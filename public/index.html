@@ -111,7 +111,7 @@ function Circle({ size = 8, fill, color, style, ...rest }) {
 // app goes to real devices or the App Store, change this back to your real,
 // always-on server URL (Render, etc.) — "localhost" only means anything on
 // the same Mac the server is running on.
-const LIVE_SITE = "http://localhost:3000";
+const LIVE_SITE = "https://medcom-server.onrender.com";
 const IS_NATIVE_SHELL =
   (typeof window !== "undefined" &&
     !!window.Capacitor &&
@@ -5018,6 +5018,12 @@ function EscalationThread({ req, viewer, requests, saveRequests, addLog, onClose
           <div style={styles.escComposerHead}>
             {mine.length > 0 ? "RAISE ANOTHER ISSUE ON THIS CALL" : "WHAT WENT WRONG ON THIS CALL?"}
           </div>
+          {mine.length > 0 && (
+            <div style={styles.escPrivacyNote}>
+              This starts a brand-new issue, separate from the one(s) above. To continue an existing
+              conversation instead, use "{isAdmin ? "Reply to the crew" : "Add a note"}" on that issue.
+            </div>
+          )}
           <textarea
             style={styles.escTextarea}
             rows={3}
@@ -11015,16 +11021,17 @@ const styles = {
     resize: "vertical",
   },
   escComposer: {
-    background: "#0B0F14",
-    border: "1px dashed #2A3441",
+    background: "#1C1408",
+    border: "1px dashed #F59E0B",
     borderRadius: 6,
     padding: 10,
+    marginTop: 14,
   },
   escComposerHead: {
-    fontSize: 9.5,
-    fontWeight: 700,
+    fontSize: 10,
+    fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#8B98A5",
+    color: "#F59E0B",
     marginBottom: 6,
   },
   escComposerActions: {
