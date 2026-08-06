@@ -8170,8 +8170,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           nobody but dispatch can act on. */}
       <AssistanceTasks
         user={user}
-        units={units}
-        requests={requests}
+        units={stationUnits}
+        requests={stationRequests}
         saveUnits={saveUnits}
         saveRequests={saveRequests}
         addLog={addLog}
@@ -8291,7 +8291,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             <label style={styles.label}>Select Team (optional — can assign later)</label>
             <select style={styles.input} value={selectedTeam} onChange={(e) => setSelectedTeam(e.target.value)}>
               <option value="">No team selected yet</option>
-              {units.map((u) => {
+              {stationUnits.map((u) => {
                 const onCall = isOnCall(u, requests);
                 const note = onCall
                   ? `on a call — ${statusMeta(u.status).label.toLowerCase()}`
@@ -9883,7 +9883,16 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
 
   return (
     <div>
-      <StatusBoard units={units} />
+      {/* One board per station rather than one board for the department. A
+          combined count answers a question nobody at either station is asking:
+          "three available" means nothing if two of them are at the other end
+          of the city. */}
+      {STATIONS.map((st) => (
+        <div key={st.key} style={{ marginBottom: 10 }}>
+          <div style={styles.stationBoardLabel}>{st.label}</div>
+          <StatusBoard units={atStation(units, st.key)} />
+        </div>
+      ))}
 
       {/* Straight under the board, above the rosters. An issue a crew took the
           trouble to write down is the one thing on this screen that has
@@ -10111,6 +10120,10 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
                     <CalendarClock size={11} /> booked for {hhmm(req.scheduledFor)}
                   </span>
                 )}
+                {/* Administration is the only screen where both stations' calls
+                    sit in one list, so this is the only screen that has to say
+                    which station a call belongs to. */}
+                <span style={styles.logStationTag}>{stationShort(stationOf(req))}</span>
               </div>
               <CallTimes times={req.times} />
               <AssistStatusLine req={req} units={units} />
@@ -11878,6 +11891,14 @@ const styles = {
     resize: "vertical",
   },
   // --- Call corrections -----------------------------------------------------
+  stationBoardLabel: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: 0.6,
+    color: "#7FB2E5",
+    marginBottom: 4,
+  },
+
   logStationTag: {
     fontSize: 9,
     fontWeight: 800,
