@@ -68,6 +68,7 @@ const FileSignature = makeIcon("📝");
 const VolumeX = makeIcon("🔇");
 const Ruler = makeIcon("📏");
 const Tag = makeIcon("🏷");
+const PencilLine = makeIcon("✎");
 const ShieldAlert = makeIcon("🛡");
 const MessageSquare = makeIcon("💬");
 const Reply = makeIcon("↩");
@@ -335,7 +336,188 @@ const REQUIREMENTS = [
   { key: "infusion", label: "Infusion Pump" },
   { key: "suction", label: "Portable Suction" },
   { key: "oxygen", label: "Oxygen" },
+  { key: "other", label: "Other" },
 ];
+
+// "Other" is a free-text requirement: the tick puts it on the call, the text
+// says what it actually is. Everywhere requirements are shown or exported we
+// want the typed text rather than the bare word "Other", so the labels are
+// built in one place instead of five.
+function reqLabels(req) {
+  const keys = (req && req.requirements) || [];
+  return keys.map((k) => {
+    const meta = REQUIREMENTS.find((r) => r.key === k);
+    const label = meta ? meta.label : k;
+    if (k === "other") {
+      const txt = (req && req.reqOther ? String(req.reqOther) : "").trim();
+      return txt ? `Other: ${txt}` : label;
+    }
+    return label;
+  });
+}
+
+// The details on a call that can be corrected after it has gone out. Dispatch
+// often has to raise a call on what it is told down a phone, so the MRN can be
+// missing and a ward or a nature can be wrong. The desk can correct these
+// itself; a crew who finds the call is wrong at the bedside can only *propose*
+// the correction, and it stays proposed until the desk verifies it. Every
+// change carries the name of who made it and when.
+const EDITABLE_FIELDS = [
+  { key: "locationFrom", label: "From" },
+  { key: "locationTo", label: "To" },
+  { key: "nature", label: "Nature of call" },
+  { key: "mrn", label: "Patient MRN" },
+];
+
+function editFieldLabel(key) {
+  const f = EDITABLE_FIELDS.find((x) => x.key === key);
+  return f ? f.label : key;
+}
+
+// A blank value should read as blank rather than as the word "undefined" —
+// a missing MRN is the ordinary case, not an error.
+function editValueText(v) {
+  const t = (v === null || v === undefined ? "" : String(v)).trim();
+  return t || "—";
+}
+
+function callEdits(req) {
+  return (req && Array.isArray(req.edits) ? req.edits : []);
+}
+
+function pendingCallEdits(req) {
+  return callEdits(req).filter((e) => e.status === "pending");
+}
+
+// Every call anywhere in the system that still has a correction waiting on the
+// desk. A crew can report a wrong MRN and be back in service two minutes later,
+// which takes the call off the active board — the report has to keep surfacing
+// somewhere or the correction is lost with it.
+function callsAwaitingEditVerify(requests) {
+  return (requests || [])
+    .filter((r) => pendingCallEdits(r).length > 0)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function pendingCallEditCount(requests) {
+  return (requests || []).reduce((n, r) => n + pendingCallEdits(r).length, 0);
+}
+
+// Can this viewer report a correction on this call? The same rule escalations
+// use: the crew who ran it, or a crew who assisted on it. It deliberately does
+// not care whether the call is still open — a crew who only realises the MRN
+// was wrong after they are back in service still needs a way to say so.
+function canProposeEditOn(req, viewer) {
+  if (!req || !viewer || viewer.role !== "team" || !viewer.unitId) return false;
+  return req.assignedUnitId === viewer.unitId || isAssistingUnit(req, viewer.unitId);
+}
+
+// The three ways a correction can move, written once and shared, so a call
+// corrected from the history list behaves exactly like one corrected while it
+// is still running.
+async function applyCallEditsTo({ req, changes, note, who, requests, saveRequests, addLog }) {
+  if (!req || !changes || !changes.length) return false;
+  const now = Date.now();
+  const entries = changes.map((c) => ({
+    id: uid("edit"),
+    field: c.field,
+    from: c.from,
+    to: c.to,
+    by: who || "Dispatch",
+    byRole: "dispatcher",
+    at: now,
+    note: note || "",
+    status: "applied",
+    verifiedBy: who || "Dispatch",
+    verifiedAt: now,
+  }));
+  const fresh = await readKey("ems:requests", requests);
+  const next = fresh.map((r) => {
+    if (r.id !== req.id) return r;
+    const patched = { ...r, edits: [...callEdits(r), ...entries] };
+    changes.forEach((c) => {
+      patched[c.field] = c.to;
+    });
+    if (changes.some((c) => c.field === "locationFrom")) patched.location = patched.locationFrom;
+    return patched;
+  });
+  await saveRequests(next);
+  await addLog(
+    `DISPATCH (${who || "Dispatch"}) changed call information — ` +
+      entries.map((e) => `${editFieldLabel(e.field)}: ${editValueText(e.from)} → ${editValueText(e.to)}`).join("; ") +
+      ` — ${req.nature}` +
+      (note ? ` (${note})` : ""),
+    "status"
+  );
+  return true;
+}
+
+async function proposeCallEditsTo({ req, changes, note, viewer, requests, saveRequests, addLog }) {
+  if (!req || !changes || !changes.length || !viewer) return false;
+  const now = Date.now();
+  const who = viewer.name || viewer.unitName || "Crew";
+  const entries = changes.map((c) => ({
+    id: uid("edit"),
+    field: c.field,
+    from: c.from,
+    to: c.to,
+    by: who,
+    byRole: "crew",
+    unitId: viewer.unitId || null,
+    unitName: viewer.unitName || "",
+    at: now,
+    note: note || "",
+    status: "pending",
+    // Whether the call had already closed when this was reported, so the desk
+    // can see at a glance that it is tidying a record rather than fixing a
+    // call that is still running.
+    afterClose: req.status === "completed",
+  }));
+  const fresh = await readKey("ems:requests", requests);
+  const next = fresh.map((r) =>
+    r.id === req.id ? { ...r, edits: [...callEdits(r), ...entries] } : r
+  );
+  await saveRequests(next);
+  await addLog(
+    `${viewer.unitName || "CREW"} (${who}) changed call information — ` +
+      entries.map((e) => `${editFieldLabel(e.field)}: ${editValueText(e.from)} → ${editValueText(e.to)}`).join("; ") +
+      ` — ${req.nature} (waiting for dispatch to confirm)`,
+    "status"
+  );
+  return true;
+}
+
+async function verifyCallEditOn({ req, entry, accept, who, requests, saveRequests, addLog }) {
+  if (!req || !entry) return false;
+  const now = Date.now();
+  const byWhom = who || "Dispatch";
+  const fresh = await readKey("ems:requests", requests);
+  const next = fresh.map((r) => {
+    if (r.id !== req.id) return r;
+    const patched = {
+      ...r,
+      edits: callEdits(r).map((e) =>
+        e.id === entry.id
+          ? { ...e, status: accept ? "applied" : "rejected", verifiedBy: byWhom, verifiedAt: now }
+          : e
+      ),
+    };
+    if (accept) {
+      patched[entry.field] = entry.to;
+      if (entry.field === "locationFrom") patched.location = entry.to;
+    }
+    return patched;
+  });
+  await saveRequests(next);
+  await addLog(
+    `${entry.unitName || "CREW"} (${entry.by}) changed call information ` +
+      `(${accept ? "confirmed" : "turned down"} by ${byWhom}) — ` +
+      `${editFieldLabel(entry.field)}: ${editValueText(entry.from)} → ${editValueText(entry.to)}` +
+      ` — ${req.nature}`,
+    "status"
+  );
+  return true;
+}
 
 const REQ_STATUS = {
   pending: { label: "PENDING", color: "#F59E0B" },
@@ -741,12 +923,64 @@ function isBoardLogEntry(entry) {
   return !entry.detail && LEGACY_BOARD_LOG_RE.test(entry.message || "");
 }
 
+// The department works out of two separate stations. They run their own calls,
+// their own bookings and their own log sheet — a dispatcher at one has no
+// business seeing the other's board, and a crew signs on at the station they
+// are actually working that shift. Administration is the one place both are
+// visible at once.
+const STATIONS = [
+  { key: "main", label: "Main Office", short: "MAIN" },
+  { key: "ccc", label: "CCC", short: "CCC" },
+];
+
+// Everything that existed before stations did belongs to the Main Office —
+// that is where the original five medics run from, so an un-tagged record read
+// off an older board lands where it actually came from rather than nowhere.
+const DEFAULT_STATION = "main";
+
+function stationMeta(key) {
+  return STATIONS.find((s) => s.key === key) || STATIONS[0];
+}
+
+function stationLabel(key) {
+  const m = STATIONS.find((s) => s.key === key);
+  return m ? m.label : "";
+}
+
+function stationShort(key) {
+  const m = STATIONS.find((s) => s.key === key);
+  return m ? m.short : "";
+}
+
+// The station a record belongs to. Written as one function so an older record
+// with no station on it is read the same way everywhere instead of being
+// treated as belonging to no station at all, which would hide it from both.
+function stationOf(x) {
+  return (x && x.station) || DEFAULT_STATION;
+}
+
+function atStation(list, station) {
+  if (!station) return list || [];
+  return (list || []).filter((x) => stationOf(x) === station);
+}
+
+// A unit's name is only unique inside its own station — both stations run a
+// MEDIC 1. Anywhere the two are shown together the station has to come with it.
+function unitFullName(unit) {
+  if (!unit) return "";
+  return `${unit.name} · ${stationShort(stationOf(unit))}`;
+}
+
 const DEFAULT_UNITS = [
-  { id: "u1", name: "MEDIC 1", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
-  { id: "u2", name: "MEDIC 2", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
-  { id: "u3", name: "MEDIC 3", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
-  { id: "u4", name: "MEDIC 4", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
-  { id: "u5", name: "MEDIC 5", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "u1", name: "MEDIC 1", station: "main", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "u2", name: "MEDIC 2", station: "main", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "u3", name: "MEDIC 3", station: "main", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "u4", name: "MEDIC 4", station: "main", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "u5", name: "MEDIC 5", station: "main", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "uz", name: "ZAHRAWI", station: "main", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "c1", name: "MEDIC 1", station: "ccc", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "c2", name: "MEDIC 2", station: "ccc", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
+  { id: "c3", name: "MEDIC 3", station: "ccc", status: "oos", assignedRequestId: null, alpha: null, bravo: null },
 ];
 
 // The two built-in accounts. Each logs in with just its ID the first time,
@@ -1886,6 +2120,10 @@ function actorStamp(session) {
     name,
     role: session.role || null,
     accountId: session.accountId || null,
+    // Which station the person was working when they did this. It is what lets
+    // a station's log sheet be its own, and it is on the stamp rather than on
+    // the message so it survives into the spreadsheet as a column.
+    station: session.station || null,
     unitName: session.role === "team" ? session.unitName || "" : "",
     seat: session.role === "team" ? session.slot || null : null,
   };
@@ -2179,7 +2417,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
     "MEDIC CREW (NAME STAMPS)", "OUTCOME", "PT. REFUSED TIME", "ASSISTING TEAM(S)",
     "CALL DATE", "STATUS", "ASSIST REQ. TIME", "ASSIST REQ. BY", "ASSIST STATUS",
     "BOOKED BY", "BOOKED AT", "READY CALL TAKEN", "BOOKING NOTES",
-    "CLOSED BY", "CLOSE REASON",
+    "CLOSED BY", "CLOSE REASON", "STATION",
   ];
 
   const rows = requests
@@ -2230,7 +2468,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
         "", // ADDED SERVICE — filled in by hand
         pcrAuthorStamp(r, unit),
         r.priority ? PRIORITY[r.priority].label : "",
-        (r.requirements || []).map((k) => REQUIREMENTS.find((x) => x.key === k).label).join(", "),
+        reqLabels(r).join(", "),
         shift ? `${shift.short} (${shift.window})` : "",
         shiftDateOf(shiftRun.start),
         medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
@@ -2254,6 +2492,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
         // the question says so rather than leaving the cell blank next to a
         // patient.
         r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
+        stationLabel(stationOf(r)),
       ];
     });
 
@@ -2379,7 +2618,19 @@ function autoFitSheet(ws, headerRow) {
   return ws;
 }
 
-async function exportAndShareLog(log, requests, units, scheduled) {
+// `station` is the station whose book this is, or null for an administrator
+// exporting the department as a whole. When it is set, every sheet below is
+// that station's and nothing else — the two stations keep separate log sheets,
+// so an export that quietly mixed them would be worse than no export at all.
+async function exportAndShareLog(log, requests, units, scheduled, station) {
+  if (station) {
+    units = atStation(units, station);
+    requests = atStation(requests, station);
+    scheduled = atStation(scheduled, station);
+    // A log line belongs to the station of whoever wrote it. Lines written
+    // before stations existed carry none, and belong to the Main Office.
+    log = (log || []).filter((e) => stationOf(e) === station);
+  }
   const wb = XLSX.utils.book_new();
   // A call still running, and a seat still held, are both measured up to the
   // moment the export was taken.
@@ -2442,6 +2693,7 @@ async function exportAndShareLog(log, requests, units, scheduled) {
         "On Log Sheet": isBoardLogEntry(entry) ? "Yes" : "No",
         "Logged By": entry.actor && entry.actor.name ? entry.actor.name : "",
         Post: actorPost(entry.actor),
+        Station: stationLabel(stationOf(entry)),
       };
     });
   const eventLogSheet = autoFitSheet(
@@ -2571,9 +2823,7 @@ async function exportAndShareLog(log, requests, units, scheduled) {
         "Location To": callTo(s),
         Priority: PRIORITY[s.priority] ? PRIORITY[s.priority].label : "",
         MRN: s.mrn || "",
-        Requirements: (s.requirements || [])
-          .map((k) => (REQUIREMENTS.find((x) => x.key === k) ? REQUIREMENTS.find((x) => x.key === k).label : k))
-          .join(", "),
+        Requirements: reqLabels(s).join(", "),
         Team: unit ? unit.name : "",
         Notes: s.notes || "",
         "Booked By": s.createdBy || "",
@@ -2604,7 +2854,8 @@ async function exportAndShareLog(log, requests, units, scheduled) {
   XLSX.utils.book_append_sheet(wb, scheduledSheet, "Scheduled Requests");
 
   const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const filename = `medcom-dispatch-log-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const stationTag = station ? `-${stationShort(station).toLowerCase()}` : "-all-stations";
+  const filename = `medcom-dispatch-log${stationTag}-${new Date().toISOString().slice(0, 10)}.xlsx`;
 
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const file = new File([blob], filename, { type: blob.type });
@@ -2755,20 +3006,33 @@ function App() {
       await writeKey("ems:units", unitsToUse);
     } else {
       // Top up any missing default Medic units (boards seeded before Medic
-      // 4/5 existed), AND retire the old default "RESCUE 1" unit that some
-      // boards were originally seeded with — unless it's actively on a call
-      // right now, in which case we leave it alone rather than orphan that
-      // call. Any other custom unit a crew added themselves is never touched.
-      // Also backfills alpha/bravo slots (and resets an idle, unstaffed unit
-      // to "oos") on boards created before the crew-roster feature existed.
-      const existingNames = new Set(unitsToUse.map((x) => x.name));
-      const missing = DEFAULT_UNITS.filter((d) => !existingNames.has(d.name));
+      // 4/5, ZAHRAWI, or the CCC units existed), AND retire the old default
+      // "RESCUE 1" unit that some boards were originally seeded with — unless
+      // it's actively on a call right now, in which case we leave it alone
+      // rather than orphan that call. Any other custom unit a crew added
+      // themselves is never touched. Also backfills alpha/bravo slots (and
+      // resets an idle, unstaffed unit to "oos") on boards created before the
+      // crew-roster feature existed.
+      //
+      // Units are matched on station AND name, never name alone: both stations
+      // run a MEDIC 1, and matching on the name by itself would decide CCC's
+      // medics already existed and never create them.
+      const existingKeys = new Set(unitsToUse.map((x) => `${stationOf(x)}::${x.name}`));
+      const missing = DEFAULT_UNITS.filter((d) => !existingKeys.has(`${stationOf(d)}::${d.name}`));
       const withoutRetiredDefaults = unitsToUse.filter(
         (x) => !(x.name === "RESCUE 1" && !x.assignedRequestId)
       );
       const patched = withoutRetiredDefaults.map((x) => {
-        if (x.alpha !== undefined && x.bravo !== undefined) return x;
-        const next = { ...x, alpha: x.alpha ?? null, bravo: x.bravo ?? null };
+        // Anything from before stations existed is Main Office — that is where
+        // the original medics run from.
+        const needsStation = !x.station;
+        if (x.alpha !== undefined && x.bravo !== undefined && !needsStation) return x;
+        const next = {
+          ...x,
+          station: x.station || DEFAULT_STATION,
+          alpha: x.alpha ?? null,
+          bravo: x.bravo ?? null,
+        };
         if (next.status === "available" && !next.assignedRequestId) next.status = "oos";
         return next;
       });
@@ -2891,6 +3155,10 @@ function App() {
     if (detail) entry.detail = detail;
     const stamp = actor || actorStamp(userRef.current);
     if (stamp) entry.actor = stamp;
+    // The station this line belongs to, lifted onto the entry so a station's
+    // log reads without having to know where in the entry the station hides.
+    const st = (stamp && stamp.station) || (detail && detail.station) || null;
+    if (st) entry.station = st;
     const next = [entry, ...current].slice(0, LOG_CAP);
     setLog(next);
     await writeKey("ems:log", next);
@@ -2995,6 +3263,7 @@ function App() {
         const assignNow = !!picked && !isOnCall(picked, reqList);
         const req = {
           id: uid("req"),
+          station: stationOf(entry),
           locationFrom: callFrom(entry),
           locationTo: callTo(entry),
           location: callFrom(entry),
@@ -3362,9 +3631,16 @@ function App() {
         <div style={styles.sideCol}>
           {seesLogSheet ? (
             <React.Fragment>
-              <UhuPanel units={units} requests={requests} />
+              <UhuPanel
+                units={user.role === "admin" ? units : atStation(units, user.station || DEFAULT_STATION)}
+                requests={user.role === "admin" ? requests : atStation(requests, user.station || DEFAULT_STATION)}
+              />
               <div style={{ height: 16 }} />
-              <LogSheet log={log} units={units} />
+              <LogSheet
+                log={log}
+                units={user.role === "admin" ? units : atStation(units, user.station || DEFAULT_STATION)}
+                station={user.role === "admin" ? null : user.station || DEFAULT_STATION}
+              />
             </React.Fragment>
           ) : (
             <UhuPanel units={units} requests={requests} focusUnitId={user.unitId} />
@@ -3373,7 +3649,7 @@ function App() {
       </div>
       {seesLogSheet && (
         <div style={styles.footerBar}>
-          <button style={styles.shareBtn} onClick={() => exportAndShareLog(log, requests, units, scheduled)}>
+          <button style={styles.shareBtn} onClick={() => exportAndShareLog(log, requests, units, scheduled, user.role === "admin" ? null : user.station || DEFAULT_STATION)}>
             <Share2 size={16} /> Share Dispatch Log
           </button>
         </div>
@@ -3444,7 +3720,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
   const [role, setRole] = useState(null); // null | "dispatcher" | "team" | "admin"
 
   // ---- account sign-in state machine ----
-  const [stage, setStage] = useState("id"); // "id" | "createPassword" | "verifyPassword" | "roleChoice" | "chooseShift" | "chooseTeam" | "chooseSeat"
+  const [stage, setStage] = useState("id"); // "id" | "createPassword" | "verifyPassword" | "roleChoice" | "chooseShift" | "chooseStation" | "chooseTeam" | "chooseSeat"
   const [idInput, setIdInput] = useState("");
   const [foundAccount, setFoundAccount] = useState(null);
   const [seatUnit, setSeatUnit] = useState(null);
@@ -3454,6 +3730,9 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
   // whether a seat still has to be picked afterward.
   const [pendingRole, setPendingRole] = useState(null);
   const [shiftKey, setShiftKey] = useState(null);
+  // Which of the two stations this session is working. Everything the
+  // session then sees — calls, bookings, the log — is that station's.
+  const [stationKey, setStationKey] = useState(null);
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [error, setError] = useState("");
@@ -3549,8 +3828,17 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
   function chooseShift(key) {
     setShiftKey(key);
     setError("");
+    // Then which station. Both roles answer it: the desk runs one station's
+    // board, and a crew signs on to the medic they are actually working, which
+    // only means anything once we know which station's medics to show them.
+    setStage("chooseStation");
+  }
+
+  function chooseStation(key) {
+    setStationKey(key);
+    setError("");
     if (pendingRole === "dispatcher") {
-      finishDispatcherLogin(foundAccount, key);
+      finishDispatcherLogin(foundAccount, shiftKey, key);
       return;
     }
     // Nobody is rostered to a fixed medic: the unit is chosen on the way in,
@@ -3560,7 +3848,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
     setStage("chooseTeam");
   }
 
-  async function finishDispatcherLogin(account, key) {
+  async function finishDispatcherLogin(account, key, station) {
     setBusy(true);
     const now = Date.now();
     const assignment = shiftAssignment(key, now);
@@ -3569,10 +3857,11 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
       role: "dispatcher",
       name: account.name || account.id,
       accountId: account.id,
+      station: station || DEFAULT_STATION,
       ...assignment,
     };
     await addLog(
-      `Dispatch — ${account.name || account.id} signed on for ${shiftPhrase(assignment)}` +
+      `Dispatch — ${account.name || account.id} signed on at ${stationLabel(session.station)} for ${shiftPhrase(assignment)}` +
         (late > 0 ? ` · already ${msDurationStr(late)} past that shift's end` : ""),
       "shift",
       {
@@ -3581,6 +3870,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
         name: account.name || account.id,
         accountId: account.id,
         shift: key,
+        station: session.station,
         shiftStart: assignment.shiftStart,
         shiftEnd: assignment.shiftEnd,
         overtimeMs: late,
@@ -3686,12 +3976,16 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
       name: account.name || account.id,
       unitId: teamId,
       unitName,
+      // The station is taken from the unit itself rather than from what was
+      // tapped on the way in, so a crew's session can never disagree with the
+      // truck they are actually sitting in.
+      station: stationOf(unit),
       slot,
       accountId: account.id,
       ...assignment,
     };
     await addLog(
-      `${unitName ? `${unitName} — ` : ""}${account.name || account.id} (${seatLabel(slot)}) ` +
+      `${unitName ? `${unitName} (${stationShort(stationOf(unit))}) — ` : ""}${account.name || account.id} (${seatLabel(slot)}) ` +
         `signed on for ${shiftPhrase(assignment)}` +
         (late > 0 ? ` · already ${msDurationStr(late)} past that shift's end` : "") +
         relievedNote,
@@ -3702,6 +3996,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
         name: account.name || account.id,
         accountId: account.id,
         unitName,
+        station: stationOf(unit),
         seat: slot,
         shift: key,
         shiftStart: assignment.shiftStart,
@@ -3905,13 +4200,38 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
               onBack={() => (canJoinTeam(foundAccount.role) ? setStage("roleChoice") : resetAccountFlow())}
             />}
 
+            {stage === "chooseStation" && (
+              <>
+                <div style={styles.loginSub}>Which station are you working this shift?</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+                  {STATIONS.map((s) => {
+                    const count = units.filter((u) => stationOf(u) === s.key).length;
+                    return (
+                      <button key={s.key} style={styles.roleBtn} onClick={() => chooseStation(s.key)}>
+                        <div style={{ textAlign: "left" }}>
+                          <div style={styles.roleBtnTitle}>{s.label}</div>
+                          <div style={styles.roleBtnSub}>
+                            {count} {count === 1 ? "medic" : "medics"} on this station
+                          </div>
+                        </div>
+                        <ChevronRight size={18} color="#8B98A5" />
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={styles.loginActions}>
+                  <button style={styles.ghostBtn} onClick={() => setStage("chooseShift")}>Back</button>
+                </div>
+              </>
+            )}
+
             {stage === "chooseTeam" && (
               <>
                 <div style={styles.loginSub}>
-                  Which medic are you working this shift?
+                  Which medic are you working this shift at {stationLabel(stationKey)}?
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                  {units.map((u) => (
+                  {units.filter((u) => stationOf(u) === stationKey).map((u) => (
                     <button key={u.id} style={styles.roleBtn} onClick={() => chooseJoinTeam(u.id)}>
                       <div style={{ textAlign: "left" }}>
                         <div style={styles.roleBtnTitle}>{u.name}</div>
@@ -4775,6 +5095,145 @@ function AssistanceTasks({ user, units, requests, saveUnits, saveRequests, addLo
   );
 }
 
+// The correction form. The same fields for whoever opens it — what differs is
+// what happens on save, which the caller decides: the desk's changes land on
+// the call, a crew's are proposed and wait. `mode` only changes the wording so
+// nobody is in any doubt which of the two they are doing.
+function CallEditForm({ req, mode, onSubmit, onCancel }) {
+  const [vals, setVals] = React.useState(() => {
+    const o = {};
+    EDITABLE_FIELDS.forEach((f) => {
+      o[f.key] = req && req[f.key] !== undefined && req[f.key] !== null ? String(req[f.key]) : "";
+    });
+    return o;
+  });
+  const [note, setNote] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  // Only what actually moved is worth recording — an untouched form should not
+  // stamp the call with four "changes" that changed nothing.
+  const changes = EDITABLE_FIELDS.map((f) => {
+    const before = req && req[f.key] !== undefined && req[f.key] !== null ? String(req[f.key]) : "";
+    const after = vals[f.key] || "";
+    return { field: f.key, from: before.trim(), to: after.trim() };
+  }).filter((c) => c.from !== c.to);
+
+  const proposing = mode === "propose";
+
+  async function submit() {
+    if (!changes.length || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(changes, note.trim());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={styles.editPanel}>
+      <div style={styles.editPanelHead}>
+        {proposing ? "REPORT WRONG DETAILS ON THIS CALL" : "CORRECT THE CALL DETAILS"}
+      </div>
+      <div style={styles.editPanelNote}>
+        {proposing
+          ? "Change whatever is wrong and send it to the desk. Nothing on the call moves until dispatch confirms it — the details below stay as they are until then."
+          : "Whatever you change here is corrected on the call straight away, and the change is recorded against your name."}
+      </div>
+
+      {EDITABLE_FIELDS.map((f) => (
+        <div key={f.key} style={{ marginTop: 8 }}>
+          <label style={styles.label}>{f.label}</label>
+          <input
+            style={styles.input}
+            value={vals[f.key]}
+            onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}
+            placeholder={f.key === "mrn" ? "Leave blank if still not known" : ""}
+          />
+        </div>
+      ))}
+
+      <div style={{ marginTop: 8 }}>
+        <label style={styles.label}>Note (optional)</label>
+        <input
+          style={styles.input}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder={proposing ? "e.g. ward gave us a different MRN at the bedside" : "e.g. MRN confirmed with the ward"}
+        />
+      </div>
+
+      <div style={styles.editPanelActions}>
+        <span style={styles.editPanelCount}>
+          {changes.length === 0
+            ? "Nothing changed yet."
+            : `${changes.length} change${changes.length === 1 ? "" : "s"} ready.`}
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.ghostBtnSm} onClick={onCancel}>Cancel</button>
+          <button style={styles.primaryBtnSm} disabled={!changes.length || busy} onClick={submit}>
+            {proposing ? "Send to dispatch" : "Save correction"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// What the desk sees when a crew has reported something wrong. Each proposed
+// change is confirmed or turned down on its own — a crew can be right about the
+// MRN and wrong about the ward in the same report.
+function PendingEditReview({ req, onVerify, onReject }) {
+  const pend = pendingCallEdits(req);
+  if (!pend.length) return null;
+  return (
+    <div style={styles.editReview}>
+      <div style={styles.editReviewHead}>
+        <AlertTriangle size={13} /> CREW REPORTED WRONG DETAILS — {pend.length} WAITING
+      </div>
+      {pend.map((e) => (
+        <div key={e.id} style={styles.editReviewRow}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={styles.editReviewField}>{editFieldLabel(e.field)}</div>
+            <div style={styles.editReviewChange}>
+              <span style={styles.editReviewFrom}>{editValueText(e.from)}</span>
+              <ArrowRight size={11} style={{ margin: "0 5px", verticalAlign: -1 }} />
+              <span style={styles.editReviewTo}>{editValueText(e.to)}</span>
+            </div>
+            <div style={styles.editReviewBy}>
+              {e.by}{e.unitName ? ` · ${e.unitName}` : ""} · {hhmm(e.at)}
+              {e.note ? ` — "${e.note}"` : ""}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button style={styles.ghostBtnSm} onClick={() => onReject(e)}>Turn down</button>
+            <button style={styles.primaryBtnSm} onClick={() => onVerify(e)}>Confirm</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The trail of corrections that were actually made, so the call always says who
+// changed what and when.
+function EditHistory({ req }) {
+  const done = callEdits(req).filter((e) => e.status === "applied");
+  if (!done.length) return null;
+  return (
+    <div style={styles.editHistory}>
+      {done.map((e) => (
+        <div key={e.id} style={styles.editHistoryRow}>
+          <PencilLine size={10} style={{ verticalAlign: -1, marginRight: 4 }} />
+          {editFieldLabel(e.field)}: {editValueText(e.from)} → <strong>{editValueText(e.to)}</strong>
+          {" · "}{e.by}{e.verifiedBy && e.verifiedBy !== e.by ? ` (confirmed by ${e.verifiedBy})` : ""}
+          {" · "}{hhmm(e.verifiedAt || e.at)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // The two ends of a call — where the patient is collected and where they are
 // taken — as one "from → to" line. A call carrying no destination (an older
 // record, or one raised before the destination was known) shows the pick-up
@@ -5427,10 +5886,39 @@ function callSearchText(req, units, escalations) {
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
-function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer }) {
+function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect }) {
   const [open, setOpen] = useState(!!shiftWindow);
   const [shown, setShown] = useState(HISTORY_PAGE);
   const [codingFor, setCodingFor] = useState(null);
+  // Which call has the correction form open, keyed by id for the same reason
+  // the coding picker is: this list is a map over calls.
+  const [editFor, setEditFor] = useState(null);
+
+  async function applyEdits(req, changes, note) {
+    const ok = await applyCallEditsTo({
+      req, changes, note,
+      who: user && user.name ? user.name : "Dispatch",
+      requests, saveRequests, addLog,
+    });
+    if (ok) setEditFor(null);
+  }
+
+  async function proposeEdits(req, changes, note) {
+    const ok = await proposeCallEditsTo({
+      req, changes, note, viewer,
+      requests, saveRequests, addLog,
+    });
+    if (ok) setEditFor(null);
+  }
+
+  async function verifyEdit(req, entry, accept) {
+    await verifyCallEditOn({
+      req, entry, accept,
+      who: user && user.name ? user.name : "Dispatch",
+      requests, saveRequests, addLog,
+    });
+  }
+
   // The escalation thread is opened one call at a time, keyed by call id — the
   // same shape the coding picker uses, and for the same reason: this list is a
   // map over calls, so the state that belongs to a row has to live up here.
@@ -5753,16 +6241,76 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
                       </span>
                     )}
                   </div>
-                  {req.mrn && <div style={styles.mrnRow}>MRN: {req.mrn}</div>}
+                  {req.mrn ? (
+                    <div style={styles.mrnRow}>MRN: {req.mrn}</div>
+                  ) : (
+                    <div style={styles.mrnMissingRow}>
+                      <AlertTriangle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                      No MRN on this call
+                    </div>
+                  )}
                   {req.requirements && req.requirements.length > 0 && (
                     <div style={styles.checklistRow}>
-                      {req.requirements.map((k) => (
-                        <span key={k} style={styles.reqBadge}>
-                          {REQUIREMENTS.find((r) => r.key === k) ? REQUIREMENTS.find((r) => r.key === k).label : k}
-                        </span>
+                      {reqLabels(req).map((label, i) => (
+                        <span key={i} style={styles.reqBadge}>{label}</span>
                       ))}
                     </div>
                   )}
+
+                  {/* Corrections on a call that has already closed. This is the
+                      answer to the crew who only find out the MRN was wrong
+                      after they are back in service: the call has left the
+                      active board, but it is still here, and it can still be
+                      put right. */}
+                  {canCorrect && (
+                    <>
+                      <PendingEditReview
+                        req={req}
+                        onVerify={(e) => verifyEdit(req, e, true)}
+                        onReject={(e) => verifyEdit(req, e, false)}
+                      />
+                      <EditHistory req={req} />
+                      {editFor === req.id ? (
+                        <CallEditForm
+                          req={req}
+                          mode="apply"
+                          onSubmit={(changes, note) => applyEdits(req, changes, note)}
+                          onCancel={() => setEditFor(null)}
+                        />
+                      ) : (
+                        <button style={styles.editOpenBtn} onClick={() => setEditFor(req.id)}>
+                          <PencilLine size={12} /> Correct call details
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {!canCorrect && canProposeEditOn(req, viewer) && (
+                    <>
+                      {pendingCallEdits(req).length > 0 && (
+                        <div style={styles.editPendingNote}>
+                          <Clock size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                          Sent to dispatch — waiting for them to confirm:{" "}
+                          {pendingCallEdits(req)
+                            .map((e) => `${editFieldLabel(e.field)} → ${editValueText(e.to)}`)
+                            .join(", ")}
+                        </div>
+                      )}
+                      <EditHistory req={req} />
+                      {editFor === req.id ? (
+                        <CallEditForm
+                          req={req}
+                          mode="propose"
+                          onSubmit={(changes, note) => proposeEdits(req, changes, note)}
+                          onCancel={() => setEditFor(null)}
+                        />
+                      ) : (
+                        <button style={styles.editOpenBtn} onClick={() => setEditFor(req.id)}>
+                          <PencilLine size={12} /> These details are wrong
+                        </button>
+                      )}
+                    </>
+                  )}
+
                   <CallTimes times={req.times} />
                   <AssistStatusLine req={req} units={units} />
                   {/* Coding a call is a closed-call job — a call still running
@@ -6491,7 +7039,7 @@ function SchedulePreAlert({ entries, units, now, onDismiss, audioCtxRef }) {
 // two views and nowhere else, and refuses to draw anything for any other role.
 // Crews never see a booking: the first they know of one is the call arriving on
 // their screen at its dispatch time, exactly like any other call.
-function ScheduledRequests({ user, units, requests, scheduled, saveScheduled, addLog, audioCtxRef }) {
+function ScheduledRequests({ user, units, requests, scheduled, allScheduled, saveScheduled, addLog, audioCtxRef }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState("upcoming");
   const [showForm, setShowForm] = useState(false);
@@ -6537,7 +7085,12 @@ function ScheduledRequests({ user, units, requests, scheduled, saveScheduled, ad
   if (!user || (user.role !== "dispatcher" && user.role !== "admin")) return null;
 
   const now = Date.now();
+  // `list` is this station's bookings, for reading. `saveFallback` is every
+  // station's, because a write here replaces the whole stored array — if a
+  // read ever fails and we fall back to the filtered list, the other
+  // station's bookings would be written out of existence.
   const list = scheduled || [];
+  const saveFallback = allScheduled || scheduled || [];
   const upcoming = list
     .filter((s) => s && schedOpen(s, now))
     .sort((a, b) => (a.scheduledFor || 0) - (b.scheduledFor || 0));
@@ -6619,6 +7172,7 @@ function ScheduledRequests({ user, units, requests, scheduled, saveScheduled, ad
     const createdAt = Date.now();
     const entry = {
       id: uid("sch"),
+      station: user && user.station ? user.station : DEFAULT_STATION,
       locationFrom: locationFrom.trim(),
       locationTo: locationTo.trim(),
       nature: nature.trim(),
@@ -6644,7 +7198,7 @@ function ScheduledRequests({ user, units, requests, scheduled, saveScheduled, ad
     };
     // Fresh read before writing: two desks booking at the same moment must not
     // overwrite each other's booking.
-    const fresh = await readKey("ems:scheduled", list);
+    const fresh = await readKey("ems:scheduled", saveFallback);
     await saveScheduled([...fresh, entry]);
     const teamName = team ? (units.find((u) => u.id === team) || {}).name || "" : "";
     await addLog(
@@ -6662,7 +7216,7 @@ function ScheduledRequests({ user, units, requests, scheduled, saveScheduled, ad
   }
 
   async function patchBooking(id, patch, logLine) {
-    const fresh = await readKey("ems:scheduled", list);
+    const fresh = await readKey("ems:scheduled", saveFallback);
     const target = fresh.find((s) => s && s.id === id);
     if (!target) return;
     await saveScheduled(fresh.map((s) => (s && s.id === id ? { ...s, ...patch } : s)));
@@ -7250,6 +7804,58 @@ function ScheduledRequests({ user, units, requests, scheduled, saveScheduled, ad
 
 // ---------- dispatcher view ----------
 
+// The safety net. A correction reported on a call that then closes would
+// otherwise disappear with the call — the desk's active board only carries
+// calls that are still running. This gathers every one still waiting, from any
+// call in any state, and puts it at the top of the desk's screen until it has
+// been dealt with.
+function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
+  const waiting = callsAwaitingEditVerify(requests);
+  if (!waiting.length) return null;
+
+  async function verify(req, entry, accept) {
+    await verifyCallEditOn({
+      req, entry, accept,
+      who: user && user.name ? user.name : "Dispatch",
+      requests, saveRequests, addLog,
+    });
+  }
+
+  return (
+    <div style={styles.editInbox}>
+      <div style={styles.editInboxHead}>
+        <AlertTriangle size={14} /> CALL INFORMATION WAITING TO BE CONFIRMED —{" "}
+        {pendingCallEditCount(requests)}
+      </div>
+      <div style={styles.editInboxNote}>
+        Crews have reported these details as wrong. Nothing changes on the call until you confirm it.
+        Calls that have already closed still show here, so a correction is never lost because the
+        team went back in service.
+      </div>
+      {waiting.map((req) => {
+        const unit = units.find((u) => u.id === req.assignedUnitId);
+        return (
+          <div key={req.id} style={styles.editInboxCall}>
+            <div style={styles.editInboxCallHead}>
+              <span style={styles.editInboxNature}>{req.nature}</span>
+              <span style={styles.editInboxMeta}>
+                <CallRoute req={req} size="sm" />
+                {unit ? ` · ${unit.name}` : ""}
+                {req.status === "completed" ? " · CALL CLOSED" : ""}
+              </span>
+            </div>
+            <PendingEditReview
+              req={req}
+              onVerify={(e) => verify(req, e, true)}
+              onReject={(e) => verify(req, e, false)}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef }) {
   const [showForm, setShowForm] = useState(false);
   const [locationFrom, setLocationFrom] = useState("");
@@ -7258,6 +7864,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   const [priority, setPriority] = useState("urgent");
   const [mrn, setMrn] = useState("");
   const [requirements, setRequirements] = useState([]);
+  // Free text for the "Other" requirement, and which call the desk has the
+  // correction form open on.
+  const [reqOther, setReqOther] = useState("");
+  const [editingCallId, setEditingCallId] = useState(null);
   const [selectedTeam, setSelectedTeam] = useState("");
   const [callType, setCallType] = useState("");
   const [loadedKm, setLoadedKm] = useState("");
@@ -7276,14 +7886,49 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     setRequirements((r) => (r.includes(key) ? r.filter((x) => x !== key) : [...r, key]));
   }
 
-  const active = requests.filter((r) => r.status !== "completed").sort((a, b) => b.createdAt - a.createdAt);
+  // Everything on this desk is its own station's. The full `units`, `requests`
+  // and `scheduled` arrays are deliberately left alone — every save in here
+  // re-reads the whole board and writes it back, so handing a filtered array to
+  // one of those would quietly delete the other station's work. These are the
+  // display lists, and nothing else.
+  const myStation = user && user.station ? user.station : DEFAULT_STATION;
+  const stationUnits = atStation(units, myStation);
+  const stationRequests = atStation(requests, myStation);
+  const stationScheduled = atStation(scheduled, myStation);
+
+  const active = stationRequests
+    .filter((r) => r.status !== "completed")
+    .sort((a, b) => b.createdAt - a.createdAt);
   // Every team that isn't already out on a call, whatever their status board
   // colour says. Dispatch needs the full list to be able to send anyone at all:
   // filtering to "available" only meant a signed-on crew whose status hadn't
   // been reset was invisible from the desk.
-  const assignable = assignableUnits(units, requests);
-  const inService = units.filter((u) => isStaffed(u));
+  const assignable = assignableUnits(stationUnits, requests);
+  const inService = stationUnits.filter((u) => isStaffed(u));
   const unassigned = active.filter((r) => r.status === "pending");
+
+  // The desk's own correction. It lands on the call immediately and carries the
+  // name of whoever made it — a call that quietly changes with no name on it is
+  // worse than one that was wrong.
+  // Both of these now live at module level so the same correction behaves
+  // identically whether it is made on a live call here or on a closed one
+  // from the history list.
+  async function applyCallEdits(target, changes, note) {
+    const ok = await applyCallEditsTo({
+      req: target, changes, note,
+      who: user && user.name ? user.name : "Dispatch",
+      requests, saveRequests, addLog,
+    });
+    if (ok) setEditingCallId(null);
+  }
+
+  async function verifyCallEdit(target, entry, accept) {
+    await verifyCallEditOn({
+      req: target, entry, accept,
+      who: user && user.name ? user.name : "Dispatch",
+      requests, saveRequests, addLog,
+    });
+  }
 
   async function submitRequest() {
     if (!locationFrom.trim() || !nature.trim()) return;
@@ -7300,6 +7945,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     const assignNow = !!pickedUnit && !isOnCall(pickedUnit, freshRequests);
     const req = {
       id: uid("req"),
+      // The station that raised it. A call belongs to the board it came from
+      // for the whole of its life — that is what keeps the two stations' calls,
+      // and their log sheets, genuinely separate.
+      station: user && user.station ? user.station : DEFAULT_STATION,
       // Pickup point and destination. `location` is still written as the pickup
       // point so anything reading the old single field keeps working.
       locationFrom: locationFrom.trim(),
@@ -7308,6 +7957,9 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       nature: nature.trim(),
       priority,
       mrn: mrn.trim(),
+      // The typed detail behind an "Other" requirement, kept only when the
+      // box is actually ticked so a stray note can't linger on the call.
+      reqOther: requirements.includes("other") ? reqOther.trim() : "",
       requirements,
       // The two codes the billing sheet wants. Whatever the desk knows at
       // intake — often the category and nothing else — with the rest left for
@@ -7356,6 +8008,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     setPriority("urgent");
     setMrn("");
     setRequirements([]);
+    setReqOther("");
     setCallType("");
     setLoadedKm("");
     setSelectedTeam("");
@@ -7494,7 +8147,23 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
   return (
     <div>
-      <StatusBoard units={units} />
+      <div style={styles.stationBanner}>
+        <Radio size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
+        {stationLabel(myStation)} — dispatch desk
+      </div>
+
+      <StatusBoard units={stationUnits} />
+
+      {/* Anything a crew has reported wrong that is still waiting on the desk —
+          including on calls that have already closed. Scoped to this station:
+          the other desk answers its own. */}
+      <PendingEditsInbox
+        requests={stationRequests}
+        units={stationUnits}
+        user={user}
+        saveRequests={saveRequests}
+        addLog={addLog}
+      />
 
       {/* A crew on scene asking for a second ambulance goes to the top of the
           desk, above the calls themselves: it is the only alert here that
@@ -7605,6 +8274,17 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                 </label>
               ))}
             </div>
+            {/* Ticking "Other" on its own tells the crew nothing. The box only
+                appears once it is ticked, and what is typed here is what shows
+                on the call and on the log sheet instead of the bare word. */}
+            {requirements.includes("other") && (
+              <input
+                style={{ ...styles.input, marginTop: 8 }}
+                value={reqOther}
+                onChange={(e) => setReqOther(e.target.value)}
+                placeholder="What else is needed? e.g. bariatric stretcher, incubator, isolation precautions"
+              />
+            )}
           </div>
 
           <div>
@@ -7668,15 +8348,48 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   </span>
                 )}
               </div>
-              {req.mrn && <div style={styles.mrnRow}>MRN: {req.mrn}</div>}
+              {/* The MRN line is worth saying out loud when it is missing. A call
+                  can go out without one and often has to — this is the reminder
+                  that it still needs filling in, and the way in to do it. */}
+              {req.mrn ? (
+                <div style={styles.mrnRow}>MRN: {req.mrn}</div>
+              ) : (
+                <div style={styles.mrnMissingRow}>
+                  <AlertTriangle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                  No MRN yet — add it from "Correct call details" once the ward gives it.
+                </div>
+              )}
               {req.notes && <div style={styles.mrnRow}>{req.notes}</div>}
               {req.requirements && req.requirements.length > 0 && (
                 <div style={styles.checklistRow}>
-                  {req.requirements.map((k) => (
-                    <span key={k} style={styles.reqBadge}>{REQUIREMENTS.find((r) => r.key === k).label}</span>
+                  {reqLabels(req).map((label, i) => (
+                    <span key={i} style={styles.reqBadge}>{label}</span>
                   ))}
                 </div>
               )}
+
+              {/* Anything a crew has reported wrong on this call, waiting on the
+                  desk to confirm or turn down. */}
+              <PendingEditReview
+                req={req}
+                onVerify={(e) => verifyCallEdit(req, e, true)}
+                onReject={(e) => verifyCallEdit(req, e, false)}
+              />
+              <EditHistory req={req} />
+
+              {editingCallId === req.id ? (
+                <CallEditForm
+                  req={req}
+                  mode="apply"
+                  onSubmit={(changes, note) => applyCallEdits(req, changes, note)}
+                  onCancel={() => setEditingCallId(null)}
+                />
+              ) : (
+                <button style={styles.editOpenBtn} onClick={() => setEditingCallId(req.id)}>
+                  <PencilLine size={12} /> Correct call details
+                </button>
+              )}
+
               <CallTimes times={req.times} />
               <AssistStatusLine req={req} units={units} />
 
@@ -7809,27 +8522,29 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> UNITS
       </div>
       <div style={styles.unitGrid}>
-        {units.map((u) => (
+        {stationUnits.map((u) => (
           <UnitRosterCard key={u.id} unit={u} />
         ))}
       </div>
 
       <ScheduledRequests
         user={user}
-        units={units}
-        requests={requests}
-        scheduled={scheduled}
+        units={stationUnits}
+        requests={stationRequests}
+        scheduled={stationScheduled}
+        allScheduled={scheduled}
         saveScheduled={saveScheduled}
         addLog={addLog}
         audioCtxRef={audioCtxRef}
       />
 
       <CompletedCalls
-        requests={requests}
-        units={units}
+        requests={stationRequests}
+        units={stationUnits}
         saveRequests={saveRequests}
         addLog={addLog}
         user={user}
+        canCorrect
       />
     </div>
   );
@@ -7877,6 +8592,12 @@ function SeatLine({ label, member }) {
 
 function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef }) {
   const myUnit = units.find((u) => u.id === user.unitId);
+  // A crew belongs to the station their truck is at, and sees nothing of the
+  // other one. As on the desk, the full arrays are left alone for saving —
+  // these are only what gets shown.
+  const myStation = myUnit ? stationOf(myUnit) : (user.station || DEFAULT_STATION);
+  const stationUnits = atStation(units, myStation);
+  const stationRequests = atStation(requests, myStation);
   // Only a call that is still running counts as this crew's assignment. A
   // completed one left behind by a stale pointer must not resurface here — and
   // certainly must not restart the alarm.
@@ -7897,6 +8618,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [ambulanceInput, setAmbulanceInput] = useState(myUnit ? myUnit.ambulanceNumber || "" : "");
   // Whether the escalation thread on the live call is unfolded.
   const [escOpen, setEscOpen] = useState(false);
+  // Whether the "these details are wrong" form is open on the live call.
+  const [editOpen, setEditOpen] = useState(false);
   const alarmIntervalRef = useRef(null);
   const alarmingRequestId = useRef(null);
   const notifiedRequestId = useRef(null);
@@ -8168,6 +8891,19 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     );
   }
 
+  // A crew finds the call is wrong — usually the MRN, sometimes the ward. They
+  // report it and it goes no further than that: the call keeps the details it
+  // has until the desk confirms the change. A crew correcting the record from
+  // the bedside on their own would leave dispatch working from a call that
+  // quietly changed underneath them.
+  async function proposeCallEdits(changes, note) {
+    const ok = await proposeCallEditsTo({
+      req: myRequest, changes, note, viewer: escViewer,
+      requests, saveRequests, addLog,
+    });
+    if (ok) setEditOpen(false);
+  }
+
   // The patient refuses the transfer at the bedside. The response stands and
   // the timeline carries on exactly as it would have — this only records the
   // refusal and its time, and stamps the call as a response with no transport
@@ -8343,7 +9079,14 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         />
       )}
 
-      <StatusBoard units={units} />
+      <div style={styles.stationBanner}>
+        <Radio size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
+        {stationLabel(myStation)} — {myUnit.name}
+      </div>
+
+      {/* The board of every unit's status, and who is free, belongs to the desk
+          and to administration. A crew needs its own call and its own unit —
+          the rest is dispatch's picture to hold, not theirs to watch. */}
 
       <CallAlertNotice audioCtxRef={audioCtxRef} />
 
@@ -8452,11 +9195,42 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           {myRequest.notes && <div style={styles.mrnRow}>{myRequest.notes}</div>}
           {myRequest.requirements && myRequest.requirements.length > 0 && (
             <div style={styles.checklistRow}>
-              {myRequest.requirements.map((k) => (
-                <span key={k} style={styles.reqBadge}>{REQUIREMENTS.find((r) => r.key === k).label}</span>
+              {reqLabels(myRequest).map((label, i) => (
+                <span key={i} style={styles.reqBadge}>{label}</span>
               ))}
             </div>
           )}
+
+          {/* Corrections. A crew can say the details are wrong; only the desk can
+              make that stick. Anything already sent shows here so the same crew
+              doesn't report it twice while they wait. */}
+          {!assisting && (
+            <div style={styles.editCrewBlock}>
+              {pendingCallEdits(myRequest).length > 0 && (
+                <div style={styles.editPendingNote}>
+                  <Clock size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                  Sent to dispatch — waiting for them to confirm:{" "}
+                  {pendingCallEdits(myRequest)
+                    .map((e) => `${editFieldLabel(e.field)} → ${editValueText(e.to)}`)
+                    .join(", ")}
+                </div>
+              )}
+              <EditHistory req={myRequest} />
+              {!editOpen ? (
+                <button style={styles.ghostBtnSm} onClick={() => setEditOpen(true)}>
+                  <PencilLine size={12} /> These details are wrong
+                </button>
+              ) : (
+                <CallEditForm
+                  req={myRequest}
+                  mode="propose"
+                  onSubmit={proposeCallEdits}
+                  onCancel={() => setEditOpen(false)}
+                />
+              )}
+            </div>
+          )}
+
           <CallTimes times={myRequest.times} />
 
           {/* Where the ask for a second ambulance has got to, on the card of the
@@ -8612,16 +9386,17 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       )}
 
       {/* The calls this team has already finished on the shift that is running
-          now. Read-only: the crew stamped the times, and this is where they
-          read them back. Scoped to their own 12-hour window, because the
-          truck's older history belongs to the crews who worked it before them —
-          though a search, a date or the escalated-issues filter opens the whole
-          record they are allowed to see. Correcting a closed call is still the
-          desk's job; raising an issue on one is theirs. */}
+          now. The crew stamped the times, and this is where they read them
+          back. Scoped to their own 12-hour window, because the truck's older
+          history belongs to the crews who worked it before them — though a
+          search, a date or the escalated-issues filter opens the whole record
+          they are allowed to see. A crew who only realises here that a detail
+          was wrong can still report it: it goes to the desk the same way it
+          would have on the live call, and the desk still has the last word. */}
       <div style={{ marginTop: 18 }}>
         <CompletedCalls
-          requests={requests}
-          units={units}
+          requests={stationRequests}
+          units={stationUnits}
           unitId={myUnit.id}
           shiftWindow={myShiftWindow}
           user={user}
@@ -8886,6 +9661,39 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
   const [crewId, setCrewId] = useState("");
   const [crewError, setCrewError] = useState("");
   const [crewBusy, setCrewBusy] = useState(false);
+
+  // Adding a truck to a station. One box is shared between the two station
+  // sections and remembers which one is being typed into, so a name half-typed
+  // under CCC can never be added to the Main Office by accident.
+  const [newUnitName, setNewUnitName] = useState("");
+  const [newUnitStation, setNewUnitStation] = useState(null);
+  const [unitError, setUnitError] = useState("");
+
+  async function addUnit(station) {
+    const name = newUnitName.trim().toUpperCase();
+    setUnitError("");
+    if (!name) return;
+    const fresh = await readKey("ems:units", units);
+    // Only a clash inside the same station matters. Both stations run a MEDIC 1
+    // and always will.
+    if (fresh.some((u) => stationOf(u) === station && (u.name || "").toUpperCase() === name)) {
+      setUnitError(`${stationLabel(station)} already has a ${name}.`);
+      return;
+    }
+    const unit = {
+      id: uid("unit"),
+      name,
+      station,
+      status: "oos",
+      assignedRequestId: null,
+      alpha: null,
+      bravo: null,
+    };
+    await saveUnits([...fresh, unit]);
+    setNewUnitName("");
+    setNewUnitStation(null);
+    await addLog(`${name} added to ${stationLabel(station)} by ${user.name || "Admin"}`, "status");
+  }
 
   const [adminName, setAdminName] = useState("");
   const [adminId, setAdminId] = useState("");
@@ -9207,14 +10015,52 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
         </div>
       </div>
 
-      <div style={styles.sectionHeader}>
-        <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> TEAM ROSTER
-      </div>
-      <div style={styles.unitGrid}>
-        {units.map((u) => (
-          <UnitRosterCard key={u.id} unit={u} />
-        ))}
-      </div>
+      {/* Both stations, one under the other, each with its own roster and its
+          own way of adding a truck. Administration is the only place the two
+          are visible together — everywhere else they are separate boards. */}
+      {STATIONS.map((st) => {
+        const unitsHere = atStation(units, st.key);
+        const liveHere = atStation(requests, st.key).filter((r) => r.status !== "completed");
+        return (
+          <div key={st.key} style={{ marginTop: 18 }}>
+            <div style={styles.sectionHeader}>
+              <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+              {st.label.toUpperCase()} — TEAM ROSTER
+              <span style={styles.stationCount}>
+                {unitsHere.length} {unitsHere.length === 1 ? "medic" : "medics"} ·{" "}
+                {liveHere.length} live {liveHere.length === 1 ? "call" : "calls"}
+              </span>
+            </div>
+            <div style={styles.unitGrid}>
+              {unitsHere.map((u) => (
+                <UnitRosterCard key={u.id} unit={u} />
+              ))}
+            </div>
+            <div style={styles.addUnitRow}>
+              <input
+                style={{ ...styles.input, maxWidth: 220 }}
+                value={newUnitStation === st.key ? newUnitName : ""}
+                onFocus={() => setNewUnitStation(st.key)}
+                onChange={(e) => {
+                  setNewUnitStation(st.key);
+                  setNewUnitName(e.target.value);
+                }}
+                placeholder="New medic name, e.g. MEDIC 6"
+              />
+              <button
+                style={styles.primaryBtnSm}
+                disabled={newUnitStation !== st.key || !newUnitName.trim()}
+                onClick={() => addUnit(st.key)}
+              >
+                <Plus size={13} /> Add medic
+              </button>
+            </div>
+            {newUnitStation === st.key && unitError && (
+              <div style={styles.loginError}>{unitError}</div>
+            )}
+          </div>
+        );
+      })}
 
       <div style={styles.sectionHeader}>LIVE MONITOR — ACTIVE CALLS</div>
 
@@ -9300,6 +10146,7 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
         addLog={addLog}
         viewer={escViewer}
         user={user}
+        canCorrect
       />
     </div>
   );
@@ -9417,11 +10264,15 @@ const BOARD_EVENTS = {
 // under codings, bookings, status flips and closures. Those are all still
 // written and still exported; this panel shows the acknowledgement and the
 // en-route stamp, and points at the spreadsheet for the rest.
-function LogSheet({ log, units }) {
+function LogSheet({ log, units, station }) {
   const [tab, setTab] = useState("all");
   const now = Date.now();
-  const shiftEntries = log.filter((e) => e.type === "shift");
-  const boardEntries = log.filter(isBoardLogEntry);
+  // A desk reads its own station's log and nothing else. An administrator has
+  // no station on their session, so they read both — which is the one place
+  // the two are meant to be visible together.
+  const scoped = station ? log.filter((e) => stationOf(e) === station) : log;
+  const shiftEntries = scoped.filter((e) => e.type === "shift");
+  const boardEntries = scoped.filter(isBoardLogEntry);
   const shown = tab === "shift" ? shiftEntries : boardEntries;
 
   const scheduled = shiftMeta(scheduledShiftKey(now));
@@ -9474,7 +10325,7 @@ function LogSheet({ log, units }) {
           </div>
         )}
         {shown.map((entry) => (
-          <LogEntryRow key={entry.id} entry={entry} />
+          <LogEntryRow key={entry.id} entry={entry} showStation={!station} />
         ))}
       </div>
     </div>
@@ -9486,7 +10337,7 @@ function LogSheet({ log, units }) {
 // doesn't say who was on it. A shift entry also shows the swap broken out as
 // chips, so the handover can be read at a glance. Entries from before either
 // record existed fall back to the sentence alone.
-function LogEntryRow({ entry }) {
+function LogEntryRow({ entry, showStation }) {
   const detail = entry.type === "shift" ? entry.detail : null;
   const event = detail && SHIFT_EVENTS[detail.kind];
   // An acknowledgement or an en-route stamp. Anything else in the feed never
@@ -9512,6 +10363,12 @@ function LogEntryRow({ entry }) {
     >
       <div style={styles.logTopRow}>
         <span style={styles.logTime}>{entry.time}</span>
+        {/* Only worth saying when both stations are in the same feed. On a
+            desk's own log every line is its own station and the tag would be
+            noise on every row. */}
+        {showStation && (
+          <span style={styles.logStationTag}>{stationShort(stationOf(entry))}</span>
+        )}
         {boardEvent && (
           <span
             style={{ ...styles.shiftEventTag, color: boardEvent.color, borderColor: boardEvent.color }}
@@ -11020,6 +11877,147 @@ const styles = {
     lineHeight: 1.5,
     resize: "vertical",
   },
+  // --- Call corrections -----------------------------------------------------
+  logStationTag: {
+    fontSize: 9,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+    color: "#7FB2E5",
+    border: "1px solid #24425F",
+    borderRadius: 4,
+    padding: "1px 4px",
+  },
+
+  stationCount: { marginLeft: 8, fontSize: 10.5, fontWeight: 600, color: "#5B6672", letterSpacing: 0.3 },
+  addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
+
+  stationBanner: {
+    display: "flex",
+    alignItems: "center",
+    background: "#111C2B",
+    border: "1px solid #24425F",
+    borderRadius: 8,
+    padding: "7px 10px",
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: 0.5,
+    color: "#7FB2E5",
+    marginBottom: 10,
+  },
+
+  editInbox: {
+    marginTop: 12,
+    background: "#1C1408",
+    border: "1px solid #F59E0B",
+    borderRadius: 10,
+    padding: 12,
+  },
+  editInboxHead: {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+    color: "#F59E0B",
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  editInboxNote: { fontSize: 11.5, color: "#8B98A5", lineHeight: 1.5, marginTop: 6 },
+  editInboxCall: {
+    marginTop: 10,
+    borderTop: "1px solid #2A2110",
+    paddingTop: 8,
+  },
+  editInboxCallHead: { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 },
+  editInboxNature: { fontSize: 13.5, fontWeight: 700, color: "#E6EDF3" },
+  editInboxMeta: { fontSize: 11, color: "#8B98A5" },
+
+  mrnMissingRow: {
+    fontSize: 11.5,
+    color: "#F59E0B",
+    marginTop: 4,
+  },
+  editCrewBlock: { marginTop: 10 },
+  editOpenBtn: {
+    marginTop: 10,
+    background: "none",
+    border: "1px solid #2A3441",
+    color: "#8B98A5",
+    borderRadius: 6,
+    padding: "6px 10px",
+    fontSize: 11.5,
+    fontWeight: 600,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+  },
+  editPanel: {
+    marginTop: 10,
+    background: "#0B0F14",
+    border: "1px solid #3B82F6",
+    borderRadius: 8,
+    padding: 12,
+  },
+  editPanelHead: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+    color: "#3B82F6",
+    marginBottom: 6,
+  },
+  editPanelNote: { fontSize: 11.5, color: "#8B98A5", lineHeight: 1.5, marginBottom: 4 },
+  editPanelActions: {
+    marginTop: 12,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  editPanelCount: { fontSize: 11, color: "#5B6672" },
+  editReview: {
+    marginTop: 10,
+    background: "#1C1408",
+    border: "1px solid #F59E0B",
+    borderRadius: 8,
+    padding: 10,
+  },
+  editReviewHead: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+    color: "#F59E0B",
+    marginBottom: 8,
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+  },
+  editReviewRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: "8px 0",
+    borderTop: "1px solid #2A2110",
+    flexWrap: "wrap",
+  },
+  editReviewField: { fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: "#8B98A5" },
+  editReviewChange: { fontSize: 13, marginTop: 2 },
+  editReviewFrom: { color: "#8B98A5", textDecoration: "line-through" },
+  editReviewTo: { color: "#E6EDF3", fontWeight: 700 },
+  editReviewBy: { fontSize: 11, color: "#5B6672", marginTop: 3 },
+  editHistory: { marginTop: 8 },
+  editHistoryRow: { fontSize: 11, color: "#5B6672", lineHeight: 1.6 },
+  editPendingNote: {
+    fontSize: 11.5,
+    color: "#F59E0B",
+    background: "#1C1408",
+    border: "1px solid #2A2110",
+    borderRadius: 6,
+    padding: "6px 8px",
+    marginBottom: 8,
+    lineHeight: 1.5,
+  },
+
   escComposer: {
     background: "#1C1408",
     border: "1px dashed #F59E0B",
