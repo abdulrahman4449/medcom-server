@@ -3063,6 +3063,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "ADDED SERVICE", "PCR AUTHOR", "PRIORITY", "REQUIREMENTS", "SHIFT", "SHIFT DATE",
     "MEDIC CREW (NAME STAMPS)", "OUTCOME", "PT. REFUSED TIME",
     "REFUSED BY (NAME)", "REFUSED BY (NATIONAL ID)", "REFUSED BY (RELATION)",
+    "RECEIVED BY (NAME)", "RECEIVER ID", "RECEIVER RECORDED BY",
     "ASSISTING TEAM(S)",
     "CALL DATE", "STATUS", "ASSIST REQ. TIME", "ASSIST REQ. BY", "ASSIST STATUS",
     "BOOKED BY", "BOOKED AT", "READY CALL TAKEN", "BOOKING NOTES",
@@ -3126,6 +3127,9 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
         r.refusal ? r.refusal.name : "",
         r.refusal ? r.refusal.nationalId : "",
         r.refusal ? r.refusal.relation : "",
+        r.receiver ? r.receiver.name : "",
+        r.receiver ? r.receiver.receiverId : "",
+        r.receiver ? r.receiver.takenBy : "",
         assistTeamNames(r, units),
         gregDateStr(r.createdAt),
         r.status ? REQ_STATUS[r.status].label : "",
@@ -6201,6 +6205,103 @@ function AssistanceTasks({ user, units, requests, saveUnits, saveRequests, addLo
 // Signing for a refusal. All three answers are required: a refusal recorded
 // against nobody is not a record, and "the family" is not a name. The call is
 // not stamped until this is filled in, so a crew cannot half-record it.
+// Who took the patient at the other end.
+//
+// A transfer ends with a handover to somebody, and until now the record simply
+// stopped at "arrived". Naming the person who received the patient closes the
+// chain of custody: the crew stamped the time, and this says who they gave the
+// patient to. It is stamped with the crew member who recorded it, so the entry
+// itself is accountable.
+function ReceiverBanner({ req, canEdit, onSave }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [rid, setRid] = useState("");
+  const [busy, setBusy] = useState(false);
+  const rec = req && req.receiver ? req.receiver : null;
+
+  if (rec && !open) {
+    return (
+      <div style={styles.receiverDone}>
+        <CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
+        Received by <strong>{rec.name}</strong> · ID {rec.receiverId}
+        <span style={styles.receiverBy}>
+          {" "}recorded by {rec.takenBy} at {clockStr(rec.takenAt)}
+        </span>
+        {canEdit && (
+          <button
+            style={styles.receiverEdit}
+            onClick={() => {
+              setName(rec.name || "");
+              setRid(rec.receiverId || "");
+              setOpen(true);
+            }}
+          >
+            Change
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!canEdit) return null;
+
+  if (!open) {
+    return (
+      <button style={styles.receiverPrompt} onClick={() => setOpen(true)}>
+        <FileSignature size={12} /> Add who received the patient
+      </button>
+    );
+  }
+
+  const ready = name.trim() && rid.trim();
+  return (
+    <div style={styles.receiverPanel}>
+      <div style={styles.receiverHead}>WHO RECEIVED THE PATIENT?</div>
+      <div style={{ marginTop: 8 }}>
+        <label style={styles.label}>Name</label>
+        <input
+          style={styles.input}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Nurse, doctor or technician who took over"
+        />
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <label style={styles.label}>Receiver ID</label>
+        <input
+          style={styles.input}
+          value={rid}
+          onChange={(e) => setRid(e.target.value)}
+          placeholder="Their staff or badge ID"
+        />
+      </div>
+      <div style={styles.editPanelActions}>
+        <span style={styles.editPanelCount}>
+          {ready ? "Ready to record." : "Both are needed."}
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.ghostBtnSm} onClick={() => setOpen(false)}>Cancel</button>
+          <button
+            style={styles.primaryBtnSm}
+            disabled={!ready || busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onSave({ name: name.trim(), receiverId: rid.trim() });
+                setOpen(false);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RefusalForm({ onSubmit, onCancel }) {
   const [name, setName] = React.useState("");
   const [nationalId, setNationalId] = React.useState("");
@@ -9071,6 +9172,57 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Both of these now live at module level so the same correction behaves
   // identically whether it is made on a live call here or on a closed one
   // from the history list.
+  // Sending a second ambulance the crew never asked for.
+  //
+  // Until now an assist could only start with the crew raising it — which is
+  // fine when they can reach the board, and useless when they cannot. A team
+  // out of signal in a basement, or on a tablet that has died, is exactly the
+  // team most likely to need help and least able to ask. The desk can see the
+  // call, hears it on the radio, and should be able to act on that.
+  //
+  // It is recorded as raised by the desk, not attributed to the crew, so the
+  // log shows what actually happened.
+  async function dispatchRaisesAssist(target) {
+    if (!target || target.status === "completed") return;
+    if (assistPending(target)) return;
+    const unit = units.find((u) => u.id === target.assignedUnitId);
+    const ok = window.confirm(
+      `Send a second ambulance to "${target.nature}"${unit ? ` with ${unit.name}` : ""}?\n\n` +
+        `Use this when the crew cannot ask for it themselves — out of signal, or off the board. ` +
+        `It is recorded as raised by the desk.`
+    );
+    if (!ok) return;
+    const now = Date.now();
+    const fresh = await readKey("ems:requests", requests);
+    await saveRequests(
+      fresh.map((r) =>
+        r.id === target.id
+          ? {
+              ...r,
+              assist: {
+                ...(assistOf(r) || {}),
+                status: "pending",
+                requestedAt: now,
+                requestedByUnitId: target.assignedUnitId || null,
+                requestedByUnitName: unit ? unit.name : "",
+                requestedBy: user && user.name ? user.name : "Dispatch",
+                // Says plainly that the desk started this, not the crew.
+                raisedByDesk: true,
+                cancelledAt: null,
+                cancelledBy: null,
+                teams: assistTeams(r),
+              },
+            }
+          : r
+      )
+    );
+    await addLog(
+      `${user.name || "Dispatch"} sent a second ambulance to "${target.nature}"` +
+        `${unit ? ` (${unit.name})` : ""} — raised by the desk, crew did not request it`,
+      "assign"
+    );
+  }
+
   // Handing a call to the next shift on purpose, rather than waiting for the
   // submit button to do it. A ward that will not be ready for three hours, or a
   // booking the shift plainly is not going to get to, belongs to the crew coming
@@ -9584,6 +9736,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                 </div>
               )}
 
+              {/* Who took the patient, when the crew has recorded it. Read-only
+                  here: the desk was not in the room. */}
+              {req.receiver && <ReceiverBanner req={req} canEdit={false} onSave={() => {}} />}
+
               {/* Anything a crew has reported wrong on this call, waiting on the
                   desk to confirm or turn down. */}
               <PendingEditReview
@@ -9612,6 +9768,11 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                     >
                       <ArrowRight size={12} />{" "}
                       {req.handover ? "Take back onto this shift" : "Hand to next shift"}
+                    </button>
+                  )}
+                  {req.status !== "completed" && req.assignedUnitId && !assistPending(req) && (
+                    <button style={styles.deskAssistBtn} onClick={() => dispatchRaisesAssist(req)}>
+                      <Ambulance size={12} /> Send help to this team
                     </button>
                   )}
                 </div>
@@ -10125,6 +10286,26 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // has until the desk confirms the change. A crew correcting the record from
   // the bedside on their own would leave dispatch working from a call that
   // quietly changed underneath them.
+  // Recording who took the patient at the destination.
+  async function setReceiver({ name, receiverId }) {
+    if (!myRequest) return;
+    const now = Date.now();
+    const who = user && user.name ? user.name : (myUnit ? myUnit.name : "Crew");
+    const fresh = await readKey("ems:requests", requests);
+    await saveRequests(
+      fresh.map((r) =>
+        r.id === myRequest.id
+          ? { ...r, receiver: { name, receiverId, takenBy: who, takenAt: now, unitName: myUnit ? myUnit.name : "" } }
+          : r
+      )
+    );
+    await addLog(
+      `${myUnit ? myUnit.name : "Crew"} (${who}) recorded the receiver for "${myRequest.nature}" — ` +
+        `${name} (ID ${receiverId})`,
+      "status"
+    );
+  }
+
   async function proposeCallEdits(changes, note) {
     const ok = await proposeCallEditsTo({
       req: myRequest, changes, note, viewer: escViewer,
@@ -10442,6 +10623,13 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                 <span key={i} style={styles.reqBadge}>{label}</span>
               ))}
             </div>
+          )}
+
+          {/* The handover at the other end. Offered once the patient has actually
+              arrived somewhere — asking before then is asking about something
+              that has not happened. Not shown on a call where nobody was moved. */}
+          {!assisting && !isNoTransport(myRequest) && (myRequest.times || {}).arrivalDestination && (
+            <ReceiverBanner req={myRequest} canEdit onSave={setReceiver} />
           )}
 
           {/* Corrections. A crew can say the details are wrong; only the desk can
@@ -13416,6 +13604,36 @@ const styles = {
     border: "1px solid rgba(255,176,32,.35)",
     borderRadius: 8,
     padding: "6px 9px",
+  },
+
+  receiverPrompt: {
+    marginTop: 10, width: "100%", background: "none",
+    border: "1px dashed #33475A", color: "#93A7B8", borderRadius: 10,
+    padding: "11px 12px", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+  },
+  receiverDone: {
+    marginTop: 10, background: "rgba(61,220,151,.07)",
+    border: "1px solid rgba(61,220,151,.35)", borderRadius: 10,
+    padding: "10px 12px", fontSize: 13.5, color: "#C9D8E4", lineHeight: 1.5,
+  },
+  receiverBy: { color: "#5E7488", fontSize: 12.5 },
+  receiverEdit: {
+    marginLeft: 8, background: "none", border: "none", color: "#6FD6F0",
+    fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0,
+  },
+  receiverPanel: {
+    marginTop: 10, background: "#0A1017", border: "1px solid #3DDC97",
+    borderRadius: 10, padding: 12,
+  },
+  receiverHead: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#3DDC97",
+  },
+
+  deskAssistBtn: {
+    background: "none", border: "1px solid rgba(176,124,240,.5)", color: "#B07CF0",
+    borderRadius: 8, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
+    cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
 
   handOverBtn: {
