@@ -454,6 +454,87 @@ async function writeList(key, next, prev) {
   return false;
 }
 
+// ---------- keeping the live board small ----------
+//
+// Every change sends the whole board back to the server. A crew tapping
+// "arrival at scene" re-uploads every call, every log line, every escalation the
+// department has ever recorded. That is why the writes started failing: the
+// board had quietly grown past what the server would accept. Raising the limit
+// bought room, it did not fix the shape of the problem — left alone the board
+// grows forever and the same failure comes back, slower and harder to spot.
+//
+// A completed call whose shift has been submitted and finalised is already kept
+// in the archive. Holding a second copy on the live board buys nothing and costs
+// something on every write from then on. So after a few shifts it comes off, and
+// the archive is where it lives.
+//
+// Measured in shifts rather than days, because that is the unit the department
+// actually works in: four shifts is the last two days, so yesterday's work is
+// always still on the board.
+const PRUNE_KEEP_SHIFTS = 4;
+
+function pruneCutoff(now) {
+  // The start of the window PRUNE_KEEP_SHIFTS ago. Anything whose shift ended
+  // before this is old enough to live in the archive alone.
+  return shiftWindowAt(now).start - PRUNE_KEEP_SHIFTS * SHIFT_MS;
+}
+
+// A call may only be dropped when all of this is true. Age on its own is never
+// enough — the test is whether a copy is demonstrably safe somewhere else.
+function isSafeToPrune(req, submissions, cutoff) {
+  if (!req || !req.id) return false;
+  if (req.status !== "completed") return false;
+  if (!req.createdAt || req.createdAt >= cutoff) return false;
+  // Its shift must have been submitted, that submission must have completed,
+  // and the call itself must actually be inside it. Verified against the stored
+  // copy, not assumed from dates.
+  return (submissions || []).some(
+    (s) =>
+      s &&
+      s.status === "final" &&
+      s.station === stationOf(req) &&
+      req.createdAt >= s.windowStart &&
+      req.createdAt < s.windowEnd &&
+      Array.isArray(s.requests) &&
+      s.requests.some((r) => r && r.id === req.id)
+  );
+}
+
+// Log lines follow the calls: kept once they are inside a finalised submission,
+// then trimmed. The live log was already capped at 400 and silently discarding
+// the oldest, so this loses nothing that was not being lost already — the
+// difference is that now the discarded lines are in the archive first.
+function isSafeToPruneLog(entry, submissions, cutoff) {
+  if (!entry || !entry.ts || entry.ts >= cutoff) return false;
+  return (submissions || []).some(
+    (s) =>
+      s &&
+      s.status === "final" &&
+      entry.ts >= s.windowStart &&
+      entry.ts < s.windowEnd &&
+      s.station === stationOf(entry) &&
+      Array.isArray(s.log) &&
+      s.log.some((l) => l && l.id === entry.id)
+  );
+}
+
+async function pruneArchivedWork({ requests, log, submissions, now }) {
+  const cutoff = pruneCutoff(now);
+  const keepRequests = (requests || []).filter((r) => !isSafeToPrune(r, submissions, cutoff));
+  const keepLog = (log || []).filter((e) => !isSafeToPruneLog(e, submissions, cutoff));
+
+  const droppedRequests = (requests || []).length - keepRequests.length;
+  const droppedLog = (log || []).length - keepLog.length;
+  if (!droppedRequests && !droppedLog) return { droppedRequests: 0, droppedLog: 0 };
+
+  if (droppedRequests) {
+    const ok = await writeKey("ems:requests", keepRequests);
+    if (!ok) return { droppedRequests: 0, droppedLog: 0 };
+  }
+  if (droppedLog) await writeKey("ems:log", keepLog);
+  return { droppedRequests, droppedLog };
+}
+
 // ---------- submitting a shift's log ----------
 //
 // The desk submits its own log at the end of its own shift. Two submissions make
@@ -3972,6 +4053,41 @@ function App() {
     return () => {
       alive = false;
       clearInterval(t);
+    };
+  }, [ready, user && user.role]);
+
+  // Taking finished, filed work off the live board so every write stays small.
+  // Runs quietly on a desk or admin board, never a crew tablet, and only ever
+  // removes a call it has just confirmed is sitting inside a finalised
+  // submission.
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
+    let alive = true;
+    const run = async () => {
+      try {
+        const subs = (await readKey(SUBMISSION_KEY, [])) || [];
+        if (!subs.some((x) => x && x.status === "final")) return;
+        const res = await pruneArchivedWork({
+          requests: await readKey("ems:requests", requests),
+          log: await readKey("ems:log", log),
+          submissions: subs,
+          now: Date.now(),
+        });
+        if (alive && (res.droppedRequests || res.droppedLog)) {
+          await loadAll();
+        }
+      } catch (e) {
+        console.error("prune pass failed:", e);
+      }
+    };
+    // Not on a tight loop: this is housekeeping, not board state.
+    const t = setInterval(run, 15 * 60 * 1000);
+    const first = setTimeout(run, 20000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      clearTimeout(first);
     };
   }, [ready, user && user.role]);
 
@@ -8955,6 +9071,53 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Both of these now live at module level so the same correction behaves
   // identically whether it is made on a live call here or on a closed one
   // from the history list.
+  // Handing a call to the next shift on purpose, rather than waiting for the
+  // submit button to do it. A ward that will not be ready for three hours, or a
+  // booking the shift plainly is not going to get to, belongs to the crew coming
+  // on — and saying so now is better than leaving it on the board looking like
+  // work in progress. It stays on this shift's log either way: the shift that
+  // took the call owns the record of it.
+  async function handToNextShift(target) {
+    if (!target) return;
+    const shiftName = SHIFTS[user.shift] ? SHIFTS[user.shift].label : user.shift || "this shift";
+    if (target.handover) {
+      // Already handed over — let the desk take it back if they can do it after all.
+      const undo = window.confirm(
+        `"${target.nature}" is marked for the next shift.\n\nTake it back onto this shift?`
+      );
+      if (!undo) return;
+      const fresh = await readKey("ems:requests", requests);
+      await saveRequests(
+        fresh.map((r) => (r.id === target.id ? { ...r, handover: null } : r))
+      );
+      await addLog(
+        `${user.name || "Dispatch"} took "${target.nature}" back onto the ${shiftName}`,
+        "status"
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Hand "${target.nature}" to the next shift?\n\n` +
+        `It stays on the ${shiftName} log — the shift that took the call keeps the record — ` +
+        `but it will be marked on the board so the next desk knows it is theirs to run.`
+    );
+    if (!ok) return;
+    const handover = {
+      fromShift: user.shift || scheduledShiftKey(Date.now()),
+      fromShiftLabel: shiftName,
+      fromDay: opDayLabel(opDayStart(user.shiftStart || Date.now())),
+      by: user.name || "Dispatch",
+      at: Date.now(),
+      deliberate: true,
+    };
+    const fresh = await readKey("ems:requests", requests);
+    await saveRequests(fresh.map((r) => (r.id === target.id ? { ...r, handover } : r)));
+    await addLog(
+      `${user.name || "Dispatch"} handed "${target.nature}" (${callRoute(target)}) to the next shift`,
+      "status"
+    );
+  }
+
   async function applyCallEdits(target, changes, note) {
     const ok = await applyCallEditsTo({
       req: target, changes, note,
@@ -9438,9 +9601,20 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   onCancel={() => setEditingCallId(null)}
                 />
               ) : (
-                <button style={styles.editOpenBtn} onClick={() => setEditingCallId(req.id)}>
-                  <PencilLine size={12} /> Correct call details
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button style={styles.editOpenBtn} onClick={() => setEditingCallId(req.id)}>
+                    <PencilLine size={12} /> Correct call details
+                  </button>
+                  {req.status !== "completed" && (
+                    <button
+                      style={req.handover ? styles.handBackBtn : styles.handOverBtn}
+                      onClick={() => handToNextShift(req)}
+                    >
+                      <ArrowRight size={12} />{" "}
+                      {req.handover ? "Take back onto this shift" : "Hand to next shift"}
+                    </button>
+                  )}
+                </div>
               )}
 
               <CallTimes times={req.times} />
@@ -13242,6 +13416,17 @@ const styles = {
     border: "1px solid rgba(255,176,32,.35)",
     borderRadius: 8,
     padding: "6px 9px",
+  },
+
+  handOverBtn: {
+    background: "none", border: "1px solid rgba(255,176,32,.45)", color: "#FFB020",
+    borderRadius: 8, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
+    cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
+  },
+  handBackBtn: {
+    background: "rgba(255,176,32,.10)", border: "1px solid rgba(255,176,32,.55)", color: "#FFC24D",
+    borderRadius: 8, padding: "6px 10px", fontSize: 13.5, fontWeight: 700,
+    cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
 
   stepBtn: {
