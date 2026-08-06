@@ -359,6 +359,134 @@ async function writeList(key, next, prev) {
   return false;
 }
 
+// ---------- the operational day ----------
+//
+// A day here is not midnight to midnight. It runs 07:00 to 07:00: the day shift
+// and the night shift that follows it are one working day, and a call taken at
+// 02:00 belongs to the day that started the evening before. This is already how
+// shift dates are filed on the sheet, so the archive uses the same boundary
+// rather than inventing a second idea of what "6 August" means.
+const OP_DAY_START_HOUR = 7;
+const ARCHIVE_KEY = "ems:archives";
+// Archives are the permanent record, so the cap is generous. Roughly a year of
+// days: old ones fall off the end rather than growing without limit.
+const ARCHIVE_CAP = 400;
+
+function opDayStart(ts) {
+  const d = new Date(ts);
+  const start = new Date(d);
+  start.setHours(OP_DAY_START_HOUR, 0, 0, 0);
+  // Before 07:00 we are still inside the day that began yesterday morning.
+  if (d.getHours() < OP_DAY_START_HOUR) start.setDate(start.getDate() - 1);
+  return start.getTime();
+}
+
+function opDayEnd(startTs) {
+  const d = new Date(startTs);
+  d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+// A stable key for a day, independent of how dates are displayed.
+function opDayKey(startTs) {
+  const d = new Date(startTs);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function opDayLabel(startTs) {
+  return gregDateStr(startTs);
+}
+
+// A call belongs to the day it was raised on. Not the day it finished: a call
+// dispatched at 06:30 and cleared at 08:15 was that night's call, and moving it
+// into the next day would leave a hole where it happened and count it twice
+// across the two days' figures.
+function callOpDayStart(r) {
+  return r && r.createdAt ? opDayStart(r.createdAt) : null;
+}
+
+function requestsForOpDay(requests, dayStart) {
+  return (requests || []).filter((r) => callOpDayStart(r) === dayStart);
+}
+
+function logForOpDay(log, dayStart) {
+  const end = opDayEnd(dayStart);
+  return (log || []).filter((e) => e && e.ts >= dayStart && e.ts < end);
+}
+
+// Is there anything still running from that day? Used only for the early close —
+// the clock closes the day either way.
+function opDayIsQuiet(requests, units, dayStart) {
+  const stillOpen = requestsForOpDay(requests, dayStart).some((r) => r.status !== "completed");
+  if (stillOpen) return false;
+  // Nobody still signed on anywhere. A crew who has not signed out is still on
+  // duty as far as the board is concerned.
+  const anyoneOn = (units || []).some((u) => u && (u.alpha || u.bravo));
+  return !anyoneOn;
+}
+
+// Close a day and keep it. What is stored is the data the sheet is built from,
+// not a spreadsheet file: the workbook is generated when somebody downloads it,
+// so an archive from March still comes out in whatever format the sheet has
+// today rather than being frozen in the format it had then.
+//
+// Two desks can be open at 07:00, so the day is claimed the same way a booking
+// release is: write it with this board's id, read it back, and only the board
+// whose id survived is the one that wrote it. The loser leaves it alone.
+async function archiveOpDay({ dayStart, requests, units, log, scheduled, closedBy, reason, boardId }) {
+  const existing = (await readKey(ARCHIVE_KEY, [])) || [];
+  const key = opDayKey(dayStart);
+  if (existing.some((a) => a && a.dayKey === key)) return false;
+
+  const dayRequests = requestsForOpDay(requests, dayStart);
+  const entry = {
+    id: uid("arch"),
+    dayKey: key,
+    dayStart,
+    dayEnd: opDayEnd(dayStart),
+    closedAt: Date.now(),
+    closedBy: closedBy || "",
+    reason: reason || "clock",
+    claimId: boardId,
+    // A call that was still running when the day closed is kept as it stood and
+    // said so on the sheet. Its remaining times are picked up on download.
+    requests: dayRequests.map((r) => ({ ...r, openAtClose: r.status !== "completed" })),
+    log: logForOpDay(log, dayStart),
+    scheduled: (scheduled || []).filter((s) => s && s.scheduledFor && opDayStart(s.scheduledFor) === dayStart),
+    // The rosters as they stood, so the name stamps on the sheet still resolve
+    // years later even if a medic has since been renamed or retired.
+    units: (units || []).map((u) => ({ ...u })),
+    counts: STATIONS.reduce((acc, st) => {
+      acc[st.key] = dayRequests.filter((r) => stationOf(r) === st.key).length;
+      return acc;
+    }, {}),
+  };
+
+  const next = [entry, ...existing].slice(0, ARCHIVE_CAP);
+  const ok = await writeKey(ARCHIVE_KEY, next);
+  if (!ok) return false;
+
+  // Read back and see whose claim survived.
+  const after = (await readKey(ARCHIVE_KEY, [])) || [];
+  const mine = after.find((a) => a && a.dayKey === key);
+  return !!(mine && mine.claimId === boardId);
+}
+
+// Which days are finished but not yet kept. Normally none or one; more than one
+// only if no desk was open for a few days, in which case they are all caught up
+// at once rather than quietly skipped.
+function unarchivedOpDays(requests, archives, now) {
+  const today = opDayStart(now);
+  const have = new Set((archives || []).map((a) => a && a.dayKey));
+  const days = new Set();
+  (requests || []).forEach((r) => {
+    const d = callOpDayStart(r);
+    // Only days that are actually over. The day in progress is not archived.
+    if (d && d < today && !have.has(opDayKey(d))) days.add(d);
+  });
+  return Array.from(days).sort((a, b) => a - b);
+}
+
 // ---------- session (survives a page refresh) ----------
 //
 // Who is signed in used to live only in React state, so a refresh — or a
@@ -3087,6 +3215,100 @@ async function exportAndShareLog(log, requests, units, scheduled, station) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+// Downloading a kept day. One workbook, one sheet per station, built from the
+// archive rather than from the live board.
+//
+// Calls are taken from the archive, but if a call has moved on since the day was
+// closed — a crew's offline stamps arriving late, a correction the desk
+// confirmed the next morning — the current version is used and the sheet says
+// the day was amended. That is the honest way round: the record is complete, and
+// it admits it changed rather than quietly differing from what was filed.
+async function exportArchivedDay(archive, liveRequests) {
+  if (!archive) return;
+  const byId = new Map((liveRequests || []).filter((r) => r && r.id).map((r) => [r.id, r]));
+
+  let amended = 0;
+  const requests = (archive.requests || []).map((snap) => {
+    const live = byId.get(snap.id);
+    if (!live) return snap;
+    // The archive added openAtClose; the live copy has never carried it. Compare
+    // without it, so the flag itself does not read as a change.
+    const { openAtClose, ...asFiled } = snap;
+    if (JSON.stringify(live) === JSON.stringify(asFiled)) return snap;
+    amended += 1;
+    return { ...live, openAtClose };
+  });
+
+  const units = archive.units && archive.units.length ? archive.units : [];
+  const log = archive.log || [];
+  const scheduled = archive.scheduled || [];
+  const at = archive.dayEnd;
+  const crewIndex = medicCrewIndex(units, log, at);
+
+  const wb = XLSX.utils.book_new();
+
+  STATIONS.forEach((st) => {
+    const stationRequests = atStation(requests, st.key);
+    const stationUnits = atStation(units, st.key);
+    const stationScheduled = atStation(scheduled, st.key);
+    const aoa = buildDispatchLogAOA(stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key);
+    // A line at the top of each sheet saying what this book is and whether it
+    // has changed since the day was closed.
+    aoa.splice(1, 0, [
+      `OPERATIONAL DAY: ${opDayLabel(archive.dayStart)} 07:00 → ${opDayLabel(archive.dayEnd)} 07:00` +
+        ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}` +
+        (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : ""),
+    ]);
+    const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4);
+    XLSX.utils.book_append_sheet(wb, sheet, `DISPATCH LOG — ${stationShort(st.key)}`);
+  });
+
+  // The event feed for the day, both stations, with the station on each line.
+  const eventRows = log
+    .slice()
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .map((e) => ({
+      Time: e.ts ? gregDateTimeStr(e.ts) : e.time || "",
+      Station: stationLabel(stationOf(e)),
+      Type: (e.type || "").toUpperCase(),
+      Event: e.message || "",
+      "Logged By": e.actor && e.actor.name ? e.actor.name : "",
+      Post: actorPost(e.actor),
+    }));
+  XLSX.utils.book_append_sheet(
+    wb,
+    autoFitSheet(
+      eventRows.length
+        ? XLSX.utils.json_to_sheet(eventRows)
+        : XLSX.utils.aoa_to_sheet([["No events recorded for this day."]]),
+      0
+    ),
+    "Event Log"
+  );
+
+  const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const filename = `medcom-dispatch-log-${archive.dayKey}.xlsx`;
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const file = new File([blob], filename, { type: blob.type });
+
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+      await navigator.share({ files: [file], title: `MEDCOM Dispatch Log — ${opDayLabel(archive.dayStart)}` });
+      return;
+    }
+  } catch (e) {
+    // fall through to download
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 // ---------- main app ----------
 
 // The one thing a crew must be able to see at a glance: whether what is on
@@ -3145,6 +3367,8 @@ function App() {
   // for tomorrow is never mistaken for a live call — see the scheduling section
   // near ScheduledRequests.
   const [scheduled, setScheduled] = useState([]);
+  // The kept days. Read once at load and refreshed whenever one is closed.
+  const [archives, setArchives] = useState([]);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -3381,6 +3605,10 @@ function App() {
     // A failed read here leaves the schedule as it was rather than emptying it:
     // an outage must not make the desk think nothing is booked.
     if (sch !== READ_FAILED) setScheduled(sch || []);
+    // The kept days come along on the same poll, so a day closed by another
+    // desk appears here without needing a refresh.
+    const arch = await readKey(ARCHIVE_KEY, []);
+    setArchives(arch || []);
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -3610,6 +3838,122 @@ function App() {
     const t = setInterval(releaseDueScheduled, POLL_MS);
     return () => clearInterval(t);
   }, [ready, user && user.role, releaseDueScheduled]);
+
+  // Closing the operational day and keeping it.
+  //
+  // Three ways in, and the first one to happen wins. The day the crews are
+  // working is never touched — only a day that is already over.
+  //
+  //   1. The clock. Once it is past 07:00, the day that ended is closed. This
+  //      one always happens, which is the point: a crew who forgets to sign out,
+  //      or a transfer still running at seven, cannot stop the record being kept.
+  //   2. Quiet. If every call is finished and nobody is signed on before 07:00
+  //      comes round, there is nothing left to wait for, so it closes early.
+  //   3. By hand, from the admin screen.
+  //
+  // Runs on dispatch and admin boards only, never a crew tablet, and the day is
+  // claimed before it is written so two open desks cannot file it twice.
+  const archivingRef = useRef(false);
+  const closeFinishedDays = useCallback(async () => {
+    const u = userRef.current;
+    if (!u || (u.role !== "dispatcher" && u.role !== "admin")) return;
+    if (archivingRef.current) return;
+    archivingRef.current = true;
+    try {
+      const now = Date.now();
+      const freshRequests = await readKey("ems:requests", requests);
+      const freshUnits = await readKey("ems:units", units);
+      const freshLog = await readKey("ems:log", log);
+      const freshScheduled = await readKey("ems:scheduled", scheduled);
+      const archivesNow = (await readKey(ARCHIVE_KEY, [])) || [];
+
+      // Days that are over and not yet kept. Usually none; more than one only if
+      // no desk has been open for a while, and then they are all caught up.
+      const pending = unarchivedOpDays(freshRequests, archivesNow, now);
+
+      // And the day in progress, if it has already gone quiet.
+      const today = opDayStart(now);
+      const quietToday =
+        !archivesNow.some((a) => a && a.dayKey === opDayKey(today)) &&
+        requestsForOpDay(freshRequests, today).length > 0 &&
+        opDayIsQuiet(freshRequests, freshUnits, today);
+
+      const toClose = quietToday ? [...pending, today] : pending;
+      for (const dayStart of toClose) {
+        const won = await archiveOpDay({
+          dayStart,
+          requests: freshRequests,
+          units: freshUnits,
+          log: freshLog,
+          scheduled: freshScheduled,
+          closedBy: u.name || "",
+          reason: dayStart === today ? "quiet" : "clock",
+          boardId: clientIdRef.current,
+        });
+        if (won) {
+          setArchives((await readKey(ARCHIVE_KEY, [])) || []);
+          await addLog(
+            `Log sheet saved for ${opDayLabel(dayStart)} (07:00–07:00) — ` +
+              `${requestsForOpDay(freshRequests, dayStart).length} calls` +
+              (dayStart === today ? " — all calls complete and all crews signed out" : ""),
+            "status"
+          );
+        }
+      }
+    } catch (e) {
+      // A failed pass is not worth surfacing: the next one tries again, and the
+      // clock trigger means the day cannot be missed entirely.
+      console.error("closeFinishedDays failed:", e);
+    } finally {
+      archivingRef.current = false;
+    }
+  }, [requests, units, log, scheduled]);
+
+  // Closing the day in progress by hand. The same path as the automatic close —
+  // it only skips the two conditions, because an administrator asking for it is
+  // the condition.
+  const closeTodayNow = useCallback(async () => {
+    const u = userRef.current;
+    if (!u || u.role !== "admin") return;
+    const now = Date.now();
+    const dayStart = opDayStart(now);
+    const freshRequests = await readKey("ems:requests", requests);
+    const count = requestsForOpDay(freshRequests, dayStart).length;
+    const stillOpen = requestsForOpDay(freshRequests, dayStart).filter((r) => r.status !== "completed").length;
+    const ok = window.confirm(
+      `Save the log sheet for ${opDayLabel(dayStart)} now?\n\n` +
+        `${count} call${count === 1 ? "" : "s"}` +
+        (stillOpen > 0
+          ? `, ${stillOpen} still running. Those are kept as they stand and their remaining times are picked up when you download it.`
+          : ".") +
+        "\n\nThe day carries on as normal — this only files the record."
+    );
+    if (!ok) return;
+    const won = await archiveOpDay({
+      dayStart,
+      requests: freshRequests,
+      units: await readKey("ems:units", units),
+      log: await readKey("ems:log", log),
+      scheduled: await readKey("ems:scheduled", scheduled),
+      closedBy: u.name || "Admin",
+      reason: "manual",
+      boardId: clientIdRef.current,
+    });
+    if (won) {
+      setArchives((await readKey(ARCHIVE_KEY, [])) || []);
+      await addLog(`Log sheet saved for ${opDayLabel(dayStart)} by ${u.name || "Admin"} — ${count} calls`, "status");
+    }
+  }, [requests, units, log, scheduled]);
+
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
+    closeFinishedDays();
+    // A minute is plenty: this is a once-a-day event, not something to check
+    // every three seconds alongside the board.
+    const t = setInterval(closeFinishedDays, 60000);
+    return () => clearInterval(t);
+  }, [ready, user && user.role, closeFinishedDays]);
 
   // Releases a crew member's Alpha/Bravo seat on sign-out and records the
   // shift they just finished, including any overtime. If that leaves the unit
@@ -3899,6 +4243,8 @@ function App() {
               saveScheduled={saveScheduled}
               addLog={addLog}
               audioCtxRef={audioCtxRef}
+              archives={archives}
+              onCloseToday={closeTodayNow}
             />
           )}
         </div>
@@ -10014,7 +10360,78 @@ function AlarmOverlay({ request, onAcknowledge, assisting, withUnit }) {
 
 const ROLE_LABELS = { crew: "team member", dispatcher: "dispatcher", admin: "admin" };
 
-function AdminView({ user, units, requests, scheduled, accounts, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef }) {
+// The kept days, newest first. This is where a supervisor goes back to a night
+// three weeks ago — the calls, the crews, both stations, in one workbook.
+function SavedLogs({ archives, requests, onCloseToday, canCloseToday, todayCallCount }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const list = (archives || []).slice().sort((a, b) => (b.dayStart || 0) - (a.dayStart || 0));
+
+  async function download(a) {
+    setBusy(a.id);
+    try {
+      await exportArchivedDay(a, requests);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div style={styles.sectionHeader}>
+        <Archive size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> SAVED LOG SHEETS
+        <span style={styles.stationCount}>
+          {list.length} {list.length === 1 ? "day" : "days"} kept
+        </span>
+      </div>
+
+      <div style={styles.savedNote}>
+        A day runs 07:00 to 07:00 — the day shift and the night that follows it. It is saved on its
+        own once every call is finished and every crew has signed out, and in any case at 07:00, so a
+        call still running at seven never holds the record up. Each file has one sheet per station.
+      </div>
+
+      {canCloseToday && (
+        <button style={{ ...styles.ghostBtnSm, marginTop: 10 }} onClick={onCloseToday}>
+          <Archive size={12} /> Close today now ({todayCallCount} {todayCallCount === 1 ? "call" : "calls"})
+        </button>
+      )}
+
+      {list.length === 0 ? (
+        <div style={styles.emptyState}>
+          Nothing kept yet. The first day will be saved here once it is over.
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+          {!open && list.length > 4 && (
+            <button style={styles.ghostBtnSm} onClick={() => setOpen(true)}>
+              Show all {list.length} days
+            </button>
+          )}
+          {(open ? list : list.slice(0, 4)).map((a) => (
+            <div key={a.id} style={styles.savedRow}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.savedDay}>{opDayLabel(a.dayStart)} · 07:00 → 07:00</div>
+                <div style={styles.savedMeta}>
+                  {STATIONS.map((st) => `${stationShort(st.key)} ${(a.counts && a.counts[st.key]) || 0}`).join(" · ")}
+                  {" · closed "}
+                  {gregDateTimeStr(a.closedAt)}
+                  {a.closedBy ? ` by ${a.closedBy}` : ""}
+                  {a.reason === "quiet" ? " · finished early" : a.reason === "manual" ? " · closed by hand" : ""}
+                </div>
+              </div>
+              <button style={styles.primaryBtnSm} disabled={busy === a.id} onClick={() => download(a)}>
+                <Share2 size={12} /> {busy === a.id ? "Preparing…" : "Download"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminView({ user, units, requests, scheduled, accounts, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, archives, onCloseToday }) {
   const [crewName, setCrewName] = useState("");
   const [crewId, setCrewId] = useState("");
   const [crewError, setCrewError] = useState("");
@@ -10251,6 +10668,17 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
           <StatusBoard units={atStation(units, st.key)} />
         </div>
       ))}
+
+      {/* The kept days, near the top: it is the thing an administrator comes
+          back to this screen for, and it should not be at the bottom of a long
+          scroll. */}
+      <SavedLogs
+        archives={archives}
+        requests={requests}
+        onCloseToday={onCloseToday}
+        canCloseToday={requestsForOpDay(requests, opDayStart(Date.now())).length > 0}
+        todayCallCount={requestsForOpDay(requests, opDayStart(Date.now())).length}
+      />
 
       {/* Straight under the board, above the rosters. An issue a crew took the
           trouble to write down is the one thing on this screen that has
@@ -12296,6 +12724,20 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
+
+  savedNote: { fontSize: 13.5, color: "#8B98A5", lineHeight: 1.55, marginTop: 8 },
+  savedRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    background: "#0E141B",
+    border: "1px solid #1C2530",
+    borderRadius: 8,
+    padding: "10px 12px",
+    flexWrap: "wrap",
+  },
+  savedDay: { fontSize: 14, fontWeight: 700, color: "#E6EDF3" },
+  savedMeta: { fontSize: 12.5, color: "#5B6672", marginTop: 3 },
 
   stationBoardLabel: {
     fontSize: 12,
