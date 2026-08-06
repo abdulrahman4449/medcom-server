@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>MEDCOM Dispatch</title>
 <style>
-  html, body, #root { height: 100%; margin: 0; background: #0B0F14; }
+  html, body, #root { height: 100%; margin: 0; background: #0A1017; }
   * { box-sizing: border-box; }
 </style>
 
@@ -261,7 +261,23 @@ async function readKey(key, fallback) {
 let connectionOk = true;
 const connectionListeners = new Set();
 
+// One failed request is not a lost signal. On a 3-second poll a single blip
+// used to flip the banner to OFFLINE and the next poll flipped it straight back,
+// so the thing meant to tell a crew where they stand was flickering at them
+// instead. Coming back is instant — a request that succeeds means there is
+// signal, full stop — but going offline needs a few failures in a row before we
+// say so out loud.
+const OFFLINE_STRIKES = 3;
+let connectionStrikes = 0;
+
 function setConnectionOk(ok) {
+  if (ok) {
+    connectionStrikes = 0;
+  } else {
+    connectionStrikes += 1;
+    // Not enough failures yet to call it. Say nothing and wait.
+    if (connectionStrikes < OFFLINE_STRIKES) return;
+  }
   if (connectionOk === ok) return;
   connectionOk = ok;
   connectionListeners.forEach((fn) => {
@@ -357,6 +373,138 @@ async function writeList(key, next, prev) {
     notifyPendingChanged();
   }
   return false;
+}
+
+// ---------- submitting a shift's log ----------
+//
+// The desk submits its own log at the end of its own shift. Two submissions make
+// a day: the day shift's and the night shift's, filed under the same operational
+// date, and each station files separately — so 6 August holds up to four, one
+// per shift per station.
+//
+// A submission is not always finished when it is made. A call raised at 06:30
+// that is still running at 07:00 belongs to the shift that took it, but its
+// remaining times and the crew's overtime are not known yet. So the desk submits
+// and goes home; the submission stays open in the background and completes
+// itself once that call is closed and its crew has signed out. Nobody has to
+// come back and do anything.
+const SUBMISSION_KEY = "ems:submissions";
+const SUBMISSION_CAP = 600;
+
+function submissionId(dayStart, shiftKey, station) {
+  return `${opDayKey(dayStart)}::${shiftKey}::${station}`;
+}
+
+// Every call this desk's shift is answerable for: raised inside the shift
+// window, at this station. A call belongs to the shift that took it, not the
+// one that happened to be on when it finished.
+function requestsForShift(requests, station, windowStart, windowEnd) {
+  return (requests || []).filter(
+    (r) =>
+      stationOf(r) === station &&
+      r.createdAt >= windowStart &&
+      r.createdAt < windowEnd
+  );
+}
+
+function logForShift(log, station, windowStart, windowEnd) {
+  return (log || []).filter(
+    (e) => e && e.ts >= windowStart && e.ts < windowEnd && stationOf(e) === station
+  );
+}
+
+// What is still outstanding on a submission: calls not closed, and crews from
+// those calls not yet signed out. While either is true the submission is held
+// open and its overtime is not final.
+function submissionOutstanding(sub, requests, units) {
+  const ids = new Set((sub.requestIds || []));
+  const openCalls = (requests || []).filter((r) => ids.has(r.id) && r.status !== "completed");
+  const crewStillOn = (units || []).filter(
+    (u) => stationOf(u) === sub.station && (u.alpha || u.bravo)
+  );
+  return { openCalls, crewStillOn };
+}
+
+// The desk submitting its shift. Safe to press with a call still running: what
+// is known now is filed, and what is not yet known is marked as still open. The
+// background pass below finishes it off later.
+async function submitShiftLog({ requests, units, log, scheduled, station, windowStart, windowEnd, shiftKey, by }) {
+  const all = (await readKey(SUBMISSION_KEY, [])) || [];
+  const dayStart = opDayStart(windowStart);
+  const id = submissionId(dayStart, shiftKey, station);
+  if (all.some((s) => s && s.id === id)) return { ok: false, reason: "already" };
+
+  const mine = requestsForShift(requests, station, windowStart, windowEnd);
+  const openIds = mine.filter((r) => r.status !== "completed").map((r) => r.id);
+
+  const entry = {
+    id,
+    dayKey: opDayKey(dayStart),
+    dayStart,
+    dayLabel: opDayLabel(dayStart),
+    shiftKey,
+    shiftLabel: SHIFTS[shiftKey] ? SHIFTS[shiftKey].label : shiftKey,
+    station,
+    windowStart,
+    windowEnd,
+    submittedAt: Date.now(),
+    submittedBy: by || "",
+    // Open until every call it covers is closed and the crews are off.
+    status: openIds.length ? "open" : "final",
+    requestIds: mine.map((r) => r.id),
+    openRequestIds: openIds,
+    // The snapshot as submitted. The live record is preferred on download when
+    // it has moved on, and the sheet says so.
+    requests: mine.map((r) => ({ ...r })),
+    log: logForShift(log, station, windowStart, windowEnd),
+    scheduled: (scheduled || []).filter(
+      (s) => s && stationOf(s) === station && s.scheduledFor >= windowStart && s.scheduledFor < windowEnd
+    ),
+    units: (units || []).filter((u) => stationOf(u) === station).map((u) => ({ ...u })),
+    callCount: mine.length,
+  };
+
+  const next = [entry, ...all].slice(0, SUBMISSION_CAP);
+  const ok = await writeKey(SUBMISSION_KEY, next);
+  return { ok, entry, openCount: openIds.length };
+}
+
+// Finishing off submissions that were filed with a call still running. Runs in
+// the background on any desk or admin board: once the last call is closed and
+// the station's crews are signed out, the submission is completed — its calls
+// refreshed to their final times and the overtime that was still accruing when
+// it was submitted now counted.
+async function finaliseOpenSubmissions({ requests, units, log, boardId }) {
+  const all = (await readKey(SUBMISSION_KEY, [])) || [];
+  const open = all.filter((s) => s && s.status === "open");
+  if (!open.length) return 0;
+
+  let changed = 0;
+  const next = all.map((s) => {
+    if (!s || s.status !== "open") return s;
+    const { openCalls, crewStillOn } = submissionOutstanding(s, requests, units);
+    if (openCalls.length || crewStillOn.length) return s;
+    changed += 1;
+    const byId = new Map((requests || []).map((r) => [r.id, r]));
+    return {
+      ...s,
+      status: "final",
+      finalisedAt: Date.now(),
+      finalisedBy: boardId,
+      openRequestIds: [],
+      requests: (s.requestIds || []).map((id) => {
+        const live = byId.get(id);
+        return live ? { ...live } : (s.requests || []).find((r) => r.id === id);
+      }).filter(Boolean),
+      // The log is re-cut at completion so the closing stamps and the sign-outs
+      // that happened after submission are in the record too.
+      log: logForShift(log, s.station, s.windowStart, Date.now()),
+    };
+  });
+
+  if (!changed) return 0;
+  await writeKey(SUBMISSION_KEY, next);
+  return changed;
 }
 
 // ---------- the operational day ----------
@@ -639,17 +787,17 @@ function useSoundLevel() {
 // ---------- constants ----------
 
 const STATUS = {
-  available: { label: "AVAILABLE", color: "#22C55E" },
-  dispatched: { label: "DISPATCHED", color: "#F59E0B" },
-  enroute: { label: "EN ROUTE", color: "#3B82F6" },
-  onscene: { label: "ON SCENE", color: "#EF4444" },
+  available: { label: "AVAILABLE", color: "#3DDC97" },
+  dispatched: { label: "DISPATCHED", color: "#FFB020" },
+  enroute: { label: "EN ROUTE", color: "#35C4E8" },
+  onscene: { label: "ON SCENE", color: "#FF4D5E" },
   transporting: { label: "TRANSPORTING", color: "#8B5CF6" },
   oos: { label: "OUT OF SERVICE", color: "#64748B" },
 };
 
 const PRIORITY = {
-  critical: { label: "CRITICAL", color: "#DC2626" },
-  urgent: { label: "URGENT", color: "#F59E0B" },
+  critical: { label: "CRITICAL", color: "#FF4D5E" },
+  urgent: { label: "URGENT", color: "#FFB020" },
   routine: { label: "ROUTINE", color: "#64748B" },
 };
 
@@ -842,10 +990,10 @@ async function verifyCallEditOn({ req, entry, accept, who, requests, saveRequest
 }
 
 const REQ_STATUS = {
-  pending: { label: "PENDING", color: "#F59E0B" },
-  assigned: { label: "ASSIGNED", color: "#3B82F6" },
-  enroute: { label: "EN ROUTE", color: "#3B82F6" },
-  onscene: { label: "ON SCENE", color: "#EF4444" },
+  pending: { label: "PENDING", color: "#FFB020" },
+  assigned: { label: "ASSIGNED", color: "#35C4E8" },
+  enroute: { label: "EN ROUTE", color: "#35C4E8" },
+  onscene: { label: "ON SCENE", color: "#FF4D5E" },
   transporting: { label: "TRANSPORTING", color: "#8B5CF6" },
   arrived: { label: "ARRIVED AT DESTINATION", color: "#14B8A6" },
   completed: { label: "COMPLETED", color: "#64748B" },
@@ -906,9 +1054,9 @@ const REFUSAL_FROM_STATUSES = ["onscene", "transporting", "arrived"];
 // running it can go back in service — see CLOSEOUT_REQUIREMENTS below. Open to
 // either side, mandatory for the one holding the call at the end.
 const CALL_TYPES = [
-  { key: "A", name: "ALS", desc: "Advanced life support", color: "#EF4444" },
-  { key: "B", name: "BLS", desc: "Basic life support", color: "#3B82F6" },
-  { key: "C", name: "CRITICAL", desc: "Critical care", color: "#DC2626" },
+  { key: "A", name: "ALS", desc: "Advanced life support", color: "#FF4D5E" },
+  { key: "B", name: "BLS", desc: "Basic life support", color: "#35C4E8" },
+  { key: "C", name: "CRITICAL", desc: "Critical care", color: "#FF4D5E" },
   { key: "D", name: "AUXILIARY", desc: "Additional ambulance (auxiliary)", color: "#8B5CF6" },
   { key: "E", name: "NO TRANSPORT", desc: "Ambulance responded — no transport", color: NO_TRANSPORT.color },
   { key: "NA", name: "N/A", desc: "Not applicable", color: "#64748B" },
@@ -1201,7 +1349,7 @@ const SHIFT_MS = SHIFT_HOURS * 60 * 60 * 1000;
 const SHIFTS = {
   day: {
     key: "day", label: "DAY SHIFT", short: "DAY", glyph: "☀",
-    startHour: 7, window: "07:00 – 19:00", color: "#F59E0B",
+    startHour: 7, window: "07:00 – 19:00", color: "#FFB020",
   },
   night: {
     key: "night", label: "NIGHT SHIFT", short: "NIGHT", glyph: "☾",
@@ -1212,10 +1360,10 @@ const SHIFT_KEYS = ["day", "night"];
 
 // What each kind of shift entry on the log sheet is called.
 const SHIFT_EVENTS = {
-  on: { label: "SIGNED ON", color: "#22C55E" },
-  off: { label: "SIGNED OFF", color: "#8B98A5" },
-  swap: { label: "SHIFT SWAP", color: "#3B82F6" },
-  overtime: { label: "OVERTIME", color: "#EF4444" },
+  on: { label: "SIGNED ON", color: "#3DDC97" },
+  off: { label: "SIGNED OFF", color: "#93A7B8" },
+  swap: { label: "SHIFT SWAP", color: "#35C4E8" },
+  overtime: { label: "OVERTIME", color: "#FF4D5E" },
 };
 
 // How long after a seat is vacated a fresh sign-on still counts as taking
@@ -1593,16 +1741,16 @@ function escalationAwaitsAdmin(esc) {
 // of it: the crew are waiting to hear back, the admins are looking for the ones
 // nobody has answered yet.
 function escalationStateMeta(esc, role) {
-  if (!escalationIsOpen(esc)) return { key: "resolved", label: "RESOLVED", color: "#22C55E" };
+  if (!escalationIsOpen(esc)) return { key: "resolved", label: "RESOLVED", color: "#3DDC97" };
   // Answered, and then written back on: it is waiting on the admins again, and
   // saying "REPLIED" on it would read as dealt with when it is not.
   if (escalationAwaitsAdmin(esc) && lastAdminReply(esc)) {
-    return { key: "reopened", label: role === "admin" ? "CREW REPLIED" : "WITH ADMIN", color: "#F59E0B" };
+    return { key: "reopened", label: role === "admin" ? "CREW REPLIED" : "WITH ADMIN", color: "#FFB020" };
   }
   if (lastAdminReply(esc)) {
-    return { key: "answered", label: role === "admin" ? "REPLIED" : "ADMIN REPLIED", color: "#3B82F6" };
+    return { key: "answered", label: role === "admin" ? "REPLIED" : "ADMIN REPLIED", color: "#35C4E8" };
   }
-  return { key: "open", label: role === "admin" ? "NEEDS A REPLY" : "WITH ADMIN", color: "#F59E0B" };
+  return { key: "open", label: role === "admin" ? "NEEDS A REPLY" : "WITH ADMIN", color: "#FFB020" };
 }
 
 // Who this board is, as far as escalations are concerned. Built once per view
@@ -3309,6 +3457,82 @@ async function exportArchivedDay(archive, liveRequests) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+// Downloading a submitted shift log. One station, one shift, one sheet — the
+// two stations are kept apart because they are submitted apart.
+async function exportSubmission(sub, liveRequests) {
+  if (!sub) return;
+  const byId = new Map((liveRequests || []).filter((r) => r && r.id).map((r) => [r.id, r]));
+  let amended = 0;
+  const requests = (sub.requests || []).map((snap) => {
+    const live = byId.get(snap.id);
+    if (!live) return snap;
+    if (JSON.stringify(live) === JSON.stringify(snap)) return snap;
+    amended += 1;
+    return live;
+  });
+
+  const units = sub.units || [];
+  const log = sub.log || [];
+  const at = sub.finalisedAt || sub.submittedAt;
+  const crewIndex = medicCrewIndex(units, log, at);
+
+  const wb = XLSX.utils.book_new();
+  const aoa = buildDispatchLogAOA(requests, units, crewIndex, sub.scheduled || [], at, sub.station);
+  aoa.splice(1, 0, [
+    `${sub.dayLabel} · ${sub.shiftLabel} · ${stationLabel(sub.station)}` +
+      ` · submitted ${gregDateTimeStr(sub.submittedAt)}${sub.submittedBy ? ` by ${sub.submittedBy}` : ""}` +
+      (sub.status === "open" ? " · STILL OPEN — waiting on a call to close" : "") +
+      (amended > 0 ? ` · UPDATED SINCE SUBMISSION (${amended} call${amended === 1 ? "" : "s"})` : ""),
+  ]);
+  XLSX.utils.book_append_sheet(
+    wb,
+    autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4),
+    `${stationShort(sub.station)} ${sub.shiftKey === "night" ? "NIGHT" : "DAY"}`
+  );
+
+  const eventRows = log
+    .slice()
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .map((e) => ({
+      Time: e.ts ? gregDateTimeStr(e.ts) : e.time || "",
+      Type: (e.type || "").toUpperCase(),
+      Event: e.message || "",
+      "Logged By": e.actor && e.actor.name ? e.actor.name : "",
+      Post: actorPost(e.actor),
+    }));
+  XLSX.utils.book_append_sheet(
+    wb,
+    autoFitSheet(
+      eventRows.length
+        ? XLSX.utils.json_to_sheet(eventRows)
+        : XLSX.utils.aoa_to_sheet([["No events recorded for this shift."]]),
+      0
+    ),
+    "Event Log"
+  );
+
+  const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const filename = `medcom-${sub.station}-${sub.shiftKey}-${sub.dayKey}.xlsx`;
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const file = new File([blob], filename, { type: blob.type });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+      await navigator.share({ files: [file], title: `MEDCOM — ${sub.dayLabel} ${sub.shiftLabel}` });
+      return;
+    }
+  } catch (e) {}
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 // ---------- main app ----------
 
 // The one thing a crew must be able to see at a glance: whether what is on
@@ -3319,15 +3543,11 @@ function ConnectionBanner() {
   const [, force] = useState(0);
 
   useEffect(() => {
+    // Driven by events only. It used to also re-render on a 2-second timer,
+    // which made the banner twitch on a screen a crew is trying to read.
     const fn = () => force((n) => n + 1);
     connectionListeners.add(fn);
-    // The queue can also drain on a poll that changes nothing else, so this
-    // ticks over on its own as well rather than waiting for an event.
-    const t = setInterval(fn, 2000);
-    return () => {
-      connectionListeners.delete(fn);
-      clearInterval(t);
-    };
+    return () => connectionListeners.delete(fn);
   }, []);
 
   const held = totalPendingCount();
@@ -3369,6 +3589,8 @@ function App() {
   const [scheduled, setScheduled] = useState([]);
   // The kept days. Read once at load and refreshed whenever one is closed.
   const [archives, setArchives] = useState([]);
+  // Shift logs the desks have submitted, per station.
+  const [submissions, setSubmissions] = useState([]);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -3609,6 +3831,8 @@ function App() {
     // desk appears here without needing a refresh.
     const arch = await readKey(ARCHIVE_KEY, []);
     setArchives(arch || []);
+    const subs = await readKey(SUBMISSION_KEY, []);
+    setSubmissions(subs || []);
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -3839,121 +4063,9 @@ function App() {
     return () => clearInterval(t);
   }, [ready, user && user.role, releaseDueScheduled]);
 
-  // Closing the operational day and keeping it.
-  //
-  // Three ways in, and the first one to happen wins. The day the crews are
-  // working is never touched — only a day that is already over.
-  //
-  //   1. The clock. Once it is past 07:00, the day that ended is closed. This
-  //      one always happens, which is the point: a crew who forgets to sign out,
-  //      or a transfer still running at seven, cannot stop the record being kept.
-  //   2. Quiet. If every call is finished and nobody is signed on before 07:00
-  //      comes round, there is nothing left to wait for, so it closes early.
-  //   3. By hand, from the admin screen.
-  //
-  // Runs on dispatch and admin boards only, never a crew tablet, and the day is
-  // claimed before it is written so two open desks cannot file it twice.
-  const archivingRef = useRef(false);
-  const closeFinishedDays = useCallback(async () => {
-    const u = userRef.current;
-    if (!u || (u.role !== "dispatcher" && u.role !== "admin")) return;
-    if (archivingRef.current) return;
-    archivingRef.current = true;
-    try {
-      const now = Date.now();
-      const freshRequests = await readKey("ems:requests", requests);
-      const freshUnits = await readKey("ems:units", units);
-      const freshLog = await readKey("ems:log", log);
-      const freshScheduled = await readKey("ems:scheduled", scheduled);
-      const archivesNow = (await readKey(ARCHIVE_KEY, [])) || [];
 
-      // Days that are over and not yet kept. Usually none; more than one only if
-      // no desk has been open for a while, and then they are all caught up.
-      const pending = unarchivedOpDays(freshRequests, archivesNow, now);
 
-      // And the day in progress, if it has already gone quiet.
-      const today = opDayStart(now);
-      const quietToday =
-        !archivesNow.some((a) => a && a.dayKey === opDayKey(today)) &&
-        requestsForOpDay(freshRequests, today).length > 0 &&
-        opDayIsQuiet(freshRequests, freshUnits, today);
 
-      const toClose = quietToday ? [...pending, today] : pending;
-      for (const dayStart of toClose) {
-        const won = await archiveOpDay({
-          dayStart,
-          requests: freshRequests,
-          units: freshUnits,
-          log: freshLog,
-          scheduled: freshScheduled,
-          closedBy: u.name || "",
-          reason: dayStart === today ? "quiet" : "clock",
-          boardId: clientIdRef.current,
-        });
-        if (won) {
-          setArchives((await readKey(ARCHIVE_KEY, [])) || []);
-          await addLog(
-            `Log sheet saved for ${opDayLabel(dayStart)} (07:00–07:00) — ` +
-              `${requestsForOpDay(freshRequests, dayStart).length} calls` +
-              (dayStart === today ? " — all calls complete and all crews signed out" : ""),
-            "status"
-          );
-        }
-      }
-    } catch (e) {
-      // A failed pass is not worth surfacing: the next one tries again, and the
-      // clock trigger means the day cannot be missed entirely.
-      console.error("closeFinishedDays failed:", e);
-    } finally {
-      archivingRef.current = false;
-    }
-  }, [requests, units, log, scheduled]);
-
-  // Closing the day in progress by hand. The same path as the automatic close —
-  // it only skips the two conditions, because an administrator asking for it is
-  // the condition.
-  const closeTodayNow = useCallback(async () => {
-    const u = userRef.current;
-    if (!u || u.role !== "admin") return;
-    const now = Date.now();
-    const dayStart = opDayStart(now);
-    const freshRequests = await readKey("ems:requests", requests);
-    const count = requestsForOpDay(freshRequests, dayStart).length;
-    const stillOpen = requestsForOpDay(freshRequests, dayStart).filter((r) => r.status !== "completed").length;
-    const ok = window.confirm(
-      `Save the log sheet for ${opDayLabel(dayStart)} now?\n\n` +
-        `${count} call${count === 1 ? "" : "s"}` +
-        (stillOpen > 0
-          ? `, ${stillOpen} still running. Those are kept as they stand and their remaining times are picked up when you download it.`
-          : ".") +
-        "\n\nThe day carries on as normal — this only files the record."
-    );
-    if (!ok) return;
-    const won = await archiveOpDay({
-      dayStart,
-      requests: freshRequests,
-      units: await readKey("ems:units", units),
-      log: await readKey("ems:log", log),
-      scheduled: await readKey("ems:scheduled", scheduled),
-      closedBy: u.name || "Admin",
-      reason: "manual",
-      boardId: clientIdRef.current,
-    });
-    if (won) {
-      setArchives((await readKey(ARCHIVE_KEY, [])) || []);
-      await addLog(`Log sheet saved for ${opDayLabel(dayStart)} by ${u.name || "Admin"} — ${count} calls`, "status");
-    }
-  }, [requests, units, log, scheduled]);
-
-  useEffect(() => {
-    if (!ready || !user) return;
-    if (user.role !== "dispatcher" && user.role !== "admin") return;
-    closeFinishedDays();
-    // A minute is plenty: this is a once-a-day event, not something to check
-    // every three seconds alongside the board.
-    const t = setInterval(closeFinishedDays, 60000);
-    return () => clearInterval(t);
-  }, [ready, user && user.role, closeFinishedDays]);
 
   // Releases a crew member's Alpha/Bravo seat on sign-out and records the
   // shift they just finished, including any overtime. If that leaves the unit
@@ -4243,8 +4355,7 @@ function App() {
               saveScheduled={saveScheduled}
               addLog={addLog}
               audioCtxRef={audioCtxRef}
-              archives={archives}
-              onCloseToday={closeTodayNow}
+              submissions={submissions}
             />
           )}
         </div>
@@ -4267,10 +4378,22 @@ function App() {
           )}
         </div>
       </div>
-      {seesLogSheet && (
+      {/* The desk files its shift; an administrator, who has no shift of their
+          own, still takes the whole board as a file. */}
+      {user.role === "dispatcher" && (
         <div style={styles.footerBar}>
-          <button style={styles.shareBtn} onClick={() => exportAndShareLog(log, requests, units, scheduled, user.role === "admin" ? null : user.station || DEFAULT_STATION)}>
-            <Share2 size={16} /> Share Dispatch Log
+          <button style={styles.shareBtn} onClick={submitMyShiftLog}>
+            <Archive size={16} /> Submit Dispatch Log
+          </button>
+        </div>
+      )}
+      {user.role === "admin" && (
+        <div style={styles.footerBar}>
+          <button
+            style={styles.shareBtn}
+            onClick={() => exportAndShareLog(log, requests, units, scheduled, null)}
+          >
+            <Share2 size={16} /> Export whole board
           </button>
         </div>
       )}
@@ -4286,9 +4409,9 @@ function GlobalFont() {
       * { box-sizing: border-box; }
       body { margin: 0; }
       ::-webkit-scrollbar { width: 8px; height: 8px; }
-      ::-webkit-scrollbar-thumb { background: #2A3441; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb { background: #26384A; border-radius: 4px; }
       button:focus-visible, select:focus-visible, input:focus-visible {
-        outline: 2px solid #3B82F6;
+        outline: 2px solid #35C4E8;
         outline-offset: 2px;
       }
       @keyframes pulse-dot {
@@ -4669,7 +4792,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
           <img src={DEPT_LOGO} alt="KFSH&RC Ambulance EMS" style={styles.loginDeptLogo} />
         </div>
         <div style={styles.loginHeader}>
-          <Radio size={22} color="#3B82F6" />
+          <Radio size={22} color="#35C4E8" />
           <span style={styles.loginHeaderText}>MEDCOM DISPATCH</span>
         </div>
         <div style={styles.loginSub}>Sign in to view calls and unit status.</div>
@@ -4681,21 +4804,21 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                 <div style={styles.roleBtnTitle}>Dispatcher</div>
                 <div style={styles.roleBtnSub}>Create calls, assign units, monitor the board</div>
               </div>
-              <ChevronRight size={18} color="#8B98A5" />
+              <ChevronRight size={18} color="#93A7B8" />
             </button>
             <button style={styles.roleBtn} onClick={() => setRole("team")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Team</div>
                 <div style={styles.roleBtnSub}>Crew members — ID and password, then your shift and seat</div>
               </div>
-              <ChevronRight size={18} color="#8B98A5" />
+              <ChevronRight size={18} color="#93A7B8" />
             </button>
             <button style={styles.roleBtn} onClick={() => setRole("admin")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Admin</div>
                 <div style={styles.roleBtnSub}>Manage IDs and units — ID and password</div>
               </div>
-              <ChevronRight size={18} color="#8B98A5" />
+              <ChevronRight size={18} color="#93A7B8" />
             </button>
           </div>
         )}
@@ -4790,7 +4913,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                           : "Create calls, assign units, monitor the board"}
                       </div>
                     </div>
-                    <ChevronRight size={18} color="#8B98A5" />
+                    <ChevronRight size={18} color="#93A7B8" />
                   </button>
                   <button
                     style={styles.roleBtn}
@@ -4803,7 +4926,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                       <div style={styles.roleBtnTitle}>Join a Team</div>
                       <div style={styles.roleBtnSub}>Pick your shift, a unit, and take a seat as crew</div>
                     </div>
-                    <ChevronRight size={18} color="#8B98A5" />
+                    <ChevronRight size={18} color="#93A7B8" />
                   </button>
                 </div>
                 <div style={styles.loginActions}>
@@ -4833,7 +4956,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                             {count} {count === 1 ? "medic" : "medics"} on this station
                           </div>
                         </div>
-                        <ChevronRight size={18} color="#8B98A5" />
+                        <ChevronRight size={18} color="#93A7B8" />
                       </button>
                     );
                   })}
@@ -4859,7 +4982,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                           {crewShiftSummary(u) ? ` · on duty: ${crewShiftSummary(u)}` : ""}
                         </div>
                       </div>
-                      <ChevronRight size={18} color="#8B98A5" />
+                      <ChevronRight size={18} color="#93A7B8" />
                     </button>
                   ))}
                 </div>
@@ -4905,7 +5028,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                                 " — take over"}
                           </div>
                         </div>
-                        <ChevronRight size={18} color="#8B98A5" />
+                        <ChevronRight size={18} color="#93A7B8" />
                       </button>
                     );
                   })}
@@ -4958,7 +5081,7 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
           return (
             <button
               key={key}
-              style={{ ...styles.roleBtn, borderColor: key === suggested ? meta.color : "#2A3441" }}
+              style={{ ...styles.roleBtn, borderColor: key === suggested ? meta.color : "#26384A" }}
               disabled={busy}
               onClick={() => onPick(key)}
             >
@@ -4969,7 +5092,7 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
                 </div>
                 <div style={styles.roleBtnSub}>{state}</div>
               </div>
-              <ChevronRight size={18} color="#8B98A5" />
+              <ChevronRight size={18} color="#93A7B8" />
             </button>
           );
         })}
@@ -5019,15 +5142,15 @@ function Header({ user, clock, onLogout, onChangeShift }) {
         <div style={styles.headerBarGroup}>
           <ShiftChip user={user} onChangeShift={onChangeShift} />
           <div style={styles.clock}>
-            <Clock size={14} color="#8B98A5" />
+            <Clock size={14} color="#93A7B8" />
             <span>{clock}</span>
           </div>
         </div>
         <div style={styles.headerBarGroup}>
           <SoundChip />
           <div style={styles.userBadge}>
-            <span style={{ color: "#8B98A5" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
-            <span style={{ color: "#E6EDF3", fontWeight: 600 }}>{user.name}</span>
+            <span style={{ color: "#93A7B8" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
+            <span style={{ color: "#E9F1F7", fontWeight: 600 }}>{user.name}</span>
           </div>
           <button style={styles.iconBtn} onClick={onLogout} title="Sign out">
             <LogOut size={16} />
@@ -5058,8 +5181,8 @@ function SoundChip() {
       <button
         style={{
           ...styles.soundChip,
-          borderColor: muted ? "#F59E0B" : "#2A3441",
-          color: muted ? "#FBBF24" : "#E6EDF3",
+          borderColor: muted ? "#FFB020" : "#26384A",
+          color: muted ? "#FFC24D" : "#E9F1F7",
         }}
         onClick={() => setOpen((s) => !s)}
         title={
@@ -5133,8 +5256,8 @@ function ShiftChip({ user, onChangeShift }) {
       <button
         style={{
           ...styles.shiftChip,
-          borderColor: ot > 0 ? "#EF4444" : meta.color,
-          color: ot > 0 ? "#FCA5A5" : "#E6EDF3",
+          borderColor: ot > 0 ? "#FF4D5E" : meta.color,
+          color: ot > 0 ? "#FCA5A5" : "#E9F1F7",
         }}
         onClick={() => setOpen((s) => !s)}
         title={`${meta.label} ${shiftWindowStr(user)} — tap to swap shift`}
@@ -5369,7 +5492,7 @@ function CallCodingBlock({ req, onSet, title, hint, missing }) {
               type="button"
               style={{
                 ...(on ? styles.codeChoiceOn : styles.codeChoice),
-                borderColor: on ? t.color : isSuggested ? "rgba(245,158,11,0.7)" : "#2A3441",
+                borderColor: on ? t.color : isSuggested ? "rgba(245,158,11,0.7)" : "#26384A",
                 ...(on ? { color: t.color } : null),
               }}
               title={`${t.key} — ${t.desc}`}
@@ -5405,7 +5528,7 @@ function CallCodingBlock({ req, onSet, title, hint, missing }) {
               type="button"
               style={{
                 ...(on ? styles.codeChoiceOn : styles.codeChoice),
-                borderColor: on ? LOADED_KM_COLOR : "#2A3441",
+                borderColor: on ? LOADED_KM_COLOR : "#26384A",
                 ...(on ? { color: LOADED_KM_COLOR } : null),
               }}
               title={`${k.key} — ${k.desc}`}
@@ -5930,7 +6053,7 @@ function CallRoute({ req, size }) {
       <span style={styles.routeFrom}>{from || "—"}</span>
       {to && (
         <React.Fragment>
-          <ArrowRight size={glyph} style={{ color: "#5B6672" }} />
+          <ArrowRight size={glyph} style={{ color: "#5E7488" }} />
           <span style={styles.routeTo}>{to}</span>
         </React.Fragment>
       )}
@@ -6745,7 +6868,7 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
           somebody has to think of. */}
       <div style={styles.historyFilters}>
         <div style={styles.historyFilterInputWrap}>
-          <Search size={12} style={{ color: "#5B6672" }} />
+          <Search size={12} style={{ color: "#5E7488" }} />
           <input
             style={styles.historyFilterInput}
             value={query}
@@ -7073,9 +7196,9 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
 // pre-assigned to it is dispatched, their screen alarms, and the call runs
 // through the normal timeline.
 const SCHED_STATUS = {
-  scheduled: { label: "SCHEDULED", color: "#3B82F6" },
-  releasing: { label: "DISPATCHING…", color: "#F59E0B" },
-  released: { label: "DISPATCHED", color: "#22C55E" },
+  scheduled: { label: "SCHEDULED", color: "#35C4E8" },
+  releasing: { label: "DISPATCHING…", color: "#FFB020" },
+  released: { label: "DISPATCHED", color: "#3DDC97" },
   cancelled: { label: "CANCELLED", color: "#64748B" },
 };
 
@@ -10129,9 +10252,9 @@ function CrewShiftCard({ user, unit, onCall }) {
   const partnerMeta = partner ? shiftMeta(partner.shift) : null;
 
   return (
-    <div style={{ ...styles.shiftCard, borderLeftColor: ot > 0 ? "#EF4444" : meta ? meta.color : "#2A3441" }}>
+    <div style={{ ...styles.shiftCard, borderLeftColor: ot > 0 ? "#FF4D5E" : meta ? meta.color : "#26384A" }}>
       <div style={styles.shiftCardTop}>
-        <span style={{ ...styles.shiftCardTitle, color: meta ? meta.color : "#8B98A5" }}>
+        <span style={{ ...styles.shiftCardTitle, color: meta ? meta.color : "#93A7B8" }}>
           {meta ? `${meta.glyph} ${meta.label}` : "SHIFT NOT RECORDED"}
         </span>
         <span style={styles.shiftCardWindow}>
@@ -10140,7 +10263,7 @@ function CrewShiftCard({ user, unit, onCall }) {
       </div>
       {ot > 0 ? (
         <div style={styles.shiftCardOvertime}>
-          <Circle size={8} fill="#EF4444" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
+          <Circle size={8} fill="#FF4D5E" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
           <span style={styles.shiftCardOvertimeLabel}>ON OVERTIME</span>
           <span style={styles.shiftCardOvertimeTime}>{msDurationStr(ot)}</span>
         </div>
@@ -10188,7 +10311,7 @@ function AlertToneCheck({ audioCtxRef, priority, label, style }) {
         </span>
         <button
           type="button"
-          style={{ ...styles.toneCheckBtn, borderColor: "#F59E0B", color: "#FBBF24" }}
+          style={{ ...styles.toneCheckBtn, borderColor: "#FFB020", color: "#FFC24D" }}
           onClick={() => {
             setSoundLevel("full");
             soundCallAlert(audioCtxRef, priority || "routine");
@@ -10362,67 +10485,136 @@ const ROLE_LABELS = { crew: "team member", dispatcher: "dispatcher", admin: "adm
 
 // The kept days, newest first. This is where a supervisor goes back to a night
 // three weeks ago — the calls, the crews, both stations, in one workbook.
-function SavedLogs({ archives, requests, onCloseToday, canCloseToday, todayCallCount }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(null);
-  const list = (archives || []).slice().sort((a, b) => (b.dayStart || 0) - (a.dayStart || 0));
+// Account admin is set up once and then rarely touched, but it sat open above
+// everything an administrator actually watches. These fold away and say how many
+// are on file, so the screen opens on the board rather than on three forms.
+function FoldingSection({ title, count, countLabel, open, onToggle, children }) {
+  return (
+    <div style={{ marginTop: 14 }}>
+      <button style={styles.foldHeader} onClick={onToggle}>
+        <ChevronRight
+          size={13}
+          style={{
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform .15s ease",
+            marginRight: 8,
+          }}
+        />
+        {title}
+        <span style={styles.foldCount}>
+          {count} {countLabel}
+        </span>
+      </button>
+      {open && <div style={styles.foldBody}>{children}</div>}
+    </div>
+  );
+}
 
-  async function download(a) {
-    setBusy(a.id);
+function SavedLogs({ submissions, requests }) {
+  const [station, setStation] = useState(STATIONS[0].key);
+  const [busy, setBusy] = useState(null);
+
+  const mine = (submissions || [])
+    .filter((x) => x && x.station === station)
+    .sort((a, b) => (b.windowStart || 0) - (a.windowStart || 0));
+
+  // Grouped by the operational day, so the day shift and the night that
+  // followed it sit together under one date the way the department thinks
+  // about them.
+  const days = [];
+  mine.forEach((sub) => {
+    const found = days.find((d) => d.key === sub.dayKey);
+    if (found) found.subs.push(sub);
+    else days.push({ key: sub.dayKey, label: sub.dayLabel, dayStart: sub.dayStart, subs: [sub] });
+  });
+
+  async function download(sub) {
+    setBusy(sub.id);
     try {
-      await exportArchivedDay(a, requests);
+      await exportSubmission(sub, requests);
     } finally {
       setBusy(null);
     }
   }
 
+  const openCount = (submissions || []).filter((x) => x && x.status === "open").length;
+
   return (
     <div style={{ marginTop: 18 }}>
       <div style={styles.sectionHeader}>
-        <Archive size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> SAVED LOG SHEETS
+        <Archive size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> LOG SHEET ARCHIVE
         <span style={styles.stationCount}>
-          {list.length} {list.length === 1 ? "day" : "days"} kept
+          {(submissions || []).length} submitted
+          {openCount ? ` · ${openCount} still completing` : ""}
         </span>
       </div>
 
-      <div style={styles.savedNote}>
-        A day runs 07:00 to 07:00 — the day shift and the night that follows it. It is saved on its
-        own once every call is finished and every crew has signed out, and in any case at 07:00, so a
-        call still running at seven never holds the record up. Each file has one sheet per station.
+      {/* Each station keeps its own archive, because each station submits its
+          own shifts. */}
+      <div style={styles.archTabs}>
+        {STATIONS.map((st) => {
+          const n = (submissions || []).filter((x) => x && x.station === st.key).length;
+          const on = st.key === station;
+          return (
+            <button
+              key={st.key}
+              style={on ? styles.archTabOn : styles.archTab}
+              onClick={() => setStation(st.key)}
+            >
+              {st.label}
+              <span style={styles.archTabCount}>{n}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {canCloseToday && (
-        <button style={{ ...styles.ghostBtnSm, marginTop: 10 }} onClick={onCloseToday}>
-          <Archive size={12} /> Close today now ({todayCallCount} {todayCallCount === 1 ? "call" : "calls"})
-        </button>
-      )}
+      <div style={styles.savedNote}>
+        Each desk submits its own shift. A day holds the day shift and the night that follows it.
+        A shift submitted with a call still running is filed straight away and completes itself
+        once that call closes and its crew signs out, so the overtime is counted.
+      </div>
 
-      {list.length === 0 ? (
+      {days.length === 0 ? (
         <div style={styles.emptyState}>
-          Nothing kept yet. The first day will be saved here once it is over.
+          Nothing submitted for {stationLabel(station)} yet.
         </div>
       ) : (
-        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-          {!open && list.length > 4 && (
-            <button style={styles.ghostBtnSm} onClick={() => setOpen(true)}>
-              Show all {list.length} days
-            </button>
-          )}
-          {(open ? list : list.slice(0, 4)).map((a) => (
-            <div key={a.id} style={styles.savedRow}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={styles.savedDay}>{opDayLabel(a.dayStart)} · 07:00 → 07:00</div>
-                <div style={styles.savedMeta}>
-                  {STATIONS.map((st) => `${stationShort(st.key)} ${(a.counts && a.counts[st.key]) || 0}`).join(" · ")}
-                  {" · closed "}
-                  {gregDateTimeStr(a.closedAt)}
-                  {a.closedBy ? ` by ${a.closedBy}` : ""}
-                  {a.reason === "quiet" ? " · finished early" : a.reason === "manual" ? " · closed by hand" : ""}
-                </div>
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 14 }}>
+          {days.map((d) => (
+            <div key={d.key}>
+              <div style={styles.archDay}>{d.label}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {d.subs.map((sub) => (
+                  <div key={sub.id} style={styles.savedRow}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={styles.savedDay}>
+                        {sub.shiftLabel}
+                        {sub.status === "open" && (
+                          <span style={styles.archOpenTag}>completing…</span>
+                        )}
+                      </div>
+                      <div style={styles.savedMeta}>
+                        {sub.callCount} {sub.callCount === 1 ? "call" : "calls"} · submitted{" "}
+                        {gregDateTimeStr(sub.submittedAt)}
+                        {sub.submittedBy ? ` by ${sub.submittedBy}` : ""}
+                        {sub.status === "open" && sub.openRequestIds && sub.openRequestIds.length
+                          ? ` · waiting on ${sub.openRequestIds.length} call${
+                              sub.openRequestIds.length === 1 ? "" : "s"
+                            } to close`
+                          : ""}
+                        {sub.finalisedAt ? ` · completed ${gregDateTimeStr(sub.finalisedAt)}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      style={styles.primaryBtnSm}
+                      disabled={busy === sub.id}
+                      onClick={() => download(sub)}
+                    >
+                      <Share2 size={12} /> {busy === sub.id ? "Preparing…" : "Download"}
+                    </button>
+                  </div>
+                ))}
               </div>
-              <button style={styles.primaryBtnSm} disabled={busy === a.id} onClick={() => download(a)}>
-                <Share2 size={12} /> {busy === a.id ? "Preparing…" : "Download"}
-              </button>
             </div>
           ))}
         </div>
@@ -10431,7 +10623,7 @@ function SavedLogs({ archives, requests, onCloseToday, canCloseToday, todayCallC
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, archives, onCloseToday }) {
+function AdminView({ user, units, requests, scheduled, accounts, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions }) {
   const [crewName, setCrewName] = useState("");
   const [crewId, setCrewId] = useState("");
   const [crewError, setCrewError] = useState("");
@@ -10440,6 +10632,12 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
   // Adding a truck to a station. One box is shared between the two station
   // sections and remembers which one is being typed into, so a name half-typed
   // under CCC can never be added to the Main Office by accident.
+  // The account lists start folded: an administrator opens this screen to look
+  // at the board, not to add an ID.
+  const [openCrew, setOpenCrew] = useState(false);
+  const [openDisp, setOpenDisp] = useState(false);
+  const [openAdm, setOpenAdm] = useState(false);
+
   const [newUnitName, setNewUnitName] = useState("");
   const [newUnitStation, setNewUnitStation] = useState(null);
   const [unitError, setUnitError] = useState("");
@@ -10672,13 +10870,7 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
       {/* The kept days, near the top: it is the thing an administrator comes
           back to this screen for, and it should not be at the bottom of a long
           scroll. */}
-      <SavedLogs
-        archives={archives}
-        requests={requests}
-        onCloseToday={onCloseToday}
-        canCloseToday={requestsForOpDay(requests, opDayStart(Date.now())).length > 0}
-        todayCallCount={requestsForOpDay(requests, opDayStart(Date.now())).length}
-      />
+      <SavedLogs submissions={submissions} requests={requests} />
 
       {/* Straight under the board, above the rosters. An issue a crew took the
           trouble to write down is the one thing on this screen that has
@@ -10691,7 +10883,13 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
         addLog={addLog}
       />
 
-      <div style={styles.sectionHeader}>ADD TEAM MEMBER ID</div>
+      <FoldingSection
+        title="ADD TEAM MEMBER ID"
+        count={accounts.filter((a) => a.role === "crew").length}
+        countLabel="on file"
+        open={openCrew}
+        onToggle={() => setOpenCrew((v) => !v)}
+      >
       <div style={styles.requestForm}>
         <div style={styles.formRow}>
           <div style={{ flex: 1 }}>
@@ -10731,8 +10929,15 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
         )}
         <RemoveError role="crew" />
       </div>
+      </FoldingSection>
 
-      <div style={styles.sectionHeader}>ADD DISPATCHER</div>
+      <FoldingSection
+        title="ADD DISPATCHER"
+        count={accounts.filter((a) => a.role === "dispatcher").length}
+        countLabel="on file"
+        open={openDisp}
+        onToggle={() => setOpenDisp((v) => !v)}
+      >
       <div style={styles.requestForm}>
         <div style={styles.formRow}>
           <div style={{ flex: 1 }}>
@@ -10769,8 +10974,15 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
         )}
         <RemoveError role="dispatcher" />
       </div>
+      </FoldingSection>
 
-      <div style={styles.sectionHeader}>ADD ADMIN</div>
+      <FoldingSection
+        title="ADD ADMIN"
+        count={accounts.filter((a) => a.role === "admin").length}
+        countLabel="on file"
+        open={openAdm}
+        onToggle={() => setOpenAdm((v) => !v)}
+      >
       <div style={styles.requestForm}>
         <div style={styles.formRow}>
           <div style={{ flex: 1 }}>
@@ -10809,6 +11021,7 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
           Removing an ID frees it up — the same ID can be added again whenever you need it.
         </div>
       </div>
+      </FoldingSection>
 
       {/* Both stations, one under the other, each with its own roster and its
           own way of adding a truck. Administration is the only place the two
@@ -10976,7 +11189,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
   return (
     <div style={styles.uhuPanel}>
       <div style={styles.logHeader}>
-        <Clock size={13} color="#8B98A5" />
+        <Clock size={13} color="#93A7B8" />
         <span>UHU — TIME ON CALL</span>
       </div>
 
@@ -10990,7 +11203,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
           {focus.activeCall ? (
             <div style={styles.uhuLiveBox}>
               <div style={styles.uhuLiveRow}>
-                <Circle size={8} fill="#EF4444" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
+                <Circle size={8} fill="#FF4D5E" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
                 <span style={styles.uhuLiveLabel}>ON A CALL NOW</span>
                 <span style={styles.uhuLiveTime}>{msDurationStr(focus.activeMs)}</span>
               </div>
@@ -11009,7 +11222,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
                 <div style={styles.uhuRowMain}>
                   <span style={styles.uhuRowName}>{row.unit.name}</span>
                   {row.activeCall && (
-                    <Circle size={7} fill="#EF4444" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
+                    <Circle size={7} fill="#FF4D5E" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
                   )}
                 </div>
                 <div style={styles.uhuRowRight}>
@@ -11037,18 +11250,18 @@ function UhuPanel({ units, requests, focusUnitId }) {
 // ---------- log sheet ----------
 
 const LOG_COLORS = {
-  call: "#F59E0B",
-  assign: "#3B82F6",
-  status: "#8B98A5",
-  clear: "#22C55E",
+  call: "#FFB020",
+  assign: "#35C4E8",
+  status: "#93A7B8",
+  clear: "#3DDC97",
   shift: "#818CF8",
 };
 
 // The two lines the log sheet still carries, colour-coded so a desk can tell
 // them apart down the edge of the panel without reading the sentence.
 const BOARD_EVENTS = {
-  ack: { label: "ACKNOWLEDGED", color: "#22C55E" },
-  enroute: { label: "EN ROUTE", color: "#3B82F6" },
+  ack: { label: "ACKNOWLEDGED", color: "#3DDC97" },
+  enroute: { label: "EN ROUTE", color: "#35C4E8" },
 };
 
 // The log sheet doubles as the shift record: every sign-on, sign-off, swap and
@@ -11082,7 +11295,7 @@ function LogSheet({ log, units, station }) {
   return (
     <div style={styles.logPanel}>
       <div style={styles.logHeader}>
-        <AlertTriangle size={13} color="#8B98A5" />
+        <AlertTriangle size={13} color="#93A7B8" />
         <span>LOG SHEET</span>
       </div>
 
@@ -11157,7 +11370,7 @@ function LogEntryRow({ entry, showStation }) {
       style={{
         ...styles.logEntry,
         borderLeftColor:
-          (event ? event.color : boardEvent ? boardEvent.color : LOG_COLORS[entry.type]) || "#3A4453",
+          (event ? event.color : boardEvent ? boardEvent.color : LOG_COLORS[entry.type]) || "#33475A",
       }}
     >
       <div style={styles.logTopRow}>
@@ -11238,16 +11451,17 @@ const display = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-u
 const styles = {
   app: {
     minHeight: "100vh",
-    background: "#0B0F14",
-    color: "#E6EDF3",
+    background:
+      "radial-gradient(1200px 600px at 20% -10%, #16283A 0%, transparent 60%), #0A1017",
+    color: "#E9F1F7",
     fontFamily: mono,
     display: "flex",
     flexDirection: "column",
   },
   loadingScreen: {
     minHeight: "100vh",
-    background: "#0B0F14",
-    color: "#8B98A5",
+    background: "#0A1017",
+    color: "#93A7B8",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -11260,19 +11474,19 @@ const styles = {
     maxWidth: 340,
     textAlign: "left",
     padding: 24,
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 12,
   },
   connectErrorTitle: { fontFamily: display, fontWeight: 700, fontSize: 17, color: "#F5F7FA", marginBottom: 8 },
-  connectErrorBody: { fontSize: 14.5, color: "#8B98A5", lineHeight: 1.5, marginBottom: 10 },
-  connectErrorList: { fontSize: 14, color: "#C3CBD3", lineHeight: 1.7, paddingLeft: 18, margin: "0 0 16px" },
+  connectErrorBody: { fontSize: 14.5, color: "#93A7B8", lineHeight: 1.5, marginBottom: 10 },
+  connectErrorList: { fontSize: 14, color: "#C9D8E4", lineHeight: 1.7, paddingLeft: 18, margin: "0 0 16px" },
   connectRetryBtn: {
-    background: "#3B82F6",
+    background: "#35C4E8",
     border: "none",
-    color: "#0B0F14",
+    color: "#0A1017",
     fontWeight: 700,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
     fontFamily: mono,
@@ -11288,8 +11502,8 @@ const styles = {
     position: "sticky",
     top: 0,
     zIndex: 30,
-    borderBottom: "1px solid #1C2530",
-    background: "#0E141B",
+    borderBottom: "1px solid #1F2E3C",
+    background: "#111C26",
     paddingTop: "env(safe-area-inset-top)",
   },
   // The masthead: a white plate the full width of the board, a crest hard
@@ -11317,7 +11531,7 @@ const styles = {
     fontWeight: 700,
     fontSize: 22,
     letterSpacing: 2.4,
-    color: "#0B0F14",
+    color: "#0A1017",
     whiteSpace: "nowrap",
   },
   // Read from across a control room, so the crests are sized to be recognised
@@ -11333,13 +11547,13 @@ const styles = {
     gap: 10,
   },
   headerBarGroup: { display: "flex", alignItems: "center", gap: 18 },
-  clock: { display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "#8B98A5" },
+  clock: { display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "#93A7B8" },
   userBadge: { display: "flex", flexDirection: "column", fontSize: 13, lineHeight: 1.3, textAlign: "right" },
   iconBtn: {
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#93A7B8",
+    borderRadius: 8,
     padding: 7,
     cursor: "pointer",
     display: "flex",
@@ -11353,8 +11567,8 @@ const styles = {
     bottom: 0,
     left: 0,
     right: 0,
-    background: "#0E141B",
-    borderTop: "1px solid #1C2530",
+    background: "#111C26",
+    borderTop: "1px solid #1F2E3C",
     padding: "12px 16px",
     paddingBottom: "calc(12px + env(safe-area-inset-bottom))",
     display: "flex",
@@ -11362,11 +11576,11 @@ const styles = {
     zIndex: 40,
   },
   shareBtn: {
-    background: "#3B82F6",
+    background: "#35C4E8",
     border: "none",
-    color: "#0B0F14",
+    color: "#0A1017",
     fontWeight: 700,
-    borderRadius: 8,
+    borderRadius: 10,
     padding: "11px 22px",
     cursor: "pointer",
     fontFamily: mono,
@@ -11384,7 +11598,7 @@ const styles = {
     fontFamily: display,
     fontSize: 14,
     letterSpacing: 1.2,
-    color: "#8B98A5",
+    color: "#93A7B8",
     margin: "24px 0 10px",
     fontWeight: 700,
   },
@@ -11394,25 +11608,25 @@ const styles = {
     flexWrap: "wrap",
     gap: 14,
     padding: "10px 14px",
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 8,
   },
   statusBoardItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },
-  statusBoardCount: { fontWeight: 700, color: "#E6EDF3" },
-  statusBoardLabel: { color: "#8B98A5", letterSpacing: 0.5 },
+  statusBoardCount: { fontWeight: 700, color: "#E9F1F7" },
+  statusBoardLabel: { color: "#93A7B8", letterSpacing: 0.5 },
 
-  staffingLine: { marginTop: 8, fontSize: 13.5, color: "#8B98A5", letterSpacing: 0.3 },
-  staffingStrong: { color: "#E6EDF3", fontWeight: 700 },
-  staffingWarn: { color: "#F59E0B", fontWeight: 600 },
-  selectHint: { fontSize: 12.5, color: "#5B6672", marginTop: 5, lineHeight: 1.4 },
-  unitCardNoCrew: { fontSize: 12, color: "#F59E0B", fontWeight: 600, letterSpacing: 0.4 },
+  staffingLine: { marginTop: 8, fontSize: 13.5, color: "#93A7B8", letterSpacing: 0.3 },
+  staffingStrong: { color: "#E9F1F7", fontWeight: 700 },
+  staffingWarn: { color: "#FFB020", fontWeight: 600 },
+  selectHint: { fontSize: 12.5, color: "#5E7488", marginTop: 5, lineHeight: 1.4 },
+  unitCardNoCrew: { fontSize: 12, color: "#FFB020", fontWeight: 600, letterSpacing: 0.4 },
 
   alertNotice: {
     marginTop: 10,
     background: "rgba(245,158,11,0.08)",
     border: "1px solid rgba(245,158,11,0.35)",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: "10px 12px",
     display: "flex",
     alignItems: "center",
@@ -11420,12 +11634,12 @@ const styles = {
     gap: 12,
     flexWrap: "wrap",
   },
-  alertNoticeText: { fontSize: 13.5, color: "#F59E0B", lineHeight: 1.5, flex: 1, minWidth: 220 },
+  alertNoticeText: { fontSize: 13.5, color: "#FFB020", lineHeight: 1.5, flex: 1, minWidth: 220 },
   alertNoticeBtn: {
-    background: "#F59E0B",
+    background: "#FFB020",
     border: "none",
-    color: "#0B0F14",
-    borderRadius: 6,
+    color: "#0A1017",
+    borderRadius: 8,
     padding: "7px 12px",
     cursor: "pointer",
     fontFamily: mono,
@@ -11450,11 +11664,11 @@ const styles = {
     gap: 5,
     fontSize: 12.5,
     letterSpacing: 0.4,
-    color: "#8B98A5",
+    color: "#93A7B8",
   },
   toneCheckBtn: {
     background: "transparent",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
     padding: "4px 10px",
     cursor: "pointer",
@@ -11470,7 +11684,7 @@ const styles = {
     gap: 5,
     fontSize: 12.5,
     letterSpacing: 0.4,
-    color: "#FBBF24",
+    color: "#FFC24D",
     fontWeight: 700,
   },
 
@@ -11484,7 +11698,7 @@ const styles = {
     alignItems: "center",
     gap: 6,
     background: "#111823",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
     padding: "5px 11px",
     cursor: "pointer",
@@ -11494,7 +11708,7 @@ const styles = {
   },
   soundMenuBtnOn: {
     background: "rgba(59,130,246,0.16)",
-    border: "1px solid #3B82F6",
+    border: "1px solid #35C4E8",
     borderRadius: 7,
     color: "#BFDBFE",
     padding: "8px 10px",
@@ -11507,8 +11721,8 @@ const styles = {
   alertNoticeMuted: {
     marginTop: 10,
     background: "rgba(245,158,11,0.12)",
-    border: "1px solid #F59E0B",
-    borderRadius: 8,
+    border: "1px solid #FFB020",
+    borderRadius: 10,
     padding: "10px 12px",
     display: "flex",
     alignItems: "center",
@@ -11516,12 +11730,12 @@ const styles = {
     gap: 12,
     flexWrap: "wrap",
   },
-  alertNoticeMutedText: { fontSize: 13.5, color: "#FBBF24", lineHeight: 1.5, flex: 1, minWidth: 220 },
+  alertNoticeMutedText: { fontSize: 13.5, color: "#FFC24D", lineHeight: 1.5, flex: 1, minWidth: 220 },
   alertNoticeMutedBtn: {
-    background: "#F59E0B",
+    background: "#FFB020",
     border: "none",
-    color: "#0B0F14",
-    borderRadius: 6,
+    color: "#0A1017",
+    borderRadius: 8,
     padding: "7px 12px",
     cursor: "pointer",
     fontFamily: mono,
@@ -11535,8 +11749,8 @@ const styles = {
   },
 
   requestForm: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 8,
     padding: 14,
     marginBottom: 14,
@@ -11545,14 +11759,14 @@ const styles = {
     gap: 10,
   },
   formRow: { display: "flex", gap: 10, flexWrap: "wrap" },
-  label: { fontSize: 12, color: "#8B98A5", letterSpacing: 0.5, display: "block", marginBottom: 4 },
-  formHint: { fontSize: 12.5, color: "#5B6672", marginTop: -4, marginBottom: 4 },
+  label: { fontSize: 12, color: "#93A7B8", letterSpacing: 0.5, display: "block", marginBottom: 4 },
+  formHint: { fontSize: 12.5, color: "#5E7488", marginTop: -4, marginBottom: 4 },
   input: {
     width: "100%",
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
-    borderRadius: 6,
-    color: "#E6EDF3",
+    background: "#0A1017",
+    border: "1px solid #26384A",
+    borderRadius: 8,
+    color: "#E9F1F7",
     padding: "9px 10px",
     fontFamily: mono,
     fontSize: 15,
@@ -11563,50 +11777,50 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
+    background: "#0A1017",
+    border: "1px solid #26384A",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#8B98A5",
+    color: "#93A7B8",
     cursor: "pointer",
   },
   checkPillActive: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#1C2530",
-    border: "1px solid #3B82F6",
+    background: "#1F2E3C",
+    border: "1px solid #35C4E8",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     fontWeight: 600,
     cursor: "pointer",
   },
-  checkboxInput: { accentColor: "#3B82F6", width: 13, height: 13 },
+  checkboxInput: { accentColor: "#35C4E8", width: 13, height: 13 },
   reqBadge: {
     fontSize: 12,
-    color: "#8B98A5",
-    border: "1px solid #2A3441",
+    color: "#93A7B8",
+    border: "1px solid #26384A",
     borderRadius: 4,
     padding: "2px 7px",
   },
-  mrnRow: { fontSize: 13, color: "#8B98A5", marginTop: 6 },
+  mrnRow: { fontSize: 13, color: "#93A7B8", marginTop: 6 },
   timesRow: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 },
   timeChip: {
     display: "flex",
     flexDirection: "column",
-    background: "#0B0F14",
-    border: "1px solid #1C2530",
-    borderRadius: 6,
+    background: "#0A1017",
+    border: "1px solid #1F2E3C",
+    borderRadius: 8,
     padding: "5px 9px",
     minWidth: 92,
   },
-  timeChipLabel: { fontSize: 11, color: "#5B6672", letterSpacing: 0.3 },
-  timeChipValue: { fontSize: 14, color: "#C3CBD3", fontWeight: 600, marginTop: 2 },
-  pendingAckTag: { fontSize: 13.5, color: "#F59E0B", fontWeight: 600 },
-  ackTag: { fontSize: 13.5, color: "#22C55E", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 },
+  timeChipLabel: { fontSize: 11, color: "#5E7488", letterSpacing: 0.3 },
+  timeChipValue: { fontSize: 14, color: "#C9D8E4", fontWeight: 600, marginTop: 2 },
+  pendingAckTag: { fontSize: 13.5, color: "#FFB020", fontWeight: 600 },
+  ackTag: { fontSize: 13.5, color: "#3DDC97", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 },
 
   alarmOverlay: {
     position: "fixed",
@@ -11623,8 +11837,8 @@ const styles = {
   alarmCard: {
     width: "100%",
     maxWidth: 420,
-    background: "#0E141B",
-    border: "2px solid #DC2626",
+    background: "#111C26",
+    border: "2px solid #FF4D5E",
     borderRadius: 14,
     padding: "28px 24px",
     textAlign: "center",
@@ -11639,28 +11853,28 @@ const styles = {
     width: 14,
     height: 14,
     borderRadius: "50%",
-    background: "#DC2626",
+    background: "#FF4D5E",
     animation: "pulse-dot 0.8s ease-in-out infinite",
   },
   alarmTitle: { fontFamily: display, fontWeight: 800, fontSize: 22, letterSpacing: 1.5, color: "#FCA5A5" },
   alarmAssistLine: { fontSize: 14, color: "#A5B4FC", fontWeight: 600, letterSpacing: 0.3 },
-  alarmPriority: { fontSize: 13, fontWeight: 800, color: "#0B0F14", padding: "4px 10px", borderRadius: 5, letterSpacing: 0.6 },
+  alarmPriority: { fontSize: 13, fontWeight: 800, color: "#0A1017", padding: "4px 10px", borderRadius: 5, letterSpacing: 0.6 },
   alarmNature: { fontFamily: display, fontWeight: 700, fontSize: 20, color: "#F5F7FA", marginTop: 4 },
-  alarmLocation: { display: "flex", alignItems: "center", gap: 6, fontSize: 15.5, color: "#E6EDF3" },
+  alarmLocation: { display: "flex", alignItems: "center", gap: 6, fontSize: 15.5, color: "#E9F1F7" },
   alarmRoute: { display: "flex", flexDirection: "column", gap: 4, alignItems: "center" },
   alarmLocationLabel: {
     fontSize: 11,
     letterSpacing: 1,
     fontWeight: 700,
-    color: "#8B98A5",
-    border: "1px solid #2A3441",
+    color: "#93A7B8",
+    border: "1px solid #26384A",
     borderRadius: 4,
     padding: "1px 5px",
   },
-  alarmMrn: { fontSize: 14, color: "#C3CBD3" },
+  alarmMrn: { fontSize: 14, color: "#C9D8E4" },
   alarmReqBadge: {
     fontSize: 12.5,
-    color: "#0B0F14",
+    color: "#0A1017",
     background: "#F5F7FA",
     borderRadius: 4,
     padding: "3px 8px",
@@ -11671,7 +11885,7 @@ const styles = {
     background: "#F5F7FA",
     color: "#7F0E0E",
     border: "none",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: "13px 22px",
     fontWeight: 800,
     fontSize: 16,
@@ -11685,7 +11899,7 @@ const styles = {
   alarmFootnote: { fontSize: 12.5, color: "#FCA5A5", marginTop: 4 },
   alarmFootnoteMuted: {
     fontSize: 12.5,
-    color: "#FBBF24",
+    color: "#FFC24D",
     marginTop: 4,
     display: "inline-flex",
     alignItems: "center",
@@ -11697,17 +11911,17 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 8,
     padding: 12,
     flexWrap: "wrap",
   },
-  unitCardAmbulance: { fontSize: 12.5, color: "#5B6672" },
+  unitCardAmbulance: { fontSize: 12.5, color: "#5E7488" },
   unitMemberRow: { display: "flex", justifyContent: "space-between", fontSize: 13, gap: 6 },
-  unitMemberLabel: { color: "#5B6672", letterSpacing: 0.4 },
+  unitMemberLabel: { color: "#5E7488", letterSpacing: 0.4 },
   unitMemberRight: { display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" },
-  unitMemberName: { color: "#C3CBD3", fontWeight: 600 },
+  unitMemberName: { color: "#C9D8E4", fontWeight: 600 },
 
   // ---- shifts ----
   shiftChipWrap: { position: "relative" },
@@ -11716,7 +11930,7 @@ const styles = {
     alignItems: "center",
     gap: 6,
     background: "#111823",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
     padding: "5px 11px",
     cursor: "pointer",
@@ -11724,14 +11938,14 @@ const styles = {
     fontSize: 13.5,
     letterSpacing: 0.4,
   },
-  shiftChipTime: { color: "#8B98A5", fontVariantNumeric: "tabular-nums" },
+  shiftChipTime: { color: "#93A7B8", fontVariantNumeric: "tabular-nums" },
   shiftMenu: {
     position: "absolute",
     top: "calc(100% + 8px)",
     right: 0,
     width: 268,
     background: "#111823",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 10,
     padding: 10,
     display: "flex",
@@ -11740,19 +11954,19 @@ const styles = {
     zIndex: 40,
     boxShadow: "0 12px 28px rgba(0,0,0,0.45)",
   },
-  shiftMenuHead: { fontSize: 12.5, color: "#8B98A5", letterSpacing: 0.4, lineHeight: 1.5 },
+  shiftMenuHead: { fontSize: 12.5, color: "#93A7B8", letterSpacing: 0.4, lineHeight: 1.5 },
   shiftMenuBtn: {
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
+    background: "#0A1017",
+    border: "1px solid #26384A",
     borderRadius: 7,
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     padding: "8px 10px",
     cursor: "pointer",
     fontFamily: mono,
     fontSize: 13.5,
     textAlign: "left",
   },
-  shiftMenuHint: { fontSize: 12, color: "#5B6672", lineHeight: 1.5 },
+  shiftMenuHint: { fontSize: 12, color: "#5E7488", lineHeight: 1.5 },
   shiftTag: {
     border: "1px solid",
     borderRadius: 999,
@@ -11763,7 +11977,7 @@ const styles = {
     whiteSpace: "nowrap",
   },
   otTag: {
-    border: "1px solid #EF4444",
+    border: "1px solid #FF4D5E",
     color: "#FCA5A5",
     background: "rgba(239,68,68,0.12)",
     borderRadius: 999,
@@ -11775,7 +11989,7 @@ const styles = {
   },
   shiftCard: {
     background: "#111823",
-    border: "1px solid #1C2530",
+    border: "1px solid #1F2E3C",
     borderLeft: "3px solid",
     borderRadius: 10,
     padding: "12px 14px",
@@ -11785,37 +11999,37 @@ const styles = {
   },
   shiftCardTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
   shiftCardTitle: { fontFamily: display, fontWeight: 700, fontSize: 15, letterSpacing: 0.8 },
-  shiftCardWindow: { fontSize: 13.5, color: "#8B98A5", fontVariantNumeric: "tabular-nums" },
-  shiftCardRemaining: { fontSize: 15, color: "#E6EDF3", fontVariantNumeric: "tabular-nums" },
+  shiftCardWindow: { fontSize: 13.5, color: "#93A7B8", fontVariantNumeric: "tabular-nums" },
+  shiftCardRemaining: { fontSize: 15, color: "#E9F1F7", fontVariantNumeric: "tabular-nums" },
   shiftCardOvertime: { display: "flex", alignItems: "center", gap: 8 },
-  shiftCardOvertimeLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#EF4444" },
+  shiftCardOvertimeLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#FF4D5E" },
   shiftCardOvertimeTime: { marginLeft: "auto", fontSize: 16, color: "#F5F7FA", fontVariantNumeric: "tabular-nums" },
-  shiftCardNote: { fontSize: 13, color: "#8B98A5", lineHeight: 1.5 },
+  shiftCardNote: { fontSize: 13, color: "#93A7B8", lineHeight: 1.5 },
   shiftBanner: {
     display: "flex",
     alignItems: "center",
     gap: 8,
     flexWrap: "wrap",
     padding: "9px 12px",
-    borderBottom: "1px solid #1C2530",
+    borderBottom: "1px solid #1F2E3C",
   },
-  shiftBannerWindow: { fontSize: 12.5, color: "#8B98A5", fontVariantNumeric: "tabular-nums" },
-  shiftBannerCrew: { fontSize: 12.5, color: "#5B6672", marginLeft: "auto" },
+  shiftBannerWindow: { fontSize: 12.5, color: "#93A7B8", fontVariantNumeric: "tabular-nums" },
+  shiftBannerCrew: { fontSize: 12.5, color: "#5E7488", marginLeft: "auto" },
   shiftBannerDate: {
     fontSize: 12,
-    color: "#5B6672",
+    color: "#5E7488",
     padding: "0 12px 8px",
-    borderBottom: "1px solid #1C2530",
+    borderBottom: "1px solid #1F2E3C",
     fontVariantNumeric: "tabular-nums",
   },
   logScopeNote: {
     fontSize: 12.5,
     lineHeight: 1.5,
-    color: "#5B6672",
+    color: "#5E7488",
     padding: "8px 12px",
-    borderBottom: "1px solid #1C2530",
+    borderBottom: "1px solid #1F2E3C",
   },
-  logTabs: { display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid #1C2530" },
+  logTabs: { display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid #1F2E3C" },
   shiftDetailRow: { display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", marginTop: 6 },
   shiftEventTag: {
     border: "1px solid",
@@ -11826,25 +12040,25 @@ const styles = {
     letterSpacing: 0.5,
   },
   shiftDetailChip: {
-    background: "#0B0F14",
-    border: "1px solid #1C2530",
+    background: "#0A1017",
+    border: "1px solid #1F2E3C",
     borderRadius: 4,
     padding: "1px 5px",
     fontSize: 11.5,
-    color: "#8B98A5",
+    color: "#93A7B8",
     whiteSpace: "nowrap",
   },
 
   emptyState: {
-    color: "#5B6672",
+    color: "#5E7488",
     fontSize: 14.5,
     padding: "18px 4px",
     fontStyle: "italic",
   },
 
   callCard: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderLeft: "3px solid",
     borderRadius: 8,
     padding: 12,
@@ -11852,21 +12066,21 @@ const styles = {
   },
   callCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
   callCardNature: { fontFamily: display, fontWeight: 700, fontSize: 16 },
-  callCardMeta: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#8B98A5" },
+  callCardMeta: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#93A7B8" },
   callCardMetaItem: { display: "flex", alignItems: "center", gap: 4 },
   callCardActions: { display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" },
 
-  routeFrom: { color: "#C3CBD3" },
-  routeTo: { color: "#E6EDF3", fontWeight: 600 },
+  routeFrom: { color: "#C9D8E4" },
+  routeTo: { color: "#E9F1F7", fontWeight: 600 },
 
-  historyNote: { fontSize: 13, color: "#5B6672", lineHeight: 1.5 },
-  historyDuration: { fontSize: 13, color: "#8B98A5", fontVariantNumeric: "tabular-nums" },
-  historyClosedBy: { fontSize: 12.5, color: "#5B6672", marginTop: 8 },
+  historyNote: { fontSize: 13, color: "#5E7488", lineHeight: 1.5 },
+  historyDuration: { fontSize: 13, color: "#93A7B8", fontVariantNumeric: "tabular-nums" },
+  historyClosedBy: { fontSize: 12.5, color: "#5E7488", marginTop: 8 },
   scheduledTag: {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
     padding: "1px 7px",
     fontSize: 11.5,
@@ -11882,8 +12096,8 @@ const styles = {
   quickPickRow: { display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" },
   quickPickBtn: {
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
+    border: "1px solid #26384A",
+    color: "#93A7B8",
     borderRadius: 999,
     padding: "3px 10px",
     cursor: "pointer",
@@ -11893,8 +12107,8 @@ const styles = {
 
   // ---- the Gregorian date/time picker ----
   whenPicker: {
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
+    background: "#0A1017",
+    border: "1px solid #26384A",
     borderRadius: 8,
     padding: 10,
   },
@@ -11905,42 +12119,42 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
     paddingBottom: 10,
-    borderBottom: "1px solid #1C2530",
+    borderBottom: "1px solid #1F2E3C",
   },
   whenReadoutTime: {
     fontFamily: display,
     fontWeight: 700,
     fontSize: 26,
     lineHeight: 1,
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     fontVariantNumeric: "tabular-nums",
   },
-  whenReadoutDate: { fontSize: 13.5, color: "#8B98A5", marginTop: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  whenReadoutDate: { fontSize: 13.5, color: "#93A7B8", marginTop: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
   whenCalTag: {
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
     padding: "1px 6px",
     fontSize: 11,
     letterSpacing: 0.4,
-    color: "#5B6672",
+    color: "#5E7488",
   },
   whenReadoutSide: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 },
-  whenReadoutUntil: { fontSize: 13.5, color: "#3B82F6", fontWeight: 600, fontVariantNumeric: "tabular-nums" },
+  whenReadoutUntil: { fontSize: 13.5, color: "#35C4E8", fontWeight: 600, fontVariantNumeric: "tabular-nums" },
   whenSection: { marginTop: 10 },
   whenSectionLabel: {
     fontSize: 11.5,
     letterSpacing: 0.6,
-    color: "#5B6672",
+    color: "#5E7488",
     fontWeight: 700,
     marginBottom: 6,
   },
   calHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 },
-  calMonthLabel: { fontFamily: display, fontWeight: 700, fontSize: 15, color: "#E6EDF3", letterSpacing: 0.3 },
+  calMonthLabel: { fontFamily: display, fontWeight: 700, fontSize: 15, color: "#E9F1F7", letterSpacing: 0.3 },
   calNavBtn: {
-    background: "#0E141B",
-    border: "1px solid #2A3441",
-    color: "#C3CBD3",
-    borderRadius: 6,
+    background: "#111C26",
+    border: "1px solid #26384A",
+    color: "#C9D8E4",
+    borderRadius: 8,
     width: 26,
     height: 26,
     cursor: "pointer",
@@ -11953,15 +12167,15 @@ const styles = {
     textAlign: "center",
     fontSize: 11,
     letterSpacing: 0.4,
-    color: "#5B6672",
+    color: "#5E7488",
     padding: "2px 0 4px",
     fontWeight: 700,
   },
   calDay: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
-    color: "#C3CBD3",
-    borderRadius: 6,
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
+    color: "#C9D8E4",
+    borderRadius: 8,
     padding: "7px 0",
     cursor: "pointer",
     fontFamily: mono,
@@ -11969,9 +12183,9 @@ const styles = {
     fontVariantNumeric: "tabular-nums",
   },
   calDayOutside: { color: "#3A4551", background: "transparent" },
-  calDayPast: { color: "#2A3441", cursor: "not-allowed", background: "transparent", borderColor: "#141C24" },
-  calDayToday: { borderColor: "#3B82F6", color: "#93C5FD" },
-  calDaySelected: { background: "#3B82F6", borderColor: "#3B82F6", color: "#0B0F14", fontWeight: 700 },
+  calDayPast: { color: "#26384A", cursor: "not-allowed", background: "transparent", borderColor: "#141C24" },
+  calDayToday: { borderColor: "#35C4E8", color: "#93C5FD" },
+  calDaySelected: { background: "#35C4E8", borderColor: "#35C4E8", color: "#0A1017", fontWeight: 700 },
   calDayHeading: {
     display: "flex",
     alignItems: "baseline",
@@ -11979,28 +12193,28 @@ const styles = {
     gap: 10,
     marginTop: 6,
     paddingBottom: 4,
-    borderBottom: "1px solid #1C2530",
+    borderBottom: "1px solid #1F2E3C",
   },
-  calDayHeadingText: { fontFamily: display, fontWeight: 700, fontSize: 14, color: "#C3CBD3", letterSpacing: 0.3 },
-  calDayHeadingCount: { fontSize: 12, color: "#5B6672" },
+  calDayHeadingText: { fontFamily: display, fontWeight: 700, fontSize: 14, color: "#C9D8E4", letterSpacing: 0.3 },
+  calDayHeadingCount: { fontSize: 12, color: "#5E7488" },
   whenTimeRow: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
   whenTimeSelect: {
-    background: "#0E141B",
-    border: "1px solid #2A3441",
-    color: "#E6EDF3",
-    borderRadius: 6,
+    background: "#111C26",
+    border: "1px solid #26384A",
+    color: "#E9F1F7",
+    borderRadius: 8,
     padding: "8px 10px",
     fontFamily: mono,
     fontSize: 18,
     fontVariantNumeric: "tabular-nums",
   },
-  whenTimeColon: { fontFamily: mono, fontSize: 18, color: "#5B6672" },
+  whenTimeColon: { fontFamily: mono, fontSize: 18, color: "#5E7488" },
   whenNudgeGroup: { display: "flex", gap: 4, marginLeft: 4, flexWrap: "wrap" },
   whenNudgeBtn: {
-    background: "#0E141B",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
-    borderRadius: 6,
+    background: "#111C26",
+    border: "1px solid #26384A",
+    color: "#93A7B8",
+    borderRadius: 8,
     padding: "6px 8px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12009,7 +12223,7 @@ const styles = {
   rescheduleBox: {
     marginTop: 10,
     paddingTop: 10,
-    borderTop: "1px solid #1C2530",
+    borderTop: "1px solid #1F2E3C",
   },
 
   // ---- the cancellation banner ----
@@ -12020,7 +12234,7 @@ const styles = {
     marginTop: 10,
     background: "rgba(245,158,11,0.08)",
     border: "1px solid rgba(245,158,11,0.45)",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: "10px 12px",
   },
   cancelReasonHead: {
@@ -12028,30 +12242,30 @@ const styles = {
     fontWeight: 700,
     fontSize: 13.5,
     letterSpacing: 0.6,
-    color: "#FBBF24",
+    color: "#FFC24D",
     display: "flex",
     alignItems: "center",
     gap: 6,
   },
-  cancelReasonNote: { fontSize: 12.5, color: "#8B98A5", lineHeight: 1.5, margin: "6px 0 8px" },
+  cancelReasonNote: { fontSize: 12.5, color: "#93A7B8", lineHeight: 1.5, margin: "6px 0 8px" },
   reasonPill: {
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
+    background: "#0A1017",
+    border: "1px solid #26384A",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#8B98A5",
+    color: "#93A7B8",
     cursor: "pointer",
     fontFamily: mono,
     textAlign: "left",
   },
   reasonPillActive: {
     background: "#2A1C06",
-    border: "1px solid #F59E0B",
+    border: "1px solid #FFB020",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#FBBF24",
+    color: "#FFC24D",
     fontWeight: 600,
     cursor: "pointer",
     fontFamily: mono,
@@ -12065,7 +12279,7 @@ const styles = {
     border: "none",
     color: "#FEE2E2",
     fontWeight: 700,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12080,9 +12294,9 @@ const styles = {
   // desk it is the first thing to reach for when the ward says "we'll call you".
   awaitCallToggle: {
     width: "100%",
-    background: "#0E141B",
-    border: "1px dashed #2A3441",
-    color: "#8B98A5",
+    background: "#111C26",
+    border: "1px dashed #26384A",
+    color: "#93A7B8",
     borderRadius: 7,
     padding: "9px 11px",
     marginBottom: 8,
@@ -12113,7 +12327,7 @@ const styles = {
     gap: 7,
     lineHeight: 1.4,
   },
-  awaitCallNote: { fontSize: 13, color: "#8B98A5", lineHeight: 1.55 },
+  awaitCallNote: { fontSize: 13, color: "#93A7B8", lineHeight: 1.55 },
   awaitCallTag: {
     display: "inline-flex",
     alignItems: "center",
@@ -12129,11 +12343,11 @@ const styles = {
     whiteSpace: "nowrap",
   },
   readyNowBtn: {
-    background: "#F59E0B",
+    background: "#FFB020",
     border: "none",
-    color: "#0B0F14",
+    color: "#0A1017",
     fontWeight: 700,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "7px 11px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12148,7 +12362,7 @@ const styles = {
     marginTop: 10,
     background: "rgba(59,130,246,0.08)",
     border: "1px solid rgba(59,130,246,0.45)",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: "10px 12px",
   },
   preAlertHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
@@ -12162,12 +12376,12 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
-  preAlertCount: { fontSize: 13, color: "#C3CBD3", flex: 1, minWidth: 140 },
+  preAlertCount: { fontSize: 13, color: "#C9D8E4", flex: 1, minWidth: 140 },
   preAlertDismiss: {
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#93A7B8",
+    borderRadius: 8,
     padding: "4px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12180,19 +12394,19 @@ const styles = {
     flexWrap: "wrap",
     marginTop: 8,
     fontSize: 13.5,
-    color: "#8B98A5",
+    color: "#93A7B8",
   },
   preAlertTime: {
     fontFamily: display,
     fontWeight: 700,
     fontSize: 17,
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     fontVariantNumeric: "tabular-nums",
   },
   preAlertIn: { fontSize: 13, color: "#93C5FD", fontWeight: 600 },
-  preAlertNature: { color: "#E6EDF3", fontWeight: 600 },
-  preAlertRoute: { color: "#8B98A5" },
-  preAlertFoot: { marginTop: 8, fontSize: 12.5, color: "#5B6672", lineHeight: 1.5 },
+  preAlertNature: { color: "#E9F1F7", fontWeight: 600 },
+  preAlertRoute: { color: "#93A7B8" },
+  preAlertFoot: { marginTop: 8, fontSize: 12.5, color: "#5E7488", lineHeight: 1.5 },
   preAlertArmBtn: {
     background: "transparent",
     border: "none",
@@ -12218,7 +12432,7 @@ const styles = {
     whiteSpace: "nowrap",
   },
 
-  pill: { fontSize: 11.5, fontWeight: 700, color: "#0B0F14", padding: "3px 7px", borderRadius: 4, letterSpacing: 0.4 },
+  pill: { fontSize: 11.5, fontWeight: 700, color: "#0A1017", padding: "3px 7px", borderRadius: 4, letterSpacing: 0.4 },
 
   // ---- responded, nobody transported ----
   noTransportTag: {
@@ -12266,7 +12480,7 @@ const styles = {
     padding: "10px 10px 10px 10px",
     border: "1px solid rgba(245,158,11,0.55)",
     background: "rgba(245,158,11,0.07)",
-    borderRadius: 6,
+    borderRadius: 8,
   },
   pcrHeader: {
     display: "flex",
@@ -12285,7 +12499,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     marginBottom: 8,
   },
   pcrChoices: { display: "flex", flexWrap: "wrap", gap: 8 },
@@ -12293,9 +12507,9 @@ const styles = {
   // and picking the wrong crew member puts the report on the wrong person.
   pcrChoice: {
     background: "transparent",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     color: "#C7D0DA",
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "8px 12px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12307,9 +12521,9 @@ const styles = {
   },
   pcrChoiceOn: {
     background: "rgba(59,130,246,0.16)",
-    border: "1px solid #3B82F6",
+    border: "1px solid #35C4E8",
     color: "#93C5FD",
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "8px 12px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12319,7 +12533,7 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
-  pcrNote: { fontSize: 13.5, color: "#8B98A5", marginTop: 8, lineHeight: 1.5 },
+  pcrNote: { fontSize: 13.5, color: "#93A7B8", marginTop: 8, lineHeight: 1.5 },
 
   // ---- category of call and loaded kilometers ----
   //
@@ -12337,7 +12551,7 @@ const styles = {
     padding: "10px 10px 10px 10px",
     border: "1px solid rgba(245,158,11,0.55)",
     background: "rgba(245,158,11,0.07)",
-    borderRadius: 6,
+    borderRadius: 8,
   },
   codingHeader: {
     display: "flex",
@@ -12356,17 +12570,17 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     marginBottom: 8,
   },
-  codingRowLabel: { fontSize: 11, color: "#5B6672", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
-  codingRowLabelRequired: { fontSize: 11, color: "#F59E0B", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
+  codingRowLabel: { fontSize: 11, color: "#5E7488", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
+  codingRowLabelRequired: { fontSize: 11, color: "#FFB020", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
   codingChoices: { display: "flex", flexWrap: "wrap", gap: 6 },
   codeChoice: {
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#93A7B8",
+    borderRadius: 8,
     padding: "6px 9px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12377,8 +12591,8 @@ const styles = {
   codeChoiceOn: {
     background: "rgba(148,163,184,0.1)",
     border: "1px solid",
-    color: "#E6EDF3",
-    borderRadius: 6,
+    color: "#E9F1F7",
+    borderRadius: 8,
     padding: "6px 9px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12389,9 +12603,9 @@ const styles = {
   },
   codeChoiceKey: { fontSize: 15, fontWeight: 700, letterSpacing: 0.5 },
   codeChoiceName: { fontSize: 12, letterSpacing: 0.3, opacity: 0.85 },
-  codingSuggestion: { fontSize: 12.5, color: "#FBBF24", marginTop: 6, lineHeight: 1.5 },
-  codingNote: { fontSize: 12.5, color: "#5B6672", marginTop: 8, lineHeight: 1.5 },
-  codingNoteRequired: { fontSize: 13.5, color: "#8B98A5", marginTop: 8, lineHeight: 1.5 },
+  codingSuggestion: { fontSize: 12.5, color: "#FFC24D", marginTop: 6, lineHeight: 1.5 },
+  codingNote: { fontSize: 12.5, color: "#5E7488", marginTop: 8, lineHeight: 1.5 },
+  codingNoteRequired: { fontSize: 13.5, color: "#93A7B8", marginTop: 8, lineHeight: 1.5 },
   codingClosedRow: {
     display: "flex",
     alignItems: "center",
@@ -12423,11 +12637,11 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#5B6672",
+    color: "#5E7488",
     whiteSpace: "nowrap",
   },
-  pcrEmpty: { fontSize: 13.5, color: "#F59E0B", lineHeight: 1.5 },
-  pcrPendingNote: { fontSize: 13.5, color: "#F59E0B", fontWeight: 600, flex: 1, minWidth: 180 },
+  pcrEmpty: { fontSize: 13.5, color: "#FFB020", lineHeight: 1.5 },
+  pcrPendingNote: { fontSize: 13.5, color: "#FFB020", fontWeight: 600, flex: 1, minWidth: 180 },
   pcrAuthorTag: {
     display: "inline-flex",
     alignItems: "center",
@@ -12446,14 +12660,14 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    border: "1px solid #F59E0B",
+    border: "1px solid #FFB020",
     background: "rgba(245,158,11,0.12)",
     borderRadius: 4,
     padding: "2px 7px",
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#FBBF24",
+    color: "#FFC24D",
     whiteSpace: "nowrap",
   },
   // The exception actions sit in their own block, pushed down and away from the
@@ -12462,7 +12676,7 @@ const styles = {
   exceptionBlock: {
     marginTop: 18,
     paddingTop: 10,
-    borderTop: "1px dashed #2A3441",
+    borderTop: "1px dashed #26384A",
   },
   exceptionHeader: {
     display: "flex",
@@ -12485,7 +12699,7 @@ const styles = {
     background: "transparent",
     border: `1px solid ${NO_TRANSPORT.color}`,
     color: NO_TRANSPORT.color,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12499,9 +12713,9 @@ const styles = {
   // ---- a second ambulance on the same call ----
   assistBtn: {
     background: "transparent",
-    border: "1px solid #EF4444",
-    color: "#F87171",
-    borderRadius: 6,
+    border: "1px solid #FF4D5E",
+    color: "#FF7A86",
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -12514,8 +12728,8 @@ const styles = {
   assistBtnPending: {
     background: "rgba(239,68,68,0.12)",
     border: "1px solid rgba(239,68,68,0.5)",
-    color: "#F87171",
-    borderRadius: 6,
+    color: "#FF7A86",
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "default",
     fontFamily: mono,
@@ -12543,18 +12757,18 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    border: "1px solid #EF4444",
+    border: "1px solid #FF4D5E",
     background: "rgba(239,68,68,0.14)",
     borderRadius: 4,
     padding: "2px 7px",
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#F87171",
+    color: "#FF7A86",
     whiteSpace: "nowrap",
     animation: "pulse-dot 1.6s ease-in-out infinite",
   },
-  assistNote: { fontSize: 13.5, color: "#8B98A5", flex: 1, minWidth: 180, lineHeight: 1.5 },
+  assistNote: { fontSize: 13.5, color: "#93A7B8", flex: 1, minWidth: 180, lineHeight: 1.5 },
 
   // ---- escalations: the corner banner and the thread it opens ----
   //
@@ -12607,7 +12821,7 @@ const styles = {
   escPanel: {
     marginTop: 14,
     paddingTop: 10,
-    borderTop: "1px dashed #2A3441",
+    borderTop: "1px dashed #26384A",
   },
   escPanelHead: {
     display: "flex",
@@ -12623,33 +12837,33 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#8B98A5",
+    color: "#93A7B8",
   },
-  escEmpty: { fontSize: 13.5, color: "#5B6672", fontStyle: "italic", marginBottom: 8 },
+  escEmpty: { fontSize: 13.5, color: "#5E7488", fontStyle: "italic", marginBottom: 8 },
   escItem: {
-    background: "#0B0F14",
-    border: "1px solid #1C2530",
-    borderRadius: 6,
+    background: "#0A1017",
+    border: "1px solid #1F2E3C",
+    borderRadius: 8,
     padding: 10,
     marginBottom: 8,
   },
   escItemHead: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 },
-  escItemWhen: { fontSize: 12.5, color: "#8B98A5", fontVariantNumeric: "tabular-nums" },
-  escItemWho: { fontSize: 12.5, color: "#C3CBD3", fontWeight: 600 },
+  escItemWhen: { fontSize: 12.5, color: "#93A7B8", fontVariantNumeric: "tabular-nums" },
+  escItemWho: { fontSize: 12.5, color: "#C9D8E4", fontWeight: 600 },
   escAfterTag: {
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
     padding: "1px 7px",
     fontSize: 11,
     fontWeight: 700,
     letterSpacing: 0.3,
-    color: "#8B98A5",
+    color: "#93A7B8",
   },
-  escMessage: { fontSize: 14.5, color: "#E6EDF3", lineHeight: 1.55, whiteSpace: "pre-wrap" },
+  escMessage: { fontSize: 14.5, color: "#E9F1F7", lineHeight: 1.55, whiteSpace: "pre-wrap" },
   escPreview: {
     marginTop: 8,
     fontSize: 14,
-    color: "#C3CBD3",
+    color: "#C9D8E4",
     lineHeight: 1.5,
     display: "-webkit-box",
     WebkitLineClamp: 2,
@@ -12659,26 +12873,26 @@ const styles = {
   escReplies: { display: "flex", flexDirection: "column", gap: 6, marginTop: 8 },
   escReplyAdmin: {
     background: "rgba(59,130,246,0.10)",
-    borderLeft: "2px solid #3B82F6",
+    borderLeft: "2px solid #35C4E8",
     borderRadius: 4,
     padding: "6px 8px",
   },
   escReplyTeam: {
-    background: "#0E141B",
+    background: "#111C26",
     borderLeft: "2px solid #3A4552",
     borderRadius: 4,
     padding: "6px 8px",
   },
-  escReplyHead: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4, color: "#8B98A5", marginBottom: 3 },
-  escReplyBody: { fontSize: 14, color: "#E6EDF3", lineHeight: 1.5, whiteSpace: "pre-wrap" },
-  escResolvedNote: { fontSize: 12.5, color: "#22C55E", marginTop: 8 },
+  escReplyHead: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4, color: "#93A7B8", marginBottom: 3 },
+  escReplyBody: { fontSize: 14, color: "#E9F1F7", lineHeight: 1.5, whiteSpace: "pre-wrap" },
+  escResolvedNote: { fontSize: 12.5, color: "#3DDC97", marginTop: 8 },
   escItemActions: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 },
   escTextarea: {
     width: "100%",
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
-    borderRadius: 6,
-    color: "#E6EDF3",
+    background: "#0A1017",
+    border: "1px solid #26384A",
+    borderRadius: 8,
+    color: "#E9F1F7",
     padding: "8px 10px",
     fontFamily: mono,
     fontSize: 14.5,
@@ -12689,7 +12903,7 @@ const styles = {
   refusalPanel: {
     marginTop: 10,
     background: "#1A0E0E",
-    border: "1px solid #DC2626",
+    border: "1px solid #FF4D5E",
     borderRadius: 8,
     padding: 12,
   },
@@ -12697,12 +12911,12 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#F87171",
+    color: "#FF7A86",
     display: "flex",
     alignItems: "center",
     gap: 5,
   },
-  refusalPanelNote: { fontSize: 13.5, color: "#8B98A5", lineHeight: 1.5, marginTop: 6 },
+  refusalPanelNote: { fontSize: 13.5, color: "#93A7B8", lineHeight: 1.5, marginTop: 6 },
   refusalPanelActions: {
     marginTop: 12,
     display: "flex",
@@ -12712,10 +12926,10 @@ const styles = {
     flexWrap: "wrap",
   },
   refusalConfirmBtn: {
-    background: "#DC2626",
+    background: "#FF4D5E",
     border: "none",
     color: "#fff",
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "7px 12px",
     fontSize: 14,
     fontWeight: 700,
@@ -12725,25 +12939,65 @@ const styles = {
     gap: 5,
   },
 
-  savedNote: { fontSize: 13.5, color: "#8B98A5", lineHeight: 1.55, marginTop: 8 },
+  foldHeader: {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
+    borderRadius: 9,
+    padding: "11px 13px",
+    color: "#C9D8E4",
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 0.7,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  foldCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: "#5E7488", letterSpacing: 0.3 },
+  foldBody: { paddingTop: 10 },
+
+  archTabs: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
+  archTab: {
+    display: "inline-flex", alignItems: "center", gap: 8,
+    background: "#111C26", border: "1px solid #1F2E3C", color: "#93A7B8",
+    borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
+  archTabOn: {
+    display: "inline-flex", alignItems: "center", gap: 8,
+    background: "#16232F", border: "1px solid #35C4E8", color: "#E9F1F7",
+    borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+  },
+  archTabCount: { fontSize: 11.5, color: "#5E7488", fontWeight: 600 },
+  archDay: {
+    fontSize: 12, fontWeight: 800, letterSpacing: 0.7, color: "#6FD6F0",
+    marginBottom: 7, textTransform: "uppercase",
+  },
+  archOpenTag: {
+    marginLeft: 8, fontSize: 11, fontWeight: 700, letterSpacing: 0.4,
+    color: "#FFB020", border: "1px solid rgba(245,158,11,.4)", borderRadius: 5,
+    padding: "1px 6px",
+  },
+
+  savedNote: { fontSize: 13.5, color: "#93A7B8", lineHeight: 1.55, marginTop: 8 },
   savedRow: {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    background: "#0E141B",
-    border: "1px solid #1C2530",
-    borderRadius: 8,
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
+    borderRadius: 10,
     padding: "10px 12px",
     flexWrap: "wrap",
   },
-  savedDay: { fontSize: 14, fontWeight: 700, color: "#E6EDF3" },
-  savedMeta: { fontSize: 12.5, color: "#5B6672", marginTop: 3 },
+  savedDay: { fontSize: 14, fontWeight: 700, color: "#E9F1F7" },
+  savedMeta: { fontSize: 12.5, color: "#5E7488", marginTop: 3 },
 
   stationBoardLabel: {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.6,
-    color: "#7FB2E5",
+    color: "#6FD6F0",
     marginBottom: 4,
   },
 
@@ -12751,20 +13005,20 @@ const styles = {
     fontSize: 11,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#7FB2E5",
+    color: "#6FD6F0",
     border: "1px solid #24425F",
     borderRadius: 4,
     padding: "1px 4px",
   },
 
-  stationCount: { marginLeft: 8, fontSize: 12.5, fontWeight: 600, color: "#5B6672", letterSpacing: 0.3 },
+  stationCount: { marginLeft: 8, fontSize: 12.5, fontWeight: 600, color: "#5E7488", letterSpacing: 0.3 },
   addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
 
   offlineBanner: {
     background: "#3A1A0A",
-    borderTop: "1px solid #F59E0B",
-    borderBottom: "1px solid #F59E0B",
-    color: "#FBBF24",
+    borderTop: "1px solid #FFB020",
+    borderBottom: "1px solid #FFB020",
+    color: "#FFC24D",
     fontSize: 14,
     fontWeight: 700,
     lineHeight: 1.5,
@@ -12774,7 +13028,7 @@ const styles = {
   syncingBanner: {
     background: "#0E2233",
     borderBottom: "1px solid #24425F",
-    color: "#7FB2E5",
+    color: "#6FD6F0",
     fontSize: 14,
     fontWeight: 600,
     padding: "7px 14px",
@@ -12784,21 +13038,21 @@ const styles = {
   stationBanner: {
     display: "flex",
     alignItems: "center",
-    background: "#111C2B",
+    background: "#16232F",
     border: "1px solid #24425F",
     borderRadius: 8,
     padding: "7px 10px",
     fontSize: 14,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#7FB2E5",
+    color: "#6FD6F0",
     marginBottom: 10,
   },
 
   editInbox: {
     marginTop: 12,
     background: "#1C1408",
-    border: "1px solid #F59E0B",
+    border: "1px solid #FFB020",
     borderRadius: 10,
     padding: 12,
   },
@@ -12806,33 +13060,33 @@ const styles = {
     fontSize: 13,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     display: "flex",
     alignItems: "center",
     gap: 6,
   },
-  editInboxNote: { fontSize: 13.5, color: "#8B98A5", lineHeight: 1.5, marginTop: 6 },
+  editInboxNote: { fontSize: 13.5, color: "#93A7B8", lineHeight: 1.5, marginTop: 6 },
   editInboxCall: {
     marginTop: 10,
     borderTop: "1px solid #2A2110",
     paddingTop: 8,
   },
   editInboxCallHead: { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 },
-  editInboxNature: { fontSize: 15.5, fontWeight: 700, color: "#E6EDF3" },
-  editInboxMeta: { fontSize: 13, color: "#8B98A5" },
+  editInboxNature: { fontSize: 15.5, fontWeight: 700, color: "#E9F1F7" },
+  editInboxMeta: { fontSize: 13, color: "#93A7B8" },
 
   mrnMissingRow: {
     fontSize: 13.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     marginTop: 4,
   },
   editCrewBlock: { marginTop: 10 },
   editOpenBtn: {
     marginTop: 10,
     background: "none",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#93A7B8",
+    borderRadius: 8,
     padding: "6px 10px",
     fontSize: 13.5,
     fontWeight: 600,
@@ -12843,8 +13097,8 @@ const styles = {
   },
   editPanel: {
     marginTop: 10,
-    background: "#0B0F14",
-    border: "1px solid #3B82F6",
+    background: "#0A1017",
+    border: "1px solid #35C4E8",
     borderRadius: 8,
     padding: 12,
   },
@@ -12852,10 +13106,10 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#3B82F6",
+    color: "#35C4E8",
     marginBottom: 6,
   },
-  editPanelNote: { fontSize: 13.5, color: "#8B98A5", lineHeight: 1.5, marginBottom: 4 },
+  editPanelNote: { fontSize: 13.5, color: "#93A7B8", lineHeight: 1.5, marginBottom: 4 },
   editPanelActions: {
     marginTop: 12,
     display: "flex",
@@ -12864,11 +13118,11 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  editPanelCount: { fontSize: 13, color: "#5B6672" },
+  editPanelCount: { fontSize: 13, color: "#5E7488" },
   editReview: {
     marginTop: 10,
     background: "#1C1408",
-    border: "1px solid #F59E0B",
+    border: "1px solid #FFB020",
     borderRadius: 8,
     padding: 10,
   },
@@ -12876,7 +13130,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     marginBottom: 8,
     display: "flex",
     alignItems: "center",
@@ -12890,19 +13144,19 @@ const styles = {
     borderTop: "1px solid #2A2110",
     flexWrap: "wrap",
   },
-  editReviewField: { fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: "#8B98A5" },
+  editReviewField: { fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: "#93A7B8" },
   editReviewChange: { fontSize: 15, marginTop: 2 },
-  editReviewFrom: { color: "#8B98A5", textDecoration: "line-through" },
-  editReviewTo: { color: "#E6EDF3", fontWeight: 700 },
-  editReviewBy: { fontSize: 13, color: "#5B6672", marginTop: 3 },
+  editReviewFrom: { color: "#93A7B8", textDecoration: "line-through" },
+  editReviewTo: { color: "#E9F1F7", fontWeight: 700 },
+  editReviewBy: { fontSize: 13, color: "#5E7488", marginTop: 3 },
   editHistory: { marginTop: 8 },
-  editHistoryRow: { fontSize: 13, color: "#5B6672", lineHeight: 1.6 },
+  editHistoryRow: { fontSize: 13, color: "#5E7488", lineHeight: 1.6 },
   editPendingNote: {
     fontSize: 13.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     background: "#1C1408",
     border: "1px solid #2A2110",
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "6px 8px",
     marginBottom: 8,
     lineHeight: 1.5,
@@ -12910,8 +13164,8 @@ const styles = {
 
   escComposer: {
     background: "#1C1408",
-    border: "1px dashed #F59E0B",
-    borderRadius: 6,
+    border: "1px dashed #FFB020",
+    borderRadius: 8,
     padding: 10,
     marginTop: 14,
   },
@@ -12919,7 +13173,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#F59E0B",
+    color: "#FFB020",
     marginBottom: 6,
   },
   escComposerActions: {
@@ -12930,8 +13184,8 @@ const styles = {
     flexWrap: "wrap",
     marginTop: 8,
   },
-  escPrivacyNote: { fontSize: 12.5, color: "#5B6672", lineHeight: 1.5, flex: 1, minWidth: 200 },
-  escByTag: { fontSize: 13, color: "#C3CBD3", fontWeight: 600 },
+  escPrivacyNote: { fontSize: 12.5, color: "#5E7488", lineHeight: 1.5, flex: 1, minWidth: 200 },
+  escByTag: { fontSize: 13, color: "#C9D8E4", fontWeight: 600 },
 
   // ---- finding a call again ----
   historyFilters: {
@@ -12945,9 +13199,9 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
-    borderRadius: 6,
+    background: "#0A1017",
+    border: "1px solid #26384A",
+    borderRadius: 8,
     padding: "0 10px",
     flex: 1,
     minWidth: 200,
@@ -12957,7 +13211,7 @@ const styles = {
     background: "transparent",
     border: "none",
     outline: "none",
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     padding: "8px 0",
     fontFamily: mono,
     fontSize: 14.5,
@@ -12968,10 +13222,10 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 6,
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
-    borderRadius: 6,
-    color: "#8B98A5",
+    background: "#0A1017",
+    border: "1px solid #26384A",
+    borderRadius: 8,
+    color: "#93A7B8",
     padding: "7px 10px",
     fontFamily: mono,
     fontSize: 14,
@@ -12983,8 +13237,8 @@ const styles = {
     alignItems: "center",
     gap: 6,
     background: "rgba(59,130,246,0.12)",
-    border: "1px solid #3B82F6",
-    borderRadius: 6,
+    border: "1px solid #35C4E8",
+    borderRadius: 8,
     color: "#93C5FD",
     padding: "7px 10px",
     fontFamily: mono,
@@ -12998,8 +13252,8 @@ const styles = {
     top: "calc(100% + 6px)",
     left: 0,
     width: 268,
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
+    background: "#0A1017",
+    border: "1px solid #26384A",
     borderRadius: 8,
     padding: 10,
     boxShadow: "0 12px 30px rgba(0,0,0,0.55)",
@@ -13009,9 +13263,9 @@ const styles = {
     alignItems: "center",
     gap: 5,
     background: "transparent",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     borderRadius: 999,
-    color: "#8B98A5",
+    color: "#93A7B8",
     padding: "6px 12px",
     cursor: "pointer",
     fontFamily: mono,
@@ -13023,7 +13277,7 @@ const styles = {
     alignItems: "center",
     gap: 5,
     background: "rgba(59,130,246,0.14)",
-    border: "1px solid #3B82F6",
+    border: "1px solid #35C4E8",
     borderRadius: 999,
     color: "#93C5FD",
     padding: "6px 12px",
@@ -13037,7 +13291,7 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 5,
-    color: "#F87171",
+    color: "#FF7A86",
     fontWeight: 600,
   },
   assistStatusHelping: {
@@ -13047,13 +13301,13 @@ const styles = {
     color: "#A5B4FC",
     fontWeight: 600,
   },
-  assistStatusStood: { color: "#8B98A5" },
-  assistStatusDone: { color: "#5B6672" },
+  assistStatusStood: { color: "#93A7B8" },
+  assistStatusDone: { color: "#5E7488" },
   assistPanel: {
     marginTop: 10,
     background: "rgba(239,68,68,0.08)",
     border: "1px solid rgba(239,68,68,0.5)",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: "10px 12px",
   },
   assistPanelHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
@@ -13062,12 +13316,12 @@ const styles = {
     fontWeight: 700,
     fontSize: 13.5,
     letterSpacing: 0.6,
-    color: "#F87171",
+    color: "#FF7A86",
     display: "inline-flex",
     alignItems: "center",
     gap: 5,
   },
-  assistPanelCount: { fontSize: 13, color: "#C3CBD3", flex: 1, minWidth: 160 },
+  assistPanelCount: { fontSize: 13, color: "#C9D8E4", flex: 1, minWidth: 160 },
   assistTaskRow: {
     marginTop: 8,
     paddingTop: 8,
@@ -13083,29 +13337,29 @@ const styles = {
     fontFamily: display,
     fontWeight: 700,
     fontSize: 16,
-    color: "#E6EDF3",
+    color: "#E9F1F7",
   },
-  assistTaskNature: { color: "#E6EDF3", fontWeight: 600 },
-  assistTaskRoute: { color: "#8B98A5" },
-  assistTaskWaiting: { color: "#F87171", fontWeight: 600 },
+  assistTaskNature: { color: "#E9F1F7", fontWeight: 600 },
+  assistTaskRoute: { color: "#93A7B8" },
+  assistTaskWaiting: { color: "#FF7A86", fontWeight: 600 },
   assistTaskActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
 
   assignSelect: {
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
-    color: "#E6EDF3",
-    borderRadius: 6,
+    background: "#0A1017",
+    border: "1px solid #26384A",
+    color: "#E9F1F7",
+    borderRadius: 8,
     padding: "6px 8px",
     fontFamily: mono,
     fontSize: 14,
   },
-  assignedTag: { fontSize: 13.5, color: "#3B82F6", fontWeight: 600 },
+  assignedTag: { fontSize: 13.5, color: "#35C4E8", fontWeight: 600 },
 
   unitGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 },
   unitCard: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
-    borderRadius: 8,
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
+    borderRadius: 10,
     padding: "10px 12px",
     display: "flex",
     flexDirection: "column",
@@ -13114,8 +13368,8 @@ const styles = {
   unitCardName: { fontSize: 14.5, fontWeight: 600 },
 
   myUnitCard: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 8,
     padding: 14,
     display: "flex",
@@ -13126,8 +13380,8 @@ const styles = {
   },
 
   logPanel: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 8,
     display: "flex",
     flexDirection: "column",
@@ -13138,17 +13392,17 @@ const styles = {
     alignItems: "center",
     gap: 6,
     padding: "10px 12px",
-    borderBottom: "1px solid #1C2530",
+    borderBottom: "1px solid #1F2E3C",
     fontSize: 13,
     letterSpacing: 1,
-    color: "#8B98A5",
+    color: "#93A7B8",
     fontWeight: 700,
   },
   logList: { overflowY: "auto", padding: "6px 0" },
-  logEmpty: { color: "#5B6672", fontSize: 14, padding: "12px", fontStyle: "italic" },
+  logEmpty: { color: "#5E7488", fontSize: 14, padding: "12px", fontStyle: "italic" },
   logEntry: { borderLeft: "2px solid", padding: "6px 12px", fontSize: 13.5 },
   logTopRow: { display: "flex", alignItems: "center", gap: 8 },
-  logTime: { color: "#5B6672", fontSize: 12 },
+  logTime: { color: "#5E7488", fontSize: 12 },
   // The name stamp. Pushed to the end of the time row so the eye can run down
   // the right-hand edge of the log and read who did what without re-reading
   // every sentence — the name in white, where they were posted beside it.
@@ -13158,13 +13412,13 @@ const styles = {
     alignItems: "center",
     gap: 5,
     maxWidth: "62%",
-    background: "#0B0F14",
-    border: "1px solid #1C2530",
+    background: "#0A1017",
+    border: "1px solid #1F2E3C",
     borderRadius: 999,
     padding: "1px 7px",
   },
   logStampName: {
-    color: "#C3CBD3",
+    color: "#C9D8E4",
     fontSize: 12,
     fontWeight: 700,
     letterSpacing: 0.2,
@@ -13173,24 +13427,24 @@ const styles = {
     textOverflow: "ellipsis",
   },
   logStampPost: {
-    color: "#5B6672",
+    color: "#5E7488",
     fontSize: 11,
     letterSpacing: 0.5,
     whiteSpace: "nowrap",
-    borderLeft: "1px solid #1C2530",
+    borderLeft: "1px solid #1F2E3C",
     paddingLeft: 5,
   },
-  logMessage: { color: "#C3CBD3", marginTop: 2, lineHeight: 1.4 },
+  logMessage: { color: "#C9D8E4", marginTop: 2, lineHeight: 1.4 },
 
   uhuPanel: {
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 8,
     display: "flex",
     flexDirection: "column",
   },
   uhuFocus: { padding: "16px 14px" },
-  uhuFocusUnit: { fontFamily: display, fontSize: 15, fontWeight: 700, letterSpacing: 1, color: "#8B98A5" },
+  uhuFocusUnit: { fontFamily: display, fontSize: 15, fontWeight: 700, letterSpacing: 1, color: "#93A7B8" },
   uhuFocusTotal: {
     fontSize: 34,
     fontWeight: 600,
@@ -13199,26 +13453,26 @@ const styles = {
     margin: "6px 0 2px",
     fontVariantNumeric: "tabular-nums",
   },
-  uhuFocusCaption: { fontSize: 13.5, color: "#5B6672" },
+  uhuFocusCaption: { fontSize: 13.5, color: "#5E7488" },
   uhuLiveBox: {
     marginTop: 14,
     padding: "10px 12px",
     background: "rgba(239,68,68,0.08)",
     border: "1px solid rgba(239,68,68,0.35)",
-    borderRadius: 6,
+    borderRadius: 8,
   },
   uhuLiveRow: { display: "flex", alignItems: "center", gap: 8 },
-  uhuLiveLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#EF4444" },
+  uhuLiveLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#FF4D5E" },
   uhuLiveTime: { marginLeft: "auto", fontSize: 16, color: "#F5F7FA", fontVariantNumeric: "tabular-nums" },
-  uhuLiveNature: { fontSize: 13.5, color: "#C3CBD3", marginTop: 5 },
+  uhuLiveNature: { fontSize: 13.5, color: "#C9D8E4", marginTop: 5 },
   uhuIdleBox: {
     marginTop: 14,
     padding: "10px 12px",
-    background: "#0B0F14",
-    border: "1px solid #1C2530",
-    borderRadius: 6,
+    background: "#0A1017",
+    border: "1px solid #1F2E3C",
+    borderRadius: 8,
     fontSize: 13.5,
-    color: "#5B6672",
+    color: "#5E7488",
   },
   uhuList: { padding: "4px 0", maxHeight: 320, overflowY: "auto" },
   uhuRow: {
@@ -13230,31 +13484,31 @@ const styles = {
     borderBottom: "1px solid #141B23",
   },
   uhuRowMain: { display: "flex", alignItems: "center", gap: 7, minWidth: 0 },
-  uhuRowName: { fontSize: 14, fontWeight: 600, color: "#E6EDF3" },
+  uhuRowName: { fontSize: 14, fontWeight: 600, color: "#E9F1F7" },
   uhuRowRight: { textAlign: "right" },
   uhuRowTime: { display: "block", fontSize: 15, color: "#F5F7FA", fontVariantNumeric: "tabular-nums" },
-  uhuRowCalls: { display: "block", fontSize: 12, color: "#5B6672", marginTop: 1 },
+  uhuRowCalls: { display: "block", fontSize: 12, color: "#5E7488", marginTop: 1 },
   uhuFooter: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
     padding: "10px 12px",
-    borderTop: "1px solid #1C2530",
+    borderTop: "1px solid #1F2E3C",
     fontSize: 12.5,
     letterSpacing: 1,
     fontWeight: 700,
-    color: "#8B98A5",
+    color: "#93A7B8",
   },
-  uhuFooterTime: { color: "#E6EDF3", letterSpacing: 0.5, fontVariantNumeric: "tabular-nums" },
+  uhuFooterTime: { color: "#E9F1F7", letterSpacing: 0.5, fontVariantNumeric: "tabular-nums" },
 
   toast: {
     position: "fixed",
     top: "calc(16px + env(safe-area-inset-top))",
     right: 16,
-    background: "#F59E0B",
-    color: "#0B0F14",
-    borderRadius: 8,
+    background: "#FFB020",
+    color: "#0A1017",
+    borderRadius: 10,
     padding: "10px 12px",
     display: "flex",
     gap: 10,
@@ -13266,24 +13520,24 @@ const styles = {
   },
   toastTitle: { fontWeight: 800, fontSize: 13.5, letterSpacing: 0.5 },
   toastBody: { fontSize: 14, marginTop: 2 },
-  toastClose: { background: "none", border: "none", color: "#0B0F14", fontSize: 18, cursor: "pointer", lineHeight: 1 },
+  toastClose: { background: "none", border: "none", color: "#0A1017", fontSize: 18, cursor: "pointer", lineHeight: 1 },
 
   // login
   loginWrap: {
     minHeight: "100vh",
-    background: "#0B0F14",
+    background: "#0A1017",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     fontFamily: mono,
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     padding: 20,
   },
   loginCard: {
     width: "100%",
     maxWidth: 380,
-    background: "#0E141B",
-    border: "1px solid #1C2530",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
     borderRadius: 12,
     padding: 24,
   },
@@ -13303,13 +13557,13 @@ const styles = {
     boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
   },
   loginHeaderText: { fontFamily: display, fontWeight: 700, fontSize: 18, letterSpacing: 0.5 },
-  loginSub: { color: "#8B98A5", fontSize: 14, marginTop: 6 },
+  loginSub: { color: "#93A7B8", fontSize: 14, marginTop: 6 },
   roleBtn: {
-    background: "#0B0F14",
-    border: "1px solid #2A3441",
-    borderRadius: 8,
+    background: "#0A1017",
+    border: "1px solid #26384A",
+    borderRadius: 10,
     padding: "12px 14px",
-    color: "#E6EDF3",
+    color: "#E9F1F7",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -13317,30 +13571,30 @@ const styles = {
     fontFamily: mono,
   },
   roleBtnTitle: { fontWeight: 700, fontSize: 15.5 },
-  roleBtnSub: { fontSize: 13, color: "#8B98A5", marginTop: 2 },
+  roleBtnSub: { fontSize: 13, color: "#93A7B8", marginTop: 2 },
   loginActions: { display: "flex", gap: 8, marginTop: 16 },
-  loginFootnote: { fontSize: 12.5, color: "#5B6672", marginTop: 20, lineHeight: 1.5 },
-  loginError: { fontSize: 13.5, color: "#F87171", marginTop: 8 },
+  loginFootnote: { fontSize: 12.5, color: "#5E7488", marginTop: 20, lineHeight: 1.5 },
+  loginError: { fontSize: 13.5, color: "#FF7A86", marginTop: 8 },
   accountList: { display: "flex", flexDirection: "column", gap: 6, marginTop: 14 },
   accountRow: {
     display: "flex",
     alignItems: "center",
     gap: 10,
     flexWrap: "wrap",
-    background: "#0B0F14",
-    border: "1px solid #1C2530",
-    borderRadius: 6,
+    background: "#0A1017",
+    border: "1px solid #1F2E3C",
+    borderRadius: 8,
     padding: "7px 10px",
     fontSize: 13.5,
   },
-  accountRowName: { fontWeight: 700, color: "#E6EDF3" },
-  accountRowMeta: { color: "#8B98A5" },
-  accountActiveTag: { marginLeft: "auto", color: "#22C55E", fontSize: 12.5, fontWeight: 700 },
-  accountPendingTag: { marginLeft: "auto", color: "#F59E0B", fontSize: 12.5, fontWeight: 700 },
+  accountRowName: { fontWeight: 700, color: "#E9F1F7" },
+  accountRowMeta: { color: "#93A7B8" },
+  accountActiveTag: { marginLeft: "auto", color: "#3DDC97", fontSize: 12.5, fontWeight: 700 },
+  accountPendingTag: { marginLeft: "auto", color: "#FFB020", fontSize: 12.5, fontWeight: 700 },
   removeBtn: {
     background: "transparent",
     border: "1px solid #3A2429",
-    color: "#F87171",
+    color: "#FF7A86",
     borderRadius: 5,
     padding: "3px 7px",
     fontFamily: mono,
@@ -13351,22 +13605,22 @@ const styles = {
   },
 
   primaryBtn: {
-    background: "#3B82F6",
+    background: "#35C4E8",
     border: "none",
-    color: "#0B0F14",
+    color: "#0A1017",
     fontWeight: 700,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
     fontFamily: mono,
     fontSize: 15,
   },
   primaryBtnSm: {
-    background: "#3B82F6",
+    background: "#35C4E8",
     border: "none",
-    color: "#0B0F14",
+    color: "#0A1017",
     fontWeight: 700,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -13380,10 +13634,10 @@ const styles = {
   // crew are not hunting for it once the name is on.
   primaryBtnSmBlocked: {
     background: "#1B2430",
-    border: "1px solid #2A3441",
+    border: "1px solid #26384A",
     color: "#5E6B7A",
     fontWeight: 700,
-    borderRadius: 6,
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "not-allowed",
     fontFamily: mono,
@@ -13394,9 +13648,9 @@ const styles = {
   },
   ghostBtn: {
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#C3CBD3",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#C9D8E4",
+    borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
     fontFamily: mono,
@@ -13404,9 +13658,9 @@ const styles = {
   },
   ghostBtnSm: {
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#C3CBD3",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#C9D8E4",
+    borderRadius: 8,
     padding: "6px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -13418,9 +13672,9 @@ const styles = {
   tabBtn: {
     flex: 1,
     background: "transparent",
-    border: "1px solid #2A3441",
-    color: "#8B98A5",
-    borderRadius: 6,
+    border: "1px solid #26384A",
+    color: "#93A7B8",
+    borderRadius: 8,
     padding: "7px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -13428,10 +13682,10 @@ const styles = {
   },
   tabBtnActive: {
     flex: 1,
-    background: "#1C2530",
-    border: "1px solid #3B82F6",
-    color: "#E6EDF3",
-    borderRadius: 6,
+    background: "#1F2E3C",
+    border: "1px solid #35C4E8",
+    color: "#E9F1F7",
+    borderRadius: 8,
     padding: "7px 10px",
     cursor: "pointer",
     fontFamily: mono,
