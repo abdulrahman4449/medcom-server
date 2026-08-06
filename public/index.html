@@ -192,7 +192,11 @@ function changedRecords(next, prev) {
 
 function queueRecords(key, records) {
   if (!records || !Object.keys(records).length) return;
-  pendingWrites[key] = { ...(pendingWrites[key] || {}), ...records };
+  const stamped = {};
+  Object.keys(records).forEach((id) => {
+    stamped[id] = { ...records[id], __queuedAt: Date.now() };
+  });
+  pendingWrites[key] = { ...(pendingWrites[key] || {}), ...stamped };
   savePendingWrites();
 }
 
@@ -203,6 +207,49 @@ function clearQueued(key, ids) {
   savePendingWrites();
 }
 
+// Drop anything we are holding that the server already has, identically.
+//
+// Without this the queue had no way of noticing a record had got through. A
+// write that failed once — or that succeeded on a retry the caller never heard
+// about — left records held forever, and the banner sat there announcing "316
+// saved changes" on a board where nothing had changed since yesterday. A held
+// record only means something while it differs from the server; the moment the
+// two agree it is finished, and saying otherwise is just noise.
+//
+// Age is the second net: nothing is worth holding for more than a day. If it
+// has not gone up by then it never will, and it is certainly no longer the
+// newest version of anything.
+const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function reconcilePending(key, serverList) {
+  const held = pendingWrites[key];
+  if (!held) return;
+  const onServer = new Map(
+    (serverList || []).filter((x) => x && x.id).map((x) => [x.id, JSON.stringify(x)])
+  );
+  let dropped = 0;
+  Object.keys(held).forEach((id) => {
+    const rec = held[id];
+    const stale = rec && rec.__queuedAt && Date.now() - rec.__queuedAt > PENDING_MAX_AGE_MS;
+    const settled = onServer.get(id) === JSON.stringify(stripQueueMeta(rec));
+    if (settled || stale) {
+      delete held[id];
+      dropped += 1;
+    }
+  });
+  if (!Object.keys(held).length) delete pendingWrites[key];
+  if (dropped) {
+    savePendingWrites();
+    notifyPendingChanged();
+  }
+}
+
+function stripQueueMeta(rec) {
+  if (!rec || typeof rec !== "object") return rec;
+  const { __queuedAt, ...clean } = rec;
+  return clean;
+}
+
 // The server's copy, with anything this device is still holding laid over the
 // top of it. A record the device changed wins, because the device is the only
 // place that change exists yet.
@@ -210,7 +257,9 @@ function mergePending(key, serverList) {
   const held = pendingWrites[key];
   if (!held || !Object.keys(held).length) return serverList || [];
   const byId = new Map((serverList || []).filter((x) => x && x.id).map((x) => [x.id, x]));
-  Object.values(held).forEach((rec) => byId.set(rec.id, rec));
+  // The queue marker is bookkeeping for this device, not part of the record —
+  // it must never reach the board or the spreadsheet.
+  Object.values(held).forEach((rec) => byId.set(rec.id, stripQueueMeta(rec)));
   const merged = Array.from(byId.values());
   // The log is a newest-first feed with a cap; everything else keeps the order
   // the server gave it.
@@ -228,7 +277,12 @@ async function readKeyRaw(key) {
     const { value } = await res.json();
     setConnectionOk(true);
     if (value == null) return null;
-    return Array.isArray(value) ? mergePending(key, value) : value;
+    if (Array.isArray(value)) {
+      // Anything the server already has, identically, is no longer outstanding.
+      reconcilePending(key, value);
+      return mergePending(key, value);
+    }
+    return value;
   } catch (e) {
     console.error("readKey failed:", key, e);
     setConnectionOk(false);
@@ -2824,7 +2878,24 @@ function callBusyMs(req, now) {
 // A call a team was sent to as the second ambulance counts too — the truck was
 // out and the crew were working, which is the whole point of the measure — but
 // only for the stretch they were actually on it, not the call's full length.
+// UHU is a measure of this shift, not of all time.
+//
+// It used to count every call on the board, so a fleet total read "18 calls"
+// at the start of a shift that had run one — the rest were the shift before's.
+// It also meant a crew who signed out and came back on overtime carried their
+// old hours into their new tour, when for the purposes of the next shift they
+// are a fresh crew starting at zero.
+//
+// So: only calls raised inside the current 12-hour window count, and the clock
+// starts again at every changeover.
+function uhuWindowStart(now) {
+  return shiftWindowAt(now).start;
+}
+
 function computeUhu(units, requests, now) {
+  const from = uhuWindowStart(now);
+  const inShift = (requests || []).filter((r) => r && r.createdAt >= from);
+  requests = inShift;
   return units.map((unit) => {
     const mine = requests.filter((r) => r.assignedUnitId === unit.id);
     const assisted = requests.filter(
@@ -10283,13 +10354,20 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                     Record {closeoutMissingText(blockers)} above to go back in service
                   </span>
                 )}
+                {/* The one thing this crew is meant to do next. It was the same
+                    size as everything else around it, which is the wrong shape
+                    for a control pressed once per stage, with a glove on, in a
+                    moving vehicle — it should be the obvious target on the
+                    screen and hard to miss. */}
                 <button
-                  style={stepBlocked ? styles.primaryBtnSmBlocked : styles.primaryBtnSm}
+                  style={stepBlocked ? styles.stepBtnBlocked : styles.stepBtn}
                   onClick={() => recordStep(nextStep)}
                   disabled={stepBlocked}
                   title={stepBlocked ? `This call needs ${closeoutMissingText(blockers)} before it can close` : ""}
                 >
+                  <span style={styles.stepBtnCue}>{stepBlocked ? "BLOCKED" : "NEXT"}</span>
                   {nextStep.buttonLabel}
+                  {!stepBlocked && <ChevronRight size={18} style={{ marginLeft: "auto" }} />}
                 </button>
               </React.Fragment>
             )}
@@ -11342,6 +11420,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
       <div style={styles.logHeader}>
         <Clock size={13} color="#93A7B8" />
         <span>UHU — TIME ON CALL</span>
+        <span style={styles.uhuScope}>this shift</span>
       </div>
 
       {focus ? (
@@ -13125,6 +13204,58 @@ const styles = {
     border: "1px solid rgba(255,176,32,.35)",
     borderRadius: 8,
     padding: "6px 9px",
+  },
+
+  stepBtn: {
+    width: "100%",
+    minHeight: 62,
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 10,
+    padding: "16px 16px",
+    background: "linear-gradient(180deg, #1B3B4B, #142B38)",
+    border: "1px solid rgba(53,196,232,.55)",
+    borderRadius: 12,
+    color: "#E9F1F7",
+    fontSize: 17,
+    fontWeight: 800,
+    letterSpacing: -0.2,
+    cursor: "pointer",
+    boxShadow: "0 10px 26px rgba(0,0,0,.35)",
+    textAlign: "left",
+  },
+  stepBtnBlocked: {
+    width: "100%",
+    minHeight: 62,
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 10,
+    padding: "16px 16px",
+    background: "#16232F",
+    border: "1px dashed #33475A",
+    borderRadius: 12,
+    color: "#5E7488",
+    fontSize: 17,
+    fontWeight: 700,
+    cursor: "not-allowed",
+    textAlign: "left",
+  },
+  stepBtnCue: {
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: 1.2,
+    color: "#6FD6F0",
+    border: "1px solid rgba(111,214,240,.45)",
+    borderRadius: 5,
+    padding: "2px 6px",
+    flex: "none",
+  },
+
+  uhuScope: {
+    marginLeft: "auto", fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+    color: "#5E7488", textTransform: "uppercase",
   },
 
   uhuStationHead: {
