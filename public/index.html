@@ -2414,7 +2414,9 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
     "TOTAL TIME", "DISP -ENRO", "ON SCENE", "ENRO -ARRV.", "OFF LOAD -SERV",
     "COMMENTS & REQUIREMENT", "TYPE OF SERVICE", "CAT. OF CALL", "KILO METER",
     "ADDED SERVICE", "PCR AUTHOR", "PRIORITY", "REQUIREMENTS", "SHIFT", "SHIFT DATE",
-    "MEDIC CREW (NAME STAMPS)", "OUTCOME", "PT. REFUSED TIME", "ASSISTING TEAM(S)",
+    "MEDIC CREW (NAME STAMPS)", "OUTCOME", "PT. REFUSED TIME",
+    "REFUSED BY (NAME)", "REFUSED BY (NATIONAL ID)", "REFUSED BY (RELATION)",
+    "ASSISTING TEAM(S)",
     "CALL DATE", "STATUS", "ASSIST REQ. TIME", "ASSIST REQ. BY", "ASSIST STATUS",
     "BOOKED BY", "BOOKED AT", "READY CALL TAKEN", "BOOKING NOTES",
     "CLOSED BY", "CLOSE REASON", "STATION",
@@ -2474,6 +2476,9 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
         medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
         callOutcomeLabel(r),
         clockStr(t[REFUSAL_TIME_KEY]),
+        r.refusal ? r.refusal.name : "",
+        r.refusal ? r.refusal.nationalId : "",
+        r.refusal ? r.refusal.relation : "",
         assistTeamNames(r, units),
         gregDateStr(r.createdAt),
         r.status ? REQ_STATUS[r.status].label : "",
@@ -4624,10 +4629,14 @@ function CallTimes({ times }) {
 function NoTransportTag({ req, style }) {
   if (!isNoTransport(req)) return null;
   const at = req.times ? req.times[REFUSAL_TIME_KEY] : null;
+  const signed = req.refusal || null;
   return (
     <span
       style={{ ...styles.noTransportTag, ...style }}
-      title={`Patient refused the transfer${at ? ` at ${clockStr(at)}` : ""}`}
+      title={
+        `Patient refused the transfer${at ? ` at ${clockStr(at)}` : ""}` +
+        (signed ? ` — signed by ${signed.name} (${signed.relation}, National ID ${signed.nationalId})` : "")
+      }
     >
       <Ban size={11} /> {NO_TRANSPORT.label}
     </span>
@@ -5099,6 +5108,65 @@ function AssistanceTasks({ user, units, requests, saveUnits, saveRequests, addLo
 // what happens on save, which the caller decides: the desk's changes land on
 // the call, a crew's are proposed and wait. `mode` only changes the wording so
 // nobody is in any doubt which of the two they are doing.
+// Signing for a refusal. All three answers are required: a refusal recorded
+// against nobody is not a record, and "the family" is not a name. The call is
+// not stamped until this is filled in, so a crew cannot half-record it.
+function RefusalForm({ onSubmit, onCancel }) {
+  const [name, setName] = React.useState("");
+  const [nationalId, setNationalId] = React.useState("");
+  const [relation, setRelation] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  const ready = name.trim() && nationalId.trim() && relation.trim();
+
+  async function submit() {
+    if (!ready || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit({ name, nationalId, relation });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={styles.refusalPanel}>
+      <div style={styles.refusalPanelHead}>
+        <Ban size={12} /> WHO IS REFUSING THE TRANSFER?
+      </div>
+      <div style={styles.refusalPanelNote}>
+        Taken at the bedside. The call stays yours and you still complete the remaining times as
+        normal — it will be stamped AMBULANCE RESPONDED — NO TRANSPORT once this is signed.
+      </div>
+
+      <div style={{ marginTop: 8 }}>
+        <label style={styles.label}>Full name</label>
+        <input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Name of the person refusing" />
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <label style={styles.label}>National ID</label>
+        <input style={styles.input} value={nationalId} onChange={(e) => setNationalId(e.target.value)} placeholder="National ID number" />
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <label style={styles.label}>Relationship to the patient</label>
+        <input style={styles.input} value={relation} onChange={(e) => setRelation(e.target.value)} placeholder="e.g. the patient, son, daughter, spouse, guardian" />
+      </div>
+
+      <div style={styles.refusalPanelActions}>
+        <span style={styles.editPanelCount}>
+          {ready ? "Ready to record." : "All three are needed before this can be recorded."}
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.ghostBtnSm} onClick={onCancel}>Cancel</button>
+          <button style={styles.refusalConfirmBtn} disabled={!ready || busy} onClick={submit}>
+            <Ban size={12} /> Record refusal
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CallEditForm({ req, mode, onSubmit, onCancel }) {
   const [vals, setVals] = React.useState(() => {
     const o = {};
@@ -5148,7 +5216,7 @@ function CallEditForm({ req, mode, onSubmit, onCancel }) {
             style={styles.input}
             value={vals[f.key]}
             onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}
-            placeholder={f.key === "mrn" ? "Leave blank if still not known" : ""}
+            placeholder={f.key === "mrn" ? "Enter the National ID number if no MRN is available" : ""}
           />
         </div>
       ))}
@@ -8620,6 +8688,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [escOpen, setEscOpen] = useState(false);
   // Whether the "these details are wrong" form is open on the live call.
   const [editOpen, setEditOpen] = useState(false);
+  // Whether the refusal is being signed for.
+  const [refusalOpen, setRefusalOpen] = useState(false);
   const alarmIntervalRef = useRef(null);
   const alarmingRequestId = useRef(null);
   const notifiedRequestId = useRef(null);
@@ -8908,15 +8978,18 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // the timeline carries on exactly as it would have — this only records the
   // refusal and its time, and stamps the call as a response with no transport
   // from here on.
-  async function recordRefusal() {
+  // A refusal is the one thing a crew records that ends with no patient moved,
+  // so it is the one thing that has to be signed for. The name, National ID and
+  // relationship of whoever refused are taken at the bedside and stored on the
+  // call — "the patient refused" with nobody's name against it is not a record
+  // of anything.
+  async function recordRefusal({ name, nationalId, relation }) {
     if (!myRequest || !myUnit || assisting) return;
     if (isNoTransport(myRequest)) return;
-    const ok = window.confirm(
-      `Record that the patient refused the transfer on "${myRequest.nature}"?\n\n` +
-        "The call stays yours and you still complete the remaining times as normal. " +
-        "It will be stamped AMBULANCE RESPONDED — NO TRANSPORT."
-    );
-    if (!ok) return;
+    const who = (name || "").trim();
+    const nid = (nationalId || "").trim();
+    const rel = (relation || "").trim();
+    if (!who || !nid || !rel) return;
     const now = Date.now();
     const freshRequests = await readKey("ems:requests", requests);
     const nextRequests = freshRequests.map((r) =>
@@ -8926,13 +8999,24 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             noTransport: true,
             refusedBy: user && user.name ? user.name : myUnit.name,
             refusedByUnitId: myUnit.id,
+            // Who actually refused, as given at the bedside.
+            refusal: {
+              name: who,
+              nationalId: nid,
+              relation: rel,
+              takenBy: user && user.name ? user.name : myUnit.name,
+              takenAt: now,
+              unitName: myUnit.name,
+            },
             times: { ...r.times, [REFUSAL_TIME_KEY]: now },
           }
         : r
     );
     await saveRequests(nextRequests);
+    setRefusalOpen(false);
     await addLog(
-      `${myUnit.name} — patient refused transfer at ${clockStr(now)} (${myRequest.nature}) — ${NO_TRANSPORT.label}`,
+      `${myUnit.name} — patient refused transfer at ${clockStr(now)} (${myRequest.nature}) — ` +
+        `signed by ${who} (${rel}, National ID ${nid}) — ${NO_TRANSPORT.label}`,
       "status"
     );
   }
@@ -9355,7 +9439,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
               </div>
               <div style={styles.exceptionActions}>
                 {showRefusalBtn && (
-                  <button style={styles.refusalBtn} onClick={recordRefusal}>
+                  <button style={styles.refusalBtn} onClick={() => setRefusalOpen(true)}>
                     <Ban size={13} /> Patient refused transfer
                   </button>
                 )}
@@ -9370,6 +9454,12 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                   </button>
                 )}
               </div>
+              {refusalOpen && (
+                <RefusalForm
+                  onCancel={() => setRefusalOpen(false)}
+                  onSubmit={recordRefusal}
+                />
+              )}
             </div>
           )}
           {!alarmActive && escOpen && (
@@ -11891,6 +11981,45 @@ const styles = {
     resize: "vertical",
   },
   // --- Call corrections -----------------------------------------------------
+  refusalPanel: {
+    marginTop: 10,
+    background: "#1A0E0E",
+    border: "1px solid #DC2626",
+    borderRadius: 8,
+    padding: 12,
+  },
+  refusalPanelHead: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+    color: "#F87171",
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+  },
+  refusalPanelNote: { fontSize: 11.5, color: "#8B98A5", lineHeight: 1.5, marginTop: 6 },
+  refusalPanelActions: {
+    marginTop: 12,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  refusalConfirmBtn: {
+    background: "#DC2626",
+    border: "none",
+    color: "#fff",
+    borderRadius: 6,
+    padding: "7px 12px",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+  },
+
   stationBoardLabel: {
     fontSize: 10,
     fontWeight: 800,
