@@ -29,7 +29,14 @@ db.exec(`
 `);
 
 const app = express();
-app.use(express.json());
+// The board is sent whole on every write, and a busy day's log alone runs past
+// 100 KB — which is express's default body limit. Past that the server answered
+// 413 and the app, quite correctly, treated the rejection as being offline: it
+// held the records on the device and laid them over the server's copy on read.
+// The screen therefore looked right while nothing was actually being saved.
+// 25 MB is far more than this board will ever be and leaves no room for that
+// failure to come back as the department's history grows.
+app.use(express.json({ limit: "25mb" }));
 
 // CORS: the native iOS/Android app calls this from a different origin
 // (capacitor://localhost on iOS, http://localhost on Android) than the web
