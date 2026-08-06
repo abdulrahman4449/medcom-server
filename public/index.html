@@ -3838,6 +3838,34 @@ function App() {
     setReady(true);
   }, []);
 
+  // Finishing off submissions that were filed with a call still running: once
+  // the last call is closed and the station's crews are off, the submission
+  // completes itself with the final times and the overtime counted.
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
+    let alive = true;
+    const run = async () => {
+      try {
+        const n = await finaliseOpenSubmissions({
+          requests: await readKey("ems:requests", requests),
+          units: await readKey("ems:units", units),
+          log: await readKey("ems:log", log),
+          boardId: clientIdRef.current,
+        });
+        if (n && alive) setSubmissions((await readKey(SUBMISSION_KEY, [])) || []);
+      } catch (e) {
+        console.error("finalise pass failed:", e);
+      }
+    };
+    run();
+    const t = setInterval(run, 30000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [ready, user && user.role]);
+
   useEffect(() => {
     loadAll();
     const poll = setInterval(loadAll, POLL_MS);
@@ -3905,6 +3933,106 @@ function App() {
     setScheduled(next);
     await writeList("ems:scheduled", next, prev);
   }
+
+  // The desk filing its own shift. This is the end-of-tour action: it takes the
+  // twelve hours that have just been worked, files them to the archive, and
+  // hands anything still running to the crew coming on.
+  const submitMyShiftLog = useCallback(async () => {
+    const u = userRef.current;
+    if (!u || u.role !== "dispatcher") return;
+    const station = u.station || DEFAULT_STATION;
+    // The window this desk actually signed on for, not whatever the wall clock
+    // says now — a night desk pressing this at 07:20 is filing the night.
+    const windowStart = u.shiftStart || shiftWindowAt(Date.now()).start;
+    const windowEnd = u.shiftEnd || windowStart + SHIFT_MS;
+    const shiftKey = u.shift || scheduledShiftKey(windowStart);
+    const shiftName = SHIFTS[shiftKey] ? SHIFTS[shiftKey].label : shiftKey;
+
+    // The log is the record of a completed tour. Submitting halfway through
+    // would file a shift that is still happening and shut the rest of it out of
+    // the archive, so this waits until the twelve hours are actually up.
+    const now = Date.now();
+    if (now < windowEnd) {
+      window.alert(
+        `Not yet — this shift still has ${msDurationStr(windowEnd - now)} to run.\n\n` +
+          `The log can be submitted from ${clockStr(windowEnd)}, once the twelve hours are complete.`
+      );
+      return;
+    }
+
+    const freshRequests = await readKey("ems:requests", requests);
+    const mine = requestsForShift(freshRequests, station, windowStart, windowEnd);
+    const stillOpen = mine.filter((r) => r.status !== "completed");
+
+    const ok = window.confirm(
+      `Submit the ${shiftName} log for ${stationLabel(station)} — ${opDayLabel(opDayStart(windowStart))}?\n\n` +
+        `${mine.length} call${mine.length === 1 ? "" : "s"}.` +
+        (stillOpen.length
+          ? `\n\n${stillOpen.length} still running. ${stillOpen.length === 1 ? "It stays" : "They stay"} on this shift's log — ` +
+            `${stillOpen.length === 1 ? "it is" : "they are"} handed to the next shift to finish, and this log completes ` +
+            `itself once ${stillOpen.length === 1 ? "it is" : "they are"} closed and the crews have signed out, so the overtime is counted. ` +
+            `You do not need to come back.`
+          : "") +
+        `\n\nIt goes straight to the admin archive.`
+    );
+    if (!ok) return;
+
+    const res = await submitShiftLog({
+      requests: freshRequests,
+      units: await readKey("ems:units", units),
+      log: await readKey("ems:log", log),
+      scheduled: await readKey("ems:scheduled", scheduled),
+      station,
+      windowStart,
+      windowEnd,
+      shiftKey,
+      by: u.name || "",
+    });
+
+    if (res.reason === "already") {
+      window.alert(`The ${shiftName} log for ${stationLabel(station)} has already been submitted.`);
+      return;
+    }
+    if (!res.ok) {
+      window.alert("No signal — the submission is saved on this device and goes up automatically.");
+      return;
+    }
+
+    // Anything still running is handed over rather than just left on the board.
+    // The call keeps belonging to the shift that took it — that is what stops it
+    // being counted twice — but it is stamped so the next desk can see at a
+    // glance that it came from the shift before and is not theirs to file.
+    if (stillOpen.length) {
+      const handover = {
+        fromShift: shiftKey,
+        fromShiftLabel: shiftName,
+        fromDay: opDayLabel(opDayStart(windowStart)),
+        by: u.name || "Dispatch",
+        at: Date.now(),
+      };
+      const openIds = new Set(stillOpen.map((r) => r.id));
+      const fresh2 = await readKey("ems:requests", freshRequests);
+      await saveRequests(fresh2.map((r) => (openIds.has(r.id) ? { ...r, handover } : r)));
+      await addLog(
+        `${stationLabel(station)} — ${stillOpen.length} call${stillOpen.length === 1 ? "" : "s"} handed to the next shift by ` +
+          `${u.name || "Dispatch"}: ${stillOpen.map((r) => r.nature).join("; ")}`,
+        "status"
+      );
+    }
+
+    setSubmissions((await readKey(SUBMISSION_KEY, [])) || []);
+    await addLog(
+      `${stationLabel(station)} — ${shiftName} log submitted by ${u.name || "Dispatch"} · ` +
+        `${res.entry.callCount} call${res.entry.callCount === 1 ? "" : "s"}` +
+        (res.openCount ? ` · ${res.openCount} still running, completes automatically` : ""),
+      "status"
+    );
+    window.alert(
+      res.openCount
+        ? "Submitted, and the open calls handed to the next shift.\n\nThis log completes on its own once they close and the crews sign out."
+        : "Submitted to the admin archive."
+    );
+  }, [requests, units, log, scheduled]);
 
   // Turns bookings whose time has come into ordinary calls.
   //
@@ -9153,6 +9281,17 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   </span>
                 )}
               </div>
+              {/* Came in from the shift before. The next desk needs to know at a
+                  glance that this one is not theirs to file — it stays on the
+                  log of the shift that took it. */}
+              {req.handover && (
+                <div style={styles.handoverTag}>
+                  <ArrowRight size={11} style={{ verticalAlign: -1, marginRight: 5 }} />
+                  HANDED OVER from the {req.handover.fromShiftLabel} ({req.handover.fromDay})
+                  {req.handover.by ? ` by ${req.handover.by}` : ""} · stays on that shift's log
+                </div>
+              )}
+
               {/* The MRN line is worth saying out loud when it is missing. A call
                   can go out without one and often has to — this is the reminder
                   that it still needs filling in, and the way in to do it. */}
@@ -11184,7 +11323,19 @@ function UhuPanel({ units, requests, focusUnitId }) {
   const focus = focusUnitId ? rows.find((r) => r.unit.id === focusUnitId) : null;
   const fleetMs = rows.reduce((sum, r) => sum + r.totalMs, 0);
   const fleetCalls = rows.reduce((sum, r) => sum + r.calls, 0);
-  const ranked = rows.slice().sort((a, b) => b.totalMs - a.totalMs);
+
+  // Grouped by station and then ordered by unit, not ranked by time. Both
+  // stations run a MEDIC 1, and a list sorted by hours put them in the order
+  // "MEDIC 1, MEDIC 2, MEDIC 1" with nothing to say the last one was CCC's.
+  // Reading a roster is easier when the trucks are in the order they are named.
+  const groups = STATIONS.map((st) => ({
+    station: st,
+    rows: rows
+      .filter((r) => stationOf(r.unit) === st.key)
+      .sort((a, b) =>
+        a.unit.name.localeCompare(b.unit.name, undefined, { numeric: true, sensitivity: "base" })
+      ),
+  })).filter((g) => g.rows.length);
 
   return (
     <div style={styles.uhuPanel}>
@@ -11216,8 +11367,13 @@ function UhuPanel({ units, requests, focusUnitId }) {
       ) : (
         <React.Fragment>
           <div style={styles.uhuList}>
-            {ranked.length === 0 && <div style={styles.logEmpty}>No teams on the board yet.</div>}
-            {ranked.map((row) => (
+            {groups.length === 0 && <div style={styles.logEmpty}>No teams on the board yet.</div>}
+            {groups.map((g) => (
+              <React.Fragment key={g.station.key}>
+                {/* Only worth a heading when both stations are in the list. A
+                    desk sees its own station and needs no heading at all. */}
+                {groups.length > 1 && <div style={styles.uhuStationHead}>{g.station.label}</div>}
+                {g.rows.map((row) => (
               <div key={row.unit.id} style={styles.uhuRow}>
                 <div style={styles.uhuRowMain}>
                   <span style={styles.uhuRowName}>{row.unit.name}</span>
@@ -11233,6 +11389,8 @@ function UhuPanel({ units, requests, focusUnitId }) {
                   </span>
                 </div>
               </div>
+                ))}
+              </React.Fragment>
             ))}
           </div>
           <div style={styles.uhuFooter}>
@@ -12956,6 +13114,23 @@ const styles = {
   },
   foldCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: "#5E7488", letterSpacing: 0.3 },
   foldBody: { paddingTop: 10 },
+
+  handoverTag: {
+    marginTop: 8,
+    fontSize: 11.5,
+    fontWeight: 700,
+    letterSpacing: 0.3,
+    color: "#FFB020",
+    background: "rgba(255,176,32,.08)",
+    border: "1px solid rgba(255,176,32,.35)",
+    borderRadius: 8,
+    padding: "6px 9px",
+  },
+
+  uhuStationHead: {
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.8, color: "#6FD6F0",
+    textTransform: "uppercase", padding: "10px 0 4px",
+  },
 
   archTabs: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
   archTab: {
