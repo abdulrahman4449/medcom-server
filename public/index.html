@@ -322,6 +322,9 @@ const connectionListeners = new Set();
 // signal, full stop — but going offline needs a few failures in a row before we
 // say so out loud.
 const OFFLINE_STRIKES = 3;
+// Set when the server answers and refuses, as opposed to not answering at all.
+// The two look identical from behind a queue, and they need different words.
+let lastWriteError = null;
 let connectionStrikes = 0;
 
 function setConnectionOk(ok) {
@@ -361,14 +364,36 @@ async function writeKey(key, value) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value }),
       });
-      if (!res.ok) throw new Error(`writeKey ${key} failed: ${res.status}`);
+      if (!res.ok) {
+        // A rejection is not a lost signal, and must not be dressed up as one.
+        // 413 in particular means the board outgrew the server's body limit:
+        // the app would hold the records, merge them over the server's copy on
+        // read, and show a screen that looked saved while nothing was. Say so
+        // instead of quietly queueing forever.
+        const err = new Error(`writeKey ${key} failed: ${res.status}`);
+        err.httpStatus = res.status;
+        throw err;
+      }
       setConnectionOk(true);
+      // A write that lands clears any standing refusal.
+      if (lastWriteError) {
+        lastWriteError = null;
+        notifyPendingChanged();
+      }
       return true;
     } catch (e) {
       console.error("writeKey failed:", key, e);
+      // The server answered, and refused. Retrying an identical body will get
+      // the identical refusal, so there is nothing to wait for.
+      if (e && e.httpStatus) {
+        lastWriteError = `The server refused to save (${e.httpStatus}). Nothing has been lost — it is held on this device — but it is not reaching the server.`;
+        notifyPendingChanged();
+        return false;
+      }
       if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
     }
   }
+  lastWriteError = null;
   setConnectionOk(false);
   return false;
 }
@@ -3626,6 +3651,19 @@ function ConnectionBanner() {
 
   // Offline is the loud one. "Back online, still catching up" is quieter: the
   // crew can carry on, and it clears itself.
+  // The server is reachable but refusing to store what it is sent. Nothing is
+  // lost, but it is not being saved either, and pretending it is offline hides
+  // a problem that will not fix itself.
+  if (lastWriteError) {
+    return (
+      <div style={styles.offlineBanner}>
+        <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+        {lastWriteError}
+        {held > 0 ? ` ${held} change${held === 1 ? "" : "s"} waiting.` : ""}
+      </div>
+    );
+  }
+
   if (!connectionOk) {
     return (
       <div style={styles.offlineBanner}>
