@@ -128,14 +128,110 @@ const API_BASE = IS_NATIVE_SHELL ? LIVE_SITE : "";
 // resurrect every user an admin had removed.
 const READ_FAILED = Symbol("READ_FAILED");
 
+// ---------- working without a signal ----------
+//
+// An ambulance loses its connection constantly — basements, lifts, concrete
+// stairwells, which is exactly where patients are. Before this existed a crew
+// could stamp a whole call underground, watch every time land on screen, and
+// lose all of it the moment the tablet found a signal again: the write had
+// failed silently and the next poll overwrote the screen with the server's
+// older copy. Silent loss is worse than a visible error, because nobody knows
+// to re-enter anything.
+//
+// So: a failed write is not discarded. The records it was trying to save are
+// kept here, on the device, and replayed onto whatever the server has as soon
+// as it can be reached. They are kept per record rather than as a whole board,
+// so replaying a crew's timestamps cannot wipe out what the desk did while
+// they were out of contact.
+const PENDING_KEY = "ems:pendingWrites";
+
+// { "ems:requests": { "<record id>": {...record} }, ... }
+let pendingWrites = {};
+
+function loadPendingWrites() {
+  try {
+    const raw = window.localStorage.getItem(PENDING_KEY);
+    pendingWrites = raw ? JSON.parse(raw) || {} : {};
+  } catch (e) {
+    pendingWrites = {};
+  }
+  return pendingWrites;
+}
+
+function savePendingWrites() {
+  try {
+    window.localStorage.setItem(PENDING_KEY, JSON.stringify(pendingWrites));
+  } catch (e) {
+    // A device with no storage left still works — it just can't survive a
+    // reload while offline. Nothing else should break because of this.
+  }
+}
+
+function pendingCountFor(key) {
+  return Object.keys(pendingWrites[key] || {}).length;
+}
+
+function totalPendingCount() {
+  return Object.keys(pendingWrites).reduce((n, k) => n + pendingCountFor(k), 0);
+}
+
+// Which records in `next` are new or changed compared with `prev`. Only these
+// are worth keeping: a crew stamping one call has changed one record, and
+// queueing the whole board would mean replaying their copy of every other
+// call too.
+function changedRecords(next, prev) {
+  const before = new Map((prev || []).filter((x) => x && x.id).map((x) => [x.id, JSON.stringify(x)]));
+  const out = {};
+  (next || []).forEach((rec) => {
+    if (!rec || !rec.id) return;
+    const now = JSON.stringify(rec);
+    if (before.get(rec.id) !== now) out[rec.id] = rec;
+  });
+  return out;
+}
+
+function queueRecords(key, records) {
+  if (!records || !Object.keys(records).length) return;
+  pendingWrites[key] = { ...(pendingWrites[key] || {}), ...records };
+  savePendingWrites();
+}
+
+function clearQueued(key, ids) {
+  if (!pendingWrites[key]) return;
+  ids.forEach((id) => delete pendingWrites[key][id]);
+  if (!Object.keys(pendingWrites[key]).length) delete pendingWrites[key];
+  savePendingWrites();
+}
+
+// The server's copy, with anything this device is still holding laid over the
+// top of it. A record the device changed wins, because the device is the only
+// place that change exists yet.
+function mergePending(key, serverList) {
+  const held = pendingWrites[key];
+  if (!held || !Object.keys(held).length) return serverList || [];
+  const byId = new Map((serverList || []).filter((x) => x && x.id).map((x) => [x.id, x]));
+  Object.values(held).forEach((rec) => byId.set(rec.id, rec));
+  const merged = Array.from(byId.values());
+  // The log is a newest-first feed with a cap; everything else keeps the order
+  // the server gave it.
+  if (key === "ems:log") {
+    merged.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    return merged.slice(0, LOG_CAP);
+  }
+  return merged;
+}
+
 async function readKeyRaw(key) {
   try {
     const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
     if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
     const { value } = await res.json();
-    return value == null ? null : value;
+    setConnectionOk(true);
+    if (value == null) return null;
+    return Array.isArray(value) ? mergePending(key, value) : value;
   } catch (e) {
     console.error("readKey failed:", key, e);
+    setConnectionOk(false);
     return READ_FAILED;
   }
 }
@@ -145,11 +241,42 @@ async function readKey(key, fallback) {
     const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
     if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
     const { value } = await res.json();
-    return value == null ? fallback : value;
+    setConnectionOk(true);
+    if (value == null) return fallback;
+    // Anything this device is still holding is laid over the server's copy
+    // before anyone reads it, so a mutation built on this read is built on
+    // what the crew can actually see — not on a version of the call that has
+    // forgotten the last three things they did.
+    return Array.isArray(value) ? mergePending(key, value) : value;
   } catch (e) {
     console.error("readKey failed:", key, e);
+    setConnectionOk(false);
     return fallback;
   }
+}
+
+// Whether the last attempt to reach the server worked. Read by the banner so a
+// crew can see the state they are actually in rather than guessing from a
+// screen that looks normal either way.
+let connectionOk = true;
+const connectionListeners = new Set();
+
+function setConnectionOk(ok) {
+  if (connectionOk === ok) return;
+  connectionOk = ok;
+  connectionListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch (e) {}
+  });
+}
+
+function notifyPendingChanged() {
+  connectionListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch (e) {}
+  });
 }
 
 // Writes are retried once. An assignment is two of these in a row (the call,
@@ -165,11 +292,69 @@ async function writeKey(key, value) {
         body: JSON.stringify({ key, value }),
       });
       if (!res.ok) throw new Error(`writeKey ${key} failed: ${res.status}`);
+      setConnectionOk(true);
       return true;
     } catch (e) {
       console.error("writeKey failed:", key, e);
       if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
     }
+  }
+  setConnectionOk(false);
+  return false;
+}
+
+// Push everything this device is still holding back up to the server. Called on
+// every poll: the moment there is signal again, the queue drains on its own
+// without anybody having to remember to do anything.
+//
+// The held records are laid over the server's current copy rather than replacing
+// it, so a call the desk changed while the crew was underground keeps that
+// change, and the crew's stamps go on top of it.
+async function pushPendingWrites() {
+  if (!totalPendingCount()) return;
+  for (const key of Object.keys(pendingWrites)) {
+    const ids = Object.keys(pendingWrites[key] || {});
+    if (!ids.length) continue;
+    try {
+      const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
+      if (!res.ok) throw new Error(`replay read ${key} failed: ${res.status}`);
+      const { value } = await res.json();
+      const merged = mergePending(key, Array.isArray(value) ? value : []);
+      const ok = await writeKey(key, merged);
+      if (ok) {
+        clearQueued(key, ids);
+        notifyPendingChanged();
+      } else {
+        break;
+      }
+    } catch (e) {
+      // Still no signal. Everything stays queued and the next poll tries again.
+      setConnectionOk(false);
+      break;
+    }
+  }
+}
+
+// The write every board change goes through. If it lands, nothing is held. If
+// it doesn't, the records that changed are kept on the device and replayed
+// later — which is the whole difference between a crew losing a call's times
+// underground and not losing them.
+async function writeList(key, next, prev) {
+  const ok = await writeKey(key, next);
+  if (ok) {
+    // Anything we were holding for these records has now gone up with this
+    // write, so it is no longer outstanding.
+    const ids = (next || []).filter((x) => x && x.id).map((x) => x.id);
+    if (pendingCountFor(key)) {
+      clearQueued(key, ids);
+      notifyPendingChanged();
+    }
+    return true;
+  }
+  const changed = changedRecords(next, prev);
+  if (Object.keys(changed).length) {
+    queueRecords(key, changed);
+    notifyPendingChanged();
   }
   return false;
 }
@@ -2407,7 +2592,7 @@ function computeUhu(units, requests, now) {
 //
 // This is the one sheet in the export that carries a call. Everything the app
 // holds about one goes on its row here and is not repeated on another sheet.
-function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
+function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station) {
   const header = [
     "FROM", "TO", "PT. MRN.", "MEDIC TEAM", "TRUCK", "APPT. TIME", "DISP. TIME",
     "ENROU TIME", "ARRV. TIME", "DEP. TIME", "OFF LOAD TIME", "BACK IN SERV.",
@@ -2502,7 +2687,14 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now) {
     });
 
   return [
-    ["MAIN HOSPITAL AMBULANCE DISPATCH LOG"],
+    // The station this book belongs to, said on the first line. A sheet
+    // headed "MAIN HOSPITAL" on a CCC export is worse than an unlabelled
+    // one — it states the wrong thing rather than nothing.
+    [
+      station
+        ? `KFSH&RC AMBULANCE DISPATCH LOG — ${stationLabel(station).toUpperCase()}`
+        : "KFSH&RC AMBULANCE DISPATCH LOG — ALL STATIONS",
+    ],
     // Each row carries its own CALL DATE, so this line says when the export was
     // taken rather than repeating one date the rows may not all share.
     [`EXPORTED: ${gregDateTimeStr(now || Date.now())}`],
@@ -2660,7 +2852,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station) {
   // captions sit on the fifth row, under the title, the export stamp and the
   // line naming the two shift windows.
   const dispatchLogSheet = autoFitSheet(
-    XLSX.utils.aoa_to_sheet(buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt)),
+    XLSX.utils.aoa_to_sheet(buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station)),
     4
   );
   XLSX.utils.book_append_sheet(wb, dispatchLogSheet, "DISPATCH LOG");
@@ -2822,6 +3014,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station) {
           : "No time — ward to call when patient ready",
         Shift: shiftKey ? shiftLabelWithWindow(shiftKey) : "",
         "Shift Date": shiftRun ? shiftDateOf(shiftRun.start) : "",
+        Station: stationLabel(stationOf(s)),
         Status: schedStatusMeta(s.status).label,
         "Nature of Call": s.nature || "",
         "Location From": callFrom(s),
@@ -2886,6 +3079,48 @@ async function exportAndShareLog(log, requests, units, scheduled, station) {
 }
 
 // ---------- main app ----------
+
+// The one thing a crew must be able to see at a glance: whether what is on
+// their screen has actually reached the desk. A screen that looks identical
+// online and offline is how times get lost without anyone knowing, so this says
+// it plainly and stays there until the last held record has gone up.
+function ConnectionBanner() {
+  const [, force] = useState(0);
+
+  useEffect(() => {
+    const fn = () => force((n) => n + 1);
+    connectionListeners.add(fn);
+    // The queue can also drain on a poll that changes nothing else, so this
+    // ticks over on its own as well rather than waiting for an event.
+    const t = setInterval(fn, 2000);
+    return () => {
+      connectionListeners.delete(fn);
+      clearInterval(t);
+    };
+  }, []);
+
+  const held = totalPendingCount();
+  if (connectionOk && held === 0) return null;
+
+  // Offline is the loud one. "Back online, still catching up" is quieter: the
+  // crew can carry on, and it clears itself.
+  if (!connectionOk) {
+    return (
+      <div style={styles.offlineBanner}>
+        <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+        NO SIGNAL — you can keep working. Everything you enter is saved on this device
+        {held > 0 ? ` (${held} waiting)` : ""} and sent automatically when signal returns.
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.syncingBanner}>
+      <Radio size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+      Back online — sending {held} saved {held === 1 ? "change" : "changes"}…
+    </div>
+  );
+}
 
 function App() {
   const [ready, setReady] = useState(false);
@@ -2961,6 +3196,13 @@ function App() {
     registerAlertWorker();
   }, []);
 
+  // Whatever this device was still holding when it was last closed. Without
+  // this, force-quitting the app underground — or the tablet simply running out
+  // of battery — would throw away the stamps it had not managed to send yet.
+  useEffect(() => {
+    loadPendingWrites();
+  }, []);
+
   useEffect(() => {
     const opts = { capture: true, passive: true };
     window.addEventListener("pointerdown", armAlerts, opts);
@@ -2984,6 +3226,12 @@ function App() {
   }, [ready]);
 
   const loadAll = useCallback(async () => {
+    // Anything this device is still holding from a spell without signal goes up
+    // first, before the board is read back. Sending it first means the read
+    // below already contains it, instead of the server's older copy briefly
+    // landing on screen and undoing a crew's stamps in front of them.
+    await pushPendingWrites();
+
     const [u, r, l, acc, seeded, sch] = await Promise.all([
       readKeyRaw("ems:units"),
       readKeyRaw("ems:requests"),
@@ -3165,28 +3413,36 @@ function App() {
     const st = (stamp && stamp.station) || (detail && detail.station) || null;
     if (st) entry.station = st;
     const next = [entry, ...current].slice(0, LOG_CAP);
+    const prevLog = log;
     setLog(next);
-    await writeKey("ems:log", next);
+    await writeList("ems:log", next, prevLog);
   }
 
+  // Every board save goes through writeList, which keeps whatever didn't reach
+  // the server on the device and replays it later. The screen is updated first
+  // either way: a crew underground must be able to keep working the call.
   async function saveUnits(next) {
+    const prev = units;
     setUnits(next);
-    await writeKey("ems:units", next);
+    await writeList("ems:units", next, prev);
   }
 
   async function saveAccounts(next) {
+    const prev = accounts;
     setAccounts(next);
-    await writeKey("ems:accounts", next);
+    await writeList("ems:accounts", next, prev);
   }
 
   async function saveRequests(next) {
+    const prev = requests;
     setRequests(next);
-    await writeKey("ems:requests", next);
+    await writeList("ems:requests", next, prev);
   }
 
   async function saveScheduled(next) {
+    const prev = scheduled;
     setScheduled(next);
-    await writeKey("ems:scheduled", next);
+    await writeList("ems:scheduled", next, prev);
   }
 
   // Turns bookings whose time has come into ordinary calls.
@@ -3591,6 +3847,10 @@ function App() {
     <div style={styles.app}>
       <GlobalFont />
       <Header user={user} clock={clock} onLogout={handleLogout} onChangeShift={changeShift} />
+      {/* Directly under the header, above everything, for every role. Nobody
+          should have to scroll to find out whether the board is reaching the
+          server. */}
+      <ConnectionBanner />
       <div style={{ ...styles.body, paddingBottom: seesLogSheet ? 84 : 24 }}>
         <div style={styles.mainCol}>
           {user.role === "dispatcher" && (
@@ -12040,6 +12300,27 @@ const styles = {
 
   stationCount: { marginLeft: 8, fontSize: 10.5, fontWeight: 600, color: "#5B6672", letterSpacing: 0.3 },
   addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
+
+  offlineBanner: {
+    background: "#3A1A0A",
+    borderTop: "1px solid #F59E0B",
+    borderBottom: "1px solid #F59E0B",
+    color: "#FBBF24",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.5,
+    padding: "9px 14px",
+    textAlign: "center",
+  },
+  syncingBanner: {
+    background: "#0E2233",
+    borderBottom: "1px solid #24425F",
+    color: "#7FB2E5",
+    fontSize: 12,
+    fontWeight: 600,
+    padding: "7px 14px",
+    textAlign: "center",
+  },
 
   stationBanner: {
     display: "flex",
