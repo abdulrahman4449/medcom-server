@@ -430,11 +430,49 @@ async function pushPendingWrites() {
   }
 }
 
+// While a write is in the air, the server's copy of that key is out of date by
+// definition. The board polls every three seconds, so without this a crew's tap
+// could be painted over by a read that started before their change landed — the
+// stamp would appear, vanish, and the crew would tap again thinking it had not
+// registered. That is exactly what was happening.
+//
+// A key is held from the moment a write starts until shortly after it finishes,
+// and reads for a held key are ignored rather than applied.
+const writesInFlight = new Map();
+const WRITE_SETTLE_MS = 1500;
+
+function markWriteStarted(key) {
+  writesInFlight.set(key, { started: Date.now(), done: 0 });
+}
+
+function markWriteFinished(key) {
+  const e = writesInFlight.get(key);
+  if (e) e.done = Date.now();
+}
+
+function writeInFlight(key) {
+  const e = writesInFlight.get(key);
+  if (!e) return false;
+  if (!e.done) return true;
+  if (Date.now() - e.done < WRITE_SETTLE_MS) return true;
+  writesInFlight.delete(key);
+  return false;
+}
+
 // The write every board change goes through. If it lands, nothing is held. If
 // it doesn't, the records that changed are kept on the device and replayed
 // later — which is the whole difference between a crew losing a call's times
 // underground and not losing them.
 async function writeList(key, next, prev) {
+  markWriteStarted(key);
+  try {
+    return await writeListInner(key, next, prev);
+  } finally {
+    markWriteFinished(key);
+  }
+}
+
+async function writeListInner(key, next, prev) {
   const ok = await writeKey(key, next);
   if (ok) {
     // Anything we were holding for these records has now gone up with this
@@ -1213,6 +1251,88 @@ const REFUSAL_FROM_STATUSES = ["onscene", "transporting", "arrived"];
 // Whoever gets there first, both codes have to be on the call before the crew
 // running it can go back in service — see CLOSEOUT_REQUIREMENTS below. Open to
 // either side, mandatory for the one holding the call at the end.
+// ---------- the sheet's own vocabulary ----------
+//
+// Taken verbatim from the department's dispatch log so what a crew picks here
+// is the same word that lands in the column, rather than free text somebody has
+// to translate at the end of the month.
+//
+// The sheet's lists carry rows of underscores as visual dividers between groups.
+// They are spacing, not choices, and they are stripped here — left in, they
+// would appear in the app as selectable options and end up written against real
+// calls.
+function fromSheetList(items) {
+  return items.filter((x) => x && x.trim() && !/^_+$/.test(x.trim()));
+}
+
+// Column B — where the patient is collected. Grouped as the sheet groups them:
+// the main campus, then CCC, then everything off-site.
+const PATIENT_ORIGINS = fromSheetList([
+  "KACOLD Bldg.",
+  "EAST WING Bldg.",
+  "MAIN HOSPITAL Bldg.",
+  "EMERGENCY Bldg.",
+  "HEART CENTER Bldg.",
+  "OLD OUTPATIENT Bldg.",
+  "ALZAHRAWI Bldg.",
+  "MAIN HOUSING FACILITY",
+  "MAIN WORK FACILITIES",
+  "HOSPITAL GROUNDS",
+  "CSSD BLOODBANK Bldg.",
+  "________________________",
+  "CCC MAIN Bldg.",
+  "CCC HOUSING FACILITY",
+  "CCC WORK FACILITIES",
+  "CCC GROUNDS",
+  "_______________________",
+  "MEDEVAC",
+  "PROTOCOL HOME",
+  "PATIENT HOME",
+  "OTHER HOSPITALS",
+  "KKIA",
+  "OTHERS",
+]);
+
+// Which station an origin belongs to, so the statistics can be read per station
+// without anyone tagging them by hand.
+function originStation(origin) {
+  return /^CCC /.test(origin || "") ? "ccc" : "main";
+}
+
+// Column R — CALL CATEGORY.
+const CALL_CATEGORIES = fromSheetList([
+  "EMERGENCY", "CANCELLED", "CCC ROUTINE", "CHEST PAIN PROGRAM", "CODE",
+  "COMMERCIAL FLIGHT", "DEM ADMISSION", "DIRECT ADMISSION", "DISCHARGE",
+  "ADMINISTRATIVE", "FLIGHT ASSESSMENT", "HOME HEALTH CARE", "HOME VENT PROGRAM",
+  "MEDEVAC", "MOBILE STROKE UNIT", "NO COVERAGE", "PROTOCOL EMERGENCY", "ROUTINE",
+  "RRT TRANSPORT", "STAT PROCEDURE", "TRANSPLANT", "NA",
+]);
+
+// Column S — CODES AND EMERGENCIES. The emergencies come first, then the colour
+// codes, exactly as the sheet has them.
+const EMERGENCY_CODES = fromSheetList([
+  "CARDIAC EMERGENCY", "RESPIRATORY EMERGENCY", "NEUROLOGICAL EMERGENCY",
+  "TRAUMA EMERGENCY", "OBSTETRIC GYNECOLOGICAL", "PEDIATRIC EMERGENCY",
+  "TOXICOLOGY EMERGENCY", "ENVIRONMENTAL EXPOSURE", "MEDICAL EMERGENCY",
+  "HOME VENTILATOR EMERGENCY",
+  "____________________________",
+  "CODE GREEN", "CODE BLUE", "CODE WHITE", "CODE ORANGE", "CODE YELLOW",
+  "CODE RED", "CODE PINK", "CODE BLACK", "CODE SILVER", "CODE 5", "NA",
+]);
+
+// Column Q — ADDED SERVICE.
+const ADDED_SERVICES = fromSheetList(["D", "5", "NA"]);
+
+// Column DG — ADMITTED UNDER.
+const ADMITTED_UNDER = fromSheetList([
+  "Home Health Care", "Home Mechanical Ventilation Program", "Protocol",
+  "Neuroscience Center of Excellence", "Genomics Center of Excellence",
+  "Pediatrics & Women's Health Center of Excellence", "Medical Center of Excellence",
+  "Transplant Center of Excellence", "Heart Center of Excellence",
+  "Cancer Center of Excellence", "Surgical Center of Excellence",
+  "RADIOLOGY", "GENERIC MRN",
+]);
+
 const CALL_TYPES = [
   { key: "A", name: "ALS", desc: "Advanced life support", color: "#FF4D5E" },
   { key: "B", name: "BLS", desc: "Basic life support", color: "#35C4E8" },
@@ -3062,6 +3182,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "COMMENTS & REQUIREMENT", "TYPE OF SERVICE", "CAT. OF CALL", "KILO METER",
     "ADDED SERVICE", "PCR AUTHOR", "PRIORITY", "REQUIREMENTS", "SHIFT", "SHIFT DATE",
     "MEDIC CREW (NAME STAMPS)", "OUTCOME", "PT. REFUSED TIME",
+    "Location where the patient is coming from", "CALL CATEGORY",
     "REFUSED BY (NAME)", "REFUSED BY (NATIONAL ID)", "REFUSED BY (RELATION)",
     "RECEIVED BY (NAME)", "RECEIVER ID", "RECEIVER RECORDED BY",
     "ASSISTING TEAM(S)",
@@ -3124,6 +3245,8 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
         medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
         callOutcomeLabel(r),
         clockStr(t[REFUSAL_TIME_KEY]),
+        r.patientOrigin || "",
+        r.callCategory || "",
         r.refusal ? r.refusal.name : "",
         r.refusal ? r.refusal.nationalId : "",
         r.refusal ? r.refusal.relation : "",
@@ -3900,6 +4023,13 @@ function App() {
     // failed read must never reach it as "there are no calls".
     if (u === READ_FAILED || acc === READ_FAILED || r === READ_FAILED) return;
 
+    // A read that started before a write landed is stale by definition. Applying
+    // it would undo the change on screen a moment after the crew made it, which
+    // is what made buttons look like they needed two or three taps. Skip this
+    // tick for the keys that are still settling; the next one is three seconds
+    // away and will carry the change.
+    if (writeInFlight("ems:requests") || writeInFlight("ems:units")) return;
+
     const requestsToUse = r || [];
 
     let unitsToUse = u;
@@ -4031,6 +4161,82 @@ function App() {
     setAccounts(accountsToUse);
     setReady(true);
   }, []);
+
+  // Filing the shift without being asked.
+  //
+  // This is what was discussed and never actually built: once the twelve hours
+  // are up, every call raised in them is closed, and the station's crews have
+  // signed out, there is nothing left for the desk to add. Waiting for somebody
+  // to remember to press a button only means the record is late, or missing on
+  // the morning somebody forgets.
+  //
+  // The desk can still submit by hand before this point once the shift is over;
+  // this only catches the case where nobody did.
+  const autoSubmitRef = useRef(false);
+  useEffect(() => {
+    if (!ready || !user || user.role !== "dispatcher") return;
+    let alive = true;
+    const run = async () => {
+      if (autoSubmitRef.current) return;
+      const u = userRef.current;
+      if (!u || u.role !== "dispatcher") return;
+      const station = u.station || DEFAULT_STATION;
+      const windowStart = u.shiftStart || shiftWindowAt(Date.now()).start;
+      const windowEnd = u.shiftEnd || windowStart + SHIFT_MS;
+      // Not until the tour is actually over.
+      if (Date.now() < windowEnd) return;
+
+      autoSubmitRef.current = true;
+      try {
+        const all = (await readKey(SUBMISSION_KEY, [])) || [];
+        const shiftKey = u.shift || scheduledShiftKey(windowStart);
+        const id = submissionId(opDayStart(windowStart), shiftKey, station);
+        if (all.some((x) => x && x.id === id)) return;
+
+        const freshRequests = await readKey("ems:requests", requests);
+        const freshUnits = await readKey("ems:units", units);
+        const mine = requestsForShift(freshRequests, station, windowStart, windowEnd);
+        const stillOpen = mine.filter((r) => r.status !== "completed");
+        const crewStillOn = freshUnits.filter(
+          (x) => stationOf(x) === station && (x.alpha || x.bravo)
+        );
+        // Every call closed and every crew off. Anything less and it waits —
+        // the desk can still submit by hand, which files it open and lets it
+        // complete itself.
+        if (stillOpen.length || crewStillOn.length) return;
+
+        const res = await submitShiftLog({
+          requests: freshRequests,
+          units: freshUnits,
+          log: await readKey("ems:log", log),
+          scheduled: await readKey("ems:scheduled", scheduled),
+          station,
+          windowStart,
+          windowEnd,
+          shiftKey,
+          by: `${u.name || "Dispatch"} (automatic)`,
+        });
+        if (res.ok && alive) {
+          setSubmissions((await readKey(SUBMISSION_KEY, [])) || []);
+          await addLog(
+            `${stationLabel(station)} — ${SHIFTS[shiftKey] ? SHIFTS[shiftKey].label : shiftKey} log submitted ` +
+              `automatically · all calls closed and all crews signed out · ${res.entry.callCount} calls`,
+            "status"
+          );
+        }
+      } catch (e) {
+        console.error("auto submit failed:", e);
+      } finally {
+        autoSubmitRef.current = false;
+      }
+    };
+    run();
+    const t = setInterval(run, 60000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [ready, user && user.role]);
 
   // Finishing off submissions that were filed with a call still running: once
   // the last call is closed and the station's crews are off, the submission
@@ -4713,6 +4919,7 @@ function App() {
               addLog={addLog}
               audioCtxRef={audioCtxRef}
               submissions={submissions}
+              log={log}
             />
           )}
         </div>
@@ -4832,6 +5039,32 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
   // Which of the two stations this session is working. Everything the
   // session then sees — calls, bookings, the log — is that station's.
   const [stationKey, setStationKey] = useState(null);
+  // The partner being signed in on the same device, if there is one.
+  const [partnerId, setPartnerId] = useState("");
+  const [partnerError, setPartnerError] = useState("");
+  // Matched against the ID list the same way the person signing in was, so a
+  // typo says so here rather than seating a name that does not exist.
+  const [partnerAccount, setPartnerAccount] = useState(null);
+  const partnerName = partnerAccount ? partnerAccount.name || partnerAccount.id : "";
+  useEffect(() => {
+    const q = (partnerId || "").trim().toLowerCase();
+    if (!q) {
+      setPartnerAccount(null);
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(async () => {
+      const accts = await readKey("ems:accounts", []);
+      if (!alive) return;
+      const hit = (accts || []).find((a) => a && a.id.toLowerCase() === q) || null;
+      setPartnerAccount(hit);
+      setPartnerError(hit ? "" : "That ID isn't recognised.");
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [partnerId]);
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [error, setError] = useState("");
@@ -4998,6 +5231,28 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
     finishTeamLogin(foundAccount, seat);
   }
 
+  // The other seat, taken at the same time and in the partner's own name. Only
+  // ever the opposite seat to the one being signed into, and never over somebody
+  // already sitting there — a crew sharing a tablet must not quietly stand down
+  // whoever the board thinks is in that seat.
+  async function seatPartnerIfAny(teamId, mySeat, assignment) {
+    if (!partnerAccount || !teamId) return null;
+    const other = mySeat === "alpha" ? "bravo" : "alpha";
+    const fresh = await readKey("ems:units", units);
+    const unit = fresh.find((u) => u.id === teamId);
+    if (!unit) return null;
+    if (unit[other]) return { skipped: "occupied", seat: other };
+    if (partnerAccount.id === (foundAccount ? foundAccount.id : "")) return { skipped: "same", seat: other };
+    const member = {
+      accountId: partnerAccount.id,
+      name: partnerAccount.name || partnerAccount.id,
+      signedOnAt: Date.now(),
+      ...assignment,
+    };
+    await saveUnits(fresh.map((u) => (u.id === teamId ? { ...u, [other]: member } : u)));
+    return { seated: member, seat: other };
+  }
+
   async function finishTeamLogin(account, slot) {
     const teamId = joinTeamId;
     // The medic is always picked on the way in, so there is nothing to fall back
@@ -5109,6 +5364,34 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
       // have it yet.
       actorStamp(session)
     );
+    // If a partner's ID was given, they take the other seat now — recorded in
+    // their own name, with the same shift, and logged as its own sign-on so the
+    // sheet shows two people on the truck rather than one.
+    const partnerResult = await seatPartnerIfAny(teamId, slot, assignment);
+    if (partnerResult && partnerResult.seated) {
+      await addLog(
+        `${unitName ? `${unitName} — ` : ""}${partnerResult.seated.name} ` +
+          `(${seatLabel(partnerResult.seat)}) signed on for ${shiftPhrase(assignment)} ` +
+          `· signed in by ${account.name || account.id} on a shared device`,
+        "shift",
+        {
+          kind: "on",
+          role: "team",
+          name: partnerResult.seated.name,
+          accountId: partnerResult.seated.accountId,
+          unitId: teamId,
+          unitName,
+          station: stationOf(unit),
+          seat: partnerResult.seat,
+          shift: key,
+          shiftStart: assignment.shiftStart,
+          shiftEnd: assignment.shiftEnd,
+          sharedDevice: true,
+        },
+        actorStamp(session)
+      );
+    }
+
     setBusy(false);
     onLogin(session);
   }
@@ -5394,6 +5677,42 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                   Taking over a seat that's still held stands the other person down and records the
                   shift swap on the log sheet.
                 </div>
+
+                {/* Both crew on one tablet.
+                    A two-person crew has one device between them more often than
+                    not, and the second seat was being left empty — which put one
+                    name against a call two people ran, and left the partner's
+                    hours off the sheet. Entering their ID here signs them into
+                    the other seat at the same time. It is their own ID, so the
+                    name on the seat is still theirs and not a note typed by
+                    somebody else. */}
+                <div style={styles.partnerBox}>
+                  <div style={styles.partnerHead}>
+                    <Users size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
+                    SIGNING IN YOUR PARTNER TOO?
+                  </div>
+                  <div style={styles.partnerNote}>
+                    If you are both working off this one tablet, put their ID in and they will be
+                    signed into the other seat with you. Leave it blank if they have their own device.
+                  </div>
+                  <input
+                    style={{ ...styles.input, marginTop: 8 }}
+                    value={partnerId}
+                    onChange={(e) => {
+                      setPartnerId(e.target.value);
+                      setPartnerError("");
+                    }}
+                    placeholder="Partner's ID, e.g. F1122334"
+                  />
+                  {partnerError && <div style={styles.loginError}>{partnerError}</div>}
+                  {partnerName && (
+                    <div style={styles.partnerFound}>
+                      <CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
+                      {partnerName} will be signed into the other seat.
+                    </div>
+                  )}
+                </div>
+
                 <div style={styles.loginActions}>
                   <button style={styles.ghostBtn} onClick={() => setStage("chooseTeam")}>Back</button>
                 </div>
@@ -6212,6 +6531,24 @@ function AssistanceTasks({ user, units, requests, saveUnits, saveRequests, addLo
 // chain of custody: the crew stamped the time, and this says who they gave the
 // patient to. It is stamped with the crew member who recorded it, so the entry
 // itself is accountable.
+// An explanation that stays out of the way until it is wanted.
+//
+// These notes are useful the first week and clutter for ever afterwards, and on
+// a phone-sized card they were pushing the timeline off the screen. The dot is
+// always there for whoever needs it; the words are not.
+function InfoNote({ children, label }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button style={styles.infoDot} onClick={() => setOpen((v) => !v)} title="What is this?">
+        <span style={styles.infoGlyph}>i</span>
+        {label || "What is this?"}
+      </button>
+      {open && <div style={styles.infoBody}>{children}</div>}
+    </div>
+  );
+}
+
 function ReceiverBanner({ req, canEdit, onSave }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -6453,11 +6790,26 @@ function PendingEditReview({ req, onVerify, onReject }) {
       {pend.map((e) => (
         <div key={e.id} style={styles.editReviewRow}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={styles.editReviewField}>{editFieldLabel(e.field)}</div>
+            <div style={styles.editReviewField}>
+              {editFieldLabel(e.field)}
+              {/* Dispatch now raises calls with only the pick-up point, so most
+                  of what comes back from a crew is information the desk never
+                  had rather than a correction to something it got wrong. The two
+                  need answering differently, so they are labelled differently. */}
+              <span style={(e.from || "").trim() ? styles.reviewChangedTag : styles.reviewNewTag}>
+                {(e.from || "").trim() ? "CHANGED" : "NEW"}
+              </span>
+            </div>
             <div style={styles.editReviewChange}>
-              <span style={styles.editReviewFrom}>{editValueText(e.from)}</span>
-              <ArrowRight size={11} style={{ margin: "0 5px", verticalAlign: -1 }} />
-              <span style={styles.editReviewTo}>{editValueText(e.to)}</span>
+              {(e.from || "").trim() ? (
+                <>
+                  <span style={styles.editReviewFrom}>{editValueText(e.from)}</span>
+                  <ArrowRight size={11} style={{ margin: "0 5px", verticalAlign: -1 }} />
+                  <span style={styles.editReviewTo}>{editValueText(e.to)}</span>
+                </>
+              ) : (
+                <span style={styles.editReviewTo}>{editValueText(e.to)}</span>
+              )}
             </div>
             <div style={styles.editReviewBy}>
               {e.by}{e.unitName ? ` · ${e.unitName}` : ""} · {hhmm(e.at)}
@@ -8100,7 +8452,7 @@ function WhenPicker({ value, onChange, now, hint }) {
         </div>
       </div>
 
-      {hint && <div style={styles.selectHint}>{hint}</div>}
+      {hint && <InfoNote>{hint}</InfoNote>}
     </div>
   );
 }
@@ -9126,6 +9478,9 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Free text for the "Other" requirement, and which call the desk has the
   // correction form open on.
   const [reqOther, setReqOther] = useState("");
+  // The two coded fields the sheet wants against every call.
+  const [patientOrigin, setPatientOrigin] = useState("");
+  const [callCategory, setCallCategory] = useState("");
   const [editingCallId, setEditingCallId] = useState(null);
   const [selectedTeam, setSelectedTeam] = useState("");
   const [callType, setCallType] = useState("");
@@ -9288,7 +9643,12 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   }
 
   async function submitRequest() {
-    if (!locationFrom.trim() || !nature.trim()) return;
+    // Where to collect the patient is the only thing dispatch genuinely has to
+    // know to send an ambulance. The nature of the call, the destination and the
+    // MRN are all often given later, over the radio or by the ward ringing back,
+    // and requiring them up front only meant the desk typed something plausible
+    // to get the truck moving — which is worse than an honest blank.
+    if (!locationFrom.trim()) return;
     const createdAt = Date.now();
     // Read fresh before deciding anything, so we never clobber a change another
     // device made in the last few seconds (this is what caused assigned calls
@@ -9311,7 +9671,13 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       locationFrom: locationFrom.trim(),
       locationTo: locationTo.trim(),
       location: locationFrom.trim(),
-      nature: nature.trim(),
+      // A call raised with nothing said about it reads as awaiting detail rather
+      // than as blank, so the crew and the desk both know it is still to come.
+      nature: nature.trim() || "Awaiting detail",
+      // Straight from the sheet's own lists, so the month-end statistics need no
+      // interpretation.
+      patientOrigin: patientOrigin || "",
+      callCategory: callCategory || "",
       priority,
       mrn: mrn.trim(),
       // The typed detail behind an "Other" requirement, kept only when the
@@ -9366,6 +9732,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     setMrn("");
     setRequirements([]);
     setReqOther("");
+    setPatientOrigin("");
+    setCallCategory("");
     setCallType("");
     setLoadedKm("");
     setSelectedTeam("");
@@ -9565,14 +9933,47 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {showForm && (
         <div style={styles.requestForm}>
+          {/* Where the patient is, in the department's own words. Typed freely
+              this became "ER", "Emergency", "emergency bldg" and three other
+              spellings of one building, and the month-end count had to be done
+              by eye. Picking from the sheet's own list means the statistics add
+              up on their own. */}
           <div style={styles.formRow}>
             <div style={{ flex: 1 }}>
-              <label style={styles.label}>Location from (pick-up)</label>
+              <label style={styles.label}>Where is the patient coming from?</label>
+              <select
+                style={styles.input}
+                value={patientOrigin}
+                onChange={(e) => setPatientOrigin(e.target.value)}
+              >
+                <option value="">Not stated yet</option>
+                {PATIENT_ORIGINS.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={styles.label}>Call category</label>
+              <select
+                style={styles.input}
+                value={callCategory}
+                onChange={(e) => setCallCategory(e.target.value)}
+              >
+                <option value="">Not stated yet</option>
+                {CALL_CATEGORIES.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div style={styles.formRow}>
+            <div style={{ flex: 1 }}>
+              <label style={styles.label}>Location from (pick-up) — required</label>
               <input style={styles.input} value={locationFrom} onChange={(e) => setLocationFrom(e.target.value)} placeholder="e.g. Ward 4B, Bed 12" />
             </div>
             <div style={{ flex: 1 }}>
               <label style={styles.label}>Location to (destination)</label>
-              <input style={styles.input} value={locationTo} onChange={(e) => setLocationTo(e.target.value)} placeholder="e.g. CT Suite, Radiology" />
+              <input style={styles.input} value={locationTo} onChange={(e) => setLocationTo(e.target.value)} placeholder="Can be added later" />
             </div>
           </div>
           <div style={styles.formRow}>
@@ -10010,6 +10411,24 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [editOpen, setEditOpen] = useState(false);
   // Whether the refusal is being signed for.
   const [refusalOpen, setRefusalOpen] = useState(false);
+  // Which action this crew has just tapped. Every one of these starts with a
+  // read from the server, so on a weak signal there was a pause with nothing on
+  // screen to show the tap had registered — and crews tapped again. The button
+  // now says so the instant it is pressed, and refuses a second tap while it
+  // works.
+  const [acting, setActing] = useState(null);
+
+  // Wraps any crew action so the screen answers immediately and the same tap
+  // cannot be fired twice.
+  async function runAction(name, fn) {
+    if (acting) return;
+    setActing(name);
+    try {
+      await fn();
+    } finally {
+      setActing(null);
+    }
+  }
   const alarmIntervalRef = useRef(null);
   const alarmingRequestId = useRef(null);
   const notifiedRequestId = useRef(null);
@@ -10702,13 +11121,21 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                   })}
                 </div>
               )}
-              <div style={styles.pcrNote}>
+              {/* The fact of who is writing it stays on the card; the
+                  explanation of what that means folds away. */}
+              {pcrAuthor ? (
+                <div style={styles.pcrNote}>
+                  {pcrAuthorText(myRequest)} is writing the report
+                  {pcrAuthor.assignedAt ? ` · named at ${clockStr(pcrAuthor.assignedAt)}` : ""}
+                </div>
+              ) : (
+                <div style={styles.pcrNote}>Nobody named yet</div>
+              )}
+              <InfoNote>
                 {pcrAuthor
-                  ? `${pcrAuthorText(myRequest)} is writing the report for this call` +
-                    `${pcrAuthor.assignedAt ? ` · named at ${clockStr(pcrAuthor.assignedAt)}` : ""}. ` +
-                    "Tap the other seat to move it while the call is still open."
+                  ? "Tap the other seat to move it while the call is still open."
                   : "Whoever is writing the patient care report for this call. The call cannot go back in service until one of you is on it."}
-              </div>
+              </InfoNote>
             </div>
           )}
 
@@ -10761,12 +11188,14 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                     screen and hard to miss. */}
                 <button
                   style={stepBlocked ? styles.stepBtnBlocked : styles.stepBtn}
-                  onClick={() => recordStep(nextStep)}
-                  disabled={stepBlocked}
+                  onClick={() => runAction("step", () => recordStep(nextStep))}
+                  disabled={stepBlocked || !!acting}
                   title={stepBlocked ? `This call needs ${closeoutMissingText(blockers)} before it can close` : ""}
                 >
-                  <span style={styles.stepBtnCue}>{stepBlocked ? "BLOCKED" : "NEXT"}</span>
-                  {nextStep.buttonLabel}
+                  <span style={styles.stepBtnCue}>
+                    {stepBlocked ? "BLOCKED" : acting === "step" ? "SAVING" : "NEXT"}
+                  </span>
+                  {acting === "step" ? "Recording…" : nextStep.buttonLabel}
                   {!stepBlocked && <ChevronRight size={18} style={{ marginLeft: "auto" }} />}
                 </button>
               </React.Fragment>
@@ -11044,6 +11473,10 @@ function CallAlertNotice({ audioCtxRef }) {
 }
 
 function AlarmOverlay({ request, onAcknowledge, assisting, withUnit }) {
+  // Acknowledging reads from the server before anything changes, so on a weak
+  // signal the alarm sat there looking unpressed. It now answers the tap at
+  // once and cannot be fired twice.
+  const [acking, setAcking] = useState(false);
   const level = useSoundLevel();
   const silenced = soundLevelMeta(level).gain <= 0;
   return (
@@ -11080,8 +11513,26 @@ function AlarmOverlay({ request, onAcknowledge, assisting, withUnit }) {
             ))}
           </div>
         )}
-        <button style={styles.alarmAckBtn} onClick={onAcknowledge}>
-          <Bell size={16} /> {assisting ? "ACKNOWLEDGE ASSIST" : "ACKNOWLEDGE CALL"}
+        <button
+          style={acking ? styles.alarmAckBtnBusy : styles.alarmAckBtn}
+          disabled={acking}
+          onClick={async () => {
+            if (acking) return;
+            setAcking(true);
+            try {
+              await onAcknowledge();
+            } finally {
+              setAcking(false);
+            }
+          }}
+        >
+          {acking ? (
+            "ACKNOWLEDGING…"
+          ) : (
+            <>
+              <Bell size={16} /> {assisting ? "ACKNOWLEDGE ASSIST" : "ACKNOWLEDGE CALL"}
+            </>
+          )}
         </button>
         {silenced ? (
           <div style={styles.alarmFootnoteMuted}>
@@ -11124,6 +11575,340 @@ function FoldingSection({ title, count, countLabel, open, onToggle, children }) 
       </button>
       {open && <div style={styles.foldBody}>{children}</div>}
     </div>
+  );
+}
+
+// Every issue a crew has raised, open or closed, with what they actually said.
+//
+// The inbox above is a to-do list and empties as things are dealt with, which is
+// right for working through them and wrong for looking back. Once an issue was
+// closed the reason it was raised effectively disappeared — so the department
+// had no way to see what keeps going wrong, which is the whole reason for
+// collecting them.
+// ---------- statistics ----------
+//
+// UHU per person rather than per truck. A medic works a different unit most
+// weeks, so a figure attached to MEDIC 1 says nothing about anybody; attached to
+// the name and ID on the seat, it is the measure the department actually reports.
+//
+// Two readings, because they answer different questions: the share of the shift
+// spent on a call, and the number of calls completed. A crew can be busy on one
+// long critical transfer or on nine short ones, and neither number alone tells
+// you which.
+const STAT_RANGES = [
+  { key: "shift", label: "This shift" },
+  { key: "month", label: "This month" },
+  { key: "quarter", label: "This quarter" },
+  { key: "year", label: "This year" },
+];
+
+function statRangeWindow(key, now) {
+  const d = new Date(now);
+  if (key === "shift") {
+    const w = shiftWindowAt(now);
+    return { start: w.start, end: w.start + SHIFT_MS, label: "this shift" };
+  }
+  if (key === "month") {
+    const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+    return { start, end: new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(), label: "this month" };
+  }
+  if (key === "quarter") {
+    const q = Math.floor(d.getMonth() / 3) * 3;
+    return { start: new Date(d.getFullYear(), q, 1).getTime(), end: new Date(d.getFullYear(), q + 3, 1).getTime(), label: "this quarter" };
+  }
+  return { start: new Date(d.getFullYear(), 0, 1).getTime(), end: new Date(d.getFullYear() + 1, 0, 1).getTime(), label: "this year" };
+}
+
+// Who was on which truck, when, and for how long — read off the sign-on and
+// sign-off lines rather than the current roster, so somebody who worked Tuesday
+// still counts on Friday.
+function staffStatsFor(log, requests, units, win, now) {
+  const people = new Map();
+  const person = (id, name) => {
+    const k = (id || name || "").toUpperCase();
+    if (!people.has(k)) {
+      people.set(k, { id: id || "", name: name || "", shiftMs: 0, onCallMs: 0, calls: 0, units: new Set() });
+    }
+    return people.get(k);
+  };
+
+  // Shift time worked, from the sign-on entries inside the window.
+  (log || []).forEach((e) => {
+    const d = e && e.detail;
+    if (!d || d.kind !== "on" || d.role !== "team") return;
+    const start = d.shiftStart || e.ts;
+    if (!start || start >= win.end || (d.shiftEnd || start) < win.start) return;
+    const p = person(d.accountId, d.name);
+    const from = Math.max(start, win.start);
+    const to = Math.min(d.shiftEnd || Math.min(now, win.end), win.end);
+    if (to > from) p.shiftMs += to - from;
+    if (d.unitId) p.units.add(d.unitName || d.unitId);
+  });
+
+  // Time on call, and calls completed, credited to whoever actually held the
+  // seats while the call was running — read from the same crew index the log
+  // sheet uses, so the app and the spreadsheet credit the same people.
+  const crewIndex = medicCrewIndex(units, log, now);
+  (requests || []).forEach((r) => {
+    if (!r || !r.createdAt || r.createdAt < win.start || r.createdAt >= win.end) return;
+    const busy = callBusyMs(r, now);
+    const from = callStartTs(r);
+    const to = callEndTs(r, now);
+    const stays = (crewIndex.get(r.assignedUnitId) || []).filter((c) => {
+      const w = stayWindow(c, now);
+      return w.start && w.start <= (to || from) && w.end >= from;
+    });
+    if (!stays.length) return;
+    const seen = new Set();
+    stays.forEach((c) => {
+      const k = (c.accountId || c.name || "").toUpperCase();
+      if (!k || seen.has(k)) return;
+      seen.add(k);
+      const p = person(c.accountId, c.name);
+      p.onCallMs += busy;
+      if (r.status === "completed") p.calls += 1;
+    });
+  });
+
+  return Array.from(people.values())
+    .filter((p) => p.name)
+    .map((p) => ({
+      ...p,
+      unitList: Array.from(p.units).join(", "),
+      // The share of the time they were signed on that was spent on a call.
+      uhu: p.shiftMs > 0 ? Math.min(100, (p.onCallMs / p.shiftMs) * 100) : 0,
+    }))
+    .sort((a, b) => b.uhu - a.uhu);
+}
+
+// Where the month's patients were collected from, per station.
+function originStats(requests, win) {
+  const rows = new Map();
+  PATIENT_ORIGINS.forEach((o) => rows.set(o, { origin: o, main: 0, ccc: 0, total: 0 }));
+  let unstated = 0;
+  (requests || []).forEach((r) => {
+    if (!r || !r.createdAt || r.createdAt < win.start || r.createdAt >= win.end) return;
+    const o = (r.patientOrigin || "").trim();
+    if (!o) {
+      unstated += 1;
+      return;
+    }
+    if (!rows.has(o)) rows.set(o, { origin: o, main: 0, ccc: 0, total: 0 });
+    const row = rows.get(o);
+    row[stationOf(r) === "ccc" ? "ccc" : "main"] += 1;
+    row.total += 1;
+  });
+  return { rows: Array.from(rows.values()).filter((r) => r.total > 0).sort((a, b) => b.total - a.total), unstated };
+}
+
+function Statistics({ log, requests, units }) {
+  const [open, setOpen] = useState(false);
+  const [range, setRange] = useState("shift");
+  const [mode, setMode] = useState("uhu");
+  const now = Date.now();
+  const win = statRangeWindow(range, now);
+  const staff = staffStatsFor(log, requests, units, win, now);
+  const origins = originStats(requests, win);
+  const inWindow = (requests || []).filter((r) => r && r.createdAt >= win.start && r.createdAt < win.end);
+
+  function download() {
+    const wb = XLSX.utils.book_new();
+    const rangeLabel = STAT_RANGES.find((x) => x.key === range).label;
+    XLSX.utils.book_append_sheet(
+      wb,
+      autoFitSheet(
+        XLSX.utils.json_to_sheet(
+          staff.map((p) => ({
+            "EMPLOYEE ID": p.id,
+            "FULL NAME": p.name,
+            "MEDIC TEAM": p.unitList,
+            "Total shift in minutes": Math.round(p.shiftMs / 60000),
+            "Total patient care time in minutes": Math.round(p.onCallMs / 60000),
+            "UHU %": Number(p.uhu.toFixed(1)),
+            "TOTAL CALLS": p.calls,
+          }))
+        ),
+        0
+      ),
+      `UHU ${rangeLabel}`.slice(0, 31)
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      autoFitSheet(
+        XLSX.utils.json_to_sheet(
+          origins.rows.map((r) => ({
+            "PATIENT INITIAL LOCATION": r.origin,
+            "MAIN OFFICE": r.main,
+            CCC: r.ccc,
+            TOTAL: r.total,
+          }))
+        ),
+        0
+      ),
+      "PATIENT INITIAL LOCATION"
+    );
+    const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `medcom-statistics-${range}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  return (
+    <FoldingSection
+      title="STATISTICS"
+      count={staff.length}
+      countLabel="staff with recorded time"
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div style={styles.archTabs}>
+        {STAT_RANGES.map((r) => (
+          <button
+            key={r.key}
+            style={r.key === range ? styles.archTabOn : styles.archTab}
+            onClick={() => setRange(r.key)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ ...styles.archTabs, marginTop: 8 }}>
+        <button style={mode === "uhu" ? styles.archTabOn : styles.archTab} onClick={() => setMode("uhu")}>
+          UHU — share of shift on a call
+        </button>
+        <button style={mode === "calls" ? styles.archTabOn : styles.archTab} onClick={() => setMode("calls")}>
+          Calls completed
+        </button>
+      </div>
+
+      <div style={styles.savedNote}>
+        Counted per person, by name and ID, not per truck — a medic works a different unit most
+        weeks. {inWindow.length} call{inWindow.length === 1 ? "" : "s"} raised {win.label}.
+      </div>
+
+      {staff.length === 0 ? (
+        <div style={styles.emptyState}>No signed-on time recorded in this period.</div>
+      ) : (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          {staff.map((p) => (
+            <div key={(p.id || p.name)} style={styles.statRow}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.statName}>
+                  {p.name} {p.id && <span style={styles.statId}>{p.id}</span>}
+                </div>
+                <div style={styles.statMeta}>
+                  {p.unitList || "—"} · {Math.round(p.shiftMs / 60000)} min signed on ·{" "}
+                  {Math.round(p.onCallMs / 60000)} min on call
+                </div>
+              </div>
+              {mode === "uhu" ? (
+                <div style={{ minWidth: 116 }}>
+                  <div style={styles.statBarTrack}>
+                    <div style={{ ...styles.statBarFill, width: `${Math.max(2, p.uhu)}%` }} />
+                  </div>
+                  <div style={styles.statValue}>{p.uhu.toFixed(1)}%</div>
+                </div>
+              ) : (
+                <div style={styles.statCalls}>{p.calls}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={styles.sectionHeader}>PATIENT INITIAL LOCATION — {win.label.toUpperCase()}</div>
+      {origins.rows.length === 0 ? (
+        <div style={styles.emptyState}>Nothing recorded against a location yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ ...styles.statOriginRow, color: "#5E7488", fontWeight: 700 }}>
+            <span style={{ flex: 1 }}>LOCATION</span>
+            <span style={styles.statOriginNum}>MAIN</span>
+            <span style={styles.statOriginNum}>CCC</span>
+            <span style={styles.statOriginNum}>TOTAL</span>
+          </div>
+          {origins.rows.map((r) => (
+            <div key={r.origin} style={styles.statOriginRow}>
+              <span style={{ flex: 1, minWidth: 0 }}>{r.origin}</span>
+              <span style={styles.statOriginNum}>{r.main}</span>
+              <span style={styles.statOriginNum}>{r.ccc}</span>
+              <span style={{ ...styles.statOriginNum, fontWeight: 800 }}>{r.total}</span>
+            </div>
+          ))}
+          {origins.unstated > 0 && (
+            <div style={styles.formHint}>
+              {origins.unstated} call{origins.unstated === 1 ? "" : "s"} with no location recorded.
+            </div>
+          )}
+        </div>
+      )}
+
+      <button style={{ ...styles.primaryBtnSm, marginTop: 14 }} onClick={download}>
+        <Share2 size={12} /> Download as Excel ({STAT_RANGES.find((x) => x.key === range).label})
+      </button>
+    </FoldingSection>
+  );
+}
+
+function IssuesRaised({ requests, viewer }) {
+  const [open, setOpen] = useState(false);
+  const rows = escalatedCalls(requests, viewer);
+  const all = [];
+  rows.forEach((row) => {
+    (row.escalations || []).forEach((e) => all.push({ e, req: row.req }));
+  });
+  all.sort((a, b) => (b.e.raisedAt || 0) - (a.e.raisedAt || 0));
+  const openCount = all.filter((x) => escalationIsOpen(x.e)).length;
+
+  return (
+    <FoldingSection
+      title="ISSUES RAISED BY CREWS"
+      count={all.length}
+      countLabel={openCount ? `on record · ${openCount} still open` : "on record"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      {all.length === 0 ? (
+        <div style={styles.emptyState}>No issues have been raised.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {all.slice(0, 60).map(({ e, req }) => (
+            <div key={e.id} style={styles.issueRow}>
+              <div style={styles.issueHead}>
+                <span style={escalationIsOpen(e) ? styles.issueOpen : styles.issueClosed}>
+                  {escalationIsOpen(e) ? "OPEN" : "RESOLVED"}
+                </span>
+                <span style={styles.issueWho}>
+                  {e.unitName || "Crew"}
+                  {e.raisedByName ? ` · ${e.raisedByName}` : ""}
+                </span>
+                <span style={styles.issueWhen}>{gregDateTimeStr(e.raisedAt)}</span>
+              </div>
+              {/* The reason, kept whether the issue is open or long since
+                  closed. This is the part that used to vanish. */}
+              <div style={styles.issueText}>{e.message}</div>
+              <div style={styles.issueCall}>
+                on {req.nature} · {callRoute(req)} · {stationLabel(stationOf(req))}
+              </div>
+              {(e.replies || []).length > 0 && (
+                <div style={styles.issueReply}>
+                  Reply: {e.replies[e.replies.length - 1].message}
+                </div>
+              )}
+            </div>
+          ))}
+          {all.length > 60 && (
+            <div style={styles.formHint}>Showing the 60 most recent of {all.length}.</div>
+          )}
+        </div>
+      )}
+    </FoldingSection>
   );
 }
 
@@ -11240,7 +12025,7 @@ function SavedLogs({ submissions, requests }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions }) {
   const [crewName, setCrewName] = useState("");
   const [crewId, setCrewId] = useState("");
   const [crewError, setCrewError] = useState("");
@@ -11488,6 +12273,13 @@ function AdminView({ user, units, requests, scheduled, accounts, saveUnits, save
           back to this screen for, and it should not be at the bottom of a long
           scroll. */}
       <SavedLogs submissions={submissions} requests={requests} />
+
+      {/* The standing record of what crews have reported — the reasons stay
+          readable long after each issue is closed. */}
+      {/* Per-person UHU and the month's patient-origin table. */}
+      <Statistics log={log} requests={requests} units={units} />
+
+      <IssuesRaised requests={requests} viewer={escViewer} />
 
       {/* Straight under the board, above the rosters. An issue a crew took the
           trouble to write down is the one thing on this screen that has
@@ -11915,6 +12707,7 @@ const BOARD_EVENTS = {
 // en-route stamp, and points at the spreadsheet for the rest.
 function LogSheet({ log, units, station }) {
   const [tab, setTab] = useState("all");
+  const [feedOpen, setFeedOpen] = useState(true);
   const now = Date.now();
   // A desk reads its own station's log and nothing else. An administrator has
   // no station on their session, so they read both — which is the one place
@@ -11922,7 +12715,11 @@ function LogSheet({ log, units, station }) {
   const scoped = station ? log.filter((e) => stationOf(e) === station) : log;
   const shiftEntries = scoped.filter((e) => e.type === "shift");
   const boardEntries = scoped.filter(isBoardLogEntry);
-  const shown = tab === "shift" ? shiftEntries : boardEntries;
+  // One feed rather than two tabs. "Acknowledged & en route" and "shift swaps"
+  // were the same thing split in half — the log of what happened on this board —
+  // and splitting it meant neither list told the whole story. Newest first,
+  // everything together.
+  const shown = [...shiftEntries, ...boardEntries].sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
   const scheduled = shiftMeta(scheduledShiftKey(now));
   const liveWindow = shiftWindowAt(now);
@@ -11931,10 +12728,20 @@ function LogSheet({ log, units, station }) {
 
   return (
     <div style={styles.logPanel}>
-      <div style={styles.logHeader}>
-        <AlertTriangle size={13} color="#93A7B8" />
-        <span>LOG SHEET</span>
-      </div>
+      {/* Foldable: on a desk that is watching calls, the feed is reference
+          rather than something to be stared at. */}
+      <button style={styles.logHeaderBtn} onClick={() => setFeedOpen((v) => !v)}>
+        <ChevronRight
+          size={13}
+          style={{
+            transform: feedOpen ? "rotate(90deg)" : "none",
+            transition: "transform .15s ease",
+            marginRight: 7,
+          }}
+        />
+        <span>EVENT LOG</span>
+        <span style={styles.logHeaderCount}>{shown.length}</span>
+      </button>
 
       <div style={styles.shiftBanner}>
         <span style={{ ...styles.shiftTag, color: scheduled.color, borderColor: scheduled.color }}>
@@ -11948,35 +12755,22 @@ function LogSheet({ log, units, station }) {
         Running since {gregShortDateTimeStr(liveWindow.start)} · ends {gregShortDateTimeStr(liveWindow.end)}
       </div>
 
-      <div style={styles.logTabs}>
-        <button style={tab === "all" ? styles.tabBtnActive : styles.tabBtn} onClick={() => setTab("all")}>
-          Acknowledged &amp; en route
-        </button>
-        <button style={tab === "shift" ? styles.tabBtnActive : styles.tabBtn} onClick={() => setTab("shift")}>
-          Shift swaps{shiftEntries.length > 0 ? ` (${shiftEntries.length})` : ""}
-        </button>
-      </div>
+      <InfoNote label="What is in this log?">
+        Acknowledgements, en-route stamps and shift changes. Everything else — assignments, status
+        changes, codings, bookings and closures — is still recorded and goes out on the Event Log
+        sheet of the spreadsheet, filed under the shift it happened on.
+      </InfoNote>
 
-      {tab === "all" && (
-        <div style={styles.logScopeNote}>
-          Acknowledgements and en-route stamps only. Everything else — assignments, status changes,
-          codings, bookings and closures — is still recorded and goes out on the Event Log sheet of
-          the shared spreadsheet, filed under the shift it happened on.
+      {feedOpen && (
+        <div style={styles.logList}>
+          {shown.length === 0 && (
+            <div style={styles.logEmpty}>Nothing recorded on this board yet.</div>
+          )}
+          {shown.map((entry) => (
+            <LogEntryRow key={entry.id} entry={entry} showStation={!station} />
+          ))}
         </div>
       )}
-
-      <div style={styles.logList}>
-        {shown.length === 0 && (
-          <div style={styles.logEmpty}>
-            {tab === "shift"
-              ? "No shift changes recorded yet."
-              : "No team has acknowledged a call or gone en route yet."}
-          </div>
-        )}
-        {shown.map((entry) => (
-          <LogEntryRow key={entry.id} entry={entry} showStation={!station} />
-        ))}
-      </div>
     </div>
   );
 }
@@ -12135,22 +12929,35 @@ const styles = {
   // of the window rather than scrolling away with the first call. The clock and
   // the shift countdown ride up with them, which is where the eye already
   // looks for them.
+  // The masthead follows the organisation's own app: a deep green field with a
+  // curved lower edge, the name and the person on it, and the crests kept where
+  // they have always been. Green because it is the hospital's colour and staff
+  // already read it as "one of ours"; curved because that shape is the single
+  // most recognisable thing about the app they use every day.
   headerWrap: {
     position: "sticky",
     top: 0,
     zIndex: 30,
-    borderBottom: "1px solid #1F2E3C",
-    background: "#111C26",
+    background: "linear-gradient(160deg, #0E6B4F 0%, #0A5540 55%, #08402F 100%)",
     paddingTop: "env(safe-area-inset-top)",
+    borderBottomLeftRadius: 26,
+    borderBottomRightRadius: 26,
+    boxShadow: "0 10px 28px rgba(0,0,0,.45)",
+    marginBottom: 4,
   },
   // The masthead: a white plate the full width of the board, a crest hard
   // against each end and the service name held in the middle of it. Three grid
   // columns rather than a flex row, because the two crests are different widths
   // and only equal side columns put the name in the true centre of the bar.
   brandBar: {
+    // The crests keep their white plate — they are printed artwork and need it —
+    // but it now floats as a rounded card on the green rather than spanning the
+    // full width as a separate band.
     background: "#FFFFFF",
-    borderBottom: "1px solid #D8DCE1",
-    padding: "8px 20px",
+    border: "1px solid rgba(255,255,255,.35)",
+    borderRadius: 14,
+    margin: "10px 14px 4px",
+    padding: "8px 14px",
     display: "grid",
     gridTemplateColumns: "1fr auto 1fr",
     alignItems: "center",
@@ -12184,7 +12991,7 @@ const styles = {
     gap: 10,
   },
   headerBarGroup: { display: "flex", alignItems: "center", gap: 18 },
-  clock: { display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "#93A7B8" },
+  clock: { display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "rgba(255,255,255,.85)" },
   userBadge: { display: "flex", flexDirection: "column", fontSize: 13, lineHeight: 1.3, textAlign: "right" },
   iconBtn: {
     background: "transparent",
@@ -12231,7 +13038,11 @@ const styles = {
   },
 
   sectionHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "20px 0 10px" },
+  // Section headings in the organisation's own idiom: a gold marker, the label
+  // beside it, plenty of air above. It is the pattern staff already scan for.
   sectionHeader: {
+    borderLeft: "3px solid #E9C46A",
+    paddingLeft: 10,
     fontFamily: display,
     fontSize: 14,
     letterSpacing: 1.2,
@@ -12247,7 +13058,7 @@ const styles = {
     padding: "10px 14px",
     background: "#111C26",
     border: "1px solid #1F2E3C",
-    borderRadius: 8,
+    borderRadius: 16,
   },
   statusBoardItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },
   statusBoardCount: { fontWeight: 700, color: "#E9F1F7" },
@@ -12696,10 +13507,11 @@ const styles = {
   callCard: {
     background: "#111C26",
     border: "1px solid #1F2E3C",
-    borderLeft: "3px solid",
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 4,
+    borderLeft: "4px solid",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 10,
+    boxShadow: "0 6px 18px rgba(0,0,0,.28)",
   },
   callCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
   callCardNature: { fontFamily: display, fontWeight: 700, fontSize: 16 },
@@ -13541,7 +14353,7 @@ const styles = {
     marginTop: 10,
     background: "#1A0E0E",
     border: "1px solid #FF4D5E",
-    borderRadius: 8,
+    borderRadius: 16,
     padding: 12,
   },
   refusalPanelHead: {
@@ -13624,10 +14436,82 @@ const styles = {
   },
   receiverPanel: {
     marginTop: 10, background: "#0A1017", border: "1px solid #3DDC97",
-    borderRadius: 10, padding: 12,
+    borderRadius: 16, padding: 12,
   },
   receiverHead: {
     fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#3DDC97",
+  },
+
+  statRow: {
+    display: "flex", alignItems: "center", gap: 12,
+    background: "#111C26", border: "1px solid #1F2E3C", borderRadius: 12,
+    padding: "10px 12px",
+  },
+  statName: { fontSize: 14, fontWeight: 700, color: "#E9F1F7" },
+  statId: { fontSize: 12, fontWeight: 600, color: "#5E7488", marginLeft: 6 },
+  statMeta: { fontSize: 12, color: "#5E7488", marginTop: 3 },
+  statBarTrack: { height: 8, background: "#0A1017", border: "1px solid #1F2E3C", borderRadius: 6, overflow: "hidden" },
+  statBarFill: { height: "100%", background: "linear-gradient(90deg,#3DDC97,#35C4E8)" },
+  statValue: { fontSize: 13, fontWeight: 800, color: "#E9F1F7", textAlign: "right", marginTop: 4 },
+  statCalls: { fontSize: 22, fontWeight: 800, color: "#E9F1F7", minWidth: 52, textAlign: "right" },
+  statOriginRow: {
+    display: "flex", alignItems: "center", gap: 8, fontSize: 13,
+    color: "#C9D8E4", padding: "6px 10px", background: "#0E141B",
+    border: "1px solid #1F2E3C", borderRadius: 8,
+  },
+  statOriginNum: { width: 58, textAlign: "right", fontVariantNumeric: "tabular-nums" },
+
+  reviewChangedTag: {
+    marginLeft: 7, fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
+    color: "#FFB020", border: "1px solid rgba(255,176,32,.45)",
+    borderRadius: 4, padding: "1px 5px",
+  },
+  reviewNewTag: {
+    marginLeft: 7, fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
+    color: "#3DDC97", border: "1px solid rgba(61,220,151,.45)",
+    borderRadius: 4, padding: "1px 5px",
+  },
+
+  logHeaderBtn: {
+    width: "100%", display: "flex", alignItems: "center", background: "none",
+    border: "none", borderBottom: "1px solid #1F2E3C", color: "#C9D8E4",
+    padding: "12px 14px", fontSize: 12.5, fontWeight: 800, letterSpacing: 0.9,
+    cursor: "pointer", textAlign: "left",
+  },
+  logHeaderCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#5E7488" },
+
+  infoDot: {
+    display: "inline-flex", alignItems: "center", gap: 6,
+    background: "none", border: "none", padding: 0, cursor: "pointer",
+    color: "#5E7488", fontSize: 12.5, fontWeight: 600,
+  },
+  infoGlyph: {
+    width: 17, height: 17, borderRadius: "50%",
+    border: "1px solid #33475A", color: "#93A7B8",
+    fontSize: 11, fontWeight: 800, fontStyle: "italic",
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    flex: "none",
+  },
+  infoBody: {
+    marginTop: 7, fontSize: 13, color: "#93A7B8", lineHeight: 1.55,
+    borderLeft: "2px solid #26384A", paddingLeft: 10,
+  },
+
+  partnerBox: {
+    marginTop: 14, background: "#0A1017", border: "1px dashed #26384A",
+    borderRadius: 14, padding: 12,
+  },
+  partnerHead: { fontSize: 11, fontWeight: 800, letterSpacing: 0.7, color: "#E9C46A" },
+  partnerNote: { fontSize: 13, color: "#93A7B8", lineHeight: 1.55, marginTop: 6 },
+  partnerFound: { marginTop: 8, fontSize: 13, fontWeight: 600, color: "#3DDC97" },
+
+  ackBtnBusy: {
+    opacity: 0.6, cursor: "wait",
+  },
+  alarmAckBtnBusy: {
+    width: "100%", background: "#2A3441", border: "1px solid #33475A",
+    color: "#93A7B8", borderRadius: 12, padding: "18px 16px",
+    fontSize: 18, fontWeight: 800, letterSpacing: 0.5, cursor: "wait",
   },
 
   deskAssistBtn: {
@@ -13704,6 +14588,27 @@ const styles = {
     textTransform: "uppercase", padding: "10px 0 4px",
   },
 
+  issueRow: {
+    background: "#111C26", border: "1px solid #1F2E3C", borderRadius: 16, padding: "11px 12px",
+  },
+  issueHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  issueOpen: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#FFB020",
+    border: "1px solid rgba(255,176,32,.45)", borderRadius: 5, padding: "1px 6px",
+  },
+  issueClosed: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#3DDC97",
+    border: "1px solid rgba(61,220,151,.4)", borderRadius: 5, padding: "1px 6px",
+  },
+  issueWho: { fontSize: 12.5, fontWeight: 700, color: "#C9D8E4" },
+  issueWhen: { fontSize: 12, color: "#5E7488", marginLeft: "auto" },
+  issueText: { fontSize: 14, color: "#E9F1F7", lineHeight: 1.55, marginTop: 7 },
+  issueCall: { fontSize: 12, color: "#5E7488", marginTop: 5 },
+  issueReply: {
+    fontSize: 13, color: "#93A7B8", marginTop: 7, paddingLeft: 9,
+    borderLeft: "2px solid #26384A",
+  },
+
   archTabs: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
   archTab: {
     display: "inline-flex", alignItems: "center", gap: 8,
@@ -13733,7 +14638,7 @@ const styles = {
     gap: 10,
     background: "#111C26",
     border: "1px solid #1F2E3C",
-    borderRadius: 10,
+    borderRadius: 16,
     padding: "10px 12px",
     flexWrap: "wrap",
   },
@@ -13800,7 +14705,7 @@ const styles = {
     marginTop: 12,
     background: "#1C1408",
     border: "1px solid #FFB020",
-    borderRadius: 10,
+    borderRadius: 16,
     padding: 12,
   },
   editInboxHead: {
@@ -13846,7 +14751,7 @@ const styles = {
     marginTop: 10,
     background: "#0A1017",
     border: "1px solid #35C4E8",
-    borderRadius: 8,
+    borderRadius: 16,
     padding: 12,
   },
   editPanelHead: {
@@ -13870,7 +14775,7 @@ const styles = {
     marginTop: 10,
     background: "#1C1408",
     border: "1px solid #FFB020",
-    borderRadius: 8,
+    borderRadius: 16,
     padding: 10,
   },
   editReviewHead: {
@@ -14106,7 +15011,8 @@ const styles = {
   unitCard: {
     background: "#111C26",
     border: "1px solid #1F2E3C",
-    borderRadius: 10,
+    boxShadow: "0 6px 18px rgba(0,0,0,.28)",
+    borderRadius: 16,
     padding: "10px 12px",
     display: "flex",
     flexDirection: "column",
@@ -14127,9 +15033,10 @@ const styles = {
   },
 
   logPanel: {
+    boxShadow: "0 6px 18px rgba(0,0,0,.28)",
     background: "#111C26",
     border: "1px solid #1F2E3C",
-    borderRadius: 8,
+    borderRadius: 16,
     display: "flex",
     flexDirection: "column",
     maxHeight: 560,
@@ -14184,9 +15091,10 @@ const styles = {
   logMessage: { color: "#C9D8E4", marginTop: 2, lineHeight: 1.4 },
 
   uhuPanel: {
+    boxShadow: "0 6px 18px rgba(0,0,0,.28)",
     background: "#111C26",
     border: "1px solid #1F2E3C",
-    borderRadius: 8,
+    borderRadius: 16,
     display: "flex",
     flexDirection: "column",
   },
