@@ -573,6 +573,42 @@ async function pruneArchivedWork({ requests, log, submissions, now }) {
   return { droppedRequests, droppedLog };
 }
 
+// ---------- what the sheet still needs ----------
+//
+// A call going back in service is not the same as its record being finished. The
+// category gets argued over at the destination, the kilometres are read when the
+// truck parks, the MRN turns up later. Left alone these gaps are only discovered
+// at the end of the month, by somebody reading 400 rows looking for blanks.
+//
+// So the desk is told while the shift is still in living memory: which calls are
+// short, and of what.
+const LOG_COMPLETENESS = [
+  { key: "patientOrigin", label: "where the patient came from", has: (r) => !!r.patientOrigin },
+  { key: "locationTo", label: "destination", has: (r) => !!callTo(r) },
+  { key: "mrn", label: "MRN", has: (r) => !!(r.mrn && String(r.mrn).trim()) },
+  { key: "callType", label: "cat. of call", has: (r) => !!callTypeOf(r) },
+  { key: "callCategory", label: "call category", has: (r) => !!r.callCategory },
+  { key: "loadedKm", label: "kilometre band", has: (r) => !!loadedKmOf(r) },
+  {
+    key: "receiver",
+    label: "who received the patient",
+    // Only asked of a call where somebody was actually handed over.
+    applies: (r) => !isNoTransport(r) && !!(r.times || {}).arrivalDestination,
+    has: (r) => !!(r.receiver && r.receiver.name),
+  },
+];
+
+function missingLogFields(req) {
+  if (!req || req.status !== "completed") return [];
+  return LOG_COMPLETENESS.filter((f) => (!f.applies || f.applies(req)) && !f.has(req));
+}
+
+function callsNeedingDetail(requests) {
+  return (requests || [])
+    .filter((r) => r.status === "completed" && missingLogFields(r).length)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
 // ---------- no coverage ----------
 //
 // The station has nothing left to send: every truck is out with a patient. It is
@@ -8000,6 +8036,9 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
   // fields this is not a correction to something the desk decided — it is the
   // crew stating who they handed the patient to, which only they can know. It is
   // stamped with whoever entered it either way.
+  // Which of these calls the sheet still wants something from.
+  const incomplete = canCorrect ? callsNeedingDetail(requests) : [];
+
   async function saveReceiverOn(req, { name, receiverId }) {
     const who = user && user.name ? user.name : "Crew";
     const fresh = await readKey("ems:requests", requests);
@@ -8171,6 +8210,38 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
           </button>
         )}
       </div>
+
+      {/* The sheet's outstanding questions, said once at the top rather than
+          left to be discovered at the end of the month by somebody reading four
+          hundred rows looking for blanks. Only the desk sees it — filling these
+          in is their job, and a crew's proposal still has to come back here to
+          be confirmed. */}
+      {incomplete.length > 0 && (
+        <div style={styles.needsDetail}>
+          <div style={styles.needsDetailHead}>
+            <span style={styles.needsDetailBulb}>💡</span>
+            {incomplete.length} completed call{incomplete.length === 1 ? "" : "s"} still
+            {incomplete.length === 1 ? " needs" : " need"} information before the log is finished
+          </div>
+          <div style={styles.needsDetailBody}>
+            Open the call below and use <strong>Correct call details</strong>. Until then these
+            columns go out blank on the dispatch log.
+          </div>
+          <div style={styles.needsDetailList}>
+            {incomplete.slice(0, 6).map((r) => (
+              <div key={r.id} style={styles.needsDetailItem}>
+                <span style={styles.needsDetailNature}>{r.nature}</span>
+                <span style={styles.needsDetailWhat}>
+                  missing: {missingLogFields(r).map((f) => f.label).join(", ")}
+                </span>
+              </div>
+            ))}
+            {incomplete.length > 6 && (
+              <div style={styles.needsDetailWhat}>and {incomplete.length - 6} more below.</div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Finding a call again. The desk searches hundreds of them; a crew
           searching at all is usually looking for the one they raised an issue
@@ -8369,6 +8440,14 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
                       {reqLabels(req).map((label, i) => (
                         <span key={i} style={styles.reqBadge}>{label}</span>
                       ))}
+                    </div>
+                  )}
+
+                  {/* The same flag on the card, so a call is identifiable once
+                      the list runs past the six named above. */}
+                  {canCorrect && missingLogFields(req).length > 0 && (
+                    <div style={styles.needsDetailTag}>
+                      💡 needs: {missingLogFields(req).map((f) => f.label).join(", ")}
                     </div>
                   )}
 
@@ -11112,12 +11191,31 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     );
   }
 
+  // The ambulance a medic is running is a fact about the shift, not about the
+  // unit for ever. Trucks are swapped for servicing, and the number left over
+  // from last week quietly went onto this week's calls — which is exactly the
+  // column the finance and maintenance records are matched on. So it is stamped
+  // with the shift it was entered for, and asked for again each shift.
   async function saveAmbulanceNumber() {
     if (!myUnit) return;
+    const n = ambulanceInput.trim();
     const freshUnits = await readKey("ems:units", units);
-    const nextUnits = freshUnits.map((u) => (u.id === myUnit.id ? { ...u, ambulanceNumber: ambulanceInput.trim() } : u));
+    const nextUnits = freshUnits.map((u) =>
+      u.id === myUnit.id
+        ? {
+            ...u,
+            ambulanceNumber: n,
+            ambulanceShiftStart: user.shiftStart || shiftWindowAt(Date.now()).start,
+            ambulanceSetBy: user.name || "",
+            ambulanceSetAt: Date.now(),
+          }
+        : u
+    );
     await saveUnits(nextUnits);
-    await addLog(`${myUnit.name} assigned ambulance #${ambulanceInput.trim() || "—"}`, "status");
+    await addLog(
+      `${myUnit.name} — ambulance #${n || "—"} recorded for ${shiftPhrase(user)} by ${user.name || "the crew"}`,
+      "status"
+    );
   }
 
   async function setStatus(status) {
@@ -11286,6 +11384,13 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       "status"
     );
   }
+
+  // Whether the ambulance number still has to be confirmed for this tour. Asked
+  // of Alpha, because somebody has to own it and two people being asked means
+  // neither does.
+  const myShiftStart = user.shiftStart || shiftWindowAt(Date.now()).start;
+  const ambulanceNeedsConfirming =
+    !!myUnit && user.slot === "alpha" && myUnit.ambulanceShiftStart !== myShiftStart;
 
   // The other seat, and whether it was signed on from this device.
   const otherSeat = user.slot === "alpha" ? "bravo" : "alpha";
@@ -11609,6 +11714,26 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       )}
 
       <div style={styles.sectionHeader}>ASSIGNED AMBULANCE</div>
+      {/* Asked once a shift, of whoever is sitting in Alpha.
+          A number carried over from last week goes onto this week's calls
+          without anybody noticing, and it is the column the maintenance and
+          finance records are matched on. So it is confirmed at the start of each
+          tour rather than assumed. */}
+      {ambulanceNeedsConfirming && (
+        <div style={styles.ambulancePrompt}>
+          <div style={styles.ambulancePromptHead}>
+            <Ambulance size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+            WHICH AMBULANCE ARE YOU ON THIS SHIFT?
+          </div>
+          <div style={styles.ambulancePromptBody}>
+            {myUnit.ambulanceNumber
+              ? `Last recorded as ${myUnit.ambulanceNumber}${
+                  myUnit.ambulanceSetAt ? ` on ${gregDateStr(myUnit.ambulanceSetAt)}` : ""
+                }. Confirm it or enter the one you are actually on.`
+              : "It goes on every call this shift and on the log sheet."}
+          </div>
+        </div>
+      )}
       <div style={styles.ambulanceRow}>
         <input
           style={{ ...styles.input, maxWidth: 180 }}
@@ -11616,9 +11741,18 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           onChange={(e) => setAmbulanceInput(e.target.value)}
           placeholder="e.g. A-207"
         />
-        <button style={styles.primaryBtnSm} onClick={saveAmbulanceNumber}>Save</button>
-        {myUnit.ambulanceNumber && (
-          <span style={styles.assignedTag}>Current: {myUnit.ambulanceNumber}</span>
+        <button
+          style={ambulanceNeedsConfirming ? styles.primaryBtnSm : styles.ghostBtnSm}
+          disabled={!ambulanceInput.trim()}
+          onClick={saveAmbulanceNumber}
+        >
+          {ambulanceNeedsConfirming ? "Confirm for this shift" : "Update"}
+        </button>
+        {myUnit.ambulanceNumber && !ambulanceNeedsConfirming && (
+          <span style={styles.assignedTag}>
+            {myUnit.ambulanceNumber}
+            {myUnit.ambulanceSetBy ? ` · set by ${myUnit.ambulanceSetBy}` : ""}
+          </span>
         )}
       </div>
 
@@ -15271,6 +15405,31 @@ const styles = {
   infoBody: {
     marginTop: 7, fontSize: 13, color: "#93A7B8", lineHeight: 1.55,
     borderLeft: "2px solid #26384A", paddingLeft: 10,
+  },
+
+  ambulancePrompt: {
+    background: "linear-gradient(180deg,#123246,#0C2233)",
+    border: "1px solid #35C4E8", borderRadius: 14,
+    padding: "12px 14px", marginBottom: 10,
+  },
+  ambulancePromptHead: { fontSize: 14, fontWeight: 800, color: "#8FE0F5", letterSpacing: 0.2 },
+  ambulancePromptBody: { fontSize: 13, color: "#93A7B8", lineHeight: 1.55, marginTop: 6 },
+
+  needsDetail: {
+    marginTop: 10, background: "rgba(233,196,106,.07)",
+    border: "1px solid rgba(233,196,106,.5)", borderRadius: 14, padding: "12px 14px",
+  },
+  needsDetailHead: { fontSize: 14.5, fontWeight: 800, color: "#FFD98A", lineHeight: 1.45 },
+  needsDetailBulb: { marginRight: 7, fontSize: 15 },
+  needsDetailBody: { fontSize: 13, color: "#93A7B8", lineHeight: 1.55, marginTop: 6 },
+  needsDetailList: { marginTop: 9, display: "flex", flexDirection: "column", gap: 5 },
+  needsDetailItem: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" },
+  needsDetailNature: { fontSize: 13.5, fontWeight: 700, color: "#E9F1F7" },
+  needsDetailWhat: { fontSize: 12.5, color: "#93A7B8" },
+  needsDetailTag: {
+    marginTop: 8, fontSize: 12.5, fontWeight: 700, color: "#FFD98A",
+    background: "rgba(233,196,106,.08)", border: "1px solid rgba(233,196,106,.4)",
+    borderRadius: 8, padding: "6px 9px",
   },
 
   coverageRow: { marginBottom: 12 },
