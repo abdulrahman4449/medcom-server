@@ -5286,6 +5286,7 @@ function App() {
               addLog={addLog}
               audioCtxRef={audioCtxRef}
               submissions={submissions}
+              coverage={coverage}
               log={log}
             />
           )}
@@ -6020,10 +6021,10 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                     </button>
                   ))}
                 </div>
-                <div style={styles.formHint}>
+                <InfoNote label="More about this">
                   Nobody is fixed to a medic — pick the unit you're on today. Your name is stamped on
                   every line it puts on the log sheet.
-                </div>
+                </InfoNote>
                 <div style={styles.loginActions}>
                   <button style={styles.ghostBtn} onClick={() => setStage("chooseShift")}>
                     Back
@@ -6067,10 +6068,10 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                     );
                   })}
                 </div>
-                <div style={styles.formHint}>
+                <InfoNote label="More about this">
                   Taking over a seat that's still held stands the other person down and records the
                   shift swap on the log sheet.
-                </div>
+                </InfoNote>
 
                 {/* Both crew on one tablet.
                     A two-person crew has one device between them more often than
@@ -6192,10 +6193,10 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
           );
         })}
       </div>
-      <div style={styles.formHint}>
+      <InfoNote label="More about this">
         Working past the end of your 12 hours is fine — the board keeps counting and puts the extra
         time on the log sheet as overtime.
-      </div>
+      </InfoNote>
       <div style={styles.loginActions}>
         <button style={styles.ghostBtn} disabled={busy} onClick={onBack}>Back</button>
       </div>
@@ -7004,7 +7005,7 @@ function ReceiverBanner({ req, canEdit, onSave }) {
   if (!open) {
     return (
       <button style={styles.receiverPrompt} onClick={() => setOpen(true)}>
-        <FileSignature size={12} /> Add who received the patient
+        <FileSignature size={15} /> WHO RECEIVED THE PATIENT?
       </button>
     );
   }
@@ -9857,11 +9858,11 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
         <AlertTriangle size={14} /> CALL INFORMATION WAITING TO BE CONFIRMED —{" "}
         {pendingCallEditCount(requests)}
       </div>
-      <div style={styles.editInboxNote}>
+      <InfoNote label="How this works">
         Crews have reported these details as wrong. Nothing changes on the call until you confirm it.
         Calls that have already closed still show here, so a correction is never lost because the
         team went back in service.
-      </div>
+      </InfoNote>
       {waiting.map((req) => {
         const unit = units.find((u) => u.id === req.assignedUnitId);
         return (
@@ -10515,10 +10516,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
               })}
             </select>
             {assignable.length === 0 && (
-              <div style={styles.selectHint}>
+              <InfoNote label="More about this">
                 Every team is out on a call. Raise the call without a team and assign one as soon as a
                 team clears.
-              </div>
+              </InfoNote>
             )}
           </div>
 
@@ -11591,13 +11592,6 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             </div>
           )}
 
-          {/* The handover at the other end. Offered once the patient has actually
-              arrived somewhere — asking before then is asking about something
-              that has not happened. Not shown on a call where nobody was moved. */}
-          {!assisting && !isNoTransport(myRequest) && (myRequest.times || {}).arrivalDestination && (
-            <ReceiverBanner req={myRequest} canEdit onSave={setReceiver} />
-          )}
-
           {/* Corrections. A crew can say the details are wrong; only the desk can
               make that stick. Anything already sent shows here so the same crew
               doesn't report it twice while they wait. */}
@@ -11626,6 +11620,15 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                 />
               )}
             </div>
+          )}
+
+          {/* The handover at the other end, put where the crew is already looking
+              — directly above the timeline, the moment they arrive. It is the
+              last thing anybody remembers to do and the first thing asked for
+              afterwards, so until it is answered it is the loudest thing on the
+              card. */}
+          {!assisting && !isNoTransport(myRequest) && (myRequest.times || {}).arrivalDestination && (
+            <ReceiverBanner req={myRequest} canEdit onSave={setReceiver} />
           )}
 
           <CallTimes times={myRequest.times} />
@@ -12248,6 +12251,100 @@ function originStats(requests, win) {
   return { rows: Array.from(rows.values()).filter((r) => r.total > 0).sort((a, b) => b.total - a.total), unstated };
 }
 
+// What administration needs to be able to answer: how often the department had
+// nothing to send, at which station, for how long, and when. Open gaps are shown
+// first and loudly — those are happening now.
+function CoveragePanel({ coverage, units, requests }) {
+  const [open, setOpen] = useState(false);
+  const [tick, setTick] = useState(Date.now());
+  const list = (coverage || []).slice().sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  const live = list.filter((c) => !c.endedAt);
+
+  useEffect(() => {
+    if (!live.length) return;
+    const t = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [live.length]);
+
+  // Totals per station, so a month can be summarised without counting rows.
+  const totals = STATIONS.map((st) => {
+    const mine = list.filter((c) => c.station === st.key);
+    const ms = mine.reduce((sum, c) => sum + ((c.endedAt || tick) - c.startedAt), 0);
+    return { station: st, count: mine.length, ms };
+  });
+
+  return (
+    <>
+      {/* Anything running right now sits outside the fold — an administrator
+          should not have to open a section to find out the department cannot
+          answer a call. */}
+      {live.map((c) => (
+        <div key={c.id} style={styles.coverageOn}>
+          <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
+          NO COVERAGE AT {stationLabel(c.station).toUpperCase()} — {msDurationStr(tick - c.startedAt)}
+          <span style={styles.coverageSince}>
+            since {clockStr(c.startedAt)} · declared by {c.startedBy}
+            {c.unitsOut && c.unitsOut.length ? ` · ${c.unitsOut.join(", ")} out` : ""}
+          </span>
+        </div>
+      ))}
+
+      <FoldingSection
+        title="NO COVERAGE — RECORD"
+        count={list.length}
+        countLabel={live.length ? `on record · ${live.length} running now` : "on record"}
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+      >
+        <div style={styles.archTabs}>
+          {totals.map((t) => (
+            <div key={t.station.key} style={styles.coverageTotal}>
+              <div style={styles.coverageTotalName}>{t.station.label}</div>
+              <div style={styles.coverageTotalVal}>
+                {t.count} {t.count === 1 ? "period" : "periods"}
+              </div>
+              <div style={styles.coverageTotalMeta}>{msDurationStr(t.ms)} total</div>
+            </div>
+          ))}
+        </div>
+
+        <InfoNote label="What counts as no coverage?">
+          Every staffed team at that station is out with a patient. Zahrawi is not counted — it runs
+          its own service, and its being free does not mean the fleet can answer a call. A period is
+          declared by the desk and ends by itself the moment any team is back in service.
+        </InfoNote>
+
+        {list.length === 0 ? (
+          <div style={styles.emptyState}>No periods recorded.</div>
+        ) : (
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+            {list.slice(0, 60).map((c) => (
+              <div key={c.id} style={c.endedAt ? styles.coverageRowPast : styles.coverageRowLive}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={styles.coverageRowHead}>
+                    {stationLabel(c.station)}
+                    <span style={styles.coverageRowWhen}>{gregDateTimeStr(c.startedAt)}</span>
+                  </div>
+                  <div style={styles.coverageRowMeta}>
+                    {c.endedAt
+                      ? `${clockStr(c.startedAt)} → ${clockStr(c.endedAt)}`
+                      : `${clockStr(c.startedAt)} → still running`}
+                    {c.unitsOut && c.unitsOut.length ? ` · ${c.unitsOut.join(", ")} out` : ""}
+                    {c.startedBy ? ` · declared by ${c.startedBy}` : ""}
+                  </div>
+                </div>
+                <div style={c.endedAt ? styles.coverageDur : styles.coverageDurLive}>
+                  {msDurationStr((c.endedAt || tick) - c.startedAt)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </FoldingSection>
+    </>
+  );
+}
+
 function Statistics({ log, requests, units }) {
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState("shift");
@@ -12335,9 +12432,13 @@ function Statistics({ log, requests, units }) {
       </div>
 
       <div style={styles.savedNote}>
-        Counted per person, by name and ID, not per truck — a medic works a different unit most
-        weeks. {inWindow.length} call{inWindow.length === 1 ? "" : "s"} raised {win.label}.
+        {inWindow.length} call{inWindow.length === 1 ? "" : "s"} raised {win.label}.
       </div>
+      <InfoNote label="How this is counted">
+        Per person, by name and ID, not per truck — a medic works a different unit most weeks, so a
+        figure attached to a truck says nothing about anybody. UHU is the share of the time somebody
+        was signed on that they spent on a call.
+      </InfoNote>
 
       {staff.length === 0 ? (
         <div style={styles.emptyState}>No signed-on time recorded in this period.</div>
@@ -12517,11 +12618,11 @@ function SavedLogs({ submissions, requests }) {
         })}
       </div>
 
-      <div style={styles.savedNote}>
+      <InfoNote label="How this works">
         Each desk submits its own shift. A day holds the day shift and the night that follows it.
         A shift submitted with a call still running is filed straight away and completes itself
         once that call closes and its crew signs out, so the overtime is counted.
-      </div>
+      </InfoNote>
 
       {days.length === 0 ? (
         <div style={styles.emptyState}>
@@ -12572,7 +12673,7 @@ function SavedLogs({ submissions, requests }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage }) {
   const [crewName, setCrewName] = useState("");
   const [crewId, setCrewId] = useState("");
   const [crewError, setCrewError] = useState("");
@@ -12823,6 +12924,9 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
 
       {/* The standing record of what crews have reported — the reasons stay
           readable long after each issue is closed. */}
+      {/* Coverage first: anything running now is shown outside the fold. */}
+      <CoveragePanel coverage={coverage} units={units} requests={requests} />
+
       {/* Per-person UHU and the month's patient-origin table. */}
       <Statistics log={log} requests={requests} units={units} />
 
@@ -12857,10 +12961,10 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
             <input style={styles.input} value={crewId} onChange={(e) => setCrewId(e.target.value)} placeholder="e.g. F1122334" />
           </div>
         </div>
-        <div style={styles.formHint}>
+        <InfoNote label="More about this">
           Team members aren't tied to a medic — they choose the unit they're working, and Alpha or
           Bravo on it, at every sign-in.
-        </div>
+        </InfoNote>
         {crewError && <div style={styles.loginError}>{crewError}</div>}
         <button style={styles.primaryBtnSm} disabled={crewBusy} onClick={addCrewAccount}>
           <Plus size={14} /> Add ID
@@ -12973,9 +13077,9 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           </div>
         )}
         <RemoveError role="admin" />
-        <div style={styles.formHint}>
+        <InfoNote label="About removing an ID">
           Removing an ID frees it up — the same ID can be added again whenever you need it.
-        </div>
+        </InfoNote>
       </div>
       </FoldingSection>
 
@@ -14973,10 +15077,24 @@ const styles = {
   },
 
   receiverPrompt: {
-    marginTop: 10, width: "100%", background: "none",
-    border: "1px dashed #33475A", color: "#93A7B8", borderRadius: 10,
-    padding: "11px 12px", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
-    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+    marginTop: 12,
+    marginBottom: 4,
+    width: "100%",
+    minHeight: 58,
+    background: "linear-gradient(180deg,#3A2A05,#241A03)",
+    border: "1px solid #E9C46A",
+    color: "#FFD98A",
+    borderRadius: 14,
+    padding: "14px 16px",
+    fontSize: 15.5,
+    fontWeight: 800,
+    letterSpacing: 0.2,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    boxShadow: "0 8px 22px rgba(233,196,106,.16)",
   },
   receiverDone: {
     marginTop: 10, background: "rgba(61,220,151,.07)",
@@ -15052,6 +15170,26 @@ const styles = {
   },
 
   coverageRow: { marginBottom: 12 },
+  coverageTotal: {
+    background: "#111C26", border: "1px solid #26384A", borderRadius: 12,
+    padding: "10px 14px", minWidth: 150,
+  },
+  coverageTotalName: { fontSize: 11.5, fontWeight: 700, color: "#93A7B8", letterSpacing: 0.4 },
+  coverageTotalVal: { fontSize: 19, fontWeight: 800, color: "#E9F1F7", marginTop: 3 },
+  coverageTotalMeta: { fontSize: 12, color: "#5E7488", marginTop: 2 },
+  coverageRowPast: {
+    display: "flex", alignItems: "center", gap: 10,
+    background: "#0E141B", border: "1px solid #1F2E3C", borderRadius: 12, padding: "10px 12px",
+  },
+  coverageRowLive: {
+    display: "flex", alignItems: "center", gap: 10,
+    background: "rgba(255,77,94,.10)", border: "1px solid #FF4D5E", borderRadius: 12, padding: "10px 12px",
+  },
+  coverageRowHead: { fontSize: 14, fontWeight: 700, color: "#E9F1F7", display: "flex", gap: 8, flexWrap: "wrap" },
+  coverageRowWhen: { fontSize: 12, fontWeight: 600, color: "#5E7488" },
+  coverageRowMeta: { fontSize: 12.5, color: "#93A7B8", marginTop: 3 },
+  coverageDur: { fontSize: 15, fontWeight: 800, color: "#C9D8E4", minWidth: 78, textAlign: "right" },
+  coverageDurLive: { fontSize: 15, fontWeight: 800, color: "#FF7A86", minWidth: 78, textAlign: "right" },
   coverageBtn: {
     display: "inline-flex", alignItems: "center", gap: 7,
     background: "rgba(255,77,94,.10)", border: "1px solid rgba(255,77,94,.55)",
