@@ -4265,67 +4265,95 @@ function App() {
     setReady(true);
   }, []);
 
-  // Filing the shift without being asked.
+  // Filing a shift that nobody filed by hand.
   //
-  // This is what was discussed and never actually built: once the twelve hours
-  // are up, every call raised in them is closed, and the station's crews have
-  // signed out, there is nothing left for the desk to add. Waiting for somebody
-  // to remember to press a button only means the record is late, or missing on
-  // the morning somebody forgets.
+  // The first version of this only ran on a signed-in dispatcher's board and
+  // read the window off *their own session* — which meant it could never fire in
+  // the one situation it exists for. The desk finishes, signs out, and there is
+  // no longer a dispatcher session anywhere to notice that the shift is over.
+  // An administrator opening the app next morning found nothing submitted,
+  // because nothing was left running that could submit it.
   //
-  // The desk can still submit by hand before this point once the shift is over;
-  // this only catches the case where nobody did.
+  // So it no longer depends on anyone being signed in as the desk. It works from
+  // the clock and the board: for each station, look back over the last few shift
+  // windows, and file any that has ended, has calls, has none of them still
+  // running, and has nobody from that station still signed on. An admin opening
+  // the app is enough to catch up whatever was missed.
   const autoSubmitRef = useRef(false);
+  const AUTO_SUBMIT_LOOKBACK = 6; // shifts — three days
+
   useEffect(() => {
-    if (!ready || !user || user.role !== "dispatcher") return;
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
     let alive = true;
+
     const run = async () => {
       if (autoSubmitRef.current) return;
-      const u = userRef.current;
-      if (!u || u.role !== "dispatcher") return;
-      const station = u.station || DEFAULT_STATION;
-      const windowStart = u.shiftStart || shiftWindowAt(Date.now()).start;
-      const windowEnd = u.shiftEnd || windowStart + SHIFT_MS;
-      // Not until the tour is actually over.
-      if (Date.now() < windowEnd) return;
-
       autoSubmitRef.current = true;
       try {
-        const all = (await readKey(SUBMISSION_KEY, [])) || [];
-        const shiftKey = u.shift || scheduledShiftKey(windowStart);
-        const id = submissionId(opDayStart(windowStart), shiftKey, station);
-        if (all.some((x) => x && x.id === id)) return;
-
+        const now = Date.now();
         const freshRequests = await readKey("ems:requests", requests);
         const freshUnits = await readKey("ems:units", units);
-        const mine = requestsForShift(freshRequests, station, windowStart, windowEnd);
-        const stillOpen = mine.filter((r) => r.status !== "completed");
-        const crewStillOn = freshUnits.filter(
-          (x) => stationOf(x) === station && (x.alpha || x.bravo)
-        );
-        // Every call closed and every crew off. Anything less and it waits —
-        // the desk can still submit by hand, which files it open and lets it
-        // complete itself.
-        if (stillOpen.length || crewStillOn.length) return;
+        const freshLog = await readKey("ems:log", log);
+        const freshScheduled = await readKey("ems:scheduled", scheduled);
+        let all = (await readKey(SUBMISSION_KEY, [])) || [];
 
-        const res = await submitShiftLog({
-          requests: freshRequests,
-          units: freshUnits,
-          log: await readKey("ems:log", log),
-          scheduled: await readKey("ems:scheduled", scheduled),
-          station,
-          windowStart,
-          windowEnd,
-          shiftKey,
-          by: `${u.name || "Dispatch"} (automatic)`,
-        });
-        if (res.ok && alive) {
-          setSubmissions((await readKey(SUBMISSION_KEY, [])) || []);
-          await addLog(
-            `${stationLabel(station)} — ${SHIFTS[shiftKey] ? SHIFTS[shiftKey].label : shiftKey} log submitted ` +
-              `automatically · all calls closed and all crews signed out · ${res.entry.callCount} calls`,
-            "status"
-          );
+        // The windows that have already ended, newest first.
+        const current = shiftWindowAt(now).start;
+        const windows = [];
+        for (let n = 1; n <= AUTO_SUBMIT_LOOKBACK; n++) {
+          const start = current - n * SHIFT_MS;
+          windows.push({ start, end: start + SHIFT_MS, key: scheduledShiftKey(start) });
+        }
+        // And the window running now, if it has already finished early — every
+        // call closed and everyone off before the twelve hours are up.
+        windows.unshift({ start: current, end: current + SHIFT_MS, key: scheduledShiftKey(current) });
+
+        for (const st of STATIONS) {
+          const crewStillOn = freshUnits.filter(
+            (u) => stationOf(u) === st.key && (u.alpha || u.bravo)
+          ).length;
+
+          for (const w of windows) {
+            const id = submissionId(opDayStart(w.start), w.key, st.key);
+            if (all.some((x) => x && x.id === id)) continue;
+
+            const mine = requestsForShift(freshRequests, st.key, w.start, w.end);
+            // Nothing happened on that shift at this station — there is no log to
+            // file, and filing an empty one every twelve hours would bury the
+            // real ones.
+            if (!mine.length) continue;
+
+            const stillOpen = mine.filter((r) => r.status !== "completed").length;
+            const windowOver = now >= w.end;
+
+            // A finished window with everything closed, or a window still running
+            // that has gone quiet early. Either way nobody is left to add to it.
+            if (stillOpen) continue;
+            if (!windowOver && crewStillOn) continue;
+            if (windowOver && crewStillOn) continue;
+
+            const res = await submitShiftLog({
+              requests: freshRequests,
+              units: freshUnits,
+              log: freshLog,
+              scheduled: freshScheduled,
+              station: st.key,
+              windowStart: w.start,
+              windowEnd: w.end,
+              shiftKey: w.key,
+              by: "Filed automatically",
+            });
+            if (!res.ok) continue;
+            all = (await readKey(SUBMISSION_KEY, [])) || [];
+            if (alive) setSubmissions(all);
+            await addLog(
+              `${stationLabel(st.key)} — ${SHIFTS[w.key] ? SHIFTS[w.key].label : w.key} log ` +
+                `(${opDayLabel(opDayStart(w.start))}) filed automatically · all calls closed and ` +
+                `all crews signed out · ${res.entry.callCount} calls`,
+              "status"
+            );
+          }
         }
       } catch (e) {
         console.error("auto submit failed:", e);
@@ -4333,6 +4361,7 @@ function App() {
         autoSubmitRef.current = false;
       }
     };
+
     run();
     const t = setInterval(run, 60000);
     return () => {
