@@ -573,6 +573,101 @@ async function pruneArchivedWork({ requests, log, submissions, now }) {
   return { droppedRequests, droppedLog };
 }
 
+// ---------- no coverage ----------
+//
+// The station has nothing left to send: every truck is out with a patient. It is
+// a state of the station rather than a call, and it is the single most important
+// thing the department has to be able to evidence — how long, how often, and
+// when. Until now it lived in somebody's memory of a bad Tuesday.
+//
+// Zahrawi is excluded from the test. It runs its own service and its
+// availability does not mean the main fleet can answer a call.
+//
+// It is declared by the desk, because the desk is the one who knows a call is
+// waiting and nothing is free. It ends on its own the moment any team is back in
+// service — nobody has to remember to press it again, which is exactly the
+// moment nobody would.
+const COVERAGE_KEY = "ems:coverage";
+const COVERAGE_CAP = 500;
+
+function isZahrawi(unit) {
+  return /ZAHRAWI|^ZAH$/i.test((unit && unit.name) || "");
+}
+
+// The units that count towards coverage at a station.
+function coverageUnits(units, station) {
+  return (units || []).filter((u) => stationOf(u) === station && !isZahrawi(u) && isStaffed(u));
+}
+
+// Is any of them free to take a call?
+function stationHasCoverage(units, requests, station) {
+  const fleet = coverageUnits(units, station);
+  if (!fleet.length) return false;
+  return fleet.some((u) => !liveRequestFor(u, requests));
+}
+
+function openCoverageGap(list, station) {
+  return (list || []).find((c) => c && c.station === station && !c.endedAt) || null;
+}
+
+async function startCoverageGap({ station, by, units, requests, list, addLog }) {
+  const existing = (await readKey(COVERAGE_KEY, list)) || [];
+  if (openCoverageGap(existing, station)) return false;
+  const entry = {
+    id: uid("cov"),
+    station,
+    startedAt: Date.now(),
+    startedBy: by || "Dispatch",
+    // What the board looked like when it was declared, so the record can be read
+    // back without having to reconstruct it.
+    unitsOut: coverageUnits(units, station).map((u) => u.name),
+    endedAt: null,
+    endedBy: null,
+  };
+  const next = [entry, ...existing].slice(0, COVERAGE_CAP);
+  const ok = await writeKey(COVERAGE_KEY, next);
+  if (!ok) return false;
+  await addLog(
+    `NO COVERAGE declared at ${stationLabel(station)} by ${by || "Dispatch"} — ` +
+      `${entry.unitsOut.length} team${entry.unitsOut.length === 1 ? "" : "s"} out with patients` +
+      (entry.unitsOut.length ? ` (${entry.unitsOut.join(", ")})` : ""),
+    "status"
+  );
+  return true;
+}
+
+// Closed by the board, not by a person: the first team back in service ends it.
+async function closeCoverageGapIfClear({ units, requests, list, addLog }) {
+  const existing = (await readKey(COVERAGE_KEY, list)) || [];
+  const open = existing.filter((c) => c && !c.endedAt);
+  if (!open.length) return 0;
+  const now = Date.now();
+  let closed = 0;
+  const next = existing.map((c) => {
+    if (!c || c.endedAt) return c;
+    if (!stationHasCoverage(units, requests, c.station)) return c;
+    closed += 1;
+    return { ...c, endedAt: now, endedBy: "First team back in service" };
+  });
+  if (!closed) return 0;
+  await writeKey(COVERAGE_KEY, next);
+  for (const c of next.filter((x) => x && x.endedAt === now)) {
+    await addLog(
+      `Coverage restored at ${stationLabel(c.station)} after ` +
+        `${msDurationStr(c.endedAt - c.startedAt)} with no ambulance available`,
+      "status"
+    );
+  }
+  return closed;
+}
+
+// The gaps that fall inside a window, for the sheet.
+function coverageGapsIn(list, station, from, to) {
+  return (list || [])
+    .filter((c) => c && c.station === station && c.startedAt >= from && c.startedAt < to)
+    .sort((a, b) => a.startedAt - b.startedAt);
+}
+
 // ---------- submitting a shift's log ----------
 //
 // The desk submits its own log at the end of its own shift. Two submissions make
@@ -626,7 +721,7 @@ function submissionOutstanding(sub, requests, units) {
 // The desk submitting its shift. Safe to press with a call still running: what
 // is known now is filed, and what is not yet known is marked as still open. The
 // background pass below finishes it off later.
-async function submitShiftLog({ requests, units, log, scheduled, station, windowStart, windowEnd, shiftKey, by }) {
+async function submitShiftLog({ requests, units, log, scheduled, station, windowStart, windowEnd, shiftKey, by, coverageList }) {
   const all = (await readKey(SUBMISSION_KEY, [])) || [];
   const dayStart = opDayStart(windowStart);
   const id = submissionId(dayStart, shiftKey, station);
@@ -659,6 +754,9 @@ async function submitShiftLog({ requests, units, log, scheduled, station, window
       (s) => s && stationOf(s) === station && s.scheduledFor >= windowStart && s.scheduledFor < windowEnd
     ),
     units: (units || []).filter((u) => stationOf(u) === station).map((u) => ({ ...u })),
+    // The gaps that happened on this shift travel with it, so a submitted log
+    // carries its own evidence rather than depending on a live list.
+    coverage: coverageGapsIn(coverageList, station, windowStart, windowEnd),
     callCount: mine.length,
   };
 
@@ -3201,10 +3299,30 @@ function serviceTypeFor(req) {
   return t;
 }
 
+// Fill a set of rows with a colour and a legible figure colour.
+function paintRows(sheet, rows, offset, bg, fg) {
+  if (!rows || !rows.length || !sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  rows.forEach((r) => {
+    const rowIdx = r + (offset || 0);
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
+      if (!cell) continue;
+      cell.s = {
+        ...(cell.s || {}),
+        fill: { patternType: "solid", fgColor: { rgb: bg } },
+        font: { ...((cell.s || {}).font || {}), color: { rgb: fg }, bold: true },
+      };
+    }
+  });
+  return sheet;
+}
+
 // Paint the night shift. The row indices come back on the AOA itself, because
 // only the builder knows which call belongs to which shift — by the time it is a
 // sheet the times are strings.
 function shadeNightRows(sheet, aoa, offset) {
+  paintRows(sheet, (aoa && aoa.coverageRows) || [], offset, "FFC00000", "FFFFFFFF");
   const rows = (aoa && aoa.nightRows) || [];
   if (!rows.length) return sheet;
   const ref = sheet["!ref"];
@@ -3226,7 +3344,7 @@ function shadeNightRows(sheet, aoa, offset) {
   return sheet;
 }
 
-function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station) {
+function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage) {
   // Section 1 as the sheet has it, with the two changes asked for: where the
   // patient is coming from leads the sheet rather than trailing it, and the call
   // category sits immediately after the category of call it qualifies.
@@ -3382,6 +3500,10 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
 
   // Which rows are night calls, so the sheet can be shaded after it is built.
   const nightRows = [];
+  // And which are periods with no ambulance available — these are the rows the
+  // department will be asked about, so they are marked in red and carry the
+  // sheet's own NO COVERAGE category rather than being invented as a new idea.
+  const coverageRows = [];
 
   groups.forEach((g, gi) => {
     if (gi > 0) out.push([]);
@@ -3391,9 +3513,35 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       if (isNightCall(r)) nightRows.push(out.length);
       out.push([idx + 1, ...rowFor(r)]);
     });
+
+    // The gaps for this station, under its calls, in the order they happened.
+    const gaps = (coverage || []).filter((c) => c && c.station === g.key)
+      .sort((a, b) => a.startedAt - b.startedAt);
+    if (gaps.length) {
+      out.push([]);
+      out.push([`${stationLabel(g.key).toUpperCase()} — NO COVERAGE`]);
+      out.push([
+        "#", "STARTED", "ENDED", "DURATION", "TEAMS OUT", "DECLARED BY", "ENDED BY", "CALL CATEGORY", "DATE",
+      ]);
+      gaps.forEach((c, idx) => {
+        coverageRows.push(out.length);
+        out.push([
+          idx + 1,
+          clockStr(c.startedAt),
+          c.endedAt ? clockStr(c.endedAt) : "STILL RUNNING",
+          c.endedAt ? durationStr(c.startedAt, c.endedAt) : "",
+          (c.unitsOut || []).join(", "),
+          c.startedBy || "",
+          c.endedBy || "",
+          "NO COVERAGE",
+          gregDateStr(c.startedAt),
+        ]);
+      });
+    }
   });
 
   out.nightRows = nightRows;
+  out.coverageRows = coverageRows;
   out.headerRows = [];
   return out;
 }
@@ -3507,7 +3655,7 @@ function autoFitSheet(ws, headerRow) {
 // exporting the department as a whole. When it is set, every sheet below is
 // that station's and nothing else — the two stations keep separate log sheets,
 // so an export that quietly mixed them would be worse than no export at all.
-async function exportAndShareLog(log, requests, units, scheduled, station) {
+async function exportAndShareLog(log, requests, units, scheduled, station, coverage) {
   if (station) {
     units = atStation(units, station);
     requests = atStation(requests, station);
@@ -3539,7 +3687,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station) {
   // layout, with the fields the template has no room for appended after it. Its
   // captions sit on the fifth row, under the title, the export stamp and the
   // line naming the two shift windows.
-  const dispatchAoa = buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station);
+  const dispatchAoa = buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station, coverage);
   const dispatchLogSheet = shadeNightRows(
     autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), 4),
     dispatchAoa,
@@ -3804,7 +3952,7 @@ async function exportArchivedDay(archive, liveRequests) {
     const stationRequests = atStation(requests, st.key);
     const stationUnits = atStation(units, st.key);
     const stationScheduled = atStation(scheduled, st.key);
-    const aoa = buildDispatchLogAOA(stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key);
+    const aoa = buildDispatchLogAOA(stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key, []);
     const nightRows = aoa.nightRows || [];
     // A line at the top of each sheet saying what this book is and whether it
     // has changed since the day was closed.
@@ -3883,7 +4031,7 @@ async function exportSubmission(sub, liveRequests) {
   const crewIndex = medicCrewIndex(units, log, at);
 
   const wb = XLSX.utils.book_new();
-  const aoa = buildDispatchLogAOA(requests, units, crewIndex, sub.scheduled || [], at, sub.station);
+  const aoa = buildDispatchLogAOA(requests, units, crewIndex, sub.scheduled || [], at, sub.station, sub.coverage || []);
   const subNightRows = aoa.nightRows || [];
   aoa.splice(1, 0, [
     `${sub.dayLabel} · ${sub.shiftLabel} · ${stationLabel(sub.station)}` +
@@ -4011,6 +4159,8 @@ function App() {
   const [archives, setArchives] = useState([]);
   // Shift logs the desks have submitted, per station.
   const [submissions, setSubmissions] = useState([]);
+  // Periods with no ambulance available, per station.
+  const [coverage, setCoverage] = useState([]);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -4260,10 +4410,41 @@ function App() {
     setArchives(arch || []);
     const subs = await readKey(SUBMISSION_KEY, []);
     setSubmissions(subs || []);
+    const cov = await readKey(COVERAGE_KEY, []);
+    setCoverage(cov || []);
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
   }, []);
+
+  // Ending a no-coverage period the moment a team is back in service. It is
+  // closed by the board rather than by a person, so nobody has to remember —
+  // which is the one thing nobody would, in the middle of the shift that caused
+  // it.
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
+    let alive = true;
+    const run = async () => {
+      try {
+        const n = await closeCoverageGapIfClear({
+          units: await readKey("ems:units", units),
+          requests: await readKey("ems:requests", requests),
+          list: coverage,
+          addLog,
+        });
+        if (n && alive) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
+      } catch (e) {
+        console.error("coverage watcher failed:", e);
+      }
+    };
+    run();
+    const t = setInterval(run, 10000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [ready, user && user.role, units, requests]);
 
   // Filing a shift that nobody filed by hand.
   //
@@ -4791,9 +4972,61 @@ function App() {
           // relieving them even though the seat was empty in between.
           lastCrew: { ...(unit.lastCrew || {}), [user.slot]: outgoing },
         };
-        if (stillEmpty && unit.status === "available") patch.status = "oos";
+
+        // A partner signed on from this device goes off with it. There is one
+        // tablet between them; when it leaves the truck the second seat has no
+        // way to sign itself off, and leaving them on the board would have the
+        // sheet counting hours they were not working and dispatch believing the
+        // unit is still crewed.
+        const partner = unit[otherSlot];
+        const partnerCameFromHere =
+          partner && partner.viaSeat === user.slot &&
+          (!partner.viaAccountId || partner.viaAccountId === user.accountId);
+        if (partnerCameFromHere) {
+          patch[otherSlot] = null;
+          patch.lastCrew = {
+            ...(patch.lastCrew || {}),
+            [otherSlot]: {
+              name: partner.name,
+              accountId: partner.accountId,
+              shift: partner.shift || null,
+              shiftStart: partner.shiftStart || null,
+              shiftEnd: partner.shiftEnd || null,
+              signedOnAt: partner.signedOnAt || null,
+              signedOffAt: now,
+              overtimeMs: overtimeMs(partner, now),
+            },
+          };
+        }
+
+        const bothEmpty = stillEmpty || partnerCameFromHere;
+        if (bothEmpty && unit.status === "available") patch.status = "oos";
         const nextUnits = freshUnits.map((u) => (u.id === user.unitId ? { ...u, ...patch } : u));
         await saveUnits(nextUnits);
+        if (partnerCameFromHere) {
+          const pot = overtimeMs(partner, now);
+          await addLog(
+            `${unit.name} — ${partner.name} (${seatLabel(otherSlot)}) signed off with the shared device` +
+              ` ${shiftPhrase(partner)}` + (pot > 0 ? ` · ${msDurationStr(pot)} overtime` : ""),
+            "shift",
+            {
+              kind: "off",
+              role: "team",
+              name: partner.name,
+              accountId: partner.accountId,
+              unitId: unit.id,
+              unitName: unit.name,
+              station: stationOf(unit),
+              seat: otherSlot,
+              shift: partner.shift || null,
+              shiftStart: partner.shiftStart || null,
+              shiftEnd: partner.shiftEnd || null,
+              overtimeMs: pot,
+              sharedDevice: true,
+            }
+          );
+        }
+
         await addLog(
           `${unit.name} — ${user.name} (${seatLabel(user.slot)}) signed off ${shiftPhrase(user)}` +
             (ot > 0 ? ` · ${msDurationStr(ot)} overtime` : ""),
@@ -5015,6 +5248,8 @@ function App() {
         <div style={styles.mainCol}>
           {user.role === "dispatcher" && (
             <DispatcherView
+              coverage={coverage}
+              setCoverage={setCoverage}
               user={user}
               units={units}
               requests={requests}
@@ -5087,7 +5322,7 @@ function App() {
         <div style={styles.footerBar}>
           <button
             style={styles.shareBtn}
-            onClick={() => exportAndShareLog(log, requests, units, scheduled, null)}
+            onClick={() => exportAndShareLog(log, requests, units, scheduled, null, coverage)}
           >
             <Share2 size={16} /> Export whole board
           </button>
@@ -5174,6 +5409,8 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
   // The partner being signed in on the same device, if there is one.
   const [partnerId, setPartnerId] = useState("");
   const [partnerError, setPartnerError] = useState("");
+  const [partnerPw, setPartnerPw] = useState("");
+  const [partnerOk, setPartnerOk] = useState(false);
   // Matched against the ID list the same way the person signing in was, so a
   // typo says so here rather than seating a name that does not exist.
   const [partnerAccount, setPartnerAccount] = useState(null);
@@ -5197,6 +5434,26 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
       clearTimeout(t);
     };
   }, [partnerId]);
+
+  // Checked as it is typed, so the crew know before they commit whether the
+  // second seat is actually going to be taken.
+  useEffect(() => {
+    let alive = true;
+    if (!partnerAccount || !partnerPw) {
+      setPartnerOk(false);
+      return;
+    }
+    (async () => {
+      const hash = await hashPassword(partnerPw);
+      if (!alive) return;
+      const good = !!partnerAccount.passwordHash && hash === partnerAccount.passwordHash;
+      setPartnerOk(good);
+      setPartnerError(good || partnerPw.length < 4 ? "" : "That password doesn't match that ID.");
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [partnerAccount, partnerPw]);
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [error, setError] = useState("");
@@ -5368,7 +5625,8 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
   // already sitting there — a crew sharing a tablet must not quietly stand down
   // whoever the board thinks is in that seat.
   async function seatPartnerIfAny(teamId, mySeat, assignment) {
-    if (!partnerAccount || !teamId) return null;
+    // No password, no seat. This is the whole point of asking for it.
+    if (!partnerAccount || !partnerOk || !teamId) return null;
     const other = mySeat === "alpha" ? "bravo" : "alpha";
     const fresh = await readKey("ems:units", units);
     const unit = fresh.find((u) => u.id === teamId);
@@ -5379,6 +5637,10 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
       accountId: partnerAccount.id,
       name: partnerAccount.name || partnerAccount.id,
       signedOnAt: Date.now(),
+      // Signed on from the other seat's device. Recorded so that when that seat
+      // signs off, this one goes with it — the tablet is leaving the truck.
+      viaSeat: mySeat,
+      viaAccountId: foundAccount ? foundAccount.id : null,
       ...assignment,
     };
     await saveUnits(fresh.map((u) => (u.id === teamId ? { ...u, [other]: member } : u)));
@@ -5836,8 +6098,33 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                     }}
                     placeholder="Partner's ID, e.g. F1122334"
                   />
+                  {/* Their own password, typed by them.
+                      Signing somebody onto a truck puts their name against every
+                      call it runs and every hour it works. That has to be their
+                      own act, not something a colleague can do for them from
+                      memory of their ID — so the partner takes the tablet and
+                      enters their password, exactly as they would on their own
+                      device. */}
+                  {partnerAccount && (
+                    <input
+                      style={{ ...styles.input, marginTop: 8 }}
+                      type="password"
+                      value={partnerPw}
+                      onChange={(e) => {
+                        setPartnerPw(e.target.value);
+                        setPartnerError("");
+                      }}
+                      placeholder={`${partnerName}'s password — hand them the tablet`}
+                    />
+                  )}
                   {partnerError && <div style={styles.loginError}>{partnerError}</div>}
-                  {partnerName && (
+                  {partnerAccount && !partnerAccount.passwordHash && (
+                    <div style={styles.formHint}>
+                      {partnerName} has not set a password yet. They need to sign in once on any
+                      device first.
+                    </div>
+                  )}
+                  {partnerOk && (
                     <div style={styles.partnerFound}>
                       <CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
                       {partnerName} will be signed into the other seat.
@@ -9599,7 +9886,7 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
   );
 }
 
-function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef }) {
+function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage }) {
   const [showForm, setShowForm] = useState(false);
   const [locationFrom, setLocationFrom] = useState("");
   const [locationTo, setLocationTo] = useState("");
@@ -9659,6 +9946,40 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Both of these now live at module level so the same correction behaves
   // identically whether it is made on a live call here or on a closed one
   // from the history list.
+  // Is anything free right now, and is a gap already running?
+  const coverageAvailable = stationHasCoverage(units, requests, myStation);
+  const myGap = openCoverageGap(coverage, myStation);
+  // Ticks so the running duration on the banner counts up.
+  const [clockTick, setClockTick] = useState(Date.now());
+  useEffect(() => {
+    if (!myGap) return;
+    const t = setInterval(() => setClockTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [myGap && myGap.id]);
+
+  async function declareNoCoverage() {
+    if (myGap) return;
+    const free = coverageUnits(units, myStation).filter((u) => !liveRequestFor(u, requests));
+    const ok = window.confirm(
+      free.length
+        ? `${free.map((u) => u.name).join(", ")} ${free.length === 1 ? "is" : "are"} still showing as free.\n\n` +
+          `Declare NO COVERAGE anyway?`
+        : `Declare NO COVERAGE at ${stationLabel(myStation)}?\n\n` +
+          `Every team is out with a patient. It ends on its own as soon as one is back in service — ` +
+          `you do not need to press anything again.\n\nZahrawi is not counted.`
+    );
+    if (!ok) return;
+    const done = await startCoverageGap({
+      station: myStation,
+      by: user.name || "Dispatch",
+      units,
+      requests,
+      list: coverage,
+      addLog,
+    });
+    if (done) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
+  }
+
   // Sending a second ambulance the crew never asked for.
   //
   // Until now an assist could only start with the crew raising it — which is
@@ -10442,6 +10763,28 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       <div style={styles.sectionHeader}>
         <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> UNITS
       </div>
+      {/* Declaring that there is nothing left to send. Sits with the teams,
+          because that is where the desk is looking when it becomes true. */}
+      <div style={styles.coverageRow}>
+        {myGap ? (
+          <div style={styles.coverageOn}>
+            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
+            NO COVERAGE — running {msDurationStr(clockTick - myGap.startedAt)}
+            <span style={styles.coverageSince}>
+              since {clockStr(myGap.startedAt)} · ends by itself when a team is back in service
+            </span>
+          </div>
+        ) : (
+          <button
+            style={coverageAvailable ? styles.coverageBtnQuiet : styles.coverageBtn}
+            onClick={declareNoCoverage}
+          >
+            <AlertTriangle size={13} /> Declare NO COVERAGE
+            {coverageAvailable && <span style={styles.coverageHint}>a team is still free</span>}
+          </button>
+        )}
+      </div>
+
       <div style={styles.unitGrid}>
         {stationUnits.map((u) => (
           <UnitRosterCard key={u.id} unit={u} />
@@ -10857,6 +11200,58 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     );
   }
 
+  // The other seat, and whether it was signed on from this device.
+  const otherSeat = user.slot === "alpha" ? "bravo" : "alpha";
+  const mySeatPartner = myUnit ? myUnit[otherSeat] : null;
+
+  async function standPartnerDown() {
+    if (!myUnit || !mySeatPartner) return;
+    const ok = window.confirm(
+      `Stand ${mySeatPartner.name} down from ${seatLabel(otherSeat)}?\n\n` +
+        `Their hours are recorded up to now. You can sign somebody else into the seat straight after.`
+    );
+    if (!ok) return;
+    const now = Date.now();
+    const fresh = await readKey("ems:units", units);
+    const unit = fresh.find((u) => u.id === myUnit.id);
+    if (!unit || !unit[otherSeat]) return;
+    const p = unit[otherSeat];
+    const ot = overtimeMs(p, now);
+    await saveUnits(
+      fresh.map((u) =>
+        u.id === myUnit.id
+          ? {
+              ...u,
+              [otherSeat]: null,
+              lastCrew: {
+                ...(u.lastCrew || {}),
+                [otherSeat]: { ...p, signedOffAt: now, overtimeMs: ot },
+              },
+            }
+          : u
+      )
+    );
+    await addLog(
+      `${unit.name} — ${p.name} (${seatLabel(otherSeat)}) stood down by ${user.name || "the crew"}` +
+        (ot > 0 ? ` · ${msDurationStr(ot)} overtime` : ""),
+      "shift",
+      {
+        kind: "off",
+        role: "team",
+        name: p.name,
+        accountId: p.accountId,
+        unitId: unit.id,
+        unitName: unit.name,
+        station: stationOf(unit),
+        seat: otherSeat,
+        shift: p.shift || null,
+        shiftStart: p.shiftStart || null,
+        shiftEnd: p.shiftEnd || null,
+        overtimeMs: ot,
+      }
+    );
+  }
+
   async function proposeCallEdits(changes, note) {
     const ok = await proposeCallEditsTo({
       req: myRequest, changes, note, viewer: escViewer,
@@ -11105,6 +11500,26 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           </div>
         )}
       </div>
+
+      {/* Managing the other seat from this device.
+          A crew sharing one tablet changes over mid-shift like any other — a
+          partner goes off sick, or is relieved early. Whoever signed them on can
+          stand them down and sign the next person on, and the replacement gives
+          their own password just as the first one did. */}
+      {mySeatPartner && mySeatPartner.viaSeat === user.slot && (
+        <div style={styles.partnerManage}>
+          <div style={styles.partnerManageHead}>
+            <Users size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
+            {seatLabel(otherSeat).toUpperCase()} — {mySeatPartner.name}
+          </div>
+          <div style={styles.partnerNote}>
+            Signed on from this tablet. They sign off automatically when you do.
+          </div>
+          <button style={{ ...styles.ghostBtnSm, marginTop: 8 }} onClick={standPartnerDown}>
+            Stand them down
+          </button>
+        </div>
+      )}
 
       <div style={styles.sectionHeader}>ASSIGNED AMBULANCE</div>
       <div style={styles.ambulanceRow}>
@@ -14635,6 +15050,35 @@ const styles = {
     marginTop: 7, fontSize: 13, color: "#93A7B8", lineHeight: 1.55,
     borderLeft: "2px solid #26384A", paddingLeft: 10,
   },
+
+  coverageRow: { marginBottom: 12 },
+  coverageBtn: {
+    display: "inline-flex", alignItems: "center", gap: 7,
+    background: "rgba(255,77,94,.10)", border: "1px solid rgba(255,77,94,.55)",
+    color: "#FF7A86", borderRadius: 999, padding: "10px 16px",
+    fontSize: 13.5, fontWeight: 800, letterSpacing: 0.3, cursor: "pointer",
+  },
+  coverageBtnQuiet: {
+    display: "inline-flex", alignItems: "center", gap: 7,
+    background: "none", border: "1px solid #26384A",
+    color: "#5E7488", borderRadius: 999, padding: "10px 16px",
+    fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+  },
+  coverageHint: { fontSize: 11.5, fontWeight: 600, color: "#5E7488", marginLeft: 4 },
+  coverageOn: {
+    background: "linear-gradient(180deg,#7F1D26,#4A0F16)",
+    border: "1px solid #FF4D5E", borderRadius: 14,
+    padding: "12px 14px", color: "#FFFFFF",
+    fontSize: 15, fontWeight: 800, letterSpacing: 0.3,
+    boxShadow: "0 8px 24px rgba(255,77,94,.22)",
+  },
+  coverageSince: { display: "block", fontSize: 12.5, fontWeight: 600, color: "rgba(255,255,255,.75)", marginTop: 4 },
+
+  partnerManage: {
+    background: "#111C26", border: "1px solid #26384A", borderRadius: 14,
+    padding: 12, marginBottom: 12,
+  },
+  partnerManageHead: { fontSize: 12, fontWeight: 800, letterSpacing: 0.5, color: "#E9C46A" },
 
   partnerBox: {
     marginTop: 14, background: "#0A1017", border: "1px dashed #26384A",
