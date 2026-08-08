@@ -8037,7 +8037,23 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
   // crew stating who they handed the patient to, which only they can know. It is
   // stamped with whoever entered it either way.
   // Which of these calls the sheet still wants something from.
-  const incomplete = canCorrect ? callsNeedingDetail(requests) : [];
+  //
+  // A desk is answerable for its own twelve hours and no more. Showing them
+  // every gap the department has ever left turns the banner into wallpaper —
+  // and the gaps from Tuesday night belong to the desk that worked Tuesday
+  // night, who are the only people who can still remember the call.
+  //
+  // Administration is the exception: they are looking at the department rather
+  // than a shift, and the point of their view is to see what is outstanding
+  // across all of it.
+  const incomplete = React.useMemo(() => {
+    if (!canCorrect) return [];
+    const all = callsNeedingDetail(requests);
+    if (!user || user.role !== "dispatcher") return all;
+    const from = user.shiftStart || shiftWindowAt(Date.now()).start;
+    const to = user.shiftEnd || from + SHIFT_MS;
+    return all.filter((r) => r.createdAt >= from && r.createdAt < to);
+  }, [requests, canCorrect, user && user.shiftStart, user && user.shiftEnd, user && user.role]);
 
   async function saveReceiverOn(req, { name, receiverId }) {
     const who = user && user.name ? user.name : "Crew";
@@ -8220,7 +8236,8 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
         <div style={styles.needsDetail}>
           <div style={styles.needsDetailHead}>
             <span style={styles.needsDetailBulb}>💡</span>
-            {incomplete.length} completed call{incomplete.length === 1 ? "" : "s"} still
+            {incomplete.length} completed call{incomplete.length === 1 ? "" : "s"}{" "}
+            {user && user.role === "dispatcher" ? "on your shift" : "on the board"} still
             {incomplete.length === 1 ? " needs" : " need"} information before the log is finished
           </div>
           <div style={styles.needsDetailBody}>
