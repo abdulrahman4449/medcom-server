@@ -10387,6 +10387,30 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       <StatusBoard units={stationUnits} />
 
+      {/* At the top, with the status board. Whether there is anything left to
+          send is the first thing the desk needs to know when it looks at this
+          screen — not something to be found after scrolling past the calls. */}
+      <div style={styles.coverageRow}>
+        {myGap ? (
+          <div style={styles.coverageOn}>
+            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
+            NO COVERAGE — running {msDurationStr(clockTick - myGap.startedAt)}
+            <span style={styles.coverageSince}>
+              since {clockStr(myGap.startedAt)} · ends by itself when a team is back in service
+            </span>
+          </div>
+        ) : (
+          <button
+            style={coverageAvailable ? styles.coverageBtnQuiet : styles.coverageBtn}
+            onClick={declareNoCoverage}
+          >
+            <AlertTriangle size={13} /> Declare NO COVERAGE
+            {coverageAvailable && <span style={styles.coverageHint}>a team is still free</span>}
+          </button>
+        )}
+      </div>
+
+
       {/* Anything a crew has reported wrong that is still waiting on the desk —
           including on calls that have already closed. Scoped to this station:
           the other desk answers its own. */}
@@ -10818,28 +10842,6 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       <div style={styles.sectionHeader}>
         <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> UNITS
       </div>
-      {/* Declaring that there is nothing left to send. Sits with the teams,
-          because that is where the desk is looking when it becomes true. */}
-      <div style={styles.coverageRow}>
-        {myGap ? (
-          <div style={styles.coverageOn}>
-            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
-            NO COVERAGE — running {msDurationStr(clockTick - myGap.startedAt)}
-            <span style={styles.coverageSince}>
-              since {clockStr(myGap.startedAt)} · ends by itself when a team is back in service
-            </span>
-          </div>
-        ) : (
-          <button
-            style={coverageAvailable ? styles.coverageBtnQuiet : styles.coverageBtn}
-            onClick={declareNoCoverage}
-          >
-            <AlertTriangle size={13} /> Declare NO COVERAGE
-            {coverageAvailable && <span style={styles.coverageHint}>a team is still free</span>}
-          </button>
-        )}
-      </div>
-
       <div style={styles.unitGrid}>
         {stationUnits.map((u) => (
           <UnitRosterCard key={u.id} unit={u} />
@@ -12979,14 +12981,14 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
 
       {/* The standing record of what crews have reported — the reasons stay
           readable long after each issue is closed. */}
+      {/* Directly under the station boards: whether the department can answer a
+          call belongs with the picture of who is free, not further down. */}
+      <CoveragePanel coverage={coverage} units={units} requests={requests} />
+
       {/* Per-person UHU and the month's patient-origin table. */}
       <Statistics log={log} requests={requests} units={units} />
 
       <IssuesRaised requests={requests} viewer={escViewer} />
-
-      {/* Directly under the station boards: whether the department can answer a
-          call belongs with the picture of who is free, not further down. */}
-      <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
       {/* Straight under the board, above the rosters. An issue a crew took the
           trouble to write down is the one thing on this screen that has
