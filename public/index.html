@@ -3174,129 +3174,228 @@ function computeUhu(units, requests, now) {
 //
 // This is the one sheet in the export that carries a call. Everything the app
 // holds about one goes on its row here and is not repeated on another sheet.
+// The dispatch log, laid out as the department's own sheet lays it out.
+//
+// Column order, headings and spelling are taken from the log sheet in use, so a
+// month exported from here drops into the same place in the same order as a
+// month typed by hand. Where the app knows something the sheet asks for, it is
+// filled; where it does not, the cell is left empty rather than guessed at.
+//
+// The night shift is shaded. A call raised after 19:00 belongs to the night, and
+// on a printed month the two shifts were indistinguishable without reading every
+// time — so the night's rows carry a black fill and white figures, which is how
+// the department already marks them by hand.
+function isNightCall(req) {
+  return scheduledShiftKey(req && req.createdAt ? req.createdAt : 0) === "night";
+}
+
+// The service the call was run as, in the sheet's own vocabulary.
+function serviceTypeFor(req) {
+  const t = callTypeOf(req);
+  if (!t) return "";
+  if (t === "A") return "ALS";
+  if (t === "B") return "BLS";
+  if (t === "C") return "CCT";
+  if (t === "D") return "E";
+  if (t === "E") return "NA";
+  return t;
+}
+
+// Paint the night shift. The row indices come back on the AOA itself, because
+// only the builder knows which call belongs to which shift — by the time it is a
+// sheet the times are strings.
+function shadeNightRows(sheet, aoa, offset) {
+  const rows = (aoa && aoa.nightRows) || [];
+  if (!rows.length) return sheet;
+  const ref = sheet["!ref"];
+  if (!ref) return sheet;
+  const range = XLSX.utils.decode_range(ref);
+  rows.forEach((r) => {
+    const rowIdx = r + (offset || 0);
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = XLSX.utils.encode_cell({ r: rowIdx, c });
+      const cell = sheet[addr];
+      if (!cell) continue;
+      cell.s = {
+        ...(cell.s || {}),
+        fill: { patternType: "solid", fgColor: { rgb: "FF000000" } },
+        font: { ...((cell.s || {}).font || {}), color: { rgb: "FFFFFFFF" }, bold: false },
+      };
+    }
+  });
+  return sheet;
+}
+
 function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station) {
+  // Section 1 as the sheet has it, with the two changes asked for: where the
+  // patient is coming from leads the sheet rather than trailing it, and the call
+  // category sits immediately after the category of call it qualifies.
   const header = [
-    "FROM", "TO", "PT. MRN.", "MEDIC TEAM", "TRUCK", "APPT. TIME", "DISP. TIME",
-    "ENROU TIME", "ARRV. TIME", "DEP. TIME", "OFF LOAD TIME", "BACK IN SERV.",
-    "TOTAL TIME", "DISP -ENRO", "ON SCENE", "ENRO -ARRV.", "OFF LOAD -SERV",
-    "COMMENTS & REQUIREMENT", "TYPE OF SERVICE", "CAT. OF CALL", "KILO METER",
-    "ADDED SERVICE", "PCR AUTHOR", "PRIORITY", "REQUIREMENTS", "SHIFT", "SHIFT DATE",
-    "MEDIC CREW (NAME STAMPS)", "OUTCOME", "PT. REFUSED TIME",
-    "Location where the patient is coming from", "CALL CATEGORY",
-    "REFUSED BY (NAME)", "REFUSED BY (NATIONAL ID)", "REFUSED BY (RELATION)",
-    "RECEIVED BY (NAME)", "RECEIVER ID", "RECEIVER RECORDED BY",
+    "Location where the patient is coming from",
+    "Coming from?",
+    "Transported to?",
+    "MRN",
+    "App. Time",
+    "Dispatch time",
+    "En-route time",
+    "On-scene time",
+    "Departure time",
+    "Arrived on destination",
+    "Back in service",
+    "MEDIC TEAM",
+    "TRUCK",
+    "TYPE OF SERVICE",
+    "KILO METER",
+    "ADDED SERVICE",
+    "CAT. OF CALL",
+    "CALL CATEGORY",
+    "CODES AND EMERGENCIES",
+    "E-PCR AUTHOR",
+    "BRAVO",
+    // The derived intervals the sheet calculates for itself.
+    "App to Dispatch",
+    "Dispatch to En-route",
+    "En-route to On-scene",
+    "On-scene to Depart",
+    "Departure to Arrival",
+    "Arrival to Inservice",
+    "Total Time",
+    "RESPONSE TIME",
+    "DISPATCH DATA ENTRY STATUS",
+    // What the app records that the sheet has no column for, kept at the end so
+    // the department's own columns stay exactly where they are.
+    "SHIFT",
+    "SHIFT DATE",
+    "CALL DATE",
+    "STATUS",
+    "OUTCOME",
+    "PT. REFUSED TIME",
+    "REFUSED BY (NAME)",
+    "REFUSED BY (NATIONAL ID)",
+    "REFUSED BY (RELATION)",
+    "RECEIVED BY (NAME)",
+    "RECEIVER ID",
+    "RECEIVER RECORDED BY",
+    "REQUIREMENTS",
+    "MEDIC CREW (NAME STAMPS)",
     "ASSISTING TEAM(S)",
-    "CALL DATE", "STATUS", "ASSIST REQ. TIME", "ASSIST REQ. BY", "ASSIST STATUS",
-    "BOOKED BY", "BOOKED AT", "READY CALL TAKEN", "BOOKING NOTES",
-    "CLOSED BY", "CLOSE REASON", "STATION",
+    "ASSIST REQ. TIME",
+    "ASSIST REQ. BY",
+    "ASSIST STATUS",
+    "BOOKED BY",
+    "BOOKED AT",
+    "READY CALL TAKEN",
+    "BOOKING NOTES",
+    "CLOSED BY",
+    "CLOSE REASON",
+    "STATION",
   ];
 
-  const rows = requests
-    .slice()
-    .sort((a, b) => a.createdAt - b.createdAt)
-    .map((r) => {
-      const unit = units.find((u) => u.id === r.assignedUnitId);
-      const t = r.times || {};
-      // PT. MRN. has its own column, so the comment is the nature of the call on
-      // its own rather than saying the number a second time on the same row.
-      const comment = r.nature || "";
-      // Calls logged before shifts were tracked fall back to whichever shift
-      // the clock was on when they came in.
-      const shiftKey = r.shift || scheduledShiftKey(r.createdAt);
-      const shift = shiftMeta(shiftKey);
-      // Which of the two 12-hour windows this call sits in, and the day that
-      // window opened. A night call taken at 02:00 is filed under the evening
-      // before, so a night shift reads as one block on the sheet instead of
-      // being split across two dates.
-      const shiftRun = shiftWindowFor(shiftKey, r.createdAt);
-      const assist = assistOf(r);
-      // The booking this call was raised from, if it came off the scheduled
-      // board. Its booking-side detail is read onto this row so the schedule
-      // sheet does not have to carry the same transfer twice.
-      const booking = r.scheduledId ? (scheduled || []).find((s) => s && s.id === r.scheduledId) : null;
-      return [
-        callFrom(r),
-        callTo(r),
-        r.mrn || "",
-        unit ? unit.name : "",
-        unit ? unit.ambulanceNumber || "" : "",
-        clockStr(r.scheduledFor),
-        clockStr(r.createdAt),
-        clockStr(t.enroute),
-        clockStr(t.arrival),
-        clockStr(t.departure),
-        clockStr(t.arrivalDestination),
-        clockStr(t.backInService),
-        durationStr(r.createdAt, t.backInService),
-        durationStr(r.createdAt, t.enroute),
-        durationStr(t.arrival, t.departure),
-        durationStr(t.enroute, t.arrival),
-        durationStr(t.arrivalDestination, t.backInService),
-        comment,
-        "", // TYPE OF SERVICE — filled in by hand
-        r.callType || "", // CAT. OF CALL — A / B / C / D / E / NA
-        r.loadedKm || "", // KILO METER — the 1–5 band, or NA
-        "", // ADDED SERVICE — filled in by hand
-        pcrAuthorStamp(r, unit),
-        r.priority ? PRIORITY[r.priority].label : "",
-        reqLabels(r).join(", "),
-        shift ? `${shift.short} (${shift.window})` : "",
-        shiftDateOf(shiftRun.start),
-        medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
-        callOutcomeLabel(r),
-        clockStr(t[REFUSAL_TIME_KEY]),
-        r.patientOrigin || "",
-        r.callCategory || "",
-        r.refusal ? r.refusal.name : "",
-        r.refusal ? r.refusal.nationalId : "",
-        r.refusal ? r.refusal.relation : "",
-        r.receiver ? r.receiver.name : "",
-        r.receiver ? r.receiver.receiverId : "",
-        r.receiver ? r.receiver.takenBy : "",
-        assistTeamNames(r, units),
-        gregDateStr(r.createdAt),
-        r.status ? REQ_STATUS[r.status].label : "",
-        assist ? clockStr(assist.requestedAt) : "",
-        assist ? assist.requestedByUnitName || "" : "",
-        assist ? assist.status.toUpperCase() : "",
-        r.scheduledBy || (booking ? booking.createdBy || "" : ""),
-        booking && booking.createdAt ? gregDateTimeStr(booking.createdAt) : "",
-        booking && booking.readyCalledAt
-          ? `${gregDateTimeStr(booking.readyCalledAt)}${booking.readyCalledBy ? ` (${booking.readyCalledBy})` : ""}`
-          : "",
-        r.notes || (booking ? booking.notes || "" : ""),
-        r.closedBy || "",
-        // How the call ended, in the words of the desk that closed it. A call
-        // still running has nothing to say here yet; a closed one that predates
-        // the question says so rather than leaving the cell blank next to a
-        // patient.
-        r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
-        stationLabel(stationOf(r)),
-      ];
-    });
+  const rowFor = (r) => {
+    const unit = units.find((u) => u.id === r.assignedUnitId) || {};
+    const t = r.times || {};
+    const assist = assistOf(r);
+    const shiftKey = scheduledShiftKey(r.createdAt);
+    const shiftRun = shiftWindowFor(shiftKey, r.createdAt);
+    const shift = shiftMeta(shiftKey);
+    return [
+      r.patientOrigin || "",
+      callFrom(r),
+      callTo(r),
+      r.mrn || "",
+      clockStr(r.scheduledFor),
+      clockStr(r.createdAt),
+      clockStr(t.enroute),
+      clockStr(t.arrival),
+      clockStr(t.departure),
+      clockStr(t.arrivalDestination),
+      clockStr(t.backInService),
+      unit.name || "",
+      unit.ambulanceNumber || "",
+      serviceTypeFor(r),
+      loadedKmOf(r) || "",
+      r.addedService || "",
+      r.callType || "",
+      r.callCategory || "",
+      r.emergencyCode || "",
+      pcrAuthorStamp(r, unit),
+      r.pcrAuthor && r.pcrAuthor.seat === "alpha"
+        ? (unit.bravo ? unit.bravo.name : "")
+        : (unit.alpha ? unit.alpha.name : ""),
+      durationStr(r.scheduledFor, r.createdAt),
+      durationStr(r.createdAt, t.enroute),
+      durationStr(t.enroute, t.arrival),
+      durationStr(t.arrival, t.departure),
+      durationStr(t.departure, t.arrivalDestination),
+      durationStr(t.arrivalDestination, t.backInService),
+      durationStr(callStartTs(r), callEndTs(r, now)),
+      durationStr(r.createdAt, t.arrival),
+      // The sheet's own completeness check: a row with every time on it is done.
+      t.enroute && t.arrival && t.backInService ? "Completed" : "Incomplete",
+      shift ? `${shift.short} (${shift.window})` : "",
+      shiftDateOf(shiftRun.start),
+      gregDateStr(r.createdAt),
+      r.status ? REQ_STATUS[r.status].label : "",
+      callOutcomeLabel(r),
+      clockStr(t[REFUSAL_TIME_KEY]),
+      r.refusal ? r.refusal.name : "",
+      r.refusal ? r.refusal.nationalId : "",
+      r.refusal ? r.refusal.relation : "",
+      r.receiver ? r.receiver.name : "",
+      r.receiver ? r.receiver.receiverId : "",
+      r.receiver ? r.receiver.takenBy : "",
+      reqLabels(r).join(", "),
+      medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
+      assistTeamNames(r, units),
+      assist ? clockStr(assist.requestedAt) : "",
+      assist ? assist.requestedByUnitName || assist.requestedBy || "" : "",
+      assist ? (assist.status || "").toUpperCase() : "",
+      r.scheduledBy || "",
+      r.bookingCreatedAt ? gregDateTimeStr(r.bookingCreatedAt) : "",
+      r.readyCalledAt ? gregDateTimeStr(r.readyCalledAt) : "",
+      r.bookingNotes || "",
+      r.closedBy || "",
+      r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
+      stationLabel(stationOf(r)),
+    ];
+  };
 
-  return [
-    // The station this book belongs to, said on the first line. A sheet
-    // headed "MAIN HOSPITAL" on a CCC export is worse than an unlabelled
-    // one — it states the wrong thing rather than nothing.
+  const sorted = (requests || []).slice().sort((a, b) => a.createdAt - b.createdAt);
+
+  // An export covering both stations keeps them apart on the page: the Main
+  // Office's calls run first as their own numbered block, then CCC underneath as
+  // a second one. Interleaving them by time made a sheet nobody could read down.
+  const groups = station
+    ? [{ key: station, rows: sorted }]
+    : STATIONS.map((st) => ({ key: st.key, rows: sorted.filter((r) => stationOf(r) === st.key) })).filter(
+        (g) => g.rows.length
+      );
+
+  const out = [
     [
       station
         ? `KFSH&RC AMBULANCE DISPATCH LOG — ${stationLabel(station).toUpperCase()}`
         : "KFSH&RC AMBULANCE DISPATCH LOG — ALL STATIONS",
     ],
-    // Each row carries its own CALL DATE, so this line says when the export was
-    // taken rather than repeating one date the rows may not all share.
-    [`EXPORTED: ${gregDateTimeStr(now || Date.now())}`],
-    // The two windows the whole workbook is filed against, said once at the top
-    // so nobody has to infer them from the times in the columns.
-    [
-      `SHIFTS: ${SHIFTS.day.label} ${SHIFTS.day.window} · ${SHIFTS.night.label} ${SHIFTS.night.window} ` +
-        "(the night shift crosses midnight and is filed under the date it started)",
-    ],
     [],
-    header,
-    ...rows,
   ];
+
+  // Which rows are night calls, so the sheet can be shaded after it is built.
+  const nightRows = [];
+
+  groups.forEach((g, gi) => {
+    if (gi > 0) out.push([]);
+    out.push([`${stationLabel(g.key).toUpperCase()} — ${g.rows.length} call${g.rows.length === 1 ? "" : "s"}`]);
+    out.push(["#", ...header]);
+    g.rows.forEach((r, idx) => {
+      if (isNightCall(r)) nightRows.push(out.length);
+      out.push([idx + 1, ...rowFor(r)]);
+    });
+  });
+
+  out.nightRows = nightRows;
+  out.headerRows = [];
+  return out;
 }
 
 // Every shift sign-on, sign-off, swap and overtime crossing, in the order it
@@ -3440,9 +3539,11 @@ async function exportAndShareLog(log, requests, units, scheduled, station) {
   // layout, with the fields the template has no room for appended after it. Its
   // captions sit on the fifth row, under the title, the export stamp and the
   // line naming the two shift windows.
-  const dispatchLogSheet = autoFitSheet(
-    XLSX.utils.aoa_to_sheet(buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station)),
-    4
+  const dispatchAoa = buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station);
+  const dispatchLogSheet = shadeNightRows(
+    autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), 4),
+    dispatchAoa,
+    0
   );
   XLSX.utils.book_append_sheet(wb, dispatchLogSheet, "DISPATCH LOG");
 
@@ -3704,6 +3805,7 @@ async function exportArchivedDay(archive, liveRequests) {
     const stationUnits = atStation(units, st.key);
     const stationScheduled = atStation(scheduled, st.key);
     const aoa = buildDispatchLogAOA(stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key);
+    const nightRows = aoa.nightRows || [];
     // A line at the top of each sheet saying what this book is and whether it
     // has changed since the day was closed.
     aoa.splice(1, 0, [
@@ -3711,7 +3813,7 @@ async function exportArchivedDay(archive, liveRequests) {
         ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}` +
         (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : ""),
     ]);
-    const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4);
+    const sheet = shadeNightRows(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4), aoa, 1);
     XLSX.utils.book_append_sheet(wb, sheet, `DISPATCH LOG — ${stationShort(st.key)}`);
   });
 
@@ -3782,6 +3884,7 @@ async function exportSubmission(sub, liveRequests) {
 
   const wb = XLSX.utils.book_new();
   const aoa = buildDispatchLogAOA(requests, units, crewIndex, sub.scheduled || [], at, sub.station);
+  const subNightRows = aoa.nightRows || [];
   aoa.splice(1, 0, [
     `${sub.dayLabel} · ${sub.shiftLabel} · ${stationLabel(sub.station)}` +
       ` · submitted ${gregDateTimeStr(sub.submittedAt)}${sub.submittedBy ? ` by ${sub.submittedBy}` : ""}` +
@@ -3790,7 +3893,7 @@ async function exportSubmission(sub, liveRequests) {
   ]);
   XLSX.utils.book_append_sheet(
     wb,
-    autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4),
+    shadeNightRows(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4), aoa, 1),
     `${stationShort(sub.station)} ${sub.shiftKey === "night" ? "NIGHT" : "DAY"}`
   );
 
@@ -9113,10 +9216,10 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                     </option>
                   ))}
                 </select>
-                <div style={styles.selectHint}>
-                  A team can be pencilled in for a future shift even if nobody is signed on to it yet. Whoever
-                  is holding the seats when the booking goes out gets the alert.
-                </div>
+                <InfoNote label="About pencilling in a team">
+                  A team can be pencilled in for a future shift even if nobody is signed on to it yet.
+                  Whoever is holding the seats when the booking goes out gets the alert.
+                </InfoNote>
               </div>
 
               <div>
@@ -9130,10 +9233,10 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                 loadedKm={loadedKm}
                 setLoadedKm={setLoadedKm}
               />
-              <div style={styles.formHint}>
-                Both codes can be left for later — the crew or the desk can set them on the call once it
-                is running, and either can correct the other.
-              </div>
+              <InfoNote label="About these two codes">
+                Both can be left for later — the crew or the desk can set them on the call once it is
+                running, and either can correct the other.
+              </InfoNote>
 
               {error && <div style={styles.loginError}>{error}</div>}
               <div style={{ display: "flex", gap: 8 }}>
@@ -10011,11 +10114,11 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             loadedKm={loadedKm}
             setLoadedKm={setLoadedKm}
           />
-          <div style={styles.formHint}>
-            The destination can be left blank if it isn't known yet — the crew and the log sheet will
-            show the pick-up point on its own until it is filled in. The two codes can be left blank
-            too: the crew set them from the truck, and the desk can correct them on the call.
-          </div>
+          <InfoNote label="What can be left for later?">
+            Only the pick-up point is needed to send an ambulance. The destination, the nature of the
+            call, the MRN and the two codes can all be left blank — the crew set them from the truck,
+            or the desk fills them in when the ward rings back, and either can correct the other.
+          </InfoNote>
 
           <div>
             <label style={styles.label}>Requirements</label>
@@ -13006,26 +13109,33 @@ const styles = {
   mainCol: { flex: "2 1 480px", minWidth: 0 },
   sideCol: { flex: "1 1 300px", minWidth: 280 },
 
+  // The organisation's app carries a floating pill at the bottom rather than a
+  // bar welded to the edge of the screen. Same idea here: it lifts off the
+  // background, clears the home indicator, and reads as part of the same family.
   footerBar: {
     position: "fixed",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    background: "#111C26",
-    borderTop: "1px solid #1F2E3C",
-    padding: "12px 16px",
-    paddingBottom: "calc(12px + env(safe-area-inset-bottom))",
+    bottom: "calc(12px + env(safe-area-inset-bottom))",
+    left: 14,
+    right: 14,
+    background: "rgba(17,28,38,.96)",
+    border: "1px solid #26384A",
+    borderRadius: 22,
+    padding: "10px 14px",
     display: "flex",
     justifyContent: "center",
     zIndex: 40,
+    boxShadow: "0 12px 34px rgba(0,0,0,.55)",
+    backdropFilter: "blur(8px)",
   },
   shareBtn: {
-    background: "#35C4E8",
-    border: "none",
-    color: "#0A1017",
-    fontWeight: 700,
-    borderRadius: 10,
-    padding: "11px 22px",
+    // A pill in the hospital's green, as the organisation's own primary buttons
+    // are — not a square blue block.
+    background: "linear-gradient(180deg,#0E6B4F,#0A5540)",
+    border: "1px solid rgba(255,255,255,.14)",
+    color: "#FFFFFF",
+    fontWeight: 800,
+    borderRadius: 999,
+    padding: "13px 26px",
     cursor: "pointer",
     fontFamily: mono,
     fontSize: 15.5,
