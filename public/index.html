@@ -7996,6 +7996,36 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
     if (ok) setEditFor(null);
   }
 
+  // The handover, recorded on a call that has already closed. Unlike the coded
+  // fields this is not a correction to something the desk decided — it is the
+  // crew stating who they handed the patient to, which only they can know. It is
+  // stamped with whoever entered it either way.
+  async function saveReceiverOn(req, { name, receiverId }) {
+    const who = user && user.name ? user.name : "Crew";
+    const fresh = await readKey("ems:requests", requests);
+    await saveRequests(
+      fresh.map((r) =>
+        r.id === req.id
+          ? {
+              ...r,
+              receiver: {
+                name,
+                receiverId,
+                takenBy: who,
+                takenAt: Date.now(),
+                unitName: viewer ? viewer.unitName || "" : "",
+                afterClose: true,
+              },
+            }
+          : r
+      )
+    );
+    await addLog(
+      `${who} recorded the receiver for "${req.nature}" after the call closed — ${name} (ID ${receiverId})`,
+      "status"
+    );
+  }
+
   async function verifyEdit(req, entry, accept) {
     await verifyCallEditOn({
       req, entry, accept,
@@ -8340,6 +8370,20 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
                         <span key={i} style={styles.reqBadge}>{label}</span>
                       ))}
                     </div>
+                  )}
+
+                  {/* Who took the patient, recorded after the fact.
+                      A crew clearing at 03:00 goes back in service before they
+                      have written anything down, and the handover is the part
+                      that gets lost. It can be added here afterwards, by the
+                      crew who ran the call or by the desk — and changed, if the
+                      wrong name went in. */}
+                  {!isNoTransport(req) && (req.times || {}).arrivalDestination && (
+                    <ReceiverBanner
+                      req={req}
+                      canEdit={canCorrect || canProposeEditOn(req, viewer)}
+                      onSave={(v) => saveReceiverOn(req, v)}
+                    />
                   )}
 
                   {/* Corrections on a call that has already closed. This is the
@@ -10004,14 +10048,6 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Is anything free right now, and is a gap already running?
   const coverageAvailable = stationHasCoverage(units, requests, myStation);
   const myGap = openCoverageGap(coverage, myStation);
-  // Ticks so the running duration on the banner counts up.
-  const [clockTick, setClockTick] = useState(Date.now());
-  useEffect(() => {
-    if (!myGap) return;
-    const t = setInterval(() => setClockTick(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [myGap && myGap.id]);
-
   async function declareNoCoverage() {
     if (myGap) return;
     const free = coverageUnits(units, myStation).filter((u) => !liveRequestFor(u, requests));
@@ -10392,13 +10428,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           screen — not something to be found after scrolling past the calls. */}
       <div style={styles.coverageRow}>
         {myGap ? (
-          <div style={styles.coverageOn}>
-            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
-            NO COVERAGE — running {msDurationStr(clockTick - myGap.startedAt)}
-            <span style={styles.coverageSince}>
-              since {clockStr(myGap.startedAt)} · ends by itself when a team is back in service
-            </span>
-          </div>
+          <LiveCoverageBanner gap={myGap} />
         ) : (
           <button
             style={coverageAvailable ? styles.coverageBtnQuiet : styles.coverageBtn}
@@ -12311,6 +12341,29 @@ function originStats(requests, win) {
 // What administration needs to be able to answer: how often the department had
 // nothing to send, at which station, for how long, and when. Open gaps are shown
 // first and loudly — those are happening now.
+// The banner for a gap that is running now. Its own component because it is
+// shown in two places — under each station's board at the top of the admin
+// screen, and on the desk that declared it — and they must not drift apart.
+function LiveCoverageBanner({ gap }) {
+  const [tick, setTick] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [gap && gap.id]);
+  if (!gap) return null;
+  return (
+    <div style={styles.coverageOn}>
+      <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
+      NO COVERAGE — {msDurationStr(tick - gap.startedAt)}
+      <span style={styles.coverageSince}>
+        since {clockStr(gap.startedAt)} · declared by {gap.startedBy}
+        {gap.unitsOut && gap.unitsOut.length ? ` · ${gap.unitsOut.join(", ")} out` : ""}
+        {" · ends by itself when a team is back in service"}
+      </span>
+    </div>
+  );
+}
+
 function CoveragePanel({ coverage, units, requests }) {
   const [open, setOpen] = useState(false);
   const [tick, setTick] = useState(Date.now());
@@ -12332,20 +12385,6 @@ function CoveragePanel({ coverage, units, requests }) {
 
   return (
     <>
-      {/* Anything running right now sits outside the fold — an administrator
-          should not have to open a section to find out the department cannot
-          answer a call. */}
-      {live.map((c) => (
-        <div key={c.id} style={styles.coverageOn}>
-          <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
-          NO COVERAGE AT {stationLabel(c.station).toUpperCase()} — {msDurationStr(tick - c.startedAt)}
-          <span style={styles.coverageSince}>
-            since {clockStr(c.startedAt)} · declared by {c.startedBy}
-            {c.unitsOut && c.unitsOut.length ? ` · ${c.unitsOut.join(", ")} out` : ""}
-          </span>
-        </div>
-      ))}
-
       <FoldingSection
         title="NO COVERAGE — RECORD"
         count={list.length}
@@ -12967,12 +13006,19 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           combined count answers a question nobody at either station is asking:
           "three available" means nothing if two of them are at the other end
           of the city. */}
-      {STATIONS.map((st) => (
-        <div key={st.key} style={{ marginBottom: 10 }}>
-          <div style={styles.stationBoardLabel}>{st.label}</div>
-          <StatusBoard units={atStation(units, st.key)} />
-        </div>
-      ))}
+      {STATIONS.map((st) => {
+        const gap = openCoverageGap(coverage, st.key);
+        return (
+          <div key={st.key} style={{ marginBottom: 10 }}>
+            <div style={styles.stationBoardLabel}>{st.label}</div>
+            <StatusBoard units={atStation(units, st.key)} />
+            {/* Directly under this station's own board. An administrator opening
+                the app must see that a station cannot answer a call in the same
+                glance that tells them who is free — not after scrolling. */}
+            {gap && <LiveCoverageBanner gap={gap} />}
+          </div>
+        );
+      })}
 
       {/* The kept days, near the top: it is the thing an administrator comes
           back to this screen for, and it should not be at the bottom of a long
@@ -12981,8 +13027,8 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
 
       {/* The standing record of what crews have reported — the reasons stay
           readable long after each issue is closed. */}
-      {/* Directly under the station boards: whether the department can answer a
-          call belongs with the picture of who is free, not further down. */}
+      {/* The standing record. What is happening right now is shown at the top,
+          under each station's own board. */}
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
       {/* Per-person UHU and the month's patient-origin table. */}
