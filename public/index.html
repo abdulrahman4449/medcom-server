@@ -806,6 +806,42 @@ async function submitShiftLog({ requests, units, log, scheduled, station, window
 // the station's crews are signed out, the submission is completed — its calls
 // refreshed to their final times and the overtime that was still accruing when
 // it was submitted now counted.
+// A shift filed by hand before its window closed still has to take whatever the
+// rest of the window brings. Without this, a desk that submitted at 16:00
+// because it looked finished would leave every later call off the sheet — and
+// nobody would notice until the month was counted.
+async function amendSubmissionsWithLateCalls({ requests, log }) {
+  const all = (await readKey(SUBMISSION_KEY, [])) || [];
+  if (!all.length) return 0;
+  let changed = 0;
+  const next = all.map((sub) => {
+    if (!sub) return sub;
+    const known = new Set(sub.requestIds || []);
+    const late = requestsForShift(requests, sub.station, sub.windowStart, sub.windowEnd)
+      .filter((r) => !known.has(r.id));
+    if (!late.length) return sub;
+    changed += 1;
+    const merged = [...(sub.requests || []), ...late.map((r) => ({ ...r }))];
+    const stillOpen = merged.filter((r) => r.status !== "completed").map((r) => r.id);
+    return {
+      ...sub,
+      requestIds: merged.map((r) => r.id),
+      requests: merged,
+      openRequestIds: stillOpen,
+      // Taking on a call that has not finished re-opens the submission, so the
+      // overtime is counted when it does.
+      status: stillOpen.length ? "open" : sub.status,
+      callCount: merged.length,
+      log: logForShift(log, sub.station, sub.windowStart, Date.now()),
+      amendedAt: Date.now(),
+      amendedCount: (sub.amendedCount || 0) + late.length,
+    };
+  });
+  if (!changed) return 0;
+  await writeKey(SUBMISSION_KEY, next);
+  return changed;
+}
+
 async function finaliseOpenSubmissions({ requests, units, log, boardId }) {
   const all = (await readKey(SUBMISSION_KEY, [])) || [];
   const open = all.filter((s) => s && s.status === "open");
@@ -4560,9 +4596,8 @@ function App() {
           const start = current - n * SHIFT_MS;
           windows.push({ start, end: start + SHIFT_MS, key: scheduledShiftKey(start) });
         }
-        // And the window running now, if it has already finished early — every
-        // call closed and everyone off before the twelve hours are up.
-        windows.unshift({ start: current, end: current + SHIFT_MS, key: scheduledShiftKey(current) });
+        // The window running now is deliberately not a candidate: it is not over,
+        // and filing it would shut the rest of the shift out of its own log.
 
         for (const st of STATIONS) {
           const crewStillOn = freshUnits.filter(
@@ -4580,13 +4615,21 @@ function App() {
             if (!mine.length) continue;
 
             const stillOpen = mine.filter((r) => r.status !== "completed").length;
-            const windowOver = now >= w.end;
 
-            // A finished window with everything closed, or a window still running
-            // that has gone quiet early. Either way nobody is left to add to it.
+            // Only once the twelve hours are actually up.
+            //
+            // This used to also file a shift that had gone quiet early — every
+            // call closed and everyone signed out before the window ended. That
+            // was wrong: crews sign out for all sorts of reasons mid-shift, and a
+            // log filed at that moment shut the rest of the shift out of it.
+            // Anything raised afterwards fell into a window that already had a
+            // submission and was refused, so it reached no log sheet at all.
+            //
+            // A desk that has genuinely finished early can still submit by hand;
+            // that is a person deciding, not the board guessing.
+            if (now < w.end) continue;
             if (stillOpen) continue;
-            if (!windowOver && crewStillOn) continue;
-            if (windowOver && crewStillOn) continue;
+            if (crewStillOn) continue;
 
             const res = await submitShiftLog({
               requests: freshRequests,
@@ -4634,6 +4677,10 @@ function App() {
     let alive = true;
     const run = async () => {
       try {
+        await amendSubmissionsWithLateCalls({
+          requests: await readKey("ems:requests", requests),
+          log: await readKey("ems:log", log),
+        });
         const n = await finaliseOpenSubmissions({
           requests: await readKey("ems:requests", requests),
           units: await readKey("ems:units", units),
@@ -12420,17 +12467,46 @@ function staffStatsFor(log, requests, units, win, now) {
     return people.get(k);
   };
 
-  // Shift time worked, from the sign-on entries inside the window.
-  (log || []).forEach((e) => {
-    const d = e && e.detail;
-    if (!d || d.kind !== "on" || d.role !== "team") return;
-    const start = d.shiftStart || e.ts;
-    if (!start || start >= win.end || (d.shiftEnd || start) < win.start) return;
-    const p = person(d.accountId, d.name);
-    const from = Math.max(start, win.start);
-    const to = Math.min(d.shiftEnd || Math.min(now, win.end), win.end);
-    if (to > from) p.shiftMs += to - from;
-    if (d.unitId) p.units.add(d.unitName || d.unitId);
+  // Time actually worked, paired from sign-on to sign-off.
+  //
+  // This used to add up the *rostered* twelve hours behind each sign-on, which
+  // was wrong the moment anybody moved. Somebody who ran Medic 1 for six hours
+  // and then took Bravo on Medic 2 for six signed on twice, so twelve hours of
+  // work was counted as twenty-four — and their UHU came out at half what it
+  // should have been. The people most likely to move around are the ones
+  // covering gaps, so the measure punished exactly the wrong staff.
+  //
+  // Pairing on to off counts the clock they were actually signed on for, once,
+  // however many trucks they sat in. A seat still open at the end of the window
+  // is counted up to now.
+  const openSeats = new Map();
+  const seatKey = (d) => `${d.accountId || d.name}::${d.unitId || ""}::${d.seat || ""}`;
+
+  [...(log || [])]
+    .filter((e) => e && e.detail && e.detail.role === "team")
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .forEach((e) => {
+      const d = e.detail;
+      const k = seatKey(d);
+      if (d.kind === "on") {
+        openSeats.set(k, { at: e.ts, d });
+        if (d.unitId) person(d.accountId, d.name).units.add(d.unitName || d.unitId);
+      } else if (d.kind === "off") {
+        const started = openSeats.get(k);
+        openSeats.delete(k);
+        if (!started) return;
+        const from = Math.max(started.at, win.start);
+        const to = Math.min(e.ts, win.end);
+        if (to > from) person(d.accountId, d.name).shiftMs += to - from;
+      }
+    });
+
+  // Anyone still on a seat when the window closes.
+  openSeats.forEach(({ at, d }) => {
+    const from = Math.max(at, win.start);
+    const to = Math.min(now, win.end);
+    if (to > from) person(d.accountId, d.name).shiftMs += to - from;
+    if (d.unitId) person(d.accountId, d.name).units.add(d.unitName || d.unitId);
   });
 
   // Time on call, and calls completed, credited to whoever actually held the
@@ -12518,8 +12594,22 @@ function LiveCoverageBanner({ gap }) {
 function CoveragePanel({ coverage, units, requests }) {
   const [open, setOpen] = useState(false);
   const [tick, setTick] = useState(Date.now());
-  const list = (coverage || []).slice().sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-  const live = list.filter((c) => !c.endedAt);
+  // Which operational day is being read. "Every gap ever" is not a question
+  // anybody asks — the question is always about a particular day, usually one
+  // somebody has just been asked about.
+  const [day, setDay] = useState(() => opDayKey(opDayStart(Date.now())));
+
+  const all = (coverage || []).slice().sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  // The days that actually have something on them, newest first.
+  const days = [];
+  all.forEach((c) => {
+    const k = opDayKey(opDayStart(c.startedAt));
+    if (!days.some((d) => d.key === k)) {
+      days.push({ key: k, label: opDayLabel(opDayStart(c.startedAt)), start: opDayStart(c.startedAt) });
+    }
+  });
+  const list = all.filter((c) => opDayKey(opDayStart(c.startedAt)) === day);
+  const live = all.filter((c) => !c.endedAt);
 
   useEffect(() => {
     if (!live.length) return;
@@ -12536,14 +12626,35 @@ function CoveragePanel({ coverage, units, requests }) {
 
   return (
     <>
+      {/* The count follows the day being read, not the whole history: a header
+          saying "48 on record" above a list showing one day's worth reads as a
+          contradiction, which is what made it look like the filter was doing
+          nothing. */}
       <FoldingSection
         title="NO COVERAGE — RECORD"
         count={list.length}
-        countLabel={live.length ? `on record · ${live.length} running now` : "on record"}
+        countLabel={
+          live.length
+            ? `on the selected day · ${live.length} running now`
+            : "on the selected day"
+        }
         open={open}
         onToggle={() => setOpen((v) => !v)}
       >
+        {/* One day at a time. */}
         <div style={styles.archTabs}>
+          <select style={{ ...styles.input, maxWidth: 260 }} value={day} onChange={(e) => setDay(e.target.value)}>
+            {days.length === 0 && <option value={day}>{opDayLabel(opDayStart(Date.now()))}</option>}
+            {days.map((d) => (
+              <option key={d.key} value={d.key}>
+                {d.label}
+                {d.key === opDayKey(opDayStart(Date.now())) ? " — today" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ ...styles.archTabs, marginTop: 8 }}>
           {totals.map((t) => (
             <div key={t.station.key} style={styles.coverageTotal}>
               <div style={styles.coverageTotalName}>{t.station.label}</div>
@@ -12562,10 +12673,14 @@ function CoveragePanel({ coverage, units, requests }) {
         </InfoNote>
 
         {list.length === 0 ? (
-          <div style={styles.emptyState}>No periods recorded.</div>
+          <div style={styles.emptyState}>
+            No periods recorded on {days.find((d) => d.key === day)
+              ? days.find((d) => d.key === day).label
+              : opDayLabel(opDayStart(Date.now()))}.
+          </div>
         ) : (
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-            {list.slice(0, 60).map((c) => (
+            {list.map((c) => (
               <div key={c.id} style={c.endedAt ? styles.coverageRowPast : styles.coverageRowLive}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={styles.coverageRowHead}>
