@@ -5880,7 +5880,10 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
     // They stay on it until they clear and sign out, and it transfers itself
     // then. The person arriving is on duty from now either way, so their own
     // hours start correctly.
-    const freshRequests = await readKey("ems:requests", requests);
+    // Read straight from the board. This screen has no requests prop — reaching
+    // for one threw before anything else could run, which stopped every crew
+    // sign-on for every ID and looked like the app simply doing nothing.
+    const freshRequests = (await readKey("ems:requests", [])) || [];
     const situation = reliefSituationFor(unit, slot, freshRequests, now);
     if (unit && situation === "still-out") {
       const out = unit[slot];
