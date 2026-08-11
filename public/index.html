@@ -273,6 +273,15 @@ function mergePending(key, serverList) {
 async function readKeyRaw(key) {
   try {
     const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
+    // Refused, not unreachable. The account list in particular is no longer
+    // served through the board — it is credential material and now sits behind
+    // its own administrator-only endpoint. A refusal means "nothing here for
+    // you", not "no signal", and one forbidden key must not make a working
+    // board look offline.
+    if (res.status === 403) {
+      setConnectionOk(true);
+      return null;
+    }
     if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
     const { value } = await res.json();
     setConnectionOk(true);
@@ -293,6 +302,15 @@ async function readKeyRaw(key) {
 async function readKey(key, fallback) {
   try {
     const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
+    // Refused, not unreachable. The account list in particular is no longer
+    // served through the board — it is credential material and now sits behind
+    // its own administrator-only endpoint. A refusal means "nothing here for
+    // you", not "no signal", and one forbidden key must not make a working
+    // board look offline.
+    if (res.status === 403) {
+      setConnectionOk(true);
+      return null;
+    }
     if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
     const { value } = await res.json();
     setConnectionOk(true);
@@ -713,6 +731,47 @@ async function startCoverageGap({ station, by, units, requests, list, addLog }) 
     "status"
   );
   return true;
+}
+
+// Opened by the board as well as closed by it.
+//
+// Asking the desk to press a button at the exact moment the last ambulance goes
+// out gets the record wrong in both directions: it is missed entirely on the
+// busiest nights, when the desk has a phone in each hand, and it starts late
+// even when it is remembered. The board already knows the moment it becomes
+// true — every staffed team out with a patient, Zahrawi aside — so it says so
+// itself, and the desk is told rather than asked.
+async function openCoverageGapIfStuck({ units, requests, list, addLog }) {
+  const byStation = STATIONS.map((st) => st.key);
+  let opened = 0;
+  for (const station of byStation) {
+    const fleet = coverageUnits(units, station);
+    // A station with nobody signed on is not "without coverage" — it is closed.
+    // Recording a gap for it every night would bury the real ones.
+    if (!fleet.length) continue;
+    if (stationHasCoverage(units, requests, station)) continue;
+    const existing = (await readKey(COVERAGE_KEY, list)) || [];
+    if (openCoverageGap(existing, station)) continue;
+    const entry = {
+      id: uid("cov"),
+      station,
+      startedAt: Date.now(),
+      startedBy: "Detected automatically",
+      auto: true,
+      unitsOut: fleet.map((u) => u.name),
+      endedAt: null,
+      endedBy: null,
+    };
+    const ok = await writeKey(COVERAGE_KEY, [entry, ...existing].slice(0, COVERAGE_CAP));
+    if (!ok) continue;
+    opened += 1;
+    await addLog(
+      `NO COVERAGE at ${stationLabel(station)} — every team is out with a patient ` +
+        `(${entry.unitsOut.join(", ")})`,
+      "status"
+    );
+  }
+  return opened;
 }
 
 // Closed by the board, not by a person: the first team back in service ends it.
@@ -4580,13 +4639,13 @@ function App() {
     let alive = true;
     const run = async () => {
       try {
-        const n = await closeCoverageGapIfClear({
-          units: await readKey("ems:units", units),
-          requests: await readKey("ems:requests", requests),
-          list: coverage,
-          addLog,
-        });
-        if (n && alive) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
+        const u = await readKey("ems:units", units);
+        const r = await readKey("ems:requests", requests);
+        // Opened and closed by the same watcher, in that order: if the last
+        // truck goes out and comes back between two passes, nothing is invented.
+        const opened = await openCoverageGapIfStuck({ units: u, requests: r, list: coverage, addLog });
+        const closed = await closeCoverageGapIfClear({ units: u, requests: r, list: coverage, addLog });
+        if ((opened || closed) && alive) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
       } catch (e) {
         console.error("coverage watcher failed:", e);
       }
@@ -5112,6 +5171,7 @@ function App() {
   // completely unstaffed and it isn't on a call right now, the unit
   // automatically drops back to "Out of Service".
   async function handleLogout() {
+
     const now = Date.now();
     if (user && user.role === "team" && user.unitId && user.slot) {
       const freshUnits = await readKey("ems:units", units);
@@ -5695,6 +5755,8 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
     setStage(found.passwordHash ? "verifyPassword" : "createPassword");
   }
 
+  // Setting a password for the first time. The server decides whether that is
+  // allowed — this screen cannot grant it.
   async function handleCreatePassword() {
     if (pw.length < 4) {
       setError("Password must be at least 4 characters.");
@@ -10734,7 +10796,13 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             onClick={declareNoCoverage}
           >
             <AlertTriangle size={13} /> Declare NO COVERAGE
-            {coverageAvailable && <span style={styles.coverageHint}>a team is still free</span>}
+            {/* It starts on its own the moment the last team goes out. This is
+                here for the case the board cannot see — a truck off the road
+                with a fault, a crew stood down — where the desk knows something
+                the board does not. */}
+            <span style={styles.coverageHint}>
+              {coverageAvailable ? "a team is still free" : "starts by itself"}
+            </span>
           </button>
         )}
       </div>
@@ -12690,7 +12758,13 @@ function staffStatsFor(log, requests, units, win, now) {
   const person = (id, name) => {
     const k = (id || name || "").toUpperCase();
     if (!people.has(k)) {
-      people.set(k, { id: id || "", name: name || "", shiftMs: 0, onCallMs: 0, calls: 0, units: new Set() });
+      people.set(k, {
+        id: id || "", name: name || "", shiftMs: 0, onCallMs: 0, calls: 0,
+        units: new Set(),
+        // Which shift windows they worked. A set, so a medic who changes
+        // truck mid-shift is one shift, not two.
+        shifts: new Set(),
+      });
     }
     return people.get(k);
   };
@@ -12719,6 +12793,7 @@ function staffStatsFor(log, requests, units, win, now) {
       if (d.kind === "on") {
         openSeats.set(k, { at: e.ts, d });
         if (d.unitId) person(d.accountId, d.name).units.add(d.unitName || d.unitId);
+        person(d.accountId, d.name).shifts.add(shiftWindowAt(d.shiftStart || e.ts).start);
       } else if (d.kind === "off") {
         const started = openSeats.get(k);
         openSeats.delete(k);
@@ -12767,8 +12842,21 @@ function staffStatsFor(log, requests, units, win, now) {
     .map((p) => ({
       ...p,
       unitList: Array.from(p.units).join(", "),
-      // The share of the time they were signed on that was spent on a call.
-      uhu: p.shiftMs > 0 ? Math.min(100, (p.onCallMs / p.shiftMs) * 100) : 0,
+      shiftsWorked: p.shifts.size,
+      // Measured against the shift, not against time signed on.
+      //
+      // Six hours on calls in a twelve-hour shift is 50%. That is what the
+      // department means by UHU and what the figure gets compared against
+      // elsewhere. Dividing by time-signed-on instead flattered whoever left
+      // early: run six hours of calls and sign out after eight, and you scored
+      // 75% for the same work as somebody who stayed the full twelve.
+      //
+      // Over a month it is measured against the shifts actually worked, so
+      // somebody who worked ten shifts is judged on ten, not on the calendar.
+      uhu:
+        p.shifts.size > 0
+          ? Math.min(100, (p.onCallMs / (p.shifts.size * SHIFT_MS)) * 100)
+          : 0,
     }))
     .sort((a, b) => b.uhu - a.uhu);
 }
@@ -13026,8 +13114,8 @@ function Statistics({ log, requests, units }) {
       </div>
       <InfoNote label="How this is counted">
         Per person, by name and ID, not per truck — a medic works a different unit most weeks, so a
-        figure attached to a truck says nothing about anybody. UHU is the share of the time somebody
-        was signed on that they spent on a call.
+        figure attached to a truck says nothing about anybody. UHU is time on calls measured against
+        the shift: six hours on calls in a twelve-hour shift is 50%.
       </InfoNote>
 
       {staff.length === 0 ? (
@@ -13041,8 +13129,9 @@ function Statistics({ log, requests, units }) {
                   {p.name} {p.id && <span style={styles.statId}>{p.id}</span>}
                 </div>
                 <div style={styles.statMeta}>
-                  {p.unitList || "—"} · {Math.round(p.shiftMs / 60000)} min signed on ·{" "}
-                  {Math.round(p.onCallMs / 60000)} min on call
+                  {p.unitList || "—"} · {Math.round(p.onCallMs / 60000)} min on call over{" "}
+                  {p.shiftsWorked} {p.shiftsWorked === 1 ? "shift" : "shifts"} ·{" "}
+                  {Math.round(p.shiftMs / 60000)} min signed on
                 </div>
               </div>
               {mode === "uhu" ? (
