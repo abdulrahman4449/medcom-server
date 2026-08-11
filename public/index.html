@@ -3284,7 +3284,20 @@ function medicCrewStamps(unit, log, now) {
 
   (log || [])
     .filter((e) => e.type === "shift" && e.detail && e.detail.role === "team")
-    .filter((e) => (e.detail.unitName || "") === unit.name)
+    // Matched on the unit's id, not its name.
+    //
+    // Both stations run a MEDIC 1. Matching on the name alone meant a crew at
+    // CCC could be counted against the Main Office truck of the same name, and
+    // — worse for the statistics — anybody whose sign-on line carried an id but
+    // a slightly different name string matched nothing at all and vanished from
+    // the figures entirely. They had done the calls; they simply were not
+    // findable. The id is the thing that is actually unique, so it decides, and
+    // the name is only a fallback for older lines that predate it.
+    .filter((e) =>
+      e.detail.unitId && unit.id
+        ? e.detail.unitId === unit.id
+        : (e.detail.unitName || "") === unit.name
+    )
     .slice()
     .sort((a, b) => (a.ts || 0) - (b.ts || 0))
     .forEach((e) => {
@@ -7308,6 +7321,50 @@ function InfoNote({ children, label }) {
   );
 }
 
+// A call as a tile.
+//
+// On a busy board the full cards ran to several screens, and finding one meant
+// scrolling past nine others. The tile carries what identifies a call at a
+// glance — the priority down the edge, the nature, where it is going, its team
+// and its clock — and opens into the card it always was when it is tapped.
+//
+// Deliberately the same size and shape as the unit squares above it, so the
+// board reads as one thing rather than two.
+function CallTile({ req, unit, onOpen, dim }) {
+  const p = PRIORITY[req.priority] || {};
+  const started = callStartTs(req);
+  return (
+    <button
+      style={{
+        ...styles.callTile,
+        borderLeftColor: p.color,
+        opacity: dim ? 0.75 : 1,
+      }}
+      onClick={onOpen}
+    >
+      <div style={styles.callTileTop}>
+        <span style={{ ...styles.callTileDot, background: p.color }} />
+        <span style={styles.callTileNature}>{req.nature}</span>
+      </div>
+      <div style={styles.callTileRoute}>{callRoute(req)}</div>
+      <div style={styles.callTileFoot}>
+        <span style={styles.callTileUnit}>{unit ? unit.name : "Unassigned"}</span>
+        <span style={styles.callTileTime}>{hhmm(started)}</span>
+      </div>
+      {/* The things that change the answer at a glance. */}
+      <div style={styles.callTileTags}>
+        {req.status && REQ_STATUS[req.status] && (
+          <span style={{ ...styles.callTileTag, color: REQ_STATUS[req.status].color }}>
+            {REQ_STATUS[req.status].label}
+          </span>
+        )}
+        {assistPending(req) && <span style={styles.callTileAssist}>ASSIST</span>}
+        {req.handover && <span style={styles.callTileHandover}>HANDED OVER</span>}
+      </div>
+    </button>
+  );
+}
+
 function ReceiverBanner({ req, canEdit, onSave }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -8274,6 +8331,9 @@ function callSearchText(req, units, escalations) {
 
 function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect }) {
   const [open, setOpen] = useState(!!shiftWindow);
+  // The reminder starts open — it is worth reading once — and folds away
+  // for the rest of the shift once the desk has taken it in.
+  const [bulbOpen, setBulbOpen] = useState(true);
   const [shown, setShown] = useState(HISTORY_PAGE);
   const [codingFor, setCodingFor] = useState(null);
   // Which call has the correction form open, keyed by id for the same reason
@@ -8499,16 +8559,31 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
           be confirmed. */}
       {incomplete.length > 0 && (
         <div style={styles.needsDetail}>
-          <div style={styles.needsDetailHead}>
+          <button
+            style={styles.needsDetailHeadBtn}
+            onClick={() => setBulbOpen((v) => !v)}
+          >
             <span style={styles.needsDetailBulb}>💡</span>
             {incomplete.length} completed call{incomplete.length === 1 ? "" : "s"}{" "}
             {user && user.role === "dispatcher" ? "on your shift" : "on the board"} still
             {incomplete.length === 1 ? " needs" : " need"} information before the log is finished
-          </div>
+            <ChevronRight
+              size={13}
+              style={{
+                marginLeft: "auto",
+                flex: "none",
+                transform: bulbOpen ? "rotate(90deg)" : "none",
+                transition: "transform .15s ease",
+              }}
+            />
+          </button>
+          {bulbOpen && (
           <div style={styles.needsDetailBody}>
             Open the call below and use <strong>Correct call details</strong>. Until then these
             columns go out blank on the dispatch log.
           </div>
+          )}
+          {bulbOpen && (
           <div style={styles.needsDetailList}>
             {incomplete.slice(0, 6).map((r) => (
               <div key={r.id} style={styles.needsDetailItem}>
@@ -8522,6 +8597,7 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
               <div style={styles.needsDetailWhat}>and {incomplete.length - 6} more below.</div>
             )}
           </div>
+          )}
         </div>
       )}
 
@@ -10348,6 +10424,8 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
 
 function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage }) {
   const [showForm, setShowForm] = useState(false);
+  // Which call is open as a full card. Null means the tile board.
+  const [openCallId, setOpenCallId] = useState(null);
   const [locationFrom, setLocationFrom] = useState("");
   const [locationTo, setLocationTo] = useState("");
   const [nature, setNature] = useState("");
@@ -11007,8 +11085,32 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {active.length === 0 && <div style={styles.emptyState}>No active calls. The board is clear.</div>}
 
+      {/* Tiles until one is opened.
+          A board with nine calls ran to several screens as full cards, and
+          finding the one the phone is about meant scrolling past the other
+          eight. Tiles put them all in view at once; tapping one gives back
+          exactly the card it always was. */}
+      {active.length > 0 && !active.some((r) => r.id === openCallId) && (
+        <div style={styles.callTileGrid}>
+          {active.map((req) => (
+            <CallTile
+              key={req.id}
+              req={req}
+              unit={units.find((u) => u.id === req.assignedUnitId)}
+              onOpen={() => setOpenCallId(req.id)}
+            />
+          ))}
+        </div>
+      )}
+
+      {active.some((r) => r.id === openCallId) && (
+        <button style={styles.tileBackBtn} onClick={() => setOpenCallId(null)}>
+          ← All {active.length} active {active.length === 1 ? "call" : "calls"}
+        </button>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {active.map((req) => {
+        {active.filter((r) => r.id === openCallId).map((req) => {
           const assignedUnit = units.find((u) => u.id === req.assignedUnitId);
           return (
             <div key={req.id} style={{ ...styles.callCard, borderLeftColor: PRIORITY[req.priority].color }}>
@@ -13027,9 +13129,19 @@ function Statistics({ log, requests, units }) {
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState("shift");
   const [mode, setMode] = useState("uhu");
+  const [search, setSearch] = useState("");
   const now = Date.now();
   const win = statRangeWindow(range, now);
-  const staff = staffStatsFor(log, requests, units, win, now);
+  const allStaff = staffStatsFor(log, requests, units, win, now);
+  // Searching by name or ID. On a department this size the list runs past a
+  // screenful within a week, and the question is usually about one person.
+  const q = (search || "").trim().toLowerCase();
+  const staff = q
+    ? allStaff.filter(
+        (p) =>
+          (p.name || "").toLowerCase().includes(q) || (p.id || "").toLowerCase().includes(q)
+      )
+    : allStaff;
   const origins = originStats(requests, win);
   const inWindow = (requests || []).filter((r) => r && r.createdAt >= win.start && r.createdAt < win.end);
 
@@ -13109,8 +13221,16 @@ function Statistics({ log, requests, units }) {
         </button>
       </div>
 
+      <input
+        style={{ ...styles.input, marginTop: 10 }}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by name or ID"
+      />
+
       <div style={styles.savedNote}>
         {inWindow.length} call{inWindow.length === 1 ? "" : "s"} raised {win.label}.
+        {q && ` Showing ${staff.length} of ${allStaff.length} staff.`}
       </div>
       <InfoNote label="How this is counted">
         Per person, by name and ID, not per truck — a medic works a different unit most weeks, so a
@@ -15946,6 +16066,60 @@ const styles = {
   needsDetail: {
     marginTop: 10, background: "rgba(233,196,106,.07)",
     border: "1px solid rgba(233,196,106,.5)", borderRadius: 14, padding: "12px 14px",
+  },
+  callTile: {
+    textAlign: "left",
+    background: "#111C26",
+    border: "1px solid #1F2E3C",
+    borderLeft: "4px solid",
+    borderRadius: 14,
+    padding: "11px 12px",
+    cursor: "pointer",
+    color: "#E9F1F7",
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    minHeight: 104,
+    boxShadow: "0 6px 16px rgba(0,0,0,.25)",
+  },
+  callTileTop: { display: "flex", alignItems: "center", gap: 7 },
+  callTileDot: { width: 7, height: 7, borderRadius: "50%", flex: "none" },
+  callTileNature: {
+    fontSize: 13.5, fontWeight: 800, letterSpacing: -0.1,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  callTileRoute: {
+    fontSize: 12, color: "#93A7B8", lineHeight: 1.4,
+    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
+  },
+  callTileFoot: {
+    marginTop: "auto", display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap",
+  },
+  callTileUnit: { fontSize: 12, fontWeight: 700, color: "#6FD6F0" },
+  callTileTime: { fontSize: 11.5, color: "#5E7488", marginLeft: "auto" },
+  callTileTags: { display: "flex", gap: 5, flexWrap: "wrap" },
+  callTileTag: { fontSize: 10, fontWeight: 800, letterSpacing: 0.4 },
+  callTileAssist: {
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#B07CF0",
+  },
+  callTileHandover: {
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#FFB020",
+  },
+  callTileGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+    gap: 8,
+  },
+  tileBackBtn: {
+    background: "none", border: "1px solid #26384A", color: "#93A7B8",
+    borderRadius: 999, padding: "6px 12px", fontSize: 12.5, fontWeight: 700,
+    cursor: "pointer", marginBottom: 10,
+  },
+
+  needsDetailHeadBtn: {
+    width: "100%", display: "flex", alignItems: "center", gap: 4,
+    background: "none", border: "none", padding: 0, cursor: "pointer",
+    fontSize: 14.5, fontWeight: 800, color: "#FFD98A", lineHeight: 1.45, textAlign: "left",
   },
   needsDetailHead: { fontSize: 14.5, fontWeight: 800, color: "#FFD98A", lineHeight: 1.45 },
   needsDetailBulb: { marginRight: 7, fontSize: 15 },
