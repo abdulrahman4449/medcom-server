@@ -692,9 +692,9 @@ const CHECKLIST_PARTS = [
 ];
 
 const CHECK_ANSWERS = [
-  { key: "available", label: "Available", color: "#3DDC97" },
-  { key: "unavailable", label: "Not available", color: "#FF4D5E" },
-  { key: "incomplete", label: "Not complete", color: "#FFB020" },
+  { key: "available", label: "Available", short: "Available", color: "#3DDC97" },
+  { key: "unavailable", label: "Not available", short: "Missing", color: "#FF4D5E" },
+  { key: "incomplete", label: "Not complete", short: "Partial", color: "#FFB020" },
 ];
 
 function checklistPartForSeat(seat) {
@@ -7435,45 +7435,11 @@ function CallTile({ req, unit, onOpen, dim }) {
 // The crew's own list. Three answers per item, nothing pre-selected, and it
 // cannot be filed until every item has one — a checklist with blanks in it is
 // the thing everybody signs and nobody reads.
-function ChecklistCard({ part, items, run, onSubmit, disabled }) {
+function ChecklistCard({ part, items, onSubmit, onCancel }) {
   const [answers, setAnswers] = useState({});
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-
   if (!items || items.length === 0) return null;
-
-  // Already done for today, by whoever did it.
-  if (run) {
-    const flags = checklistFlags(run, items);
-    return (
-      <div style={styles.checkDone}>
-        <div style={styles.checkDoneHead}>
-          <CheckCircle2 size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
-          {part.label} done today — {run.byName} at {clockStr(run.at)}
-        </div>
-        {flags.length > 0 ? (
-          <div style={styles.checkFlagList}>
-            {flags.map((f) => (
-              <div key={f.item.id} style={styles.checkFlagRow}>
-                <span
-                  style={{
-                    ...styles.checkFlagTag,
-                    color: (CHECK_ANSWERS.find((a) => a.key === f.answer) || {}).color,
-                  }}
-                >
-                  {(CHECK_ANSWERS.find((a) => a.key === f.answer) || {}).label}
-                </span>
-                {f.item.text}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={styles.checkAllGood}>Everything available.</div>
-        )}
-        {run.note && <div style={styles.checkNoteShown}>“{run.note}”</div>}
-      </div>
-    );
-  }
 
   const answered = items.filter((it) => answers[it.id]).length;
   const ready = answered === items.length;
@@ -7481,32 +7447,36 @@ function ChecklistCard({ part, items, run, onSubmit, disabled }) {
   return (
     <div style={styles.checkCard}>
       <div style={styles.checkHead}>
-        <ClipboardList size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
-        {part.label.toUpperCase()} — {answered} of {items.length}
-      </div>
-      <div style={styles.checkSub}>
-        Checked once a day for this vehicle, by the {part.who}.
+        <span>{part.label}</span>
+        <span style={styles.checkCount}>
+          {answered}/{items.length}
+        </span>
       </div>
 
-      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={styles.checkList}>
         {items.map((it) => (
           <div key={it.id} style={styles.checkItem}>
             <div style={styles.checkItemText}>{it.text}</div>
+            {/* Three narrow buttons on one line: available, not available, not
+                complete. A tick box would force a half-restocked bag to be
+                called either fine or broken, and it would always be called
+                fine — which is why there are three and not two. */}
             <div style={styles.checkItemBtns}>
               {CHECK_ANSWERS.map((a) => {
                 const on = answers[it.id] === a.key;
                 return (
                   <button
                     key={a.key}
+                    title={a.label}
                     style={{
                       ...styles.checkAnswerBtn,
                       ...(on
-                        ? { background: a.color, color: "#0A1017", borderColor: a.color, fontWeight: 800 }
-                        : { color: a.color, borderColor: `${a.color}66` }),
+                        ? { background: a.color, color: "#0A1017", borderColor: a.color }
+                        : { color: "#5E7488", borderColor: "#26384A" }),
                     }}
                     onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
                   >
-                    {a.label}
+                    {a.short}
                   </button>
                 );
               })}
@@ -7519,27 +7489,28 @@ function ChecklistCard({ part, items, run, onSubmit, disabled }) {
         style={{ ...styles.input, marginTop: 10 }}
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        placeholder="Anything worth saying (optional)"
+        placeholder="Note (optional)"
       />
 
-      <button
-        style={ready ? styles.checkSubmit : styles.checkSubmitOff}
-        disabled={!ready || busy || disabled}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            await onSubmit({ answers, note: note.trim() });
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {ready
-          ? busy
-            ? "Filing…"
-            : `File ${part.label.toLowerCase()}`
-          : `${items.length - answered} still to answer`}
-      </button>
+      <div style={styles.checkActions}>
+        <button style={styles.ghostBtnSm} onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          style={ready ? styles.checkSubmit : styles.checkSubmitOff}
+          disabled={!ready || busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onSubmit({ answers, note: note.trim() });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {ready ? (busy ? "Filing…" : "File checklist") : `${items.length - answered} left`}
+        </button>
+      </div>
     </div>
   );
 }
@@ -8100,10 +8071,10 @@ function EscalationThread({ req, viewer, requests, saveRequests, addLog, onClose
             {mine.length > 0 ? "RAISE ANOTHER ISSUE ON THIS CALL" : "WHAT WENT WRONG ON THIS CALL?"}
           </div>
           {mine.length > 0 && (
-            <div style={styles.escPrivacyNote}>
+            <InfoNote label="Is this a new issue?">
               This starts a brand-new issue, separate from the one(s) above. To continue an existing
               conversation instead, use "{isAdmin ? "Reply to the crew" : "Add a note"}" on that issue.
-            </div>
+            </InfoNote>
           )}
           <textarea
             style={styles.escTextarea}
@@ -8115,9 +8086,11 @@ function EscalationThread({ req, viewer, requests, saveRequests, addLog, onClose
           />
           {error && <div style={styles.loginError}>{error}</div>}
           <div style={styles.escComposerActions}>
-            <span style={styles.escPrivacyNote}>
-              Goes to the admins only. Dispatch and the other teams never see it. You'll see their reply
-              here on this call.
+            <span style={{ flex: 1, minWidth: 180 }}>
+              <InfoNote label="Who sees this?">
+                Goes to the admins only. Dispatch and the other teams never see it. You'll see their
+                reply here on this call.
+              </InfoNote>
             </span>
             <button style={styles.primaryBtnSm} disabled={busy || !draft.trim()} onClick={submitNew}>
               <ShieldAlert size={13} /> Escalate to admin
@@ -8127,10 +8100,10 @@ function EscalationThread({ req, viewer, requests, saveRequests, addLog, onClose
       )}
 
       {!canRaise && isAdmin && mine.length > 0 && (
-        <div style={styles.escPrivacyNote}>
-          Only the crew member who raised each issue can read your reply. It is not on the dispatch log
-          and it is not on the shared spreadsheet.
-        </div>
+        <InfoNote label="Who can see this?">
+          Only the crew member who raised each issue can read your reply. It is not on the dispatch
+          log and it is not on the shared spreadsheet.
+        </InfoNote>
       )}
     </div>
   );
@@ -11656,6 +11629,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [editOpen, setEditOpen] = useState(false);
   // Whether the refusal is being signed for.
   const [refusalOpen, setRefusalOpen] = useState(false);
+  const [checklistOpen, setChecklistOpen] = useState(false);
   // Which action this crew has just tapped. Every one of these starts with a
   // read from the server, so on a weak signal there was a pause with nothing on
   // screen to show the tap had registered — and crews tapped again. The button
@@ -12413,18 +12387,6 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         </div>
       )}
 
-      {/* The daily check, straight after the vehicle is confirmed. That order
-          is the point: you cannot check a truck before you have said which
-          truck you are on, and the check is about that vehicle. */}
-      {myPart && myChecklistItems.length > 0 && !ambulanceNeedsConfirming && (
-        <ChecklistCard
-          part={myPart}
-          items={myChecklistItems}
-          run={myChecklistRun}
-          onSubmit={fileChecklist}
-        />
-      )}
-
       <div style={styles.sectionHeader}>ASSIGNED AMBULANCE</div>
       {/* Asked once a shift, of whoever is sitting in Alpha.
           A number carried over from last week goes onto this week's calls
@@ -12466,7 +12428,36 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             {myUnit.ambulanceSetBy ? ` · set by ${myUnit.ambulanceSetBy}` : ""}
           </span>
         )}
+
+        {/* The daily check, in the same box and on the same line as the vehicle
+            it is about. It is one small button until it is pressed, and a tick
+            once it is done — a crew opening their screen mid-shift should see
+            that it is handled, not read the whole list again. */}
+        {myPart && myChecklistItems.length > 0 && !ambulanceNeedsConfirming && (
+          myChecklistRun ? (
+            <span style={styles.checkDoneTag} title={`Filed by ${myChecklistRun.byName} at ${clockStr(myChecklistRun.at)}`}>
+              ✓ Daily checklist
+            </span>
+          ) : (
+            <button style={styles.checkOpenBtn} onClick={() => setChecklistOpen(true)}>
+              📋 Complete your daily checklist
+            </button>
+          )
+        )}
       </div>
+
+      {/* Opened only when asked for. */}
+      {checklistOpen && myPart && !myChecklistRun && (
+        <ChecklistCard
+          part={myPart}
+          items={myChecklistItems}
+          onSubmit={async (v) => {
+            await fileChecklist(v);
+            setChecklistOpen(false);
+          }}
+          onCancel={() => setChecklistOpen(false)}
+        />
+      )}
 
       <div style={styles.sectionHeader}>
         <PhoneIncoming size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{" "}
@@ -16584,32 +16575,51 @@ const styles = {
   checkTodayMissing: { fontSize: 12.5, color: "#FF7A86", fontWeight: 700 },
   checkTodayWho: { fontSize: 12, color: "#5E7488", marginLeft: "auto" },
 
+  checkOpenBtn: {
+    background: "none", border: "1px dashed #33475A", color: "#93A7B8",
+    borderRadius: 999, padding: "8px 14px", fontSize: 13, fontWeight: 700,
+    cursor: "pointer", whiteSpace: "nowrap",
+  },
+  checkDoneTag: {
+    display: "inline-flex", alignItems: "center", gap: 5,
+    fontSize: 12.5, fontWeight: 700, color: "#3DDC97",
+    border: "1px solid rgba(61,220,151,.4)", background: "rgba(61,220,151,.08)",
+    borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap",
+  },
   checkCard: {
-    background: "#111C26", border: "1px solid #26384A", borderRadius: 16,
-    padding: 14, marginBottom: 14,
+    background: "#0E141B", border: "1px solid #26384A", borderRadius: 14,
+    padding: 12, marginTop: 10,
   },
-  checkHead: { fontSize: 14, fontWeight: 800, color: "#E9C46A", letterSpacing: 0.2 },
-  checkSub: { fontSize: 12.5, color: "#93A7B8", marginTop: 5 },
+  checkHead: {
+    display: "flex", alignItems: "baseline", gap: 8,
+    fontSize: 12.5, fontWeight: 800, color: "#E9C46A", letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  checkCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#5E7488" },
+  checkList: { marginTop: 10, display: "flex", flexDirection: "column", gap: 1,
+    background: "#1F2E3C", border: "1px solid #1F2E3C", borderRadius: 10, overflow: "hidden" },
   checkItem: {
-    background: "#0A1017", border: "1px solid #1F2E3C", borderRadius: 12, padding: "10px 11px",
+    background: "#111C26", padding: "9px 11px",
+    display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
   },
-  checkItemText: { fontSize: 14, color: "#E9F1F7", lineHeight: 1.45, marginBottom: 8 },
-  checkItemBtns: { display: "flex", gap: 6, flexWrap: "wrap" },
+  checkItemText: { fontSize: 13.5, color: "#E9F1F7", lineHeight: 1.4, flex: 1, minWidth: 120 },
+  checkItemBtns: { display: "flex", gap: 4, marginLeft: "auto" },
   checkAnswerBtn: {
-    background: "none", border: "1px solid", borderRadius: 999,
-    padding: "7px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-    minHeight: 38,
+    background: "none", border: "1px solid", borderRadius: 8,
+    padding: "6px 9px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+    minHeight: 34, minWidth: 58,
   },
+  checkActions: { display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" },
   checkSubmit: {
-    width: "100%", marginTop: 12, minHeight: 52,
+    minHeight: 42, padding: "0 18px",
     background: "linear-gradient(180deg,#0E6B4F,#0A5540)",
     border: "1px solid rgba(255,255,255,.14)", borderRadius: 999,
-    color: "#FFFFFF", fontSize: 15.5, fontWeight: 800, cursor: "pointer",
+    color: "#FFFFFF", fontSize: 14, fontWeight: 800, cursor: "pointer",
   },
   checkSubmitOff: {
-    width: "100%", marginTop: 12, minHeight: 52,
+    minHeight: 42, padding: "0 18px",
     background: "#16232F", border: "1px dashed #33475A", borderRadius: 999,
-    color: "#5E7488", fontSize: 15, fontWeight: 700, cursor: "not-allowed",
+    color: "#5E7488", fontSize: 14, fontWeight: 700, cursor: "not-allowed",
   },
   checkDone: {
     background: "rgba(61,220,151,.07)", border: "1px solid rgba(61,220,151,.35)",
