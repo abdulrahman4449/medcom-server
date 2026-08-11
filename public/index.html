@@ -13362,10 +13362,30 @@ function IssuesRaised({ requests, viewer }) {
 function SavedLogs({ submissions, requests }) {
   const [station, setStation] = useState(STATIONS[0].key);
   const [busy, setBusy] = useState(null);
+  // Folded by default. Within a month this is sixty submissions, and it is
+  // reference rather than something an administrator is watching.
+  const [open, setOpen] = useState(false);
+  // Somebody asking about a log is always asking about a particular day —
+  // usually one they have just been telephoned about — so "which day" is the
+  // question the panel answers first.
+  const [dateFilter, setDateFilter] = useState("");
 
   const mine = (submissions || [])
     .filter((x) => x && x.station === station)
+    .filter((x) => !dateFilter || x.dayKey === dateFilter)
     .sort((a, b) => (b.windowStart || 0) - (a.windowStart || 0));
+
+  // Only dates that actually have a submission, newest first — no empty days to
+  // page through.
+  const availableDays = [];
+  (submissions || [])
+    .filter((x) => x && x.station === station)
+    .sort((a, b) => (b.windowStart || 0) - (a.windowStart || 0))
+    .forEach((x) => {
+      if (!availableDays.some((d) => d.key === x.dayKey)) {
+        availableDays.push({ key: x.dayKey, label: x.dayLabel });
+      }
+    });
 
   // Grouped by the operational day, so the day shift and the night that
   // followed it sit together under one date the way the department thinks
@@ -13389,14 +13409,13 @@ function SavedLogs({ submissions, requests }) {
   const openCount = (submissions || []).filter((x) => x && x.status === "open").length;
 
   return (
-    <div style={{ marginTop: 18 }}>
-      <div style={styles.sectionHeader}>
-        <Archive size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> LOG SHEET ARCHIVE
-        <span style={styles.stationCount}>
-          {(submissions || []).length} submitted
-          {openCount ? ` · ${openCount} still completing` : ""}
-        </span>
-      </div>
+    <FoldingSection
+      title="LOG SHEET ARCHIVE"
+      count={(submissions || []).length}
+      countLabel={openCount ? `submitted · ${openCount} completing` : "submitted"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
 
       {/* Each station keeps its own archive, because each station submits its
           own shifts. */}
@@ -13415,6 +13434,23 @@ function SavedLogs({ submissions, requests }) {
             </button>
           );
         })}
+      </div>
+
+      {/* Jump to a date, or clear it to see them all. */}
+      <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select
+          style={{ ...styles.input, maxWidth: 250 }}
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+        >
+          <option value="">All dates ({availableDays.length})</option>
+          {availableDays.map((d) => (
+            <option key={d.key} value={d.key}>{d.label}</option>
+          ))}
+        </select>
+        {dateFilter && (
+          <button style={styles.ghostBtnSm} onClick={() => setDateFilter("")}>Clear</button>
+        )}
       </div>
 
       <InfoNote label="How this works">
@@ -13468,7 +13504,7 @@ function SavedLogs({ submissions, requests }) {
           ))}
         </div>
       )}
-    </div>
+    </FoldingSection>
   );
 }
 
