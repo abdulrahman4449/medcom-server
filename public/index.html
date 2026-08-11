@@ -53,6 +53,7 @@ const CheckCircle2 = makeIcon("✓");
 const Plus = makeIcon("+");
 const ChevronRight = makeIcon("›");
 const Bell = makeIcon("🔔");
+const ClipboardList = makeIcon("📋");
 const Share2 = makeIcon("⤴");
 const Trash = makeIcon("🗑");
 const CalendarClock = makeIcon("🗓");
@@ -668,6 +669,59 @@ function callsNeedingDetail(requests) {
   return (requests || [])
     .filter((r) => r.status === "completed" && missingLogFields(r).length)
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+// ---------- the daily vehicle checklist ----------
+//
+// Two lists, because two people check two different things: the medic goes
+// through the clinical kit, the EMT goes through the vehicle. They are checked
+// once a day, per truck, by whoever is in that seat — and the answer to each
+// item is one of three, not a tick. "Not complete" is the one that matters:
+// a tick box forces a half-restocked bag to be called either fine or broken,
+// and crews will always pick fine.
+//
+// The items themselves are set by administration rather than written into the
+// code, because the kit changes and nobody should need a new build for it.
+const CHECKLIST_KEY = "ems:checklists";
+const CHECKLIST_RUNS_KEY = "ems:checklistRuns";
+const CHECKLIST_RUNS_CAP = 2000;
+
+const CHECKLIST_PARTS = [
+  { key: "medic", label: "Medic checklist", seat: "alpha", who: "Medic (Alpha)" },
+  { key: "emt", label: "EMT checklist", seat: "bravo", who: "EMT (Bravo)" },
+];
+
+const CHECK_ANSWERS = [
+  { key: "available", label: "Available", color: "#3DDC97" },
+  { key: "unavailable", label: "Not available", color: "#FF4D5E" },
+  { key: "incomplete", label: "Not complete", color: "#FFB020" },
+];
+
+function checklistPartForSeat(seat) {
+  return CHECKLIST_PARTS.find((p) => p.seat === seat) || CHECKLIST_PARTS[0];
+}
+
+function emptyChecklists() {
+  return { medic: [], emt: [] };
+}
+
+// One run per truck, per list, per operational day. A crew coming on at 19:00
+// does not repeat the morning's check of the same vehicle — it is a daily check
+// of a vehicle, not a per-shift ritual.
+function checklistRunFor(runs, unitId, part, dayKey) {
+  return (runs || []).find(
+    (r) => r && r.unitId === unitId && r.part === part && r.dayKey === dayKey
+  ) || null;
+}
+
+// Anything a crew flagged. This is the reason the whole thing exists: a list
+// where everything was fine tells nobody anything, and the exceptions are what
+// somebody has to act on.
+function checklistFlags(run, items) {
+  if (!run) return [];
+  return (items || [])
+    .filter((it) => run.answers && run.answers[it.id] && run.answers[it.id] !== "available")
+    .map((it) => ({ item: it, answer: run.answers[it.id] }));
 }
 
 // ---------- no coverage ----------
@@ -4386,6 +4440,9 @@ function App() {
   const [submissions, setSubmissions] = useState([]);
   // Periods with no ambulance available, per station.
   const [coverage, setCoverage] = useState([]);
+  // The checklist items administration has set, and every list filed.
+  const [checklists, setChecklists] = useState(emptyChecklists());
+  const [checklistRuns, setChecklistRuns] = useState([]);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -4637,6 +4694,10 @@ function App() {
     setSubmissions(subs || []);
     const cov = await readKey(COVERAGE_KEY, []);
     setCoverage(cov || []);
+    const cl = await readKey(CHECKLIST_KEY, null);
+    setChecklists(cl && (cl.medic || cl.emt) ? cl : emptyChecklists());
+    const runs = await readKey(CHECKLIST_RUNS_KEY, []);
+    setChecklistRuns(runs || []);
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -5537,6 +5598,9 @@ function App() {
           )}
           {user.role === "team" && (
             <TeamView
+              checklists={checklists}
+              checklistRuns={checklistRuns}
+              setChecklistRuns={setChecklistRuns}
               user={user}
               units={units}
               requests={requests}
@@ -5561,6 +5625,9 @@ function App() {
               audioCtxRef={audioCtxRef}
               submissions={submissions}
               coverage={coverage}
+              checklists={checklists}
+              setChecklists={setChecklists}
+              checklistRuns={checklistRuns}
               log={log}
             />
           )}
@@ -7362,6 +7429,118 @@ function CallTile({ req, unit, onOpen, dim }) {
         {req.handover && <span style={styles.callTileHandover}>HANDED OVER</span>}
       </div>
     </button>
+  );
+}
+
+// The crew's own list. Three answers per item, nothing pre-selected, and it
+// cannot be filed until every item has one — a checklist with blanks in it is
+// the thing everybody signs and nobody reads.
+function ChecklistCard({ part, items, run, onSubmit, disabled }) {
+  const [answers, setAnswers] = useState({});
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!items || items.length === 0) return null;
+
+  // Already done for today, by whoever did it.
+  if (run) {
+    const flags = checklistFlags(run, items);
+    return (
+      <div style={styles.checkDone}>
+        <div style={styles.checkDoneHead}>
+          <CheckCircle2 size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
+          {part.label} done today — {run.byName} at {clockStr(run.at)}
+        </div>
+        {flags.length > 0 ? (
+          <div style={styles.checkFlagList}>
+            {flags.map((f) => (
+              <div key={f.item.id} style={styles.checkFlagRow}>
+                <span
+                  style={{
+                    ...styles.checkFlagTag,
+                    color: (CHECK_ANSWERS.find((a) => a.key === f.answer) || {}).color,
+                  }}
+                >
+                  {(CHECK_ANSWERS.find((a) => a.key === f.answer) || {}).label}
+                </span>
+                {f.item.text}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={styles.checkAllGood}>Everything available.</div>
+        )}
+        {run.note && <div style={styles.checkNoteShown}>“{run.note}”</div>}
+      </div>
+    );
+  }
+
+  const answered = items.filter((it) => answers[it.id]).length;
+  const ready = answered === items.length;
+
+  return (
+    <div style={styles.checkCard}>
+      <div style={styles.checkHead}>
+        <ClipboardList size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
+        {part.label.toUpperCase()} — {answered} of {items.length}
+      </div>
+      <div style={styles.checkSub}>
+        Checked once a day for this vehicle, by the {part.who}.
+      </div>
+
+      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map((it) => (
+          <div key={it.id} style={styles.checkItem}>
+            <div style={styles.checkItemText}>{it.text}</div>
+            <div style={styles.checkItemBtns}>
+              {CHECK_ANSWERS.map((a) => {
+                const on = answers[it.id] === a.key;
+                return (
+                  <button
+                    key={a.key}
+                    style={{
+                      ...styles.checkAnswerBtn,
+                      ...(on
+                        ? { background: a.color, color: "#0A1017", borderColor: a.color, fontWeight: 800 }
+                        : { color: a.color, borderColor: `${a.color}66` }),
+                    }}
+                    onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
+                  >
+                    {a.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <input
+        style={{ ...styles.input, marginTop: 10 }}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="Anything worth saying (optional)"
+      />
+
+      <button
+        style={ready ? styles.checkSubmit : styles.checkSubmitOff}
+        disabled={!ready || busy || disabled}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await onSubmit({ answers, note: note.trim() });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {ready
+          ? busy
+            ? "Filing…"
+            : `File ${part.label.toLowerCase()}`
+          : `${items.length - answered} still to answer`}
+      </button>
+    </div>
   );
 }
 
@@ -11445,7 +11624,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -11819,6 +11998,65 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const occupantName = seatHolder ? seatHolder.name : "";
   const outgoingCall = awaitingSeat && myUnit ? liveRequestFor(myUnit, requests) : null;
 
+  // This crew member's own list, and whether it has already been done today for
+  // this truck. Alpha takes the medic list, Bravo the EMT list.
+  const myPart = user.slot ? checklistPartForSeat(user.slot) : null;
+  const myChecklistItems =
+    myPart && checklists && checklists[myPart.key] ? checklists[myPart.key] : [];
+  const todayKey = opDayKey(opDayStart(Date.now()));
+  const myChecklistRun =
+    myUnit && myPart ? checklistRunFor(checklistRuns, myUnit.id, myPart.key, todayKey) : null;
+
+  async function fileChecklist({ answers, note }) {
+    if (!myUnit || !myPart) return;
+    const now = Date.now();
+    const flagged = myChecklistItems.filter(
+      (it) => answers[it.id] && answers[it.id] !== "available"
+    );
+    const entry = {
+      id: uid("chk"),
+      unitId: myUnit.id,
+      unitName: myUnit.name,
+      station: stationOf(myUnit),
+      part: myPart.key,
+      seat: user.slot,
+      byAccountId: user.accountId || "",
+      byName: user.name || "",
+      at: now,
+      dayKey: todayKey,
+      shift: user.shift || scheduledShiftKey(now),
+      answers,
+      note: note || "",
+      flaggedCount: flagged.length,
+    };
+    const fresh = (await readKey(CHECKLIST_RUNS_KEY, checklistRuns)) || [];
+    // Already filed by somebody else in the seconds it took to answer.
+    if (checklistRunFor(fresh, myUnit.id, myPart.key, todayKey)) {
+      setChecklistRuns(fresh);
+      return;
+    }
+    const next = [entry, ...fresh].slice(0, CHECKLIST_RUNS_CAP);
+    const ok = await writeKey(CHECKLIST_RUNS_KEY, next);
+    if (ok) setChecklistRuns(next);
+    // The flagged items go on the log in words, because that is what the desk
+    // and the administrator actually read. A list where everything was fine
+    // says so in one line and takes up no more room than that.
+    await addLog(
+      `${myUnit.name} — ${myPart.label} filed by ${user.name || "crew"}` +
+        (flagged.length
+          ? ` · ${flagged.length} item${flagged.length === 1 ? "" : "s"} flagged: ` +
+            flagged
+              .map(
+                (it) =>
+                  `${it.text} (${(CHECK_ANSWERS.find((a) => a.key === answers[it.id]) || {}).label})`
+              )
+              .join("; ")
+          : " · everything available") +
+        (note ? ` · note: ${note}` : ""),
+      "status"
+    );
+  }
+
   // Whether the ambulance number still has to be confirmed for this tour. Asked
   // of Alpha, because somebody has to own it and two people being asked means
   // neither does.
@@ -12173,6 +12411,18 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             Stand them down
           </button>
         </div>
+      )}
+
+      {/* The daily check, straight after the vehicle is confirmed. That order
+          is the point: you cannot check a truck before you have said which
+          truck you are on, and the check is about that vehicle. */}
+      {myPart && myChecklistItems.length > 0 && !ambulanceNeedsConfirming && (
+        <ChecklistCard
+          part={myPart}
+          items={myChecklistItems}
+          run={myChecklistRun}
+          onSubmit={fileChecklist}
+        />
       )}
 
       <div style={styles.sectionHeader}>ASSIGNED AMBULANCE</div>
@@ -12855,7 +13105,7 @@ function statRangeWindow(key, now) {
 // Who was on which truck, when, and for how long — read off the sign-on and
 // sign-off lines rather than the current roster, so somebody who worked Tuesday
 // still counts on Friday.
-function staffStatsFor(log, requests, units, win, now) {
+function staffStatsFor(log, requests, units, win, now, checklistRuns) {
   const people = new Map();
   const person = (id, name) => {
     const k = (id || name || "").toUpperCase();
@@ -12939,6 +13189,13 @@ function staffStatsFor(log, requests, units, win, now) {
     });
   });
 
+  // The lists each person filed inside the window, credited by name.
+  (checklistRuns || []).forEach((r) => {
+    if (!r || !r.at || r.at < win.start || r.at >= win.end) return;
+    const p = person(r.byAccountId, r.byName);
+    p.checklistsFiled = (p.checklistsFiled || 0) + 1;
+  });
+
   return Array.from(people.values())
     .filter((p) => p.name)
     .map((p) => ({
@@ -12958,6 +13215,17 @@ function staffStatsFor(log, requests, units, win, now) {
       uhu:
         p.shifts.size > 0
           ? Math.min(100, (p.onCallMs / (p.shifts.size * SHIFT_MS)) * 100)
+          : 0,
+      // Checklist compliance, against the shifts they actually worked.
+      //
+      // One list per person per shift is the expectation, so somebody who
+      // worked ten shifts and filed eight is at 80%. Measured per person rather
+      // than per truck because it is a thing a person did or did not do — and
+      // it is credited to whoever filed it, not to whoever was rostered.
+      checklistsFiled: p.checklistsFiled || 0,
+      checklistCompliance:
+        p.shifts.size > 0
+          ? Math.min(100, ((p.checklistsFiled || 0) / p.shifts.size) * 100)
           : 0,
     }))
     .sort((a, b) => b.uhu - a.uhu);
@@ -13125,14 +13393,168 @@ function CoveragePanel({ coverage, units, requests }) {
   );
 }
 
-function Statistics({ log, requests, units }) {
+// Administration's side of the checklist: what is on each list, and what came
+// back today. Editing here changes what crews see on their next sign-on.
+function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLog, user }) {
+  const [open, setOpen] = useState(false);
+  const [part, setPart] = useState("medic");
+  const [draft, setDraft] = useState("");
+  const items = (checklists && checklists[part]) || [];
+  const today = opDayKey(opDayStart(Date.now()));
+
+  async function save(next) {
+    const merged = { ...emptyChecklists(), ...(checklists || {}), [part]: next };
+    setChecklists(merged);
+    await writeKey(CHECKLIST_KEY, merged);
+  }
+
+  async function addItem() {
+    const text = draft.trim();
+    if (!text) return;
+    await save([...items, { id: uid("ci"), text }]);
+    setDraft("");
+    await addLog(
+      `${user.name || "Admin"} added "${text}" to the ${part === "medic" ? "medic" : "EMT"} checklist`,
+      "status"
+    );
+  }
+
+  async function removeItem(it) {
+    if (!window.confirm(`Remove "${it.text}" from the list?\n\nLists already filed keep their answers.`)) return;
+    await save(items.filter((x) => x.id !== it.id));
+    await addLog(`${user.name || "Admin"} removed "${it.text}" from the ${part} checklist`, "status");
+  }
+
+  function move(it, dir) {
+    const i = items.findIndex((x) => x.id === it.id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= items.length) return;
+    const next = items.slice();
+    next[i] = items[j];
+    next[j] = items[i];
+    save(next);
+  }
+
+  // What came back today, per truck — the exceptions first, because a list
+  // where everything was fine needs no attention.
+  const staffed = (units || []).filter(isStaffed);
+  const todayRuns = CHECKLIST_PARTS.map((pt) => ({
+    part: pt,
+    done: staffed.map((u) => ({
+      unit: u,
+      run: checklistRunFor(checklistRuns, u.id, pt.key, today),
+    })),
+  }));
+
+  const totalExpected = staffed.length * CHECKLIST_PARTS.length;
+  const totalDone = todayRuns.reduce((n, g) => n + g.done.filter((d) => d.run).length, 0);
+
+  return (
+    <FoldingSection
+      title="VEHICLE CHECKLISTS"
+      count={totalExpected ? Math.round((totalDone / totalExpected) * 100) : 0}
+      countLabel={`% done today · ${totalDone} of ${totalExpected}`}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div style={styles.archTabs}>
+        {CHECKLIST_PARTS.map((pt) => (
+          <button
+            key={pt.key}
+            style={pt.key === part ? styles.archTabOn : styles.archTab}
+            onClick={() => setPart(pt.key)}
+          >
+            {pt.label}
+            <span style={styles.archTabCount}>{((checklists || {})[pt.key] || []).length}</span>
+          </button>
+        ))}
+      </div>
+
+      <InfoNote label="How the checklist works">
+        Each list is checked once a day per vehicle — the medic list by whoever is in Alpha, the EMT
+        list by Bravo. Every item is answered available, not available, or not complete, and the
+        answers appear here and in the statistics. Changing the list here changes what crews see
+        next time they sign on; lists already filed keep the answers they were given.
+      </InfoNote>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <input
+          style={styles.input}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Add an item, e.g. Oxygen cylinder above half"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addItem();
+          }}
+        />
+        <button style={styles.primaryBtnSm} disabled={!draft.trim()} onClick={addItem}>
+          Add
+        </button>
+      </div>
+
+      {items.length === 0 ? (
+        <div style={styles.emptyState}>
+          Nothing on this list yet. Crews see no checklist until something is added.
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          {items.map((it, idx) => (
+            <div key={it.id} style={styles.checkAdminRow}>
+              <span style={styles.checkAdminNum}>{idx + 1}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>{it.text}</span>
+              <button style={styles.checkMoveBtn} onClick={() => move(it, -1)} disabled={idx === 0}>↑</button>
+              <button style={styles.checkMoveBtn} onClick={() => move(it, 1)} disabled={idx === items.length - 1}>↓</button>
+              <button style={styles.checkRemoveBtn} onClick={() => removeItem(it)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={styles.sectionHeader}>TODAY</div>
+      {staffed.length === 0 ? (
+        <div style={styles.emptyState}>No crews signed on.</div>
+      ) : (
+        todayRuns.map((g) => (
+          <div key={g.part.key} style={{ marginTop: 8 }}>
+            <div style={styles.uhuStationHead}>{g.part.label}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {g.done.map(({ unit, run }) => {
+                const flags = run ? checklistFlags(run, (checklists || {})[g.part.key] || []) : [];
+                return (
+                  <div key={unit.id} style={styles.checkTodayRow}>
+                    <span style={styles.checkTodayUnit}>
+                      {unit.name}
+                      <span style={styles.checkTodayStation}>{stationShort(stationOf(unit))}</span>
+                    </span>
+                    {run ? (
+                      <span style={flags.length ? styles.checkTodayFlag : styles.checkTodayOk}>
+                        {flags.length
+                          ? `${flags.length} flagged — ${flags.map((f) => f.item.text).join(", ")}`
+                          : "all available"}
+                      </span>
+                    ) : (
+                      <span style={styles.checkTodayMissing}>not done</span>
+                    )}
+                    {run && <span style={styles.checkTodayWho}>{run.byName}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))
+      )}
+    </FoldingSection>
+  );
+}
+
+function Statistics({ log, requests, units, checklistRuns }) {
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState("shift");
   const [mode, setMode] = useState("uhu");
   const [search, setSearch] = useState("");
   const now = Date.now();
   const win = statRangeWindow(range, now);
-  const allStaff = staffStatsFor(log, requests, units, win, now);
+  const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns);
   // Searching by name or ID. On a department this size the list runs past a
   // screenful within a week, and the question is usually about one person.
   const q = (search || "").trim().toLowerCase();
@@ -13160,6 +13582,9 @@ function Statistics({ log, requests, units }) {
             "Total patient care time in minutes": Math.round(p.onCallMs / 60000),
             "UHU %": Number(p.uhu.toFixed(1)),
             "TOTAL CALLS": p.calls,
+            "CHECKLISTS FILED": p.checklistsFiled,
+            "SHIFTS WORKED": p.shiftsWorked,
+            "CHECKLIST COMPLIANCE %": Number(p.checklistCompliance.toFixed(0)),
           }))
         ),
         0
@@ -13219,6 +13644,9 @@ function Statistics({ log, requests, units }) {
         <button style={mode === "calls" ? styles.archTabOn : styles.archTab} onClick={() => setMode("calls")}>
           Calls completed
         </button>
+        <button style={mode === "check" ? styles.archTabOn : styles.archTab} onClick={() => setMode("check")}>
+          Checklist compliance
+        </button>
       </div>
 
       <input
@@ -13260,6 +13688,24 @@ function Statistics({ log, requests, units }) {
                     <div style={{ ...styles.statBarFill, width: `${Math.max(2, p.uhu)}%` }} />
                   </div>
                   <div style={styles.statValue}>{p.uhu.toFixed(1)}%</div>
+                </div>
+              ) : mode === "check" ? (
+                <div style={{ minWidth: 116 }}>
+                  <div style={styles.statBarTrack}>
+                    <div
+                      style={{
+                        ...styles.statBarFill,
+                        width: `${Math.max(2, p.checklistCompliance)}%`,
+                        background:
+                          p.checklistCompliance >= 80
+                            ? "linear-gradient(90deg,#3DDC97,#2FBF82)"
+                            : "linear-gradient(90deg,#FFB020,#FF7A86)",
+                      }}
+                    />
+                  </div>
+                  <div style={styles.statValue}>
+                    {p.checklistCompliance.toFixed(0)}% · {p.checklistsFiled}/{p.shiftsWorked}
+                  </div>
                 </div>
               ) : (
                 <div style={styles.statCalls}>{p.calls}</div>
@@ -13508,7 +13954,7 @@ function SavedLogs({ submissions, requests }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -13832,8 +14278,18 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           under each station's own board. */}
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
+      {/* What is on each list, and what came back today. */}
+      <ChecklistAdmin
+        checklists={checklists}
+        setChecklists={setChecklists}
+        checklistRuns={checklistRuns}
+        units={units}
+        addLog={addLog}
+        user={user}
+      />
+
       {/* Per-person UHU and the month's patient-origin table. */}
-      <Statistics log={log} requests={requests} units={units} />
+      <Statistics log={log} requests={requests} units={units} checklistRuns={checklistRuns} />
 
       <IssuesRaised requests={requests} viewer={escViewer} />
 
@@ -16103,6 +16559,69 @@ const styles = {
     marginTop: 10, background: "rgba(233,196,106,.07)",
     border: "1px solid rgba(233,196,106,.5)", borderRadius: 14, padding: "12px 14px",
   },
+  checkAdminRow: {
+    display: "flex", alignItems: "center", gap: 8,
+    background: "#0E141B", border: "1px solid #1F2E3C", borderRadius: 10,
+    padding: "9px 11px", fontSize: 13.5, color: "#E9F1F7",
+  },
+  checkAdminNum: { fontSize: 11.5, color: "#5E7488", fontWeight: 700, minWidth: 16 },
+  checkMoveBtn: {
+    background: "none", border: "1px solid #26384A", color: "#93A7B8",
+    borderRadius: 6, width: 26, height: 26, cursor: "pointer", fontSize: 12,
+  },
+  checkRemoveBtn: {
+    background: "none", border: "1px solid rgba(255,77,94,.4)", color: "#FF7A86",
+    borderRadius: 6, padding: "3px 8px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+  },
+  checkTodayRow: {
+    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+    background: "#0E141B", border: "1px solid #1F2E3C", borderRadius: 10, padding: "8px 11px",
+  },
+  checkTodayUnit: { fontSize: 13.5, fontWeight: 700, color: "#E9F1F7" },
+  checkTodayStation: { fontSize: 10.5, color: "#5E7488", marginLeft: 6, fontWeight: 700 },
+  checkTodayOk: { fontSize: 12.5, color: "#3DDC97" },
+  checkTodayFlag: { fontSize: 12.5, color: "#FFB020", flex: 1, minWidth: 0 },
+  checkTodayMissing: { fontSize: 12.5, color: "#FF7A86", fontWeight: 700 },
+  checkTodayWho: { fontSize: 12, color: "#5E7488", marginLeft: "auto" },
+
+  checkCard: {
+    background: "#111C26", border: "1px solid #26384A", borderRadius: 16,
+    padding: 14, marginBottom: 14,
+  },
+  checkHead: { fontSize: 14, fontWeight: 800, color: "#E9C46A", letterSpacing: 0.2 },
+  checkSub: { fontSize: 12.5, color: "#93A7B8", marginTop: 5 },
+  checkItem: {
+    background: "#0A1017", border: "1px solid #1F2E3C", borderRadius: 12, padding: "10px 11px",
+  },
+  checkItemText: { fontSize: 14, color: "#E9F1F7", lineHeight: 1.45, marginBottom: 8 },
+  checkItemBtns: { display: "flex", gap: 6, flexWrap: "wrap" },
+  checkAnswerBtn: {
+    background: "none", border: "1px solid", borderRadius: 999,
+    padding: "7px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+    minHeight: 38,
+  },
+  checkSubmit: {
+    width: "100%", marginTop: 12, minHeight: 52,
+    background: "linear-gradient(180deg,#0E6B4F,#0A5540)",
+    border: "1px solid rgba(255,255,255,.14)", borderRadius: 999,
+    color: "#FFFFFF", fontSize: 15.5, fontWeight: 800, cursor: "pointer",
+  },
+  checkSubmitOff: {
+    width: "100%", marginTop: 12, minHeight: 52,
+    background: "#16232F", border: "1px dashed #33475A", borderRadius: 999,
+    color: "#5E7488", fontSize: 15, fontWeight: 700, cursor: "not-allowed",
+  },
+  checkDone: {
+    background: "rgba(61,220,151,.07)", border: "1px solid rgba(61,220,151,.35)",
+    borderRadius: 14, padding: "11px 13px", marginBottom: 12,
+  },
+  checkDoneHead: { fontSize: 13.5, fontWeight: 700, color: "#C9D8E4" },
+  checkAllGood: { fontSize: 12.5, color: "#5E7488", marginTop: 5 },
+  checkFlagList: { marginTop: 8, display: "flex", flexDirection: "column", gap: 5 },
+  checkFlagRow: { fontSize: 13, color: "#C9D8E4", display: "flex", gap: 8, alignItems: "baseline" },
+  checkFlagTag: { fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, flex: "none" },
+  checkNoteShown: { fontSize: 12.5, color: "#93A7B8", marginTop: 7, fontStyle: "italic" },
+
   callTile: {
     textAlign: "left",
     background: "#111C26",
