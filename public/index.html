@@ -4447,7 +4447,9 @@ function App() {
   // order, sees the count change the moment somebody signs in, and throws. That
   // is precisely what turned the screen black after choosing a station.
   const [navTab, setNavTab] = useState("board");
-  const sectionRefs = useRef({});
+  // Bumped when the bar's New call is pressed. The form itself stays where it
+  // lives, on the dispatch board; this only tells it to open.
+  const [newCallSignal, setNewCallSignal] = useState(0);
 
   const [coverage, setCoverage] = useState([]);
   // The checklist items administration has set, and every list filed.
@@ -4713,19 +4715,23 @@ function App() {
     setReady(true);
   }, []);
 
-  // The bar moves to a section rather than routing to a page, so a desk
-  // mid-call never loses sight of the board because it tapped something.
+  // Each tab is its own page.
+  //
+  // Scrolling to a section left everything else on screen underneath it, so
+  // "History" still had the board above it and the teams below — which is not a
+  // page, it is a long screen with a shortcut. Now a tab shows its own content
+  // and nothing else, and the board is always one tap away.
   useEffect(() => {
     if (!user) return;
     // "Submit" is an action, not a place: it files the shift and drops straight
-    // back to the board rather than leaving the desk on a tab showing nothing.
+    // back to the board rather than leaving the desk on a page showing nothing.
     if (navTab === "log" && user.role === "dispatcher") {
       setNavTab("board");
       submitMyShiftLog();
       return;
     }
-    const el = sectionRefs.current[navTab];
-    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    // A new page starts at the top, as a page does.
+    if (typeof window !== "undefined" && window.scrollTo) window.scrollTo({ top: 0 });
   }, [navTab, user && user.role]);
 
   // Ending a no-coverage period the moment a team is back in service. It is
@@ -5632,10 +5638,11 @@ function App() {
       {/* The bar floats over the board, so the last section needs room to clear
           it — otherwise the final call on a long day sits underneath it. */}
       <div style={{ ...styles.body, paddingBottom: 108 }}>
-        <div style={styles.mainCol} ref={(el) => (sectionRefs.current.board = el)}>
+        <div style={styles.mainCol}>
           {user.role === "dispatcher" && (
             <DispatcherView
-              sectionRefs={sectionRefs}
+              page={navTab}
+              newCallSignal={newCallSignal}
               coverage={coverage}
               setCoverage={setCoverage}
               user={user}
@@ -5651,7 +5658,7 @@ function App() {
           )}
           {user.role === "team" && (
             <TeamView
-              sectionRefs={sectionRefs}
+              page={navTab}
               checklists={checklists}
               checklistRuns={checklistRuns}
               setChecklistRuns={setChecklistRuns}
@@ -5666,7 +5673,7 @@ function App() {
           )}
           {user.role === "admin" && (
             <AdminView
-              sectionRefs={sectionRefs}
+              page={navTab}
               user={user}
               units={units}
               requests={requests}
@@ -5715,7 +5722,13 @@ function App() {
         onSelect={setNavTab}
         action={
           user.role === "dispatcher"
-            ? { label: "New call", onClick: () => setNavTab("board") }
+            ? {
+                label: "New call",
+                onClick: () => {
+                  setNavTab("board");
+                  setNewCallSignal((n) => n + 1);
+                },
+              }
             : user.role === "admin"
               ? {
                   label: "Export",
@@ -8296,7 +8309,7 @@ function EscalationThread({ req, viewer, requests, saveRequests, addLog, onClose
 // find the call it was raised on first. An issue raised on a call that closed
 // last month would otherwise be somewhere near the bottom of a list of
 // hundreds — which is exactly how a complaint goes unanswered.
-function EscalationInbox({ requests, units, viewer, saveRequests, addLog }) {
+function EscalationInbox({ requests, units, viewer, saveRequests, addLog, embedded }) {
   const [openFor, setOpenFor] = useState(null);
   const [busyFor, setBusyFor] = useState(null);
   const seenRef = useRef(null);
@@ -8368,12 +8381,16 @@ function EscalationInbox({ requests, units, viewer, saveRequests, addLog }) {
 
   return (
     <div>
-      <div style={styles.sectionHeaderRow}>
-        <div style={{ ...styles.sectionHeader, margin: 0 }}>
-          <ShieldAlert size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> ESCALATED ISSUES
-          {pendingCount > 0 ? ` (${pendingCount} WAITING)` : ""}
+      {/* Standing on its own it needs a heading; inside the issues section it
+          does not, because the section above it already said what this is. */}
+      {!embedded && (
+        <div style={styles.sectionHeaderRow}>
+          <div style={{ ...styles.sectionHeader, margin: 0 }}>
+            <ShieldAlert size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> ESCALATED ISSUES
+            {pendingCount > 0 ? ` (${pendingCount} WAITING)` : ""}
+          </div>
         </div>
-      </div>
+      )}
 
       {shownRows.length === 0 ? (
         <div style={styles.emptyState}>
@@ -8664,7 +8681,7 @@ function callSearchText(req, units, escalations) {
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
-function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect, sectionRefs }) {
+function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect }) {
   const [open, setOpen] = useState(!!shiftWindow);
   // The reminder starts open — it is worth reading once — and folds away
   // for the rest of the shift once the desk has taken it in.
@@ -8863,7 +8880,7 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
   }
 
   return (
-    <div ref={(el) => sectionRefs && (sectionRefs.current.history = el)}>
+    <div>
       <div style={styles.sectionHeaderRow}>
         <div style={{ ...styles.sectionHeader, margin: 0 }}>
           <Archive size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{" "}
@@ -10757,10 +10774,13 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
   );
 }
 
-function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, sectionRefs }) {
+function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
   const [openCallId, setOpenCallId] = useState(null);
+  // Which page the bar is showing. Everything the desk needs to answer a call
+  // stays on the board; the rest lives on its own page.
+  const onPage = (k) => !page || page === k;
   // One clock for the whole board. A board where nothing counts reads as
   // broken, and the elapsed time is the question the desk is being asked all
   // shift — so it moves. A single ticker rather than one per tile, because
@@ -10770,6 +10790,13 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     const t = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // The bar asked for a new call. Open the form and put the board back in view.
+  useEffect(() => {
+    if (!newCallSignal) return;
+    setShowForm(true);
+    setOpenCallId(null);
+  }, [newCallSignal]);
   const [locationFrom, setLocationFrom] = useState("");
   const [locationTo, setLocationTo] = useState("");
   const [nature, setNature] = useState("");
@@ -11230,6 +11257,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       </div>
 
 
+      {onPage("board") && (
+        <>
       {/* Anything a crew has reported wrong that is still waiting on the desk —
           including on calls that have already closed. Scoped to this station:
           the other desk answers its own. */}
@@ -11275,11 +11304,16 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         )}
       </div>
 
+      {/* One way to raise a call. The button in the bar is the one that does it
+          now; a second control here saying the same thing in different words is
+          how a desk ends up unsure which one is real. */}
       <div style={styles.sectionHeaderRow}>
         <div style={styles.sectionHeader}>ACTIVE CALLS</div>
-        <button style={styles.primaryBtnSm} onClick={() => setShowForm((s) => !s)}>
-          <Plus size={14} /> Request ambulance
-        </button>
+        {showForm && (
+          <button style={styles.ghostBtnSm} onClick={() => setShowForm(false)}>
+            Cancel
+          </button>
+        )}
       </div>
 
       {showForm && (
@@ -11682,36 +11716,45 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           );
         })}
       </div>
+        </>
+      )}
 
-      <div style={styles.sectionHeader}>
-        <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> UNITS
-      </div>
-      <div style={styles.unitGrid} ref={(el) => sectionRefs && (sectionRefs.current.teams = el)}>
-        {stationUnits.map((u) => (
-          <UnitRosterCard key={u.id} unit={u} />
-        ))}
-      </div>
+      {/* Teams: the roster and what is booked for them. */}
+      {onPage("teams") && (
+        <>
+          <div style={styles.sectionHeader}>
+            <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> UNITS
+          </div>
+          <div style={styles.unitGrid}>
+            {stationUnits.map((u) => (
+              <UnitRosterCard key={u.id} unit={u} />
+            ))}
+          </div>
 
-      <ScheduledRequests
-        user={user}
-        units={stationUnits}
-        requests={stationRequests}
-        scheduled={stationScheduled}
-        allScheduled={scheduled}
-        saveScheduled={saveScheduled}
-        addLog={addLog}
-        audioCtxRef={audioCtxRef}
-      />
+          <ScheduledRequests
+            user={user}
+            units={stationUnits}
+            requests={stationRequests}
+            scheduled={stationScheduled}
+            allScheduled={scheduled}
+            saveScheduled={saveScheduled}
+            addLog={addLog}
+            audioCtxRef={audioCtxRef}
+          />
+        </>
+      )}
 
-      <CompletedCalls
-              sectionRefs={sectionRefs}
-        requests={stationRequests}
-        units={stationUnits}
-        saveRequests={saveRequests}
-        addLog={addLog}
-        user={user}
-        canCorrect
-      />
+      {/* History: everything already closed. */}
+      {onPage("history") && (
+        <CompletedCalls
+          requests={stationRequests}
+          units={stationUnits}
+          saveRequests={saveRequests}
+          addLog={addLog}
+          user={user}
+          canCorrect
+        />
+      )}
     </div>
   );
 }
@@ -11791,7 +11834,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, sectionRefs }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -11824,6 +11867,9 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // Whether the refusal is being signed for.
   const [refusalOpen, setRefusalOpen] = useState(false);
   const [checklistOpen, setChecklistOpen] = useState(false);
+  // Which page the bar is showing. A crew's call is the thing they must never
+  // have to hunt for, so it is the default and always one tap away.
+  const onPage = (k) => !page || page === k;
   // Which action this crew has just tapped. Every one of these starts with a
   // read from the server, so on a weak signal there was a pause with nothing on
   // screen to show the tap had registered — and crews tapped again. The button
@@ -12496,6 +12542,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           tones before they are relying on one of them. */}
       <AlertToneCheck audioCtxRef={audioCtxRef} label="Speaker check" style={{ marginTop: 10 }} />
 
+      {onPage("teams") && (
+        <>
       <div style={styles.sectionHeader}>YOUR SHIFT</div>
       <CrewShiftCard user={user} unit={myUnit} onCall={!!myRequest} />
 
@@ -12581,12 +12629,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         </div>
       )}
 
-      <div
-        style={styles.sectionHeader}
-        ref={(el) => sectionRefs && (sectionRefs.current.teams = el)}
-      >
-        ASSIGNED AMBULANCE
-      </div>
+      <div style={styles.sectionHeader}>ASSIGNED AMBULANCE</div>
       {/* Asked once a shift, of whoever is sitting in Alpha.
           A number carried over from last week goes onto this week's calls
           without anybody noticing, and it is the column the maintenance and
@@ -12662,6 +12705,12 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         <PhoneIncoming size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{" "}
         {assisting ? "ASSISTING ON CALL" : "ASSIGNED CALL"}
       </div>
+        </>
+      )}
+
+      {/* My call: the thing a crew must never have to hunt for. */}
+      {onPage("board") && (
+        <>
       {!myRequest ? (
         <div style={styles.emptyState}>No active call. You'll be notified here the moment dispatch assigns one.</div>
       ) : (
@@ -12939,19 +12988,24 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           they are allowed to see. A crew who only realises here that a detail
           was wrong can still report it: it goes to the desk the same way it
           would have on the live call, and the desk still has the last word. */}
-      <div style={{ marginTop: 18 }}>
-        <CompletedCalls
-              sectionRefs={sectionRefs}
-          requests={stationRequests}
-          units={stationUnits}
-          unitId={myUnit.id}
-          shiftWindow={myShiftWindow}
-          user={user}
-          viewer={escViewer}
-          saveRequests={saveRequests}
-          addLog={addLog}
-        />
-      </div>
+        </>
+      )}
+
+      {/* History: what this crew has already closed on the shift running now. */}
+      {onPage("history") && (
+        <div style={{ marginTop: 18 }}>
+          <CompletedCalls
+            requests={stationRequests}
+            units={stationUnits}
+            unitId={myUnit.id}
+            shiftWindow={myShiftWindow}
+            user={user}
+            viewer={escViewer}
+            saveRequests={saveRequests}
+            addLog={addLog}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -13940,7 +13994,7 @@ function Statistics({ log, requests, units, checklistRuns }) {
   );
 }
 
-function IssuesRaised({ requests, viewer }) {
+function IssuesRaised({ requests, viewer, units, saveRequests, addLog }) {
   const [open, setOpen] = useState(false);
   // Two things are being asked of this section and they are different
   // questions: "what still needs me" and "what has this department been
@@ -13990,6 +14044,19 @@ function IssuesRaised({ requests, viewer }) {
         going wrong. Only the crew member who raised an issue can read the reply to it; none of this
         is on the dispatch log or the shared spreadsheet.
       </InfoNote>
+
+      {/* What is actually waiting on the administrator, with the controls to
+          answer it. Only on Active, because a resolved issue needs no reply. */}
+      {tab === "active" && units && (
+        <EscalationInbox
+          requests={requests}
+          units={units}
+          viewer={viewer}
+          saveRequests={saveRequests}
+          addLog={addLog}
+          embedded
+        />
+      )}
 
       {shown.length === 0 ? (
         <div style={styles.emptyState}>
@@ -14179,7 +14246,7 @@ function SavedLogs({ submissions, requests }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, sectionRefs }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -14254,6 +14321,8 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
   // at the board, not to add an ID.
   // Which call the administrator has opened, and one clock for the tiles.
   const [adminOpenId, setAdminOpenId] = useState(null);
+  // Which page the bar is showing.
+  const onPage = (k) => !page || page === k;
   const [adminTick, setAdminTick] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setAdminTick(Date.now()), 1000);
@@ -14503,14 +14572,20 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
       {/* The kept days, near the top: it is the thing an administrator comes
           back to this screen for, and it should not be at the bottom of a long
           scroll. */}
-      <div ref={(el) => sectionRefs && (sectionRefs.current.log = el)}>
-        <SavedLogs submissions={submissions} requests={requests} />
-      </div>
+      {/* Archive: the submitted log sheets, and nothing else. */}
+      {onPage("log") && <SavedLogs submissions={submissions} requests={requests} />}
 
       {/* The standing record of what crews have reported — the reasons stay
           readable long after each issue is closed. */}
       {/* The standing record. What is happening right now is shown at the top,
           under each station's own board. */}
+      {/* Statistics: everything that measures the department rather than
+          showing its live state — coverage history, checklist compliance, the
+          per-person figures, and the standing record of issues. All on one
+          page, because they are read together when somebody asks how the month
+          went. */}
+      {onPage("stats") && (
+        <>
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
       {/* What is on each list, and what came back today. */}
@@ -14524,23 +14599,25 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
       />
 
       {/* Per-person UHU and the month's patient-origin table. */}
-      <div ref={(el) => sectionRefs && (sectionRefs.current.stats = el)}>
-        <Statistics log={log} requests={requests} units={units} checklistRuns={checklistRuns} />
-      </div>
+      <Statistics log={log} requests={requests} units={units} checklistRuns={checklistRuns} />
 
-      <IssuesRaised requests={requests} viewer={escViewer} />
-
-      {/* Straight under the board, above the rosters. An issue a crew took the
-          trouble to write down is the one thing on this screen that has
-          somebody waiting on the other end of it. */}
-      <EscalationInbox
+      {/* One place for issues, not two.
+          The inbox and the record were the same list twice — what needs
+          answering sat above what had been answered, under two different
+          headings. The inbox now lives inside the record's Active tab, where
+          somebody looking for an issue is already looking. */}
+      <IssuesRaised
         requests={requests}
-        units={units}
         viewer={escViewer}
+        units={units}
         saveRequests={saveRequests}
         addLog={addLog}
       />
+        </>
+      )}
 
+      {onPage("teams") && (
+        <>
       <FoldingSection
         title="ADD TEAM MEMBER ID"
         count={accounts.filter((a) => a.role === "crew").length}
@@ -14728,6 +14805,12 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         );
       })}
 
+        </>
+      )}
+
+      {/* Board: what is happening right now. */}
+      {onPage("board") && (
+        <>
       <div style={styles.sectionHeader}>LIVE MONITOR — ACTIVE CALLS</div>
 
       {/* An admin watching the board can send the second ambulance too, rather
@@ -14822,26 +14905,36 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         })}
       </div>
 
-      <ScheduledRequests
-        user={user}
-        units={units}
-        requests={requests}
-        scheduled={scheduled}
-        saveScheduled={saveScheduled}
-        addLog={addLog}
-        audioCtxRef={audioCtxRef}
-      />
+        </>
+      )}
 
-      <CompletedCalls
-              sectionRefs={sectionRefs}
-        requests={requests}
-        units={units}
-        saveRequests={saveRequests}
-        addLog={addLog}
-        viewer={escViewer}
-        user={user}
-        canCorrect
-      />
+      {/* Bookings sit with the teams they are for. */}
+      {onPage("teams") && (
+        <ScheduledRequests
+          user={user}
+          units={units}
+          requests={requests}
+          scheduled={scheduled}
+          saveScheduled={saveScheduled}
+          addLog={addLog}
+          audioCtxRef={audioCtxRef}
+        />
+      )}
+
+      {/* An administrator has no History tab of their own — the whole record is
+          reached from the Archive and the statistics — so the closed calls stay
+          with the board they were run from. */}
+      {onPage("board") && (
+        <CompletedCalls
+          requests={requests}
+          units={units}
+          saveRequests={saveRequests}
+          addLog={addLog}
+          viewer={escViewer}
+          user={user}
+          canCorrect
+        />
+      )}
     </div>
   );
 }
