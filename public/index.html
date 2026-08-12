@@ -15,7 +15,19 @@
 <!-- In-browser JSX transform (no build step needed) -->
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <!-- Spreadsheet export -->
-<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!--
+  xlsx-js-style, not the plain xlsx build.
+
+  The community SheetJS build reads cell styles but does not write them: every
+  fill and font colour set on a cell is silently discarded when the workbook is
+  saved. That is why the night-shift shading and the category colours never
+  appeared, however correctly they were set. This fork is the same library with
+  the same API and style writing restored.
+
+  For the internal deployment this should be served from the hospital's own
+  server rather than a public CDN, like everything else the app loads.
+-->
+<script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -3790,21 +3802,14 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "CODES AND EMERGENCIES",
     "E-PCR AUTHOR",
     "BRAVO",
-    // The derived intervals the sheet calculates for itself.
-    "App to Dispatch",
-    "Dispatch to En-route",
-    "En-route to On-scene",
-    "On-scene to Depart",
-    "Departure to Arrival",
-    "Arrival to Inservice",
-    "Total Time",
+    // One interval, not seven. The other six were the clock times above
+    // subtracted from each other — arithmetic a reader can do from the columns
+    // already in front of them, and the sheet was half again as wide for it.
     "RESPONSE TIME",
     "DISPATCH DATA ENTRY STATUS",
     // What the app records that the sheet has no column for, kept at the end so
     // the department's own columns stay exactly where they are.
     "SHIFT",
-    "SHIFT DATE",
-    "CALL DATE",
     "STATUS",
     "OUTCOME",
     "PT. REFUSED TIME",
@@ -3814,14 +3819,15 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "RECEIVED BY (NAME)",
     "RECEIVER ID",
     "RECEIVER RECORDED BY",
-    "REQUIREMENTS",
     "MEDIC CREW (NAME STAMPS)",
     "ASSISTING TEAM(S)",
     "ASSIST REQ. TIME",
     "ASSIST REQ. BY",
     "ASSIST STATUS",
     "BOOKED BY",
-    "BOOKED AT",
+    // A booking made with no time waits for the ward to ring back. This is
+    // the moment the desk released it — the only part of that arrangement
+    // anybody needs afterwards.
     "READY CALL TAKEN",
     "BOOKING NOTES",
     "CLOSED BY",
@@ -3860,19 +3866,12 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       r.pcrAuthor && r.pcrAuthor.seat === "alpha"
         ? (unit.bravo ? unit.bravo.name : "")
         : (unit.alpha ? unit.alpha.name : ""),
-      durationStr(r.scheduledFor, r.createdAt),
-      durationStr(r.createdAt, t.enroute),
-      durationStr(t.enroute, t.arrival),
-      durationStr(t.arrival, t.departure),
-      durationStr(t.departure, t.arrivalDestination),
-      durationStr(t.arrivalDestination, t.backInService),
-      durationStr(callStartTs(r), callEndTs(r, now)),
-      durationStr(r.createdAt, t.arrival),
+      // Dispatch to arrival at the destination — the whole wait, which is the
+      // one the department is judged on.
+      durationStr(r.createdAt, t.arrivalDestination),
       // The sheet's own completeness check: a row with every time on it is done.
       t.enroute && t.arrival && t.backInService ? "Completed" : "Incomplete",
-      shift ? `${shift.short} (${shift.window})` : "",
-      shiftDateOf(shiftRun.start),
-      gregDateStr(r.createdAt),
+      shift ? shift.short : "",
       r.status ? REQ_STATUS[r.status].label : "",
       callOutcomeLabel(r),
       clockStr(t[REFUSAL_TIME_KEY]),
@@ -3882,15 +3881,13 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       r.receiver ? r.receiver.name : "",
       r.receiver ? r.receiver.receiverId : "",
       r.receiver ? r.receiver.takenBy : "",
-      reqLabels(r).join(", "),
       medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
       assistTeamNames(r, units),
       assist ? clockStr(assist.requestedAt) : "",
       assist ? assist.requestedByUnitName || assist.requestedBy || "" : "",
       assist ? (assist.status || "").toUpperCase() : "",
       r.scheduledBy || "",
-      r.bookingCreatedAt ? gregDateTimeStr(r.bookingCreatedAt) : "",
-      r.readyCalledAt ? gregDateTimeStr(r.readyCalledAt) : "",
+      r.readyCalledAt ? clockStr(r.readyCalledAt) : "",
       r.bookingNotes || "",
       r.closedBy || "",
       r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
@@ -3898,7 +3895,21 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     ];
   };
 
-  const sorted = (requests || []).slice().sort((a, b) => a.createdAt - b.createdAt);
+  // Ordered the way the department works through a day: the day shift's calls in
+  // the order they were dispatched, then the night shift's in the order they
+  // were dispatched. Sorting purely by clock time put a 02:00 call from the
+  // night before at the top of the sheet, above the morning that followed it.
+  const sorted = (requests || [])
+    .slice()
+    .sort((a, b) => {
+      const da = opDayStart(a.createdAt);
+      const dbb = opDayStart(b.createdAt);
+      if (da !== dbb) return da - dbb;
+      const sa = scheduledShiftKey(a.createdAt) === "day" ? 0 : 1;
+      const sb = scheduledShiftKey(b.createdAt) === "day" ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      return a.createdAt - b.createdAt;
+    });
 
   // An export covering both stations keeps them apart on the page: the Main
   // Office's calls run first as their own numbered block, then CCC underneath as
@@ -3909,12 +3920,19 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
         (g) => g.rows.length
       );
 
+  // The date belongs at the top of the page, once, not repeated down a column
+  // on every one of forty rows that all happened on the same day.
+  const dayOf = sorted.length ? opDayStart(sorted[0].createdAt) : opDayStart(now);
   const out = [
     [
       station
         ? `KFSH&RC AMBULANCE DISPATCH LOG — ${stationLabel(station).toUpperCase()}`
         : "KFSH&RC AMBULANCE DISPATCH LOG — ALL STATIONS",
+      "",
+      "",
+      opDayLabel(dayOf),
     ],
+    [`Operational day 07:00 → 07:00 · ${sorted.length} call${sorted.length === 1 ? "" : "s"}`],
     [],
   ];
 
@@ -5916,7 +5934,28 @@ function App() {
             : user.role === "admin"
               ? {
                   label: "Export",
-                  onClick: () => exportAndShareLog(log, requests, units, scheduled, null, coverage),
+                  // Today, not everything.
+                  //
+                  // It was exporting every call the board had ever held, so an
+                  // administrator pressing this at the end of a shift got months
+                  // of history and had to find today inside it. The operational
+                  // day is what somebody wants when they press Export: the day
+                  // shift and the night that follows, as they stand, with the
+                  // coverage gaps that happened in them.
+                  onClick: () => {
+                    const from = opDayStart(Date.now());
+                    const to = opDayEnd(from);
+                    exportAndShareLog(
+                      (log || []).filter((e) => e && e.ts >= from && e.ts < to),
+                      (requests || []).filter((r) => r && r.createdAt >= from && r.createdAt < to),
+                      units,
+                      (scheduled || []).filter(
+                        (x) => x && x.scheduledFor >= from && x.scheduledFor < to
+                      ),
+                      null,
+                      (coverage || []).filter((c) => c && c.startedAt >= from && c.startedAt < to)
+                    );
+                  },
                 }
               : null
         }
