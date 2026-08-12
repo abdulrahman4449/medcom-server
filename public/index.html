@@ -3647,6 +3647,97 @@ function paintRows(sheet, rows, offset, bg, fg) {
   return sheet;
 }
 
+// A colour per call category, so a month is readable by scanning.
+//
+// Grouped by what the department does rather than by a palette: emergencies
+// red, codes deep red, scheduled work blue, programmes green, administrative
+// grey. Somebody looking for how many emergencies ran last Tuesday should not
+// have to read twenty rows to count them.
+const CATEGORY_FILLS = {
+  "EMERGENCY (INTERNAL)": ["FFC00000", "FFFFFFFF"],
+  "EMERGENCY (EXTERNAL)": ["FFE06666", "FF1A1A1A"],
+  "PROTOCOL EMERGENCY": ["FFC55A11", "FFFFFFFF"],
+  CODE: ["FF7F0000", "FFFFFFFF"],
+  "MOBILE STROKE UNIT": ["FF7F0000", "FFFFFFFF"],
+  "CHEST PAIN PROGRAM": ["FFE06666", "FF1A1A1A"],
+  "RRT TRANSPORT": ["FFE06666", "FF1A1A1A"],
+  ROUTINE: ["FF2E75B6", "FFFFFFFF"],
+  "CCC ROUTINE": ["FF9DC3E6", "FF1A1A1A"],
+  DISCHARGE: ["FF9DC3E6", "FF1A1A1A"],
+  "DIRECT ADMISSION": ["FFBDD7EE", "FF1A1A1A"],
+  "DEM ADMISSION": ["FFBDD7EE", "FF1A1A1A"],
+  "STAT PROCEDURE": ["FF2E75B6", "FFFFFFFF"],
+  "HOME HEALTH CARE": ["FF548235", "FFFFFFFF"],
+  "HOME VENT PROGRAM": ["FF548235", "FFFFFFFF"],
+  TRANSPLANT: ["FF375623", "FFFFFFFF"],
+  MEDEVAC: ["FF7030A0", "FFFFFFFF"],
+  "COMMERCIAL FLIGHT": ["FFB4A7D6", "FF1A1A1A"],
+  "FLIGHT ASSESSMENT": ["FFB4A7D6", "FF1A1A1A"],
+  ADMINISTRATIVE: ["FFBFBFBF", "FF1A1A1A"],
+  CANCELLED: ["FF808080", "FFFFFFFF"],
+  "NO COVERAGE": ["FF000000", "FFFFFFFF"],
+  NA: ["FFD9D9D9", "FF1A1A1A"],
+};
+
+function paintCategoryColumn(sheet, aoa, offset, colIndex) {
+  if (colIndex < 0 || !sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const cell = sheet[XLSX.utils.encode_cell({ r, c: colIndex })];
+    if (!cell || !cell.v) continue;
+    const fill = CATEGORY_FILLS[String(cell.v).trim()];
+    if (!fill) continue;
+    cell.s = {
+      ...(cell.s || {}),
+      fill: { patternType: "solid", fgColor: { rgb: fill[0] } },
+      font: { ...((cell.s || {}).font || {}), color: { rgb: fill[1] }, bold: true, sz: 9 },
+      alignment: { horizontal: "center", vertical: "center" },
+    };
+  }
+  return sheet;
+}
+
+// The header band, and the panes that keep it in view.
+function dressSheet(sheet, headerRowIndex, firstDataCol) {
+  if (!sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = sheet[XLSX.utils.encode_cell({ r: headerRowIndex, c })];
+    if (!cell) continue;
+    cell.s = {
+      fill: { patternType: "solid", fgColor: { rgb: "FF0A5540" } },
+      font: { color: { rgb: "FFFFFFFF" }, bold: true, sz: 9 },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+      border: {
+        bottom: { style: "thin", color: { rgb: "FF063A2C" } },
+        right: { style: "hair", color: { rgb: "FF2F6B57" } },
+      },
+    };
+  }
+  // Scrolling a month of calls with the headings off the top is how a column
+  // gets read as the wrong column.
+  sheet["!freeze"] = { xSplit: firstDataCol || 1, ySplit: headerRowIndex + 1 };
+  sheet["!autofilter"] = {
+    ref: XLSX.utils.encode_range(
+      { r: headerRowIndex, c: range.s.c },
+      { r: range.e.r, c: range.e.c }
+    ),
+  };
+  return sheet;
+}
+
+// Everything a finished log sheet needs, in one place and in the right order:
+// the header band and frozen panes, the night shift shaded, and the call
+// category coloured. Order matters — the category colour is applied last so a
+// night row does not blacken over it.
+function dressLogSheet(sheet, aoa) {
+  const headerRow = typeof aoa.headerRowIndex === "number" ? aoa.headerRowIndex : 4;
+  dressSheet(sheet, headerRow, 2);
+  shadeNightRows(sheet, aoa, 0);
+  paintCategoryColumn(sheet, aoa, 0, typeof aoa.categoryCol === "number" ? aoa.categoryCol : -1);
+  return sheet;
+}
+
 // Paint the night shift. The row indices come back on the AOA itself, because
 // only the builder knows which call belongs to which shift — by the time it is a
 // sheet the times are strings.
@@ -3829,6 +3920,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
 
   // Which rows are night calls, so the sheet can be shaded after it is built.
   const nightRows = [];
+  let firstHeaderRow = 4;
   // And which are periods with no ambulance available — these are the rows the
   // department will be asked about, so they are marked in red and carry the
   // sheet's own NO COVERAGE category rather than being invented as a new idea.
@@ -3837,6 +3929,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
   groups.forEach((g, gi) => {
     if (gi > 0) out.push([]);
     out.push([`${stationLabel(g.key).toUpperCase()} — ${g.rows.length} call${g.rows.length === 1 ? "" : "s"}`]);
+    if (gi === 0) firstHeaderRow = out.length;
     out.push(["#", ...header]);
     g.rows.forEach((r, idx) => {
       if (isNightCall(r)) nightRows.push(out.length);
@@ -3871,7 +3964,11 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
 
   out.nightRows = nightRows;
   out.coverageRows = coverageRows;
-  out.headerRows = [];
+  // Where the treatments need to land. Reported by the builder rather than
+  // guessed at by the code that dresses the sheet — it is the only thing that
+  // knows how many title lines it wrote.
+  out.headerRowIndex = firstHeaderRow;
+  out.categoryCol = header.indexOf("CALL CATEGORY") + 1; // +1 for the "#" column
   return out;
 }
 
@@ -3953,6 +4050,25 @@ function xlTextWidth(text) {
 // sheets built from objects; further down on the DISPATCH LOG sheet, which
 // carries a title and a date above its header). That row and anything above it
 // get the taller height.
+// A column is sized by what it holds, not by the banner above it.
+//
+// Widths were measured over every row including the title lines, so a sheet
+// headed "KFSH&RC AMBULANCE DISPATCH LOG — MAIN OFFICE" made its first column —
+// the row counter — as wide as that whole sentence. Titles are now skipped, and
+// a few columns that are always short are capped outright.
+const NARROW_COLUMNS = {
+  "#": 4.5,
+  MRN: 12,
+  TRUCK: 9,
+  "KILO METER": 8,
+  "ADDED SERVICE": 9,
+  "TYPE OF SERVICE": 11,
+  "MEDIC TEAM": 12,
+  "CAT. OF CALL": 11,
+  BRAVO: 14,
+  "E-PCR AUTHOR": 14,
+};
+
 function autoFitSheet(ws, headerRow) {
   if (!ws || !ws["!ref"]) return ws;
   const range = XLSX.utils.decode_range(ws["!ref"]);
@@ -3961,13 +4077,18 @@ function autoFitSheet(ws, headerRow) {
   const cols = [];
   for (let c = range.s.c; c <= range.e.c; c++) {
     let widest = 0;
+    const headText = xlCellText(ws[XLSX.utils.encode_cell({ r: heading, c })]) || "";
     for (let r = range.s.r; r <= range.e.r; r++) {
+      // Rows above the header are titles and captions spanning the page; they
+      // say nothing about how wide this column needs to be.
+      if (r < heading) continue;
       const text = xlCellText(ws[XLSX.utils.encode_cell({ r, c })]);
       if (text) widest = Math.max(widest, xlTextWidth(text));
     }
-    cols.push({
-      wch: Math.min(XL_COL_MAX_WIDTH, Math.max(XL_COL_MIN_WIDTH, Math.ceil(widest + XL_COL_PADDING))),
-    });
+    const cap = NARROW_COLUMNS[headText.trim()];
+    let wch = Math.min(XL_COL_MAX_WIDTH, Math.max(XL_COL_MIN_WIDTH, Math.ceil(widest + XL_COL_PADDING)));
+    if (cap) wch = Math.min(wch, cap);
+    cols.push({ wch });
   }
   ws["!cols"] = cols;
 
@@ -4017,10 +4138,9 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
   // captions sit on the fifth row, under the title, the export stamp and the
   // line naming the two shift windows.
   const dispatchAoa = buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station, coverage);
-  const dispatchLogSheet = shadeNightRows(
-    autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), 4),
-    dispatchAoa,
-    0
+  const dispatchLogSheet = dressLogSheet(
+    autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), dispatchAoa.headerRowIndex || 4),
+    dispatchAoa
   );
   XLSX.utils.book_append_sheet(wb, dispatchLogSheet, "DISPATCH LOG");
 
@@ -4290,7 +4410,7 @@ async function exportArchivedDay(archive, liveRequests) {
         ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}` +
         (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : ""),
     ]);
-    const sheet = shadeNightRows(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4), aoa, 1);
+    const sheet = dressLogSheet(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4), aoa);
     XLSX.utils.book_append_sheet(wb, sheet, `DISPATCH LOG — ${stationShort(st.key)}`);
   });
 
@@ -4370,7 +4490,7 @@ async function exportSubmission(sub, liveRequests) {
   ]);
   XLSX.utils.book_append_sheet(
     wb,
-    shadeNightRows(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 4), aoa, 1),
+    dressLogSheet(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4), aoa),
     `${stationShort(sub.station)} ${sub.shiftKey === "night" ? "NIGHT" : "DAY"}`
   );
 
@@ -11636,15 +11756,22 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   <button style={styles.editOpenBtn} onClick={() => setEditingCallId(req.id)}>
                     <PencilLine size={12} /> Correct call details
                   </button>
-                  {req.status !== "completed" && (
-                    <button
-                      style={req.handover ? styles.handBackBtn : styles.handOverBtn}
-                      onClick={() => handToNextShift(req)}
-                    >
-                      <ArrowRight size={12} />{" "}
-                      {req.handover ? "Take back onto this shift" : "Hand to next shift"}
-                    </button>
-                  )}
+                  {/* Only while nobody is on it.
+                      A call a crew has been dispatched to is theirs until they
+                      clear it — it cannot be handed to a shift that has not
+                      started, and offering to do so invited a desk to try. Once
+                      it is already marked over, the option to take it back stays
+                      so a change of mind is possible. */}
+                  {req.status !== "completed" &&
+                    (req.handover || !req.assignedUnitId) && (
+                      <button
+                        style={req.handover ? styles.handBackBtn : styles.handOverBtn}
+                        onClick={() => handToNextShift(req)}
+                      >
+                        <ArrowRight size={12} />{" "}
+                        {req.handover ? "Take back onto this shift" : "Hand to next shift"}
+                      </button>
+                    )}
                   {req.status !== "completed" && req.assignedUnitId && !assistPending(req) && (
                     <button style={styles.deskAssistBtn} onClick={() => dispatchRaisesAssist(req)}>
                       <Ambulance size={12} /> Send help to this team
@@ -13934,9 +14061,58 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
   );
 }
 
-function Statistics({ log, requests, units, checklistRuns }) {
+// The indicators, at the top of the page and never folded away.
+//
+// A compliance figure behind a fold is a figure nobody reads. This is what an
+// administrator opens the page for, so it opens with it — with its own period
+// selector, because the question "how are we doing" is asked over a month or a
+// quarter, not over a shift.
+function IndicatorBand({ requests, range, setRange }) {
+  const now = Date.now();
+  const win = statRangeWindow(range, now);
+  const resp = responseCompliance(requests, win.start, win.end);
+
+  return (
+    <div style={styles.bandWrap}>
+      <div style={styles.bandHead}>
+        <span style={styles.bandTitle}>PERFORMANCE</span>
+        <div style={styles.bandPeriods}>
+          {STAT_RANGES.filter((r) => r.key !== "shift").map((r) => (
+            <button
+              key={r.key}
+              style={r.key === range ? styles.bandPeriodOn : styles.bandPeriod}
+              onClick={() => setRange(r.key)}
+            >
+              {r.label.replace("This ", "")}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={styles.gaugeRow}>
+        <Gauge
+          label="Emergency response"
+          pct={resp.pct}
+          good={RESPONSE_GOOD}
+          caption={
+            resp.total ? `${resp.within} of ${resp.total} within 10 min` : "none yet this period"
+          }
+          unmeasured={resp.unmeasured}
+        />
+      </div>
+
+      {resp.avg !== null && (
+        <div style={styles.bandFoot}>
+          Average dispatch to arrival: <strong>{msDurationStr(resp.avg)}</strong> · internal
+          emergencies only, against a 10-minute standard.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
   const [open, setOpen] = useState(false);
-  const [range, setRange] = useState("shift");
   const [mode, setMode] = useState("uhu");
   const [search, setSearch] = useState("");
   const now = Date.now();
@@ -13955,47 +14131,97 @@ function Statistics({ log, requests, units, checklistRuns }) {
   const origins = originStats(requests, win);
   const inWindow = (requests || []).filter((r) => r && r.createdAt >= win.start && r.createdAt < win.end);
 
+  // The period's figures, as the department reads them: one row per employee
+  // with the three measures side by side, then where the month's patients came
+  // from. Marked with the period chosen, so a downloaded file is never mistaken
+  // for a different month.
   function download() {
     const wb = XLSX.utils.book_new();
-    const rangeLabel = STAT_RANGES.find((x) => x.key === range).label;
+    const label = STAT_RANGES.find((x) => x.key === range).label;
+
+    const staffRows = allStaff.map((p) => ({
+      "EMPLOYEE ID": p.id,
+      "FULL NAME": p.name,
+      "MEDIC TEAM": p.unitList,
+      "UHU %": Number(p.uhu.toFixed(1)),
+      "CHECKLIST COMPLIANCE %": Number(p.checklistCompliance.toFixed(0)),
+      "CALLS COMPLETED": p.calls,
+      "SHIFTS WORKED": p.shiftsWorked,
+      "TOTAL SHIFT (MIN)": Math.round(p.shiftMs / 60000),
+      "PATIENT CARE TIME (MIN)": Math.round(p.onCallMs / 60000),
+      "CHECKLISTS FILED": p.checklistsFiled,
+    }));
     XLSX.utils.book_append_sheet(
       wb,
       autoFitSheet(
-        XLSX.utils.json_to_sheet(
-          staff.map((p) => ({
-            "EMPLOYEE ID": p.id,
-            "FULL NAME": p.name,
-            "MEDIC TEAM": p.unitList,
-            "Total shift in minutes": Math.round(p.shiftMs / 60000),
-            "Total patient care time in minutes": Math.round(p.onCallMs / 60000),
-            "UHU %": Number(p.uhu.toFixed(1)),
-            "TOTAL CALLS": p.calls,
-            "CHECKLISTS FILED": p.checklistsFiled,
-            "SHIFTS WORKED": p.shiftsWorked,
-            "CHECKLIST COMPLIANCE %": Number(p.checklistCompliance.toFixed(0)),
-          }))
-        ),
-        0
+        XLSX.utils.aoa_to_sheet([
+          [`STAFF PERFORMANCE — ${label.toUpperCase()}`],
+          [`${win.label} · generated ${gregDateTimeStr(Date.now())}`],
+          [],
+          ...(staffRows.length
+            ? [Object.keys(staffRows[0]), ...staffRows.map((r) => Object.values(r))]
+            : [["No signed-on time recorded in this period."]]),
+        ]),
+        3
       ),
-      `UHU ${rangeLabel}`.slice(0, 31)
+      "STAFF PERFORMANCE"
     );
+
+    const originRows = origins.rows.map((r) => ({
+      "PATIENT INITIAL LOCATION": r.origin,
+      "MAIN OFFICE": r.main,
+      CCC: r.ccc,
+      TOTAL: r.total,
+      "% OF CALLS": origins.rows.length
+        ? Number(((r.total / origins.rows.reduce((n, x) => n + x.total, 0)) * 100).toFixed(1))
+        : 0,
+    }));
     XLSX.utils.book_append_sheet(
       wb,
       autoFitSheet(
-        XLSX.utils.json_to_sheet(
-          origins.rows.map((r) => ({
-            "PATIENT INITIAL LOCATION": r.origin,
-            "MAIN OFFICE": r.main,
-            CCC: r.ccc,
-            TOTAL: r.total,
-          }))
-        ),
-        0
+        XLSX.utils.aoa_to_sheet([
+          [`PATIENT INITIAL LOCATION — ${label.toUpperCase()}`],
+          [`${win.label} · generated ${gregDateTimeStr(Date.now())}`],
+          [],
+          ...(originRows.length
+            ? [Object.keys(originRows[0]), ...originRows.map((r) => Object.values(r))]
+            : [["Nothing recorded against a location."]]),
+          [],
+          ...(origins.unstated
+            ? [[`${origins.unstated} call(s) with no location recorded.`]]
+            : []),
+        ]),
+        3
       ),
-      "PATIENT INITIAL LOCATION"
+      "PATIENT LOCATION"
     );
+
+    // The compliance figure the indicators show, so the file and the screen
+    // cannot disagree.
+    const resp = responseCompliance(requests, win.start, win.end);
+    XLSX.utils.book_append_sheet(
+      wb,
+      autoFitSheet(
+        XLSX.utils.aoa_to_sheet([
+          [`EMERGENCY RESPONSE — ${label.toUpperCase()}`],
+          [],
+          ["Standard", "Dispatch to arrival at destination within 10 minutes"],
+          ["Applies to", "EMERGENCY (INTERNAL) only"],
+          ["Measured calls", resp.total],
+          ["Within 10 minutes", resp.within],
+          ["Compliance %", resp.pct === null ? "—" : Number(resp.pct.toFixed(1))],
+          ["Average response", resp.avg === null ? "—" : msDurationStr(resp.avg)],
+          ["Not yet measurable", resp.unmeasured],
+        ]),
+        1
+      ),
+      "EMERGENCY RESPONSE"
+    );
+
     const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const blob = new Blob([buf], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -14036,28 +14262,6 @@ function Statistics({ log, requests, units, checklistRuns }) {
           Checklist compliance
         </button>
       </div>
-
-      {/* Indicators first: how the department performed, before who did what.
-          Built as a row so the ones still to come line up beside this one. */}
-      <div style={styles.gaugeRow}>
-        <Gauge
-          label="Emergency response"
-          pct={resp.pct}
-          good={RESPONSE_GOOD}
-          caption={
-            resp.total
-              ? `${resp.within} of ${resp.total} within 10 min`
-              : "no internal emergencies yet"
-          }
-          unmeasured={resp.unmeasured}
-        />
-      </div>
-      {resp.avg !== null && (
-        <div style={styles.savedNote}>
-          Average, dispatch to arrival at destination: {msDurationStr(resp.avg)} · internal
-          emergencies only.
-        </div>
-      )}
 
       <div style={styles.sectionHeader}>BY EMPLOYEE</div>
 
@@ -14494,6 +14698,10 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
   // at the board, not to add an ID.
   // Which call the administrator has opened, and one clock for the tiles.
   const [adminOpenId, setAdminOpenId] = useState(null);
+  // One period for the whole statistics page — the indicators, the tables and
+  // the export. Two selectors would let an administrator export a month while
+  // looking at a quarter.
+  const [statRange, setStatRange] = useState("month");
   // Which page the bar is showing.
   const onPage = (k) => !page || page === k;
   const [adminTick, setAdminTick] = useState(Date.now());
@@ -14769,6 +14977,9 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           went. */}
       {onPage("stats") && (
         <>
+      {/* Always open, at the head of the page. */}
+      <IndicatorBand requests={requests} range={statRange} setRange={setStatRange} />
+
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
       {/* What is on each list, and what came back today. */}
@@ -14782,7 +14993,14 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
       />
 
       {/* Per-person UHU and the month's patient-origin table. */}
-      <Statistics log={log} requests={requests} units={units} checklistRuns={checklistRuns} />
+      <Statistics
+        log={log}
+        requests={requests}
+        units={units}
+        checklistRuns={checklistRuns}
+        range={statRange}
+        setRange={setStatRange}
+      />
 
       {/* One place for issues, not two.
           The inbox and the record were the same list twice — what needs
@@ -17028,6 +17246,30 @@ const styles = {
   },
 
   // A row of indicators, sized so more can be added without rearranging.
+  bandWrap: {
+    background: "linear-gradient(180deg, #16232F, #0D151E)",
+    border: "1px solid rgba(255,255,255,.09)",
+    borderRadius: 20,
+    padding: "14px 14px 12px",
+    marginTop: 14,
+    boxShadow: "0 12px 30px rgba(0,0,0,.42)",
+  },
+  bandHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  bandTitle: {
+    fontSize: 11.5, fontWeight: 800, letterSpacing: 1.4, color: "#E9C46A",
+    textTransform: "uppercase",
+  },
+  bandPeriods: { marginLeft: "auto", display: "flex", gap: 5 },
+  bandPeriod: {
+    background: "none", border: "1px solid #2A3949", color: "#9DB2C4",
+    borderRadius: 999, padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+  },
+  bandPeriodOn: {
+    background: "#101A24", border: "1px solid #35C4E8", color: "#F2F7FB",
+    borderRadius: 999, padding: "5px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+  },
+  bandFoot: { fontSize: 12.5, color: "#9DB2C4", marginTop: 10, lineHeight: 1.5 },
+
   gaugeRow: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(168px, 1fr))",
