@@ -4439,6 +4439,16 @@ function App() {
   // Shift logs the desks have submitted, per station.
   const [submissions, setSubmissions] = useState([]);
   // Periods with no ambulance available, per station.
+  // Which tab is showing, and the anchors it scrolls to.
+  //
+  // Declared here with the other hooks, above every early return. A hook placed
+  // after `if (!user) return <LoginScreen/>` is skipped on the renders that show
+  // the login screen and called on the ones that do not — React counts hooks by
+  // order, sees the count change the moment somebody signs in, and throws. That
+  // is precisely what turned the screen black after choosing a station.
+  const [navTab, setNavTab] = useState("board");
+  const sectionRefs = useRef({});
+
   const [coverage, setCoverage] = useState([]);
   // The checklist items administration has set, and every list filed.
   const [checklists, setChecklists] = useState(emptyChecklists());
@@ -4702,6 +4712,21 @@ function App() {
     setAccounts(accountsToUse);
     setReady(true);
   }, []);
+
+  // The bar moves to a section rather than routing to a page, so a desk
+  // mid-call never loses sight of the board because it tapped something.
+  useEffect(() => {
+    if (!user) return;
+    // "Submit" is an action, not a place: it files the shift and drops straight
+    // back to the board rather than leaving the desk on a tab showing nothing.
+    if (navTab === "log" && user.role === "dispatcher") {
+      setNavTab("board");
+      submitMyShiftLog();
+      return;
+    }
+    const el = sectionRefs.current[navTab];
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [navTab, user && user.role]);
 
   // Ending a no-coverage period the moment a team is back in service. It is
   // closed by the board rather than by a person, so nobody has to remember —
@@ -5571,29 +5596,7 @@ function App() {
   // same rule.
   const seesLogSheet = user.role === "admin" || user.role === "dispatcher";
 
-  // Which tab is showing, and the anchors it scrolls to.
-  //
-  // The sections already exist on one long screen, so the bar moves to them
-  // rather than hiding them behind routes — a desk mid-call must never lose
-  // sight of the board because it tapped something. Selecting a tab scrolls to
-  // that section and marks it; the board itself is always one tap away.
-  const [navTab, setNavTab] = useState("board");
-  const sectionRefs = useRef({});
 
-  useEffect(() => {
-    // "Submit" is an action, not a place. Tapping it files the shift and drops
-    // straight back to the board rather than leaving the desk on a tab that
-    // shows nothing.
-    if (navTab === "log" && user && user.role === "dispatcher") {
-      setNavTab("board");
-      submitMyShiftLog();
-      return;
-    }
-    const el = sectionRefs.current[navTab];
-    if (el && el.scrollIntoView) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [navTab]);
 
   // Where each role actually moves between. Not a menu of everything — four
   // places at most, because a bar with seven tabs is a menu wearing a costume.
@@ -17795,7 +17798,11 @@ const styles = {
   // login
   loginWrap: {
     minHeight: "100vh",
-    background: "#070D13",
+    // The same lit ground as the board behind it, so signing in feels like the
+    // front door of one building rather than a separate app.
+    background:
+      "radial-gradient(760px 460px at 82% -12%, rgba(14,107,79,.30) 0%, transparent 60%), " +
+      "radial-gradient(900px 620px at 12% 12%, #101E2C 0%, transparent 58%), #070D13",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -17805,11 +17812,12 @@ const styles = {
   },
   loginCard: {
     width: "100%",
-    maxWidth: 380,
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
-    borderRadius: 12,
-    padding: 24,
+    maxWidth: 400,
+    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    border: "1px solid rgba(255,255,255,.09)",
+    borderRadius: 24,
+    padding: 26,
+    boxShadow: "0 24px 60px rgba(0,0,0,.6)",
   },
   loginHeader: { display: "flex", alignItems: "center", gap: 8 },
   loginHospitalLogo: { height: 68, width: "auto", display: "block" },
@@ -17829,18 +17837,22 @@ const styles = {
   loginHeaderText: { fontFamily: display, fontWeight: 700, fontSize: 18, letterSpacing: 0.5 },
   loginSub: { color: "#9DB2C4", fontSize: 14, marginTop: 6 },
   roleBtn: {
-    background: "#070D13",
-    border: "1px solid #2A3949",
-    borderRadius: 10,
-    padding: "12px 14px",
+    background: "linear-gradient(180deg, #16232F, #101A24)",
+    border: "1px solid rgba(255,255,255,.09)",
+    borderRadius: 16,
+    padding: "16px 16px",
+    minHeight: 64,
     color: "#F2F7FB",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
+    textAlign: "left",
+    boxShadow: "0 6px 18px rgba(0,0,0,.3)",
+    transition: "transform .16s cubic-bezier(.22,1,.36,1), border-color .16s",
   },
-  roleBtnTitle: { fontWeight: 700, fontSize: 15.5 },
+  roleBtnTitle: { fontWeight: 750, fontSize: 16.5, letterSpacing: -0.2 },
   roleBtnSub: { fontSize: 13, color: "#9DB2C4", marginTop: 2 },
   loginActions: { display: "flex", gap: 8, marginTop: 16 },
   loginFootnote: { fontSize: 12.5, color: "#61788C", marginTop: 20, lineHeight: 1.5 },
