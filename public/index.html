@@ -5610,7 +5610,10 @@ function App() {
     user.role === "dispatcher"
       ? [
           { key: "board", glyph: "▦", label: "Board" },
-          { key: "history", glyph: "◷", label: "History" },
+          // What is coming and what has been. A desk looking at one is usually
+          // about to look at the other — a booking that has just gone out, and
+          // the call it became.
+          { key: "history", glyph: "🗓", label: "Schedule" },
           { key: "teams", glyph: "◑", label: "Teams" },
           { key: "log", glyph: "⬒", label: "Submit" },
         ]
@@ -11720,6 +11723,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       )}
 
       {/* Teams: the roster and what is booked for them. */}
+      {/* Teams: who is on, and nothing else. Bookings moved off this page —
+          they are work waiting to happen, not a fact about the roster. */}
       {onPage("teams") && (
         <>
           <div style={styles.sectionHeader}>
@@ -11730,7 +11735,15 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
               <UnitRosterCard key={u.id} unit={u} />
             ))}
           </div>
+        </>
+      )}
 
+      {/* Schedule: what is coming, then what has been.
+          Bookings first because they are the only part of this page anybody
+          still has to act on; the closed calls underneath are the record of the
+          ones that already went out. */}
+      {onPage("history") && (
+        <>
           <ScheduledRequests
             user={user}
             units={stationUnits}
@@ -11741,19 +11754,16 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             addLog={addLog}
             audioCtxRef={audioCtxRef}
           />
-        </>
-      )}
 
-      {/* History: everything already closed. */}
-      {onPage("history") && (
-        <CompletedCalls
-          requests={stationRequests}
-          units={stationUnits}
-          saveRequests={saveRequests}
-          addLog={addLog}
-          user={user}
-          canCorrect
-        />
+          <CompletedCalls
+            requests={stationRequests}
+            units={stationUnits}
+            saveRequests={saveRequests}
+            addLog={addLog}
+            user={user}
+            canCorrect
+          />
+        </>
       )}
     </div>
   );
