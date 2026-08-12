@@ -671,6 +671,51 @@ function callsNeedingDetail(requests) {
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
+// ---------- emergency response compliance ----------
+//
+// The department's own standard: an internal emergency should be with the
+// patient inside ten minutes. Measured from the moment dispatch raises the call
+// to the moment the crew reaches the destination — the whole journey the
+// patient waits through, not the part that flatters the figure.
+//
+// Only internal emergencies are counted. An external call is a drive, and
+// mixing the two produced an average that described neither.
+const RESPONSE_TARGET_MS = 10 * 60 * 1000;
+const RESPONSE_GOOD = 90; // per cent, at which the gauge reads green
+
+function isInternalEmergency(req) {
+  return (req && req.callCategory) === "EMERGENCY (INTERNAL)";
+}
+
+// The clock that is being judged: raised → arrived at the destination.
+function responseMsFor(req) {
+  const t = (req && req.times) || {};
+  if (!req || !req.createdAt || !t.arrivalDestination) return null;
+  return t.arrivalDestination - req.createdAt;
+}
+
+function responseCompliance(requests, from, to) {
+  const measured = (requests || []).filter(
+    (r) =>
+      isInternalEmergency(r) &&
+      r.createdAt >= from &&
+      r.createdAt < to &&
+      responseMsFor(r) !== null
+  );
+  const within = measured.filter((r) => responseMsFor(r) <= RESPONSE_TARGET_MS);
+  // Calls still running, or closed without ever arriving, are counted as
+  // outstanding rather than quietly dropped — a figure that ignores the calls
+  // it could not measure is not a compliance figure.
+  const unmeasured = (requests || []).filter(
+    (r) => isInternalEmergency(r) && r.createdAt >= from && r.createdAt < to && responseMsFor(r) === null
+  ).length;
+  const pct = measured.length ? (within.length / measured.length) * 100 : null;
+  const avg = measured.length
+    ? measured.reduce((sum, r) => sum + responseMsFor(r), 0) / measured.length
+    : null;
+  return { pct, avg, total: measured.length, within: within.length, unmeasured };
+}
+
 // ---------- the daily vehicle checklist ----------
 //
 // Two lists, because two people check two different things: the medic goes
@@ -1665,7 +1710,12 @@ function originStation(origin) {
 
 // Column R — CALL CATEGORY.
 const CALL_CATEGORIES = fromSheetList([
-  "EMERGENCY", "CANCELLED", "CCC ROUTINE", "CHEST PAIN PROGRAM", "CODE",
+  // Internal and external emergencies are the same word for two different jobs,
+  // and only one of them is ours to answer inside ten minutes. A call from a
+  // ward is a corridor away; one from outside the campus is a drive. Measuring
+  // them together produced a response figure that meant nothing, so the sheet's
+  // single EMERGENCY becomes two.
+  "EMERGENCY (INTERNAL)", "EMERGENCY (EXTERNAL)", "CANCELLED", "CCC ROUTINE", "CHEST PAIN PROGRAM", "CODE",
   "COMMERCIAL FLIGHT", "DEM ADMISSION", "DIRECT ADMISSION", "DISCHARGE",
   "ADMINISTRATIVE", "FLIGHT ASSESSMENT", "HOME HEALTH CARE", "HOME VENT PROGRAM",
   "MEDEVAC", "MOBILE STROKE UNIT", "NO COVERAGE", "PROTOCOL EMERGENCY", "ROUTINE",
@@ -4446,6 +4496,8 @@ function App() {
   // the login screen and called on the ones that do not — React counts hooks by
   // order, sees the count change the moment somebody signs in, and throws. That
   // is precisely what turned the screen black after choosing a station.
+  // Every role opens on its board. It is the thing anybody signing in wants to
+  // see first, and for a desk mid-shift it is the only thing.
   const [navTab, setNavTab] = useState("board");
   // Bumped when the bar's New call is pressed. The form itself stays where it
   // lives, on the dispatch board; this only tells it to open.
@@ -8695,9 +8747,9 @@ function callSearchText(req, units, escalations) {
 
 function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect }) {
   const [open, setOpen] = useState(!!shiftWindow);
-  // The reminder starts open — it is worth reading once — and folds away
-  // for the rest of the shift once the desk has taken it in.
-  const [bulbOpen, setBulbOpen] = useState(true);
+  // Folded, with the count still on the header. The number is the part that
+  // needs to be seen; the list of which calls is what you open it for.
+  const [bulbOpen, setBulbOpen] = useState(false);
   const [shown, setShown] = useState(HISTORY_PAGE);
   const [codingFor, setCodingFor] = useState(null);
   // Which call has the correction form open, keyed by id for the same reason
@@ -13811,6 +13863,77 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
   );
 }
 
+// A gauge. Built as one component with a slot for a caption, because more of
+// these are coming and a row of indicators only reads as a row if they are the
+// same size, the same arc and the same weight.
+//
+// Drawn as an SVG arc rather than a bar: a target of ninety per cent is a
+// position on a dial, and a dial is read without arithmetic.
+function Gauge({ label, pct, caption, good = 90, unmeasured }) {
+  const size = 132;
+  const stroke = 11;
+  const r = (size - stroke) / 2 - 2;
+  const cx = size / 2;
+  const cy = size / 2;
+  // Three-quarters of a circle, opening at the bottom, as a dial does.
+  const start = 135;
+  const sweep = 270;
+  const toXY = (deg) => {
+    const rad = ((deg - 90) * Math.PI) / 180;
+    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+  };
+  const arc = (fromDeg, toDeg) => {
+    const [x1, y1] = toXY(fromDeg);
+    const [x2, y2] = toXY(toDeg);
+    const large = toDeg - fromDeg > 180 ? 1 : 0;
+    return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
+  };
+
+  const has = pct !== null && pct !== undefined;
+  const value = has ? Math.max(0, Math.min(100, pct)) : 0;
+  const color = !has ? "#33475A" : value >= good ? "#3DDC97" : value >= good - 20 ? "#FFB020" : "#FF4D5E";
+
+  return (
+    <div style={styles.gaugeCard}>
+      <div style={styles.gaugeLabel}>{label}</div>
+      <div style={{ position: "relative", width: size, height: size, margin: "6px auto 0" }}>
+        <svg width={size} height={size}>
+          <path d={arc(start, start + sweep)} stroke="#16232F" strokeWidth={stroke} fill="none" strokeLinecap="round" />
+          {/* Where the target sits, so the number is read against something. */}
+          <path
+            d={arc(start + sweep * (good / 100) - 0.6, start + sweep * (good / 100) + 0.6)}
+            stroke="#61788C"
+            strokeWidth={stroke + 4}
+            fill="none"
+          />
+          {has && (
+            <path
+              d={arc(start, start + sweep * (value / 100))}
+              stroke={color}
+              strokeWidth={stroke}
+              fill="none"
+              strokeLinecap="round"
+              style={{ transition: "all .6s cubic-bezier(.22,1,.36,1)" }}
+            />
+          )}
+        </svg>
+        <div style={styles.gaugeCentre}>
+          <div style={{ ...styles.gaugeValue, color: has ? "#F2F7FB" : "#61788C" }}>
+            {has ? Math.round(value) : "—"}
+            {has && <span style={styles.gaugePct}>%</span>}
+          </div>
+          {caption && <div style={styles.gaugeCaption}>{caption}</div>}
+        </div>
+      </div>
+      {unmeasured > 0 && (
+        <div style={styles.gaugeNote}>
+          {unmeasured} not yet measurable — still running, or closed without arriving
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Statistics({ log, requests, units, checklistRuns }) {
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState("shift");
@@ -13818,6 +13941,7 @@ function Statistics({ log, requests, units, checklistRuns }) {
   const [search, setSearch] = useState("");
   const now = Date.now();
   const win = statRangeWindow(range, now);
+  const resp = responseCompliance(requests, win.start, win.end);
   const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns);
   // Searching by name or ID. On a department this size the list runs past a
   // screenful within a week, and the question is usually about one person.
@@ -13912,6 +14036,30 @@ function Statistics({ log, requests, units, checklistRuns }) {
           Checklist compliance
         </button>
       </div>
+
+      {/* Indicators first: how the department performed, before who did what.
+          Built as a row so the ones still to come line up beside this one. */}
+      <div style={styles.gaugeRow}>
+        <Gauge
+          label="Emergency response"
+          pct={resp.pct}
+          good={RESPONSE_GOOD}
+          caption={
+            resp.total
+              ? `${resp.within} of ${resp.total} within 10 min`
+              : "no internal emergencies yet"
+          }
+          unmeasured={resp.unmeasured}
+        />
+      </div>
+      {resp.avg !== null && (
+        <div style={styles.savedNote}>
+          Average, dispatch to arrival at destination: {msDurationStr(resp.avg)} · internal
+          emergencies only.
+        </div>
+      )}
+
+      <div style={styles.sectionHeader}>BY EMPLOYEE</div>
 
       <input
         style={{ ...styles.input, marginTop: 10 }}
@@ -14013,12 +14161,14 @@ function Statistics({ log, requests, units, checklistRuns }) {
   );
 }
 
-function IssuesRaised({ requests, viewer, units, saveRequests, addLog }) {
+function IssuesRaised({ requests, viewer, units, saveRequests, addLog, only }) {
   const [open, setOpen] = useState(false);
   // Two things are being asked of this section and they are different
   // questions: "what still needs me" and "what has this department been
   // dealing with". Split, because a list that mixes them answers neither.
-  const [tab, setTab] = useState("active");
+  // When the section is pinned to one kind — open on the board, resolved in the
+  // archive — the tabs are not offered, because there is nothing to choose.
+  const [tab, setTab] = useState(only || "active");
 
   const rows = escalatedCalls(requests, viewer);
   const all = [];
@@ -14034,28 +14184,32 @@ function IssuesRaised({ requests, viewer, units, saveRequests, addLog }) {
 
   return (
     <FoldingSection
-      title="ISSUES RAISED BY CREWS"
-      count={all.length}
-      countLabel={openCount ? `on record · ${openCount} still open` : "on record"}
+      title={only === "resolved" ? "ISSUES — RESOLVED" : "ISSUES RAISED BY CREWS"}
+      count={only ? shown.length : all.length}
+      countLabel={
+        only === "resolved" ? "resolved" : openCount ? "waiting on a reply" : "nothing outstanding"
+      }
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      <div style={styles.archTabs}>
-        <button
-          style={tab === "active" ? styles.archTabOn : styles.archTab}
-          onClick={() => setTab("active")}
-        >
-          Active
-          <span style={styles.archTabCount}>{openCount}</span>
-        </button>
-        <button
-          style={tab === "resolved" ? styles.archTabOn : styles.archTab}
-          onClick={() => setTab("resolved")}
-        >
-          Resolved
-          <span style={styles.archTabCount}>{resolvedCount}</span>
-        </button>
-      </div>
+      {!only && (
+        <div style={styles.archTabs}>
+          <button
+            style={tab === "active" ? styles.archTabOn : styles.archTab}
+            onClick={() => setTab("active")}
+          >
+            Active
+            <span style={styles.archTabCount}>{openCount}</span>
+          </button>
+          <button
+            style={tab === "resolved" ? styles.archTabOn : styles.archTab}
+            onClick={() => setTab("resolved")}
+          >
+            Resolved
+            <span style={styles.archTabCount}>{resolvedCount}</span>
+          </button>
+        </div>
+      )}
 
       <InfoNote label="What is kept here?">
         Every issue a crew has raised, open or resolved, with what they actually said. The inbox
@@ -14574,7 +14728,9 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           combined count answers a question nobody at either station is asking:
           "three available" means nothing if two of them are at the other end
           of the city. */}
-      {STATIONS.map((st) => {
+      {/* The teams table is a live picture, so it belongs where the live picture
+          is and nowhere else. Repeated on every page it became furniture. */}
+      {onPage("board") && STATIONS.map((st) => {
         const gap = openCoverageGap(coverage, st.key);
         return (
           <div key={st.key} style={{ marginBottom: 10 }}>
@@ -14591,8 +14747,16 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
       {/* The kept days, near the top: it is the thing an administrator comes
           back to this screen for, and it should not be at the bottom of a long
           scroll. */}
-      {/* Archive: the submitted log sheets, and nothing else. */}
-      {onPage("log") && <SavedLogs submissions={submissions} requests={requests} />}
+      {/* Archive: what is finished with. The log sheets, and the issues that
+          have been dealt with — kept for looking back at, not for acting on.
+          Anything still open is on the board, where somebody is expected to do
+          something about it. */}
+      {onPage("log") && (
+        <>
+          <SavedLogs submissions={submissions} requests={requests} />
+          <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
+        </>
+      )}
 
       {/* The standing record of what crews have reported — the reasons stay
           readable long after each issue is closed. */}
@@ -14625,13 +14789,6 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           answering sat above what had been answered, under two different
           headings. The inbox now lives inside the record's Active tab, where
           somebody looking for an issue is already looking. */}
-      <IssuesRaised
-        requests={requests}
-        viewer={escViewer}
-        units={units}
-        saveRequests={saveRequests}
-        addLog={addLog}
-      />
         </>
       )}
 
@@ -14827,9 +14984,19 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         </>
       )}
 
-      {/* Board: what is happening right now. */}
+      {/* Board: what is happening right now — including the issues somebody is
+          still waiting on an answer to. */}
       {onPage("board") && (
         <>
+      <IssuesRaised
+        requests={requests}
+        viewer={escViewer}
+        units={units}
+        saveRequests={saveRequests}
+        addLog={addLog}
+        only="active"
+      />
+
       <div style={styles.sectionHeader}>LIVE MONITOR — ACTIVE CALLS</div>
 
       {/* An admin watching the board can send the second ambulance too, rather
@@ -15092,7 +15259,10 @@ const BOARD_EVENTS = {
 // en-route stamp, and points at the spreadsheet for the rest.
 function LogSheet({ log, units, station }) {
   const [tab, setTab] = useState("all");
-  const [feedOpen, setFeedOpen] = useState(true);
+  // Folded on arrival. The feed is reference — a desk reads it when something
+  // needs checking, not while it is answering a call — and open by default it
+  // pushed the board off the screen.
+  const [feedOpen, setFeedOpen] = useState(false);
   const now = Date.now();
   // A desk reads its own station's log and nothing else. An administrator has
   // no station on their session, so they read both — which is the one place
@@ -16856,6 +17026,37 @@ const styles = {
   receiverHead: {
     fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#3DDC97",
   },
+
+  // A row of indicators, sized so more can be added without rearranging.
+  gaugeRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(168px, 1fr))",
+    gap: 10,
+    marginTop: 10,
+  },
+  gaugeCard: {
+    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    border: "1px solid rgba(255,255,255,.07)",
+    borderRadius: 18,
+    padding: "14px 12px 12px",
+    textAlign: "center",
+    boxShadow: "0 8px 22px rgba(0,0,0,.38)",
+  },
+  gaugeLabel: {
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.9, color: "#9DB2C4",
+    textTransform: "uppercase", lineHeight: 1.4,
+  },
+  gaugeCentre: {
+    position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "center", pointerEvents: "none",
+  },
+  gaugeValue: {
+    fontFamily: mono, fontSize: 34, fontWeight: 700, letterSpacing: -1.6,
+    lineHeight: 1, fontVariantNumeric: "tabular-nums",
+  },
+  gaugePct: { fontSize: 15, fontWeight: 600, color: "#61788C", marginLeft: 1 },
+  gaugeCaption: { fontSize: 11, color: "#61788C", marginTop: 5, maxWidth: 108, lineHeight: 1.35 },
+  gaugeNote: { fontSize: 11, color: "#61788C", marginTop: 8, lineHeight: 1.45 },
 
   statRow: {
     display: "flex", alignItems: "center", gap: 12,
