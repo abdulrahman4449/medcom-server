@@ -5607,27 +5607,36 @@ function App() {
   // Where each role actually moves between. Not a menu of everything — four
   // places at most, because a bar with seven tabs is a menu wearing a costume.
   const navTabs =
+    // Each glyph is the thing itself rather than an abstract shape. The old
+    // geometric marks — a filled square, a half circle, a quarter circle — told
+    // nobody anything: they had to be learned from the word underneath, which
+    // makes the picture decoration rather than a signpost. A crew glancing down
+    // with one thumb should recognise the destination before reading it.
     user.role === "dispatcher"
       ? [
-          { key: "board", glyph: "▦", label: "Board" },
-          // What is coming and what has been. A desk looking at one is usually
-          // about to look at the other — a booking that has just gone out, and
-          // the call it became.
+          // The board is the ambulances.
+          { key: "board", glyph: "🚑", label: "Board" },
+          // What is coming and what has been — a booking that has just gone
+          // out, and the call it became.
           { key: "history", glyph: "🗓", label: "Schedule" },
-          { key: "teams", glyph: "◑", label: "Teams" },
-          { key: "log", glyph: "⬒", label: "Submit" },
+          { key: "teams", glyph: "👥", label: "Teams" },
+          // Filing the shift's log.
+          { key: "log", glyph: "📤", label: "Submit" },
         ]
       : user.role === "admin"
         ? [
-            { key: "board", glyph: "▦", label: "Board" },
-            { key: "stats", glyph: "◔", label: "Statistics" },
-            { key: "teams", glyph: "◑", label: "Teams" },
-            { key: "log", glyph: "⬒", label: "Archive" },
+            { key: "board", glyph: "🚑", label: "Board" },
+            { key: "stats", glyph: "📊", label: "Statistics" },
+            { key: "teams", glyph: "👥", label: "Teams" },
+            // Kept, not sent — a different action from the desk's Submit, so a
+            // different picture.
+            { key: "log", glyph: "🗄", label: "Archive" },
           ]
         : [
-            { key: "board", glyph: "▦", label: "My call" },
-            { key: "history", glyph: "◷", label: "History" },
-            { key: "teams", glyph: "◑", label: "My truck" },
+            // A crew's own call, their own record, and their own truck.
+            { key: "board", glyph: "🚨", label: "My call" },
+            { key: "history", glyph: "🕘", label: "History" },
+            { key: "teams", glyph: "🚑", label: "My truck" },
           ];
 
   return (
@@ -17066,7 +17075,7 @@ const styles = {
     background: "none", border: "none", cursor: "pointer",
     fontSize: 9.5, letterSpacing: 0.4, color: "#F2F7FB", fontWeight: 700, padding: "6px 0",
   },
-  bottomGlyph: { fontSize: 16, lineHeight: 1 },
+  bottomGlyph: { fontSize: 17, lineHeight: 1.1 },
   bottomBadge: {
     position: "absolute", top: 0, right: "22%",
     background: "#FF4D5E", color: "#fff", fontSize: 9, fontWeight: 800,
