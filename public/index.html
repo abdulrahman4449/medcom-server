@@ -13742,6 +13742,11 @@ function Statistics({ log, requests, units, checklistRuns }) {
 
 function IssuesRaised({ requests, viewer }) {
   const [open, setOpen] = useState(false);
+  // Two things are being asked of this section and they are different
+  // questions: "what still needs me" and "what has this department been
+  // dealing with". Split, because a list that mixes them answers neither.
+  const [tab, setTab] = useState("active");
+
   const rows = escalatedCalls(requests, viewer);
   const all = [];
   rows.forEach((row) => {
@@ -13749,6 +13754,10 @@ function IssuesRaised({ requests, viewer }) {
   });
   all.sort((a, b) => (b.e.raisedAt || 0) - (a.e.raisedAt || 0));
   const openCount = all.filter((x) => escalationIsOpen(x.e)).length;
+  const resolvedCount = all.length - openCount;
+  const shown = all.filter((x) =>
+    tab === "active" ? escalationIsOpen(x.e) : !escalationIsOpen(x.e)
+  );
 
   return (
     <FoldingSection
@@ -13758,16 +13767,41 @@ function IssuesRaised({ requests, viewer }) {
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      {all.length === 0 ? (
-        <div style={styles.emptyState}>No issues have been raised.</div>
+      <div style={styles.archTabs}>
+        <button
+          style={tab === "active" ? styles.archTabOn : styles.archTab}
+          onClick={() => setTab("active")}
+        >
+          Active
+          <span style={styles.archTabCount}>{openCount}</span>
+        </button>
+        <button
+          style={tab === "resolved" ? styles.archTabOn : styles.archTab}
+          onClick={() => setTab("resolved")}
+        >
+          Resolved
+          <span style={styles.archTabCount}>{resolvedCount}</span>
+        </button>
+      </div>
+
+      <InfoNote label="What is kept here?">
+        Every issue a crew has raised, open or resolved, with what they actually said. The inbox
+        above empties as issues are dealt with — this does not, so the department can see what keeps
+        going wrong. Only the crew member who raised an issue can read the reply to it; none of this
+        is on the dispatch log or the shared spreadsheet.
+      </InfoNote>
+
+      {shown.length === 0 ? (
+        <div style={styles.emptyState}>
+          {tab === "active" ? "Nothing outstanding." : "Nothing resolved yet."}
+        </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {all.slice(0, 60).map(({ e, req }) => (
+          {shown.slice(0, 60).map(({ e, req }) => (
             <div key={e.id} style={styles.issueRow}>
               <div style={styles.issueHead}>
-                <span style={escalationIsOpen(e) ? styles.issueOpen : styles.issueClosed}>
-                  {escalationIsOpen(e) ? "OPEN" : "RESOLVED"}
-                </span>
+                {/* No status badge on the row: the tab above already says which
+                    of the two this is, and repeating it on every line is noise. */}
                 <span style={styles.issueWho}>
                   {e.unitName || "Crew"}
                   {e.raisedByName ? ` · ${e.raisedByName}` : ""}
@@ -13787,8 +13821,8 @@ function IssuesRaised({ requests, viewer }) {
               )}
             </div>
           ))}
-          {all.length > 60 && (
-            <div style={styles.formHint}>Showing the 60 most recent of {all.length}.</div>
+          {shown.length > 60 && (
+            <div style={styles.formHint}>Showing the 60 most recent of {shown.length}.</div>
           )}
         </div>
       )}
