@@ -3880,11 +3880,42 @@ function dressSheet(sheet, headerRowIndex, firstDataCol) {
 // the header band and frozen panes, the night shift shaded, and the call
 // category coloured. Order matters — the category colour is applied last so a
 // night row does not blacken over it.
+// A hairline around every data cell.
+//
+// Applying a fill replaces a cell's style object, so the shaded rows and the
+// coloured categories were landing with their borders stripped and the sheet
+// lost its grid wherever it was most colourful. Borders go on last, merged into
+// whatever style each cell already has.
+function gridLogSheet(sheet, headerRowIndex) {
+  if (!sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  const hair = { style: "thin", color: { rgb: "FFB7C2CC" } };
+  for (let r = headerRowIndex; r <= range.e.r; r++) {
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = sheet[addr];
+      if (!cell) continue;
+      cell.s = {
+        ...(cell.s || {}),
+        border: { top: hair, bottom: hair, left: hair, right: hair },
+        alignment: {
+          vertical: "center",
+          wrapText: true,
+          ...(((cell.s || {}).alignment) || {}),
+        },
+      };
+    }
+  }
+  return sheet;
+}
+
 function dressLogSheet(sheet, aoa) {
   const headerRow = typeof aoa.headerRowIndex === "number" ? aoa.headerRowIndex : 4;
   dressSheet(sheet, headerRow, 2);
   shadeNightRows(sheet, aoa, 0);
   paintCategoryColumn(sheet, aoa, 0, typeof aoa.categoryCol === "number" ? aoa.categoryCol : -1);
+  // Last, so nothing painted above can strip it back off again.
+  gridLogSheet(sheet, headerRow);
   return sheet;
 }
 
@@ -14001,21 +14032,52 @@ const STAT_RANGES = [
   { key: "year", label: "This year" },
 ];
 
+// A period, and what to call it.
+//
+// "This month" is fine on a screen somebody is looking at now. On a report that
+// will be filed, forwarded and read in November it says nothing — it has to say
+// August. So each window carries both: the phrase for the screen and the name
+// for the page.
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
 function statRangeWindow(key, now) {
   const d = new Date(now);
   if (key === "shift") {
     const w = shiftWindowAt(now);
-    return { start: w.start, end: w.start + SHIFT_MS, label: "this shift" };
+    return {
+      start: w.start,
+      end: w.start + SHIFT_MS,
+      label: "this shift",
+      title: `${shiftMeta(w.key) ? shiftMeta(w.key).label : "Shift"} — ${gregDateStr(w.start)}`,
+    };
   }
   if (key === "month") {
     const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-    return { start, end: new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(), label: "this month" };
+    return {
+      start,
+      end: new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(),
+      label: "this month",
+      title: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
+    };
   }
   if (key === "quarter") {
     const q = Math.floor(d.getMonth() / 3) * 3;
-    return { start: new Date(d.getFullYear(), q, 1).getTime(), end: new Date(d.getFullYear(), q + 3, 1).getTime(), label: "this quarter" };
+    return {
+      start: new Date(d.getFullYear(), q, 1).getTime(),
+      end: new Date(d.getFullYear(), q + 3, 1).getTime(),
+      label: "this quarter",
+      title: `Q${q / 3 + 1} ${d.getFullYear()} — ${MONTH_NAMES[q]} to ${MONTH_NAMES[q + 2]}`,
+    };
   }
-  return { start: new Date(d.getFullYear(), 0, 1).getTime(), end: new Date(d.getFullYear() + 1, 0, 1).getTime(), label: "this year" };
+  return {
+    start: new Date(d.getFullYear(), 0, 1).getTime(),
+    end: new Date(d.getFullYear() + 1, 0, 1).getTime(),
+    label: "this year",
+    title: String(d.getFullYear()),
+  };
 }
 
 // Who was on which truck, when, and for how long — read off the sign-on and
@@ -14585,13 +14647,22 @@ function buildStatisticsReport({ label, win, staff, origins, resp, mix, tops, ph
   const totalOrigin = origins.rows.reduce((n, r) => n + r.total, 0) || 1;
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-<title>MEDCOM Dispatch — ${esc(label)}</title>
+<title>MEDCOM Dispatch — ${esc(win.title || label)}</title>
 <style>
 @page { size: A4; margin: 16mm 15mm; }
 *{box-sizing:border-box}
 body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:10pt;line-height:1.55;margin:0}
 h1{font-size:24pt;line-height:1.08;letter-spacing:-.8pt;margin:0 0 5pt;font-weight:800}
-h2{font-size:12pt;margin:19pt 0 8pt;font-weight:800;color:#0A5540;border-left:3pt solid #E9C46A;padding-left:8pt;page-break-after:avoid}
+h2{font-size:12pt;margin:19pt 0 8pt;font-weight:800;color:#0A5540;border-left:3pt solid #E9C46A;padding-left:8pt;
+   page-break-after:avoid;break-after:avoid}
+/* A heading stranded at the foot of a page with its table overleaf is the one
+   thing that makes a printed report look unfinished. Sections are kept whole
+   where they fit; where a table is too long, its header row repeats on each
+   page instead. */
+.section h2{break-after:avoid;page-break-after:avoid}
+.section>table,.section>p,.section>div{break-before:avoid;page-break-before:avoid}
+.keep{break-inside:avoid;page-break-inside:avoid}
+thead{display:table-header-group}
 p{margin:0 0 7pt}
 .eyebrow{font-size:8pt;letter-spacing:2pt;text-transform:uppercase;color:#0A5540;font-weight:800}
 .lede{font-size:11pt;color:#3B4A58}
@@ -14634,7 +14705,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 
 <div class="eyebrow">Performance report</div>
 <h1>MEDCOM Dispatch</h1>
-<p class="lede">${esc(station || "All stations")} · ${esc(label)} · ${esc(win.label)}</p>
+<p class="lede">${esc(win.title || label)} · ${esc(station || "All stations")}</p>
 <div class="rule"></div>
 
 <div class="stats">
@@ -14646,7 +14717,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
     <div class="l">Average dispatch to arrival</div></div>
 </div>
 
-<h2>Recognition</h2>
+<div class="section keep"><h2>Recognition</h2>
 <div class="awards">
   ${award(
     "Workload and utilisation",
@@ -14668,7 +14739,8 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
   )}
 </div>
 
-<h2>Emergency response</h2>
+</div>
+<div class="section keep"><h2>Emergency response</h2>
 <p class="small muted">Measured from the moment dispatch raises an internal emergency to the moment the
 crew reaches the destination. The department's standard is ten minutes.</p>
 <table>
@@ -14680,7 +14752,8 @@ crew reaches the destination. The department's standard is ten minutes.</p>
   ${resp.unmeasured ? `<tr><td>Not yet measurable</td><td class="n">${resp.unmeasured}</td></tr>` : ""}
 </table>
 
-<h2>What the department is called for</h2>
+</div>
+<div class="section"><h2>What the department is called for</h2>
 <div class="mixbar">
   ${mix.rows.map((r) => `<span style="width:${r.pct}%;background:${r.colour}"></span>`).join("")}
 </div>
@@ -14691,11 +14764,11 @@ crew reaches the destination. The department's standard is ten minutes.</p>
     .join("")}
 </table>
 
-<div class="pb"></div>
 
-<h2>Where patients were collected from</h2>
+</div>
+<div class="section"><h2>Where patients were collected from</h2>
 <table>
-  <tr><th>Location</th><th class="n">Main Office</th><th class="n">CCC</th><th class="n">Total</th><th class="n">Share</th></tr>
+  <thead><tr><th>Location</th><th class="n">Main Office</th><th class="n">CCC</th><th class="n">Total</th><th class="n">Share</th></tr></thead>
   ${origins.rows
     .map(
       (r) =>
@@ -14705,9 +14778,10 @@ crew reaches the destination. The department's standard is ten minutes.</p>
 </table>
 ${origins.unstated ? `<p class="small muted">${origins.unstated} call(s) with no location recorded.</p>` : ""}
 
-<h2>By employee</h2>
+</div>
+<div class="section"><h2>By employee</h2>
 <table>
-  <tr><th>ID</th><th>Name</th><th>Team</th><th class="n">UHU</th><th class="n">Checklist</th><th class="n">Calls</th><th class="n">Shifts</th></tr>
+  <thead><tr><th>ID</th><th>Name</th><th>Team</th><th class="n">UHU</th><th class="n">Checklist</th><th class="n">Calls</th><th class="n">Shifts</th></tr></thead>
   ${staff
     .map(
       (p) =>
@@ -14718,7 +14792,9 @@ ${origins.unstated ? `<p class="small muted">${origins.unstated} call(s) with no
     .join("")}
 </table>
 
-<div class="callout">
+</div>
+
+<div class="callout keep">
   <strong>How these figures are produced.</strong> Every timestamp is recorded by the crew who ran
   the call, on the vehicle, at the moment it happened — not entered afterwards from memory. UHU is
   time on call as a share of the twelve-hour shifts worked. Checklist compliance is daily vehicle
@@ -15328,6 +15404,146 @@ function IssuesRaised({ requests, viewer, units, saveRequests, addLog, only }) {
   );
 }
 
+// A submitted shift, as a document.
+//
+// The spreadsheet is for working with; this is for showing. Same house style as
+// the performance report, because a manager receiving both should not have to
+// work out that they came from the same department.
+function buildShiftReport({ sub, requests }) {
+  const esc = (v) =>
+    String(v === null || v === undefined ? "" : v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  const byId = new Map((requests || []).filter((r) => r && r.id).map((r) => [r.id, r]));
+  const calls = (sub.requests || []).map((snap) => byId.get(snap.id) || snap);
+  const closed = calls.filter((r) => r.status === "completed").length;
+  const emergencies = calls.filter((r) => isInternalEmergency(r));
+  const measured = emergencies.filter((r) => responseMsFor(r) !== null);
+  const within = measured.filter((r) => responseMsFor(r) <= RESPONSE_TARGET_MS).length;
+  const gaps = sub.coverage || [];
+  const gapMs = gaps.reduce((n, c) => n + ((c.endedAt || c.startedAt) - c.startedAt), 0);
+
+  const t = (r) => r.times || {};
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>Dispatch log — ${esc(sub.dayLabel)} ${esc(sub.shiftLabel)}</title>
+<style>
+@page{size:A4 landscape;margin:12mm 10mm}
+*{box-sizing:border-box}
+body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:8.5pt;line-height:1.4;margin:0}
+h1{font-size:19pt;margin:0 0 3pt;font-weight:800;letter-spacing:-.6pt}
+h2{font-size:10.5pt;margin:14pt 0 6pt;font-weight:800;color:#0A5540;border-left:3pt solid #E9C46A;padding-left:7pt;
+   page-break-after:avoid;break-after:avoid}
+.eyebrow{font-size:7.5pt;letter-spacing:2pt;text-transform:uppercase;color:#0A5540;font-weight:800}
+.lede{font-size:10pt;color:#3B4A58;margin:0}
+.rule{height:2pt;background:#0A5540;margin:9pt 0 12pt}
+.stats{display:table;width:100%;border-spacing:5pt 0;margin-bottom:4pt}
+.stat{display:table-cell;width:20%;background:#F2F6F9;border-top:2.2pt solid #0A5540;padding:6pt 8pt}
+.stat .n{font-size:16pt;font-weight:800;color:#0A5540;line-height:1}
+.stat .l{font-size:7pt;color:#5A6B7B;margin-top:2pt;line-height:1.3}
+table{width:100%;border-collapse:collapse;margin:5pt 0 9pt;font-size:7.4pt}
+th{background:#0A5540;color:#fff;padding:4pt 4pt;font-size:6.6pt;letter-spacing:.4pt;text-transform:uppercase;
+   font-weight:800;text-align:left;border:0.5pt solid #063A2C}
+td{padding:3.4pt 4pt;border:0.5pt solid #C9D4DD}
+tr{page-break-inside:avoid}
+thead{display:table-header-group}
+tr:nth-child(even) td{background:#F7FAFB}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+td.night{background:#E4E4E4 !important}
+.cat{font-weight:700;text-align:center;font-size:6.8pt;color:#fff}
+.gap td{background:#F8DADA !important;color:#7F0000;font-weight:700}
+.foot{margin-top:11pt;border-top:0.7pt solid #C9D4DD;padding-top:6pt;font-size:7pt;color:#6C7B89}
+.keep{break-inside:avoid;page-break-inside:avoid}
+</style></head><body>
+
+<div class="eyebrow">Dispatch log</div>
+<h1>${esc(sub.dayLabel)} — ${esc(sub.shiftLabel)}</h1>
+<p class="lede">${esc(stationLabel(sub.station))} · submitted ${esc(gregDateTimeStr(sub.submittedAt))}${
+    sub.submittedBy ? ` by ${esc(sub.submittedBy)}` : ""
+  }${sub.status === "open" ? " · still completing" : ""}</p>
+<div class="rule"></div>
+
+<div class="stats">
+  <div class="stat"><div class="n">${calls.length}</div><div class="l">Calls</div></div>
+  <div class="stat"><div class="n">${closed}</div><div class="l">Completed</div></div>
+  <div class="stat"><div class="n">${emergencies.length}</div><div class="l">Internal emergencies</div></div>
+  <div class="stat"><div class="n">${measured.length ? Math.round((within / measured.length) * 100) + "%" : "—"}</div>
+    <div class="l">Within 10 minutes</div></div>
+  <div class="stat"><div class="n">${gaps.length ? msDurationStr(gapMs) : "None"}</div>
+    <div class="l">Time with no coverage</div></div>
+</div>
+
+<h2>Calls</h2>
+<table>
+  <thead><tr>
+    <th style="width:2.6%">#</th><th style="width:11%">From</th><th style="width:11%">To</th>
+    <th style="width:6%">MRN</th><th style="width:5.4%">Dispatch</th><th style="width:5.4%">En route</th>
+    <th style="width:5.4%">On scene</th><th style="width:5.4%">Depart</th><th style="width:5.4%">Arrived</th>
+    <th style="width:5.4%">In service</th><th style="width:5%">Response</th>
+    <th style="width:7%">Team</th><th style="width:4.6%">Service</th>
+    <th style="width:10%">Category</th><th style="width:10%">E-PCR author</th>
+  </tr></thead>
+  <tbody>
+  ${calls
+    .map((r, i) => {
+      const night = scheduledShiftKey(r.createdAt) === "night";
+      const cls = night ? ' class="night"' : "";
+      const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
+      const catStyle = fill
+        ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"`
+        : "";
+      return `<tr>
+        <td${cls}>${i + 1}</td>
+        <td${cls}>${esc(callFrom(r))}</td>
+        <td${cls}>${esc(callTo(r))}</td>
+        <td${cls}>${esc(r.mrn || "")}</td>
+        <td${cls}>${esc(clockStr(r.createdAt))}</td>
+        <td${cls}>${esc(clockStr(t(r).enroute))}</td>
+        <td${cls}>${esc(clockStr(t(r).arrival))}</td>
+        <td${cls}>${esc(clockStr(t(r).departure))}</td>
+        <td${cls}>${esc(clockStr(t(r).arrivalDestination))}</td>
+        <td${cls}>${esc(clockStr(t(r).backInService))}</td>
+        <td${cls} class="n">${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</td>
+        <td${cls}>${esc((sub.units || []).find((u) => u.id === r.assignedUnitId)?.name || "")}</td>
+        <td${cls}>${esc(serviceTypeFor(r))}</td>
+        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
+        <td${cls}>${esc(pcrAuthorStamp(r, (sub.units || []).find((u) => u.id === r.assignedUnitId) || {}))}</td>
+      </tr>`;
+    })
+    .join("")}
+  </tbody>
+</table>
+
+${
+  gaps.length
+    ? `<h2>No coverage</h2>
+<table class="keep">
+  <thead><tr><th style="width:4%">#</th><th style="width:10%">Started</th><th style="width:10%">Ended</th>
+  <th style="width:10%">Duration</th><th>Teams out</th><th style="width:18%">Declared by</th></tr></thead>
+  <tbody>
+  ${gaps
+    .map(
+      (c, i) =>
+        `<tr class="gap"><td>${i + 1}</td><td>${esc(clockStr(c.startedAt))}</td>` +
+        `<td>${c.endedAt ? esc(clockStr(c.endedAt)) : "still running"}</td>` +
+        `<td>${c.endedAt ? esc(msDurationStr(c.endedAt - c.startedAt)) : ""}</td>` +
+        `<td>${esc((c.unitsOut || []).join(", "))}</td><td>${esc(c.startedBy || "")}</td></tr>`
+    )
+    .join("")}
+  </tbody>
+</table>`
+    : ""
+}
+
+<div class="foot">
+  MEDCOM Dispatch · KFSH&amp;RC Ambulance Services · Shaded rows are night-shift calls ·
+  Printed ${esc(gregDateTimeStr(Date.now()))}
+</div>
+</body></html>`;
+}
+
 function SavedLogs({ submissions, requests }) {
   const [station, setStation] = useState(STATIONS[0].key);
   const [busy, setBusy] = useState(null);
@@ -15365,6 +15581,21 @@ function SavedLogs({ submissions, requests }) {
     if (found) found.subs.push(sub);
     else days.push({ key: sub.dayKey, label: sub.dayLabel, dayStart: sub.dayStart, subs: [sub] });
   });
+
+  function printShift(sub) {
+    const html = buildShiftReport({ sub, requests });
+    const w = window.open("", "_blank");
+    if (!w) {
+      window.alert("Allow pop-ups for this site to produce the report.");
+      return;
+    }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => {
+      w.focus();
+      w.print();
+    }, 300);
+  }
 
   async function download(sub) {
     setBusy(sub.id);
@@ -15459,13 +15690,20 @@ function SavedLogs({ submissions, requests }) {
                         {sub.finalisedAt ? ` · completed ${gregDateTimeStr(sub.finalisedAt)}` : ""}
                       </div>
                     </div>
-                    <button
-                      style={styles.primaryBtnSm}
-                      disabled={busy === sub.id}
-                      onClick={() => download(sub)}
-                    >
-                      <Share2 size={12} /> {busy === sub.id ? "Preparing…" : "Download"}
-                    </button>
+                    {/* Two audiences again: the spreadsheet to work with, the
+                        report to hand to somebody. */}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button style={styles.ghostBtnSm} onClick={() => printShift(sub)}>
+                        📄 PDF
+                      </button>
+                      <button
+                        style={styles.primaryBtnSm}
+                        disabled={busy === sub.id}
+                        onClick={() => download(sub)}
+                      >
+                        {busy === sub.id ? "…" : "Excel"}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
