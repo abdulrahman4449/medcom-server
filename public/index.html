@@ -895,9 +895,19 @@ function emptyChecklists() {
 // One run per truck, per list, per operational day. A crew coming on at 19:00
 // does not repeat the morning's check of the same vehicle — it is a daily check
 // of a vehicle, not a per-shift ritual.
-function checklistRunFor(runs, unitId, part, dayKey) {
+// A key for one shift on one vehicle. The check was filed per operational day,
+// so a medic who worked the day shift and came back for the night found the
+// truck already checked — by themselves, twelve hours earlier, on a vehicle
+// that had been out all afternoon since. A vehicle check belongs to the crew
+// taking the vehicle, so it is asked once per shift.
+function shiftKeyFor(ts) {
+  const w = shiftWindowAt(ts);
+  return `${opDayKey(opDayStart(w.start))}::${w.key}`;
+}
+
+function checklistRunFor(runs, unitId, part, shiftKey) {
   return (runs || []).find(
-    (r) => r && r.unitId === unitId && r.part === part && r.dayKey === dayKey
+    (r) => r && r.unitId === unitId && r.part === part && (r.shiftKey || r.dayKey) === shiftKey
   ) || null;
 }
 
@@ -3833,6 +3843,48 @@ const CATEGORY_FILLS = {
   NA: ["FFD9D9D9", "FF1A1A1A"],
 };
 
+// The two coded columns, coloured by what they mean.
+//
+// Service level runs cool to hot: a basic transfer green, an advanced one
+// amber, a critical care transfer red. Cat. of call follows the same idea, with
+// C in yellow as the department reads it. Anything marked NA goes dark grey —
+// it is a deliberate "not applicable", not a gap, and it should look settled
+// rather than missing.
+const SERVICE_FILLS = {
+  BLS: ["FF2E7D32", "FFFFFFFF"],
+  ALS: ["FFE8A33D", "FF1A1A1A"],
+  CCT: ["FFC62828", "FFFFFFFF"],
+  E: ["FF6A1B9A", "FFFFFFFF"],
+  NA: ["FF4A4A4A", "FFFFFFFF"],
+};
+
+const CALLTYPE_FILLS = {
+  A: ["FF2E7D32", "FFFFFFFF"],
+  B: ["FF1565C0", "FFFFFFFF"],
+  C: ["FFF2C037", "FF1A1A1A"],
+  D: ["FF6A1B9A", "FFFFFFFF"],
+  E: ["FF8D6E63", "FFFFFFFF"],
+  NA: ["FF4A4A4A", "FFFFFFFF"],
+};
+
+function paintCodedColumn(sheet, colIndex, table, headerRow) {
+  if (colIndex < 1 || !sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  for (let r = headerRow + 1; r <= range.e.r; r++) {
+    const cell = sheet[XLSX.utils.encode_cell({ r, c: colIndex })];
+    if (!cell || !cell.v) continue;
+    const fill = table[String(cell.v).trim().toUpperCase()];
+    if (!fill) continue;
+    cell.s = {
+      ...(cell.s || {}),
+      fill: { patternType: "solid", fgColor: { rgb: fill[0] } },
+      font: { name: XL_FONT, color: { rgb: fill[1] }, bold: true, sz: 10 },
+      alignment: { horizontal: "center", vertical: "center" },
+    };
+  }
+  return sheet;
+}
+
 function paintCategoryColumn(sheet, aoa, offset, colIndex) {
   if (colIndex < 0 || !sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
@@ -3959,6 +4011,8 @@ function dressLogSheet(sheet, aoa) {
   dressSheet(sheet, headerRow, 2);
   shadeNightRows(sheet, aoa, 0);
   paintCategoryColumn(sheet, aoa, 0, typeof aoa.categoryCol === "number" ? aoa.categoryCol : -1);
+  paintCodedColumn(sheet, typeof aoa.serviceCol === "number" ? aoa.serviceCol : -1, SERVICE_FILLS, headerRow);
+  paintCodedColumn(sheet, typeof aoa.callTypeCol === "number" ? aoa.callTypeCol : -1, CALLTYPE_FILLS, headerRow);
   // Last, so nothing painted above can strip it back off again.
   gridLogSheet(sheet, headerRow);
   return sheet;
@@ -4208,6 +4262,8 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
   // knows how many title lines it wrote.
   out.headerRowIndex = firstHeaderRow;
   out.categoryCol = header.indexOf("CALL CATEGORY") + 1; // +1 for the "#" column
+  out.serviceCol = header.indexOf("TYPE OF SERVICE") + 1;
+  out.callTypeCol = header.indexOf("CAT. OF CALL") + 1;
   return out;
 }
 
@@ -5178,6 +5234,13 @@ function App() {
   // button, and in effect it had.
   useEffect(() => {
     setNavTab("board");
+    // And the New call signal with it.
+    //
+    // The signal is a counter that DispatcherView watches. It survived a change
+    // of user, so if the last desk had pressed New call the counter was still
+    // above zero — and the next person's freshly mounted view saw a truthy
+    // value and opened the form the moment they signed in.
+    setNewCallSignal(0);
   }, [user && user.accountId]);
 
   useEffect(() => {
@@ -12589,12 +12652,21 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             audioCtxRef={audioCtxRef}
           />
 
+          {/* This shift and the one before it.
+              A desk was being shown every call the station had run since the
+              app was installed. What it needs is its own work and the shift it
+              took over from — anything older belongs to the archive, where it
+              can be found by date. A search still reaches the whole record. */}
           <CompletedCalls
             requests={stationRequests}
             units={stationUnits}
             saveRequests={saveRequests}
             addLog={addLog}
             user={user}
+            shiftWindow={{
+              start: (user.shiftStart || shiftWindowAt(Date.now()).start) - SHIFT_MS,
+              end: user.shiftEnd || (user.shiftStart || shiftWindowAt(Date.now()).start) + SHIFT_MS,
+            }}
             canCorrect
           />
         </>
@@ -12711,8 +12783,20 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const ambulanceTouched = useRef(false);
   useEffect(() => {
     if (ambulanceTouched.current) return;
-    if (myUnit && myUnit.ambulanceNumber) setAmbulanceInput(myUnit.ambulanceNumber);
-  }, [myUnit && myUnit.ambulanceNumber]);
+    // Only mirror the board's number once this shift has confirmed it. Before
+    // that the field stays empty, so nobody confirms last shift's truck by
+    // pressing a button beside a number that was already filled in.
+    //
+    // The test is worked out here rather than read from further down the
+    // component: a const declared below is in its temporal dead zone while this
+    // effect body is being created, and reaching for it crashed the crew screen.
+    const confirmedThisShift =
+      myUnit &&
+      myUnit.ambulanceShiftStart === (user.shiftStart || shiftWindowAt(Date.now()).start);
+    if (myUnit && myUnit.ambulanceNumber && confirmedThisShift) {
+      setAmbulanceInput(myUnit.ambulanceNumber);
+    }
+  }, [myUnit && myUnit.ambulanceNumber, myUnit && myUnit.ambulanceShiftStart]);
   // Whether the escalation thread on the live call is unfolded.
   const [escOpen, setEscOpen] = useState(false);
   // Whether the "these details are wrong" form is open on the live call.
@@ -13124,7 +13208,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const myPart = user.slot ? checklistPartForSeat(user.slot) : null;
   const myChecklistItems =
     myPart && checklists && checklists[myPart.key] ? checklists[myPart.key] : [];
-  const todayKey = opDayKey(opDayStart(Date.now()));
+  const todayKey = shiftKeyFor(user.shiftStart || Date.now());
   const myChecklistRun =
     myUnit && myPart ? checklistRunFor(checklistRuns, myUnit.id, myPart.key, todayKey) : null;
 
@@ -13144,7 +13228,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       byAccountId: user.accountId || "",
       byName: user.name || "",
       at: now,
-      dayKey: todayKey,
+      shiftKey: todayKey,
+      dayKey: opDayKey(opDayStart(now)),
       shift: user.shift || scheduledShiftKey(now),
       answers,
       note: note || "",
@@ -13184,6 +13269,10 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const myShiftStart = user.shiftStart || shiftWindowAt(Date.now()).start;
   const ambulanceNeedsConfirming =
     !!myUnit && user.slot === "alpha" && myUnit.ambulanceShiftStart !== myShiftStart;
+  // A number confirmed on a previous shift is last shift's answer. It is shown
+  // as a suggestion to confirm, not as this shift's fact — so the field starts
+  // empty when it has to be asked again.
+  const ambulanceCarriedOver = ambulanceNeedsConfirming ? myUnit && myUnit.ambulanceNumber : null;
 
   // The other seat, and whether it was signed on from this device.
   const otherSeat = user.slot === "alpha" ? "bravo" : "alpha";
@@ -13664,9 +13753,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           </div>
           <div style={styles.ambulancePromptBody}>
             {myUnit.ambulanceNumber
-              ? `Last recorded as ${myUnit.ambulanceNumber}${
-                  myUnit.ambulanceSetAt ? ` on ${gregDateStr(myUnit.ambulanceSetAt)}` : ""
-                }. Confirm it or enter the one you are actually on.`
+              ? `Last shift was on ${ambulanceCarriedOver}. Enter the one you are actually on — it ` +
+                `may be the same truck, but this shift has to say so itself.`
               : "It goes on every call this shift and on the log sheet."}
           </div>
         </div>
@@ -14475,7 +14563,16 @@ function staffStatsFor(log, requests, units, win, now, checklistRuns) {
       if (d.kind === "on") {
         openSeats.set(k, { at: e.ts, d });
         if (d.unitId) person(d.accountId, d.name).units.add(d.unitName || d.unitId);
-        person(d.accountId, d.name).shifts.add(shiftWindowAt(d.shiftStart || e.ts).start);
+        // Only shifts inside the period being measured.
+        //
+        // Every sign-on in the whole log was being counted, so a month's UHU was
+        // divided by every shift that person had ever worked. Signing on again
+        // made the denominator larger and the percentage smaller — which is why
+        // the figure looked stuck no matter how much work went into it.
+        const sw = shiftWindowAt(d.shiftStart || e.ts).start;
+        if (sw >= win.start && sw < win.end) {
+          person(d.accountId, d.name).shifts.add(sw);
+        }
       } else if (d.kind === "off") {
         const started = openSeats.get(k);
         openSeats.delete(k);
@@ -14730,7 +14827,7 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
   const [part, setPart] = useState("medic");
   const [draft, setDraft] = useState("");
   const items = (checklists && checklists[part]) || [];
-  const today = opDayKey(opDayStart(Date.now()));
+  const today = shiftKeyFor(Date.now());
 
   async function save(next) {
     const merged = { ...emptyChecklists(), ...(checklists || {}), [part]: next };
