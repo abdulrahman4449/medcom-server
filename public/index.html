@@ -15653,6 +15653,13 @@ function IssuesRaised({ requests, viewer, units, saveRequests, addLog, only }) {
 // The spreadsheet is for working with; this is for showing. Same house style as
 // the performance report, because a manager receiving both should not have to
 // work out that they came from the same department.
+// A submitted shift, as a document — the whole workbook, not a summary.
+//
+// The first attempt put twenty-eight columns on one landscape page and made the
+// type too small to read. Columns do not have to fit side by side: the calls are
+// split into what the call was and when it happened, keyed by the same number,
+// and every other sheet of the workbook follows as its own section. Long tables
+// simply run on to the next page with their headings repeated.
 function buildShiftReport({ sub, requests }) {
   const esc = (v) =>
     String(v === null || v === undefined ? "" : v)
@@ -15661,7 +15668,14 @@ function buildShiftReport({ sub, requests }) {
       .replace(/>/g, "&gt;");
 
   const byId = new Map((requests || []).filter((r) => r && r.id).map((r) => [r.id, r]));
-  const calls = (sub.requests || []).map((snap) => byId.get(snap.id) || snap);
+  const calls = (sub.requests || [])
+    .map((snap) => byId.get(snap.id) || snap)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const units = sub.units || [];
+  const unitOf = (r) => units.find((u) => u.id === r.assignedUnitId) || {};
+  const t = (r) => r.times || {};
+  const night = (r) => (scheduledShiftKey(r.createdAt) === "night" ? ' class="night"' : "");
+
   const closed = calls.filter((r) => r.status === "completed").length;
   const emergencies = calls.filter((r) => isInternalEmergency(r));
   const measured = emergencies.filter((r) => responseMsFor(r) !== null);
@@ -15669,17 +15683,52 @@ function buildShiftReport({ sub, requests }) {
   const gaps = sub.coverage || [];
   const gapMs = gaps.reduce((n, c) => n + ((c.endedAt || c.startedAt) - c.startedAt), 0);
 
-  const t = (r) => r.times || {};
+  // UHU, ordered by truck and seat exactly as the spreadsheet is.
+  const crewIndex = medicCrewIndex(units, sub.log || [], sub.finalisedAt || sub.submittedAt);
+  const seatOrder = { alpha: 0, bravo: 1 };
+  const uhuRows = [];
+  units
+    .slice()
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" }))
+    .forEach((u) => {
+      const row = computeUhu([u], calls, sub.finalisedAt || sub.submittedAt)[0];
+      const stamps = (crewIndex.get(u.id) || [])
+        .slice()
+        .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
+      if (!stamps.length) {
+        uhuRows.push({ medic: u.name, seat: "", name: "No crew signed in", id: "", on: "", off: "", ot: "", calls: 0, uhu: 0 });
+        return;
+      }
+      stamps.forEach((p) => {
+        const shiftMs = p.shiftStart && p.shiftEnd ? p.shiftEnd - p.shiftStart : SHIFT_MS;
+        uhuRows.push({
+          medic: u.name,
+          seat: p.seat ? seatLabel(p.seat) : "",
+          name: p.name,
+          id: p.accountId || "",
+          on: p.signedOnAt ? clockStr(p.signedOnAt) : "",
+          off: p.signedOffAt ? clockStr(p.signedOffAt) : "Still on",
+          ot: p.overtimeMs ? msDurationStr(p.overtimeMs) : "",
+          calls: row.calls,
+          uhu: shiftMs > 0 ? Math.min(100, (row.totalMs / shiftMs) * 100).toFixed(1) : "0.0",
+        });
+      });
+    });
+
+  const handover = buildShiftHandoverRows(sub.log || []);
+  const bookings = sub.scheduled || [];
+  const refusals = calls.filter((r) => r.refusal);
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>Dispatch log — ${esc(sub.dayLabel)} ${esc(sub.shiftLabel)}</title>
 <style>
-@page{size:A4 landscape;margin:9mm 8mm 11mm 8mm}
+@page{size:A4 landscape;margin:11mm 10mm 12mm 10mm}
 *{box-sizing:border-box}
-body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:8.5pt;line-height:1.4;margin:0}
+body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:8.5pt;line-height:1.45;margin:0}
 h1{font-size:19pt;margin:0 0 3pt;font-weight:800;letter-spacing:-.6pt}
-h2{font-size:10.5pt;margin:14pt 0 6pt;font-weight:800;color:#0A5540;border-left:3pt solid #E9C46A;padding-left:7pt;
-   page-break-after:avoid;break-after:avoid}
+h2{font-size:11pt;margin:15pt 0 6pt;font-weight:800;color:#0A5540;border-left:3pt solid #E9C46A;
+   padding-left:7pt;page-break-after:avoid;break-after:avoid}
+h2 .sub{font-weight:600;color:#5A6B7B;font-size:8.5pt;letter-spacing:0}
 .eyebrow{font-size:7.5pt;letter-spacing:2pt;text-transform:uppercase;color:#0A5540;font-weight:800}
 .lede{font-size:10pt;color:#3B4A58;margin:0}
 .rule{height:2pt;background:#0A5540;margin:9pt 0 12pt}
@@ -15687,24 +15736,26 @@ h2{font-size:10.5pt;margin:14pt 0 6pt;font-weight:800;color:#0A5540;border-left:
 .stat{display:table-cell;width:20%;background:#F2F6F9;border-top:2.2pt solid #0A5540;padding:6pt 8pt}
 .stat .n{font-size:16pt;font-weight:800;color:#0A5540;line-height:1}
 .stat .l{font-size:7pt;color:#5A6B7B;margin-top:2pt;line-height:1.3}
-table{width:100%;border-collapse:collapse;margin:5pt 0 9pt;font-size:7.4pt;table-layout:fixed}
-th{background:#0A5540;color:#fff;padding:3.4pt 2.6pt;font-size:5.9pt;letter-spacing:.2pt;text-transform:uppercase;
-   font-weight:800;text-align:left;border:0.5pt solid #063A2C;word-break:break-word}
-td{padding:3pt 2.6pt;border:0.5pt solid #C9D4DD;word-break:break-word;overflow-wrap:anywhere}
-/* Twenty-eight columns on one landscape page. The type is small on purpose —
-   this is a record to be filed and consulted, not read across a room, and a
-   log split over two pages is far harder to follow than a small one. */
-table.log{font-size:5.9pt}
-table.log td{padding:2.4pt 2pt}
-tr{page-break-inside:avoid}
+
+/* Readable first. A long table runs on to the next page and repeats its
+   headings; it does not shrink until nobody can read it. */
+table{width:100%;border-collapse:collapse;margin:5pt 0 10pt;font-size:7.6pt}
+th{background:#0A5540;color:#fff;padding:4.5pt 5pt;font-size:6.8pt;letter-spacing:.4pt;
+   text-transform:uppercase;font-weight:800;text-align:left;border:0.5pt solid #063A2C}
+td{padding:4pt 5pt;border:0.5pt solid #C9D4DD;vertical-align:top}
 thead{display:table-header-group}
+tr{page-break-inside:avoid}
 tr:nth-child(even) td{background:#F7FAFB}
-td.n{text-align:right;font-variant-numeric:tabular-nums}
-td.night{background:#E4E4E4 !important}
-.cat{font-weight:700;text-align:center;font-size:6.8pt;color:#fff}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+td.c,th.c{text-align:center}
+td.night{background:#E9E9E9 !important}
+td.cat{font-weight:700;text-align:center;font-size:7pt}
+td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:center}
 .gap td{background:#F8DADA !important;color:#7F0000;font-weight:700}
-.foot{margin-top:11pt;border-top:0.7pt solid #C9D4DD;padding-top:6pt;font-size:7pt;color:#6C7B89}
+.cancelled td{background:#FBE4E4 !important;color:#7F0000}
+.foot{margin-top:12pt;border-top:0.7pt solid #C9D4DD;padding-top:6pt;font-size:7pt;color:#6C7B89}
 .keep{break-inside:avoid;page-break-inside:avoid}
+.none{font-size:8pt;color:#5A6B7B;font-style:italic;margin:4pt 0 10pt}
 </style></head><body>
 
 <div class="eyebrow">Dispatch log</div>
@@ -15724,59 +15775,93 @@ td.night{background:#E4E4E4 !important}
     <div class="l">Time with no coverage</div></div>
 </div>
 
-<h2>Calls</h2>
-<table class="log">
+<h2>Calls <span class="sub">— what the call was</span></h2>
+<table>
   <thead><tr>
-    <th>#</th><th>Origin</th><th>From</th><th>To</th><th>MRN</th>
-    <th>App.</th><th>Disp.</th><th>En route</th><th>Scene</th><th>Depart</th><th>Arrived</th><th>In svc</th>
-    <th>Resp.</th><th>Team</th><th>Truck</th><th>Svc</th><th>Km</th><th>Add</th>
-    <th>Cat.</th><th>Category</th><th>Code</th><th>E-PCR author</th><th>Bravo</th>
-    <th>Status</th><th>Outcome</th><th>Received by</th><th>Assist</th><th>Closed by</th>
+    <th class="c" style="width:3%">#</th><th style="width:15%">Patient coming from</th>
+    <th style="width:14%">From</th><th style="width:14%">To</th><th style="width:8%">MRN</th>
+    <th style="width:14%">Call category</th><th style="width:14%">Codes &amp; emergencies</th>
+    <th class="c" style="width:6%">Cat.</th><th class="c" style="width:6%">Service</th>
+    <th class="c" style="width:6%">Km</th>
   </tr></thead>
   <tbody>
   ${calls
     .map((r, i) => {
-      const night = scheduledShiftKey(r.createdAt) === "night";
-      const cls = night ? ' class="night"' : "";
-      const unit = (sub.units || []).find((u) => u.id === r.assignedUnitId) || {};
+      const cls = night(r);
       const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
-      const catStyle = fill
-        ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"`
-        : "";
-      const assist = assistOf(r);
+      const catStyle = fill ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"` : "";
       return `<tr>
-        <td${cls}>${i + 1}</td>
+        <td class="c"${cls ? ' class="night c"' : ""}>${i + 1}</td>
         <td${cls}>${esc(r.patientOrigin || "")}</td>
         <td${cls}>${esc(callFrom(r))}</td>
         <td${cls}>${esc(callTo(r))}</td>
         <td${cls}>${esc(r.mrn || "")}</td>
-        <td${cls}>${esc(clockStr(r.scheduledFor))}</td>
-        <td${cls}>${esc(clockStr(r.createdAt))}</td>
-        <td${cls}>${esc(clockStr(t(r).enroute))}</td>
-        <td${cls}>${esc(clockStr(t(r).arrival))}</td>
-        <td${cls}>${esc(clockStr(t(r).departure))}</td>
-        <td${cls}>${esc(clockStr(t(r).arrivalDestination))}</td>
-        <td${cls}>${esc(clockStr(t(r).backInService))}</td>
-        <td${cls} class="n">${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</td>
-        <td${cls}>${esc(unit.name || "")}</td>
-        <td${cls}>${esc(unit.ambulanceNumber || "")}</td>
-        <td${cls}>${esc(serviceTypeFor(r))}</td>
-        <td${cls}>${esc(loadedKmFor(r))}</td>
-        <td${cls}>${esc(r.addedService || "")}</td>
-        <td${cls}>${esc(r.callType || "")}</td>
         <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
         <td${cls}>${esc(r.emergencyCode || "")}</td>
-        <td${cls}>${esc(pcrAuthorStamp(r, unit))}</td>
+        <td class="c">${esc(r.callType || "")}</td>
+        <td class="c">${esc(serviceTypeFor(r))}</td>
+        <td class="c">${esc(loadedKmFor(r))}</td>
+      </tr>`;
+    })
+    .join("")}
+  </tbody>
+</table>
+
+<h2>Calls <span class="sub">— when it happened, and who ran it</span></h2>
+<table>
+  <thead><tr>
+    <th class="c" style="width:3%">#</th>
+    <th class="c" style="width:7%">App.</th><th class="c" style="width:7%">Dispatch</th>
+    <th class="c" style="width:7%">En route</th><th class="c" style="width:7%">On scene</th>
+    <th class="c" style="width:7%">Departure</th><th class="c" style="width:7%">Arrived</th>
+    <th class="c" style="width:7%">In service</th><th class="c" style="width:7%">Response</th>
+    <th style="width:9%">Team</th><th style="width:14%">E-PCR author</th><th style="width:14%">Bravo</th>
+  </tr></thead>
+  <tbody>
+  ${calls
+    .map((r, i) => {
+      const cls = night(r);
+      const u = unitOf(r);
+      return `<tr>
+        <td class="c">${i + 1}</td>
+        <td class="c"${cls}>${esc(clockStr(r.scheduledFor))}</td>
+        <td class="c"${cls}>${esc(clockStr(r.createdAt))}</td>
+        <td class="c"${cls}>${esc(clockStr(t(r).enroute))}</td>
+        <td class="c"${cls}>${esc(clockStr(t(r).arrival))}</td>
+        <td class="c"${cls}>${esc(clockStr(t(r).departure))}</td>
+        <td class="c"${cls}>${esc(clockStr(t(r).arrivalDestination))}</td>
+        <td class="c"${cls}>${esc(clockStr(t(r).backInService))}</td>
+        <td class="c"${cls}>${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</td>
+        <td${cls}>${esc(u.name || "")}</td>
+        <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
         <td${cls}>${esc(
-          r.pcrAuthor && r.pcrAuthor.seat === "alpha"
-            ? unit.bravo && unit.bravo.name
-            : unit.alpha && unit.alpha.name
+          r.pcrAuthor && r.pcrAuthor.seat === "alpha" ? u.bravo && u.bravo.name : u.alpha && u.alpha.name
         )}</td>
+      </tr>`;
+    })
+    .join("")}
+  </tbody>
+</table>
+
+<h2>Calls <span class="sub">— outcome</span></h2>
+<table>
+  <thead><tr>
+    <th class="c" style="width:3%">#</th><th style="width:14%">Status</th><th style="width:16%">Outcome</th>
+    <th style="width:20%">Received by</th><th style="width:16%">Assisting team</th>
+    <th style="width:16%">Closed by</th><th style="width:15%">Close reason</th>
+  </tr></thead>
+  <tbody>
+  ${calls
+    .map((r, i) => {
+      const cls = night(r);
+      return `<tr>
+        <td class="c">${i + 1}</td>
         <td${cls}>${esc(r.status ? REQ_STATUS[r.status].label : "")}</td>
         <td${cls}>${esc(callOutcomeLabel(r))}</td>
         <td${cls}>${esc(r.receiver ? `${r.receiver.name} (${r.receiver.receiverId})` : "")}</td>
-        <td${cls}>${esc(assist ? assistTeamNames(r, sub.units || []) : "")}</td>
+        <td${cls}>${esc(assistTeamNames(r, units))}</td>
         <td${cls}>${esc(r.closedBy || "")}</td>
+        <td${cls}>${esc(r.status === "completed" ? callCloseReason(r) || "" : "")}</td>
       </tr>`;
     })
     .join("")}
@@ -15784,48 +15869,99 @@ td.night{background:#E4E4E4 !important}
 </table>
 
 ${
-  (sub.requests || []).some((r) => r.refusal)
+  refusals.length
     ? `<h2>Refusals</h2>
 <table class="keep">
-  <thead><tr><th style="width:22%">Call</th><th style="width:20%">Name</th><th style="width:16%">National ID</th>
-  <th style="width:16%">Relationship</th><th style="width:12%">Time</th></tr></thead>
-  <tbody>${calls
-    .filter((r) => r.refusal)
+  <thead><tr><th style="width:26%">Call</th><th style="width:22%">Signed by</th>
+  <th style="width:18%">National ID</th><th style="width:18%">Relationship</th><th class="c" style="width:16%">Time</th></tr></thead>
+  <tbody>${refusals
     .map(
       (r) =>
-        `<tr><td>${esc(r.nature)}</td><td>${esc(r.refusal.name)}</td>` +
-        `<td>${esc(r.refusal.nationalId)}</td><td>${esc(r.refusal.relation)}</td>` +
-        `<td>${esc(clockStr((r.times || {})[REFUSAL_TIME_KEY]))}</td></tr>`
+        `<tr><td>${esc(r.nature)}</td><td>${esc(r.refusal.name)}</td><td>${esc(r.refusal.nationalId)}</td>` +
+        `<td>${esc(r.refusal.relation)}</td><td class="c">${esc(clockStr((r.times || {})[REFUSAL_TIME_KEY]))}</td></tr>`
     )
     .join("")}</tbody>
 </table>`
     : ""
 }
 
-${
-  gaps.length
-    ? `<h2>No coverage</h2>
-<table class="keep">
-  <thead><tr><th style="width:4%">#</th><th style="width:10%">Started</th><th style="width:10%">Ended</th>
-  <th style="width:10%">Duration</th><th>Teams out</th><th style="width:18%">Declared by</th></tr></thead>
+<h2>UHU <span class="sub">— time on call, by seat</span></h2>
+<table>
+  <thead><tr>
+    <th style="width:12%">Medic</th><th style="width:9%">Seat</th><th style="width:22%">Name</th>
+    <th style="width:12%">Employee ID</th><th class="c" style="width:10%">Signed on</th>
+    <th class="c" style="width:10%">Signed off</th><th class="c" style="width:11%">Overtime</th>
+    <th class="n" style="width:7%">Calls</th><th class="n" style="width:7%">UHU %</th>
+  </tr></thead>
   <tbody>
-  ${gaps
+  ${uhuRows
     .map(
-      (c, i) =>
-        `<tr class="gap"><td>${i + 1}</td><td>${esc(clockStr(c.startedAt))}</td>` +
-        `<td>${c.endedAt ? esc(clockStr(c.endedAt)) : "still running"}</td>` +
-        `<td>${c.endedAt ? esc(msDurationStr(c.endedAt - c.startedAt)) : ""}</td>` +
-        `<td>${esc((c.unitsOut || []).join(", "))}</td><td>${esc(c.startedBy || "")}</td></tr>`
+      (r) =>
+        `<tr><td>${esc(r.medic)}</td><td>${esc(r.seat)}</td><td>${esc(r.name)}</td><td>${esc(r.id)}</td>` +
+        `<td class="c">${esc(r.on)}</td><td class="c">${esc(r.off)}</td>` +
+        `<td class="${r.ot ? "ot" : "c"}">${esc(r.ot)}</td>` +
+        `<td class="n">${esc(r.calls)}</td><td class="n">${esc(r.uhu)}%</td></tr>`
     )
     .join("")}
   </tbody>
+</table>
+
+<h2>Shift handover</h2>
+${
+  handover.length
+    ? `<table>
+  <thead><tr>${Object.keys(handover[0]).map((k) => `<th>${esc(k)}</th>`).join("")}</tr></thead>
+  <tbody>${handover
+    .map((row) => `<tr>${Object.values(row).map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`)
+    .join("")}</tbody>
 </table>`
-    : ""
+    : `<p class="none">No shift changes recorded on this shift.</p>`
+}
+
+<h2>Scheduled requests</h2>
+${
+  bookings.length
+    ? `<table>
+  <thead><tr><th class="c" style="width:9%">Time</th><th style="width:18%">Nature</th>
+  <th style="width:16%">From</th><th style="width:16%">To</th><th style="width:9%">MRN</th>
+  <th style="width:10%">Team</th><th style="width:10%">Status</th><th style="width:12%">Booked by</th></tr></thead>
+  <tbody>${bookings
+    .map((b) => {
+      const cls = b.status === "cancelled" ? ' class="cancelled"' : "";
+      const u = units.find((x) => x.id === b.assignedUnitId);
+      return `<tr${cls}><td class="c">${esc(b.scheduledFor ? clockStr(b.scheduledFor) : "On call")}</td>` +
+        `<td>${esc(b.nature || "")}</td><td>${esc(callFrom(b))}</td><td>${esc(callTo(b))}</td>` +
+        `<td>${esc(b.mrn || "")}</td><td>${esc(u ? u.name : "")}</td>` +
+        `<td>${esc((b.status || "").toUpperCase())}</td><td>${esc(b.scheduledBy || "")}</td></tr>`;
+    })
+    .join("")}</tbody>
+</table>`
+    : `<p class="none">No bookings on this shift.</p>`
+}
+
+<h2>No coverage</h2>
+${
+  gaps.length
+    ? `<table class="keep">
+  <thead><tr><th class="c" style="width:5%">#</th><th class="c" style="width:11%">Started</th>
+  <th class="c" style="width:11%">Ended</th><th class="c" style="width:11%">Duration</th>
+  <th style="width:36%">Teams out</th><th style="width:26%">Declared by</th></tr></thead>
+  <tbody>${gaps
+    .map(
+      (c, i) =>
+        `<tr class="gap"><td class="c">${i + 1}</td><td class="c">${esc(clockStr(c.startedAt))}</td>` +
+        `<td class="c">${c.endedAt ? esc(clockStr(c.endedAt)) : "still running"}</td>` +
+        `<td class="c">${c.endedAt ? esc(msDurationStr(c.endedAt - c.startedAt)) : ""}</td>` +
+        `<td>${esc((c.unitsOut || []).join(", "))}</td><td>${esc(c.startedBy || "")}</td></tr>`
+    )
+    .join("")}</tbody>
+</table>`
+    : `<p class="none">The station had an ambulance available throughout this shift.</p>`
 }
 
 <div class="foot">
   MEDCOM Dispatch · KFSH&amp;RC Ambulance Services · Shaded rows are night-shift calls ·
-  Printed ${esc(gregDateTimeStr(Date.now()))}
+  Amber marks overtime · Printed ${esc(gregDateTimeStr(Date.now()))}
 </div>
 </body></html>`;
 }
