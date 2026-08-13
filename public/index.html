@@ -9,6 +9,22 @@
   * { box-sizing: border-box; }
 </style>
 
+<!--
+  FOR IT — THESE FOUR FILES MUST BE SERVED LOCALLY.
+
+  The app loads four JavaScript libraries from a public CDN (unpkg.com). On an
+  internal server with no internet access they will never arrive, and the app
+  will not start. Download each one, place it beside this file, and change the
+  four src attributes below to relative paths:
+
+      react.production.min.js       →  src="./vendor/react.production.min.js"
+      react-dom.production.min.js   →  src="./vendor/react-dom.production.min.js"
+      babel.min.js                  →  src="./vendor/babel.min.js"
+      xlsx.bundle.js                →  src="./vendor/xlsx.bundle.js"
+
+  Nothing else in the application reaches outside the hospital network.
+-->
+
 <!-- React -->
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -681,6 +697,32 @@ function callsNeedingDetail(requests) {
   return (requests || [])
     .filter((r) => r.status === "completed" && missingLogFields(r).length)
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+// ---------- going out of service ----------
+//
+// A truck leaving the run is a decision about the department's cover, not about
+// one crew's afternoon. Taken silently it removed an ambulance from the board
+// with no reason recorded and nobody told — and the desk found out by noticing
+// a gap. So a crew asks, with a reason, and the desk answers.
+//
+// The truck stays available while the request is pending. It is still a working
+// ambulance until somebody says otherwise, and a crew who cannot roll is a
+// different thing from a crew who has asked not to be sent.
+const OOS_REASONS = [
+  "Vehicle fault",
+  "Equipment missing or broken",
+  "Restocking",
+  "Cleaning or decontamination",
+  "Fuel",
+  "Crew break",
+  "Crew unwell",
+  "Other",
+];
+
+function oosRequestOf(unit) {
+  const r = unit && unit.oosRequest;
+  return r && r.status === "pending" ? r : null;
 }
 
 // ---------- emergency response compliance ----------
@@ -3629,15 +3671,23 @@ function isNightCall(req) {
 }
 
 // The service the call was run as, in the sheet's own vocabulary.
+//
+// Two faults here, both of which put nothing in the column. callTypeOf returns
+// the whole meta object rather than its key, so every comparison against a
+// letter failed; and the mapping itself was wrong — C is the app's CRITICAL,
+// which the sheet calls CCT, and D is an auxiliary run, which the sheet has no
+// service type for at all.
 function serviceTypeFor(req) {
-  const t = callTypeOf(req);
-  if (!t) return "";
-  if (t === "A") return "ALS";
-  if (t === "B") return "BLS";
-  if (t === "C") return "CCT";
-  if (t === "D") return "E";
-  if (t === "E") return "NA";
-  return t;
+  const key = req && req.callType ? String(req.callType) : "";
+  if (!key) return "";
+  const map = { A: "ALS", B: "BLS", C: "CCT", D: "BLS", E: "NA", NA: "NA" };
+  return map[key] || key;
+}
+
+// The kilometre band, as the sheet numbers it. Same fault: the helper hands
+// back a description, and the column wants the band.
+function loadedKmFor(req) {
+  return req && req.loadedKm ? String(req.loadedKm) : "";
 }
 
 // Fill a set of rows with a colour and a legible figure colour.
@@ -3754,7 +3804,9 @@ function dressLogSheet(sheet, aoa) {
 // only the builder knows which call belongs to which shift — by the time it is a
 // sheet the times are strings.
 function shadeNightRows(sheet, aoa, offset) {
-  paintRows(sheet, (aoa && aoa.coverageRows) || [], offset, "FFC00000", "FFFFFFFF");
+  // A softer red for coverage: it must stand out on the page without making the
+  // rows underneath it hard to read.
+  paintRows(sheet, (aoa && aoa.coverageRows) || [], offset, "FFF4B6B6", "FF7F0000");
   const rows = (aoa && aoa.nightRows) || [];
   if (!rows.length) return sheet;
   const ref = sheet["!ref"];
@@ -3768,8 +3820,11 @@ function shadeNightRows(sheet, aoa, offset) {
       if (!cell) continue;
       cell.s = {
         ...(cell.s || {}),
-        fill: { patternType: "solid", fgColor: { rgb: "FF000000" } },
-        font: { ...((cell.s || {}).font || {}), color: { rgb: "FFFFFFFF" }, bold: false },
+        // Light grey, not black. Solid black across forty rows made the sheet
+        // painful to read for the sake of a distinction that only needs to be
+        // noticeable, not loud.
+        fill: { patternType: "solid", fgColor: { rgb: "FFD9D9D9" } },
+        font: { ...((cell.s || {}).font || {}), color: { rgb: "FF1A1A1A" }, bold: false },
       };
     }
   });
@@ -3857,7 +3912,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       unit.name || "",
       unit.ambulanceNumber || "",
       serviceTypeFor(r),
-      loadedKmOf(r) || "",
+      loadedKmFor(r),
       r.addedService || "",
       r.callType || "",
       r.callCategory || "",
@@ -4083,8 +4138,9 @@ const NARROW_COLUMNS = {
   "TYPE OF SERVICE": 11,
   "MEDIC TEAM": 12,
   "CAT. OF CALL": 11,
-  BRAVO: 14,
-  "E-PCR AUTHOR": 14,
+  // Names, not codes. Capped short they spilled into the column beside them.
+  BRAVO: 22,
+  "E-PCR AUTHOR": 22,
 };
 
 function autoFitSheet(ws, headerRow) {
@@ -6567,28 +6623,28 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
           <Radio size={22} color="#35C4E8" />
           <span style={styles.loginHeaderText}>MEDCOM DISPATCH</span>
         </div>
-        <div style={styles.loginSub}>Sign in to view calls and unit status.</div>
+        <InfoNote label="What is this?">
+          MEDCOM Dispatch — the ambulance board for KFSH&amp;RC Emergency Medical Services. Sign in
+          with the ID your administrator gave you.
+        </InfoNote>
 
         {!role && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 18 }}>
             <button style={styles.roleBtn} onClick={() => setRole("dispatcher")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Dispatcher</div>
-                <div style={styles.roleBtnSub}>Create calls, assign units, monitor the board</div>
               </div>
               <ChevronRight size={18} color="#9DB2C4" />
             </button>
             <button style={styles.roleBtn} onClick={() => setRole("team")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Team</div>
-                <div style={styles.roleBtnSub}>Crew members — ID and password, then your shift and seat</div>
               </div>
               <ChevronRight size={18} color="#9DB2C4" />
             </button>
             <button style={styles.roleBtn} onClick={() => setRole("admin")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Admin</div>
-                <div style={styles.roleBtnSub}>Manage IDs and units — ID and password</div>
               </div>
               <ChevronRight size={18} color="#9DB2C4" />
             </button>
@@ -10235,8 +10291,22 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
   const upcoming = list
     .filter((s) => s && schedOpen(s, now))
     .sort((a, b) => (a.scheduledFor || 0) - (b.scheduledFor || 0));
+  // Dispatched and cancelled, scoped to the shift running now.
+  //
+  // Left unscoped this was every booking the station had ever taken — months of
+  // them — and a desk looking for the one it cancelled an hour ago had to scroll
+  // through the lot. What a desk asks here is "what happened on my shift", so
+  // that is what it shows.
+  const shiftFrom = user && user.shiftStart ? user.shiftStart : shiftWindowAt(now).start;
+  const shiftTo = user && user.shiftEnd ? user.shiftEnd : shiftFrom + SHIFT_MS;
   const past = list
-    .filter((s) => s && !schedOpen(s, now))
+    .filter((s) => {
+      if (!s || schedOpen(s, now)) return false;
+      // Judged on when it was dealt with, not when it was booked — a booking
+      // made last week and cancelled this morning belongs to this morning.
+      const settled = s.cancelledAt || s.releasedAt || s.readyCalledAt || s.scheduledFor || 0;
+      return settled >= shiftFrom && settled < shiftTo;
+    })
     .sort((a, b) => (b.scheduledFor || 0) - (a.scheduledFor || 0));
   // Bookings waiting on a phone call are held apart from the timed ones: they
   // have no time to be due at, so they can't be "due within the half hour" and
@@ -11032,6 +11102,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // The two coded fields the sheet wants against every call.
   const [patientOrigin, setPatientOrigin] = useState("");
   const [callCategory, setCallCategory] = useState("");
+  const [callKind, setCallKind] = useState("");
   const [editingCallId, setEditingCallId] = useState(null);
   const [selectedTeam, setSelectedTeam] = useState("");
   const [callType, setCallType] = useState("");
@@ -11102,6 +11173,56 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       addLog,
     });
     if (done) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
+  }
+
+  // Answering a truck that has asked to come off.
+  //
+  // A refusal has to say why. A crew who asked because the oxygen is low and is
+  // told only "no" has learned nothing except not to ask again — and the desk
+  // may have refused for a reason the crew would accept, if they were told it.
+  async function answerOos(unit, approve) {
+    const rq = oosRequestOf(unit);
+    if (!rq) return;
+    let note = "";
+    if (!approve) {
+      note = window.prompt(
+        `Refuse ${unit.name}'s request?\n\nThey asked because: ${rq.reason}` +
+          (rq.note ? ` — ${rq.note}` : "") +
+          `\n\nSay why. The crew sees this on their screen.`
+      );
+      if (note === null) return;
+      if (!note.trim()) {
+        window.alert("A refusal needs a reason.");
+        return;
+      }
+    }
+    const now = Date.now();
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(
+      fresh.map((u) =>
+        u.id === unit.id
+          ? {
+              ...u,
+              status: approve ? "oos" : u.status,
+              oosRequest: {
+                ...rq,
+                status: approve ? "approved" : "refused",
+                answeredAt: now,
+                answeredBy: user.name || "Dispatch",
+                answerNote: note.trim(),
+              },
+            }
+          : u
+      )
+    );
+    await addLog(
+      approve
+        ? `${unit.name} taken out of service by ${user.name || "Dispatch"} — ${rq.reason}` +
+          (rq.note ? `: ${rq.note}` : "")
+        : `${unit.name} refused out of service by ${user.name || "Dispatch"} — ${note.trim()}` +
+          ` (asked: ${rq.reason})`,
+      "status"
+    );
   }
 
   // Sending a second ambulance the crew never asked for.
@@ -11255,6 +11376,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       // interpretation.
       patientOrigin: patientOrigin || "",
       callCategory: callCategory || "",
+      // What the desk declared at the moment it was raised, kept apart from the
+      // category it was later filed under. The first is what a desk believed
+      // under pressure; the second is what it turned out to be.
+      callKind: callKind || "",
       priority,
       mrn: mrn.trim(),
       // The typed detail behind an "Other" requirement, kept only when the
@@ -11311,6 +11436,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     setReqOther("");
     setPatientOrigin("");
     setCallCategory("");
+    setCallKind("");
     setCallType("");
     setLoadedKm("");
     setSelectedTeam("");
@@ -11482,6 +11608,35 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {onPage("board") && (
         <>
+      {/* Trucks asking to come off the run. Answered here because taking an
+          ambulance off is a decision about the department's cover, and this is
+          the screen where that cover is visible. */}
+      {stationUnits.filter((u) => oosRequestOf(u)).map((u) => {
+        const rq = oosRequestOf(u);
+        return (
+          <div key={u.id} style={styles.oosAsk}>
+            <div style={styles.oosAskHead}>
+              {u.name} asks to go out of service
+            </div>
+            <div style={styles.oosAskWhy}>
+              {rq.reason}
+              {rq.note ? ` — ${rq.note}` : ""}
+              <span style={styles.oosAskWho}>
+                {" "}· {rq.byName} at {clockStr(rq.askedAt)}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button style={styles.primaryBtnSm} onClick={() => answerOos(u, true)}>
+                Approve — take it off
+              </button>
+              <button style={styles.ghostBtnSm} onClick={() => answerOos(u, false)}>
+                Refuse
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
       {/* Anything a crew has reported wrong that is still waiting on the desk —
           including on calls that have already closed. Scoped to this station:
           the other desk answers its own. */}
@@ -11541,6 +11696,40 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {showForm && (
         <div style={styles.requestForm}>
+          {/* The first thing asked, because it decides whether this call is
+              measured against the ten-minute standard at all.
+              A desk raising an emergency at speed can answer this in one tap and
+              fill the rest in later; the response indicator counts what was
+              declared here, narrowed to internal once the category is set. */}
+          <div style={styles.kindRow}>
+            {[
+              { key: "emergency", label: "EMERGENCY", color: "#FF4D5E" },
+              { key: "scheduled", label: "SCHEDULED CALL", color: "#35C4E8" },
+            ].map((k) => {
+              const on = callKind === k.key;
+              return (
+                <button
+                  key={k.key}
+                  style={{
+                    ...styles.kindBtn,
+                    ...(on
+                      ? { background: k.color, color: "#070D13", borderColor: k.color, fontWeight: 800 }
+                      : { color: k.color, borderColor: `${k.color}55` }),
+                  }}
+                  onClick={() => {
+                    setCallKind(k.key);
+                    // A sensible default the desk can still change below.
+                    if (k.key === "emergency" && !callCategory) setCallCategory("EMERGENCY (INTERNAL)");
+                    if (k.key === "scheduled" && !callCategory) setCallCategory("ROUTINE");
+                    if (k.key === "emergency") setPriority("critical");
+                  }}
+                >
+                  {k.label}
+                </button>
+              );
+            })}
+          </div>
+
           {/* Where the patient is, in the department's own words. Typed freely
               this became "ER", "Emergency", "emergency bldg" and three other
               spellings of one building, and the month-end count had to be done
@@ -12103,7 +12292,60 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [editOpen, setEditOpen] = useState(false);
   // Whether the refusal is being signed for.
   const [refusalOpen, setRefusalOpen] = useState(false);
+  const [assistOpen, setAssistOpen] = useState(false);
+  const [assistWhat, setAssistWhat] = useState("");
   const [checklistOpen, setChecklistOpen] = useState(false);
+  // Asking to come off the run.
+  const [oosOpen, setOosOpen] = useState(false);
+  const [oosReason, setOosReason] = useState("");
+  const [oosNote, setOosNote] = useState("");
+  // A refusal stays on screen until the crew says they have read it.
+  const [dismissedOos, setDismissedOos] = useState(false);
+  useEffect(() => {
+    // A fresh answer is a fresh notice, even if the last one was dismissed.
+    setDismissedOos(false);
+  }, [myUnit && myUnit.oosRequest && myUnit.oosRequest.answeredAt]);
+
+  async function requestOutOfService() {
+    if (!myUnit || !oosReason) return;
+    const now = Date.now();
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(
+      fresh.map((u) =>
+        u.id === myUnit.id
+          ? {
+              ...u,
+              oosRequest: {
+                id: uid("oos"),
+                status: "pending",
+                reason: oosReason,
+                note: oosNote.trim(),
+                byName: user.name || "",
+                byAccountId: user.accountId || "",
+                seat: user.slot || null,
+                askedAt: now,
+              },
+            }
+          : u
+      )
+    );
+    await addLog(
+      `${myUnit.name} asked to go out of service — ${oosReason}` +
+        (oosNote.trim() ? `: ${oosNote.trim()}` : "") +
+        ` · requested by ${user.name || "crew"}`,
+      "status"
+    );
+    setOosOpen(false);
+    setOosReason("");
+    setOosNote("");
+  }
+
+  async function cancelOosRequest() {
+    if (!myUnit) return;
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(fresh.map((u) => (u.id === myUnit.id ? { ...u, oosRequest: null } : u)));
+    await addLog(`${myUnit.name} withdrew its out-of-service request`, "status");
+  }
   // Which page the bar is showing. A crew's call is the thing they must never
   // have to hunt for, so it is the default and always one tap away.
   const onPage = (k) => !page || page === k;
@@ -12626,16 +12868,16 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // changes: the team keep it, keep the timeline, and keep working — this puts
   // the ask in front of dispatch as an alert and as a task that is only done
   // once another team has been sent here.
-  async function requestAssistance() {
+  // Asking for a second ambulance, and saying what for.
+  //
+  // "Assist requested" told the desk an ambulance was wanted and nothing about
+  // what to send — a lifting job and a deteriorating patient need different
+  // trucks and different urgency, and the desk was left to telephone and ask.
+  async function requestAssistance(detail) {
     if (!myRequest || !myUnit || assisting) return;
     if (assistPending(myRequest)) return;
-    const already = assistTeams(myRequest).filter((t) => !t.clearedAt).length;
-    const ok = window.confirm(
-      already > 0
-        ? "Ask dispatch for another ambulance on this call, on top of the team already helping?"
-        : "Ask dispatch for an additional ambulance on this call?\n\nThe desk is alerted straight away and has to assign a second team to it."
-    );
-    if (!ok) return;
+    const what = (detail || "").trim();
+    if (!what) return;
     const now = Date.now();
     const freshRequests = await readKey("ems:requests", requests);
     const nextRequests = freshRequests.map((r) =>
@@ -12645,6 +12887,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             assist: {
               ...(assistOf(r) || {}),
               status: "pending",
+              // What they actually need, so the desk can send the right thing.
+              detail: what,
               requestedAt: now,
               requestedByUnitId: myUnit.id,
               requestedByUnitName: myUnit.name,
@@ -12790,13 +13034,85 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           <Circle size={10} fill={statusMeta(myUnit.status).color} color={statusMeta(myUnit.status).color} />
           <span style={{ fontSize: 17, fontWeight: 700, color: statusMeta(myUnit.status).color }}>{statusMeta(myUnit.status).label}</span>
         </div>
+        {/* The desk's answer, where the crew will see it.
+            A refusal in particular must reach them — they asked for a reason,
+            and being told no without one teaches only not to ask. It stays until
+            they acknowledge it. */}
+        {myUnit.oosRequest &&
+          myUnit.oosRequest.status === "refused" &&
+          !dismissedOos && (
+            <div style={styles.oosRefused}>
+              <AlertTriangle size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
+              <strong>Out of service refused</strong> by {myUnit.oosRequest.answeredBy}
+              <div style={styles.oosRefusedWhy}>“{myUnit.oosRequest.answerNote}”</div>
+              <div style={styles.oosRefusedAsked}>
+                You asked: {myUnit.oosRequest.reason}
+                {myUnit.oosRequest.note ? ` — ${myUnit.oosRequest.note}` : ""}
+              </div>
+              <button style={styles.primaryBtnSm} onClick={() => setDismissedOos(true)}>
+                Understood
+              </button>
+            </div>
+          )}
+
+        {/* Asked for, not yet answered. The truck is still available meanwhile —
+            it is a working ambulance until the desk says otherwise. */}
+        {oosRequestOf(myUnit) && (
+          <div style={styles.oosPending}>
+            <Clock size={12} style={{ verticalAlign: -1, marginRight: 6 }} />
+            Waiting on the desk — {oosRequestOf(myUnit).reason}
+            {oosRequestOf(myUnit).note ? `: ${oosRequestOf(myUnit).note}` : ""}
+            <button style={styles.oosCancel} onClick={cancelOosRequest}>
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {oosOpen && (
+          <div style={styles.oosForm}>
+            <div style={styles.oosFormHead}>WHY DOES THE TRUCK NEED TO COME OFF?</div>
+            <select
+              style={{ ...styles.input, marginTop: 8 }}
+              value={oosReason}
+              onChange={(e) => setOosReason(e.target.value)}
+            >
+              <option value="">Choose a reason</option>
+              {OOS_REASONS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+            <input
+              style={{ ...styles.input, marginTop: 8 }}
+              value={oosNote}
+              onChange={(e) => setOosNote(e.target.value)}
+              placeholder={oosReason === "Other" ? "Say what it is" : "Anything else (optional)"}
+            />
+            <div style={styles.checkActions}>
+              <button style={styles.ghostBtnSm} onClick={() => setOosOpen(false)}>Cancel</button>
+              <button
+                style={
+                  oosReason && (oosReason !== "Other" || oosNote.trim())
+                    ? styles.primaryBtnSm
+                    : styles.checkSubmitOff
+                }
+                disabled={!oosReason || (oosReason === "Other" && !oosNote.trim())}
+                onClick={requestOutOfService}
+              >
+                Send to the desk
+              </button>
+            </div>
+          </div>
+        )}
+
         {!myRequest && (
           <div style={{ display: "flex", gap: 8 }}>
             {myUnit.status !== "available" && (
               <button style={styles.ghostBtnSm} onClick={() => setStatus("available")}>Set available</button>
             )}
-            {myUnit.status !== "oos" && (
-              <button style={styles.ghostBtnSm} onClick={() => setStatus("oos")}>Out of service</button>
+            {myUnit.status !== "oos" && !oosRequestOf(myUnit) && (
+              <button style={styles.ghostBtnSm} onClick={() => setOosOpen(true)}>
+                Request out of service
+              </button>
             )}
             {myUnit.status === "oos" && (
               <button style={styles.primaryBtnSm} onClick={() => setStatus("available")}>Back in service</button>
@@ -13188,7 +13504,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                 {showAssistBtn && (
                   <button
                     style={assistPending(myRequest) ? styles.assistBtnPending : styles.assistBtn}
-                    onClick={requestAssistance}
+                    onClick={() => setAssistOpen(true)}
                     disabled={assistPending(myRequest)}
                   >
                     <Ambulance size={13} />{" "}
@@ -13196,6 +13512,36 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                   </button>
                 )}
               </div>
+              {/* What the second ambulance is for. The desk cannot send the
+                  right thing to a request that only says "assist". */}
+              {assistOpen && (
+                <div style={styles.oosForm}>
+                  <div style={styles.oosFormHead}>WHAT DO YOU NEED THE SECOND AMBULANCE FOR?</div>
+                  <input
+                    style={{ ...styles.input, marginTop: 8 }}
+                    value={assistWhat}
+                    onChange={(e) => setAssistWhat(e.target.value)}
+                    placeholder="e.g. lifting assistance, patient deteriorating, second stretcher"
+                  />
+                  <div style={styles.checkActions}>
+                    <button style={styles.ghostBtnSm} onClick={() => setAssistOpen(false)}>
+                      Cancel
+                    </button>
+                    <button
+                      style={assistWhat.trim() ? styles.primaryBtnSm : styles.checkSubmitOff}
+                      disabled={!assistWhat.trim()}
+                      onClick={async () => {
+                        await requestAssistance(assistWhat);
+                        setAssistOpen(false);
+                        setAssistWhat("");
+                      }}
+                    >
+                      Ask the desk
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {refusalOpen && (
                 <RefusalForm
                   onCancel={() => setRefusalOpen(false)}
@@ -14106,6 +14452,67 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
 // administrator opens the page for, so it opens with it — with its own period
 // selector, because the question "how are we doing" is asked over a month or a
 // quarter, not over a shift.
+// The call mix, as proportions rather than a dial.
+//
+// A gauge answers "are we hitting a target". Call mix has no target — nobody is
+// aiming for a particular share of dialysis transfers — so a gauge would look
+// impressive and say nothing. What the question actually is: what do we mostly
+// get called for. That is a proportion, so it is drawn as one.
+function CategoryMix({ requests, from, to }) {
+  const counts = new Map();
+  let total = 0;
+  (requests || []).forEach((r) => {
+    if (!r || r.createdAt < from || r.createdAt >= to) return;
+    const c = (r.callCategory || "").trim() || "Not stated";
+    counts.set(c, (counts.get(c) || 0) + 1);
+    total += 1;
+  });
+  const rows = Array.from(counts.entries())
+    .map(([name, n]) => ({ name, n, pct: (n / total) * 100 }))
+    .sort((a, b) => b.n - a.n);
+
+  const colourOf = (name) => {
+    const f = CATEGORY_FILLS[name];
+    return f ? `#${f[0].slice(2)}` : "#61788C";
+  };
+
+  return (
+    <div style={styles.mixCard}>
+      <div style={styles.gaugeLabel}>What we are called for</div>
+      {total === 0 ? (
+        <div style={styles.emptyState}>No calls in this period.</div>
+      ) : (
+        <>
+          {/* One bar, in proportion. Reading a share is what eyes are good at
+              and what a column of numbers is bad at. */}
+          <div style={styles.mixBar}>
+            {rows.map((r) => (
+              <span
+                key={r.name}
+                title={`${r.name} — ${r.n} (${r.pct.toFixed(0)}%)`}
+                style={{ width: `${r.pct}%`, background: colourOf(r.name), display: "block", height: "100%" }}
+              />
+            ))}
+          </div>
+          <div style={styles.mixList}>
+            {rows.slice(0, 8).map((r) => (
+              <div key={r.name} style={styles.mixRow}>
+                <span style={{ ...styles.mixDot, background: colourOf(r.name) }} />
+                <span style={styles.mixName}>{r.name}</span>
+                <span style={styles.mixPct}>{r.pct.toFixed(0)}%</span>
+                <span style={styles.mixN}>{r.n}</span>
+              </div>
+            ))}
+            {rows.length > 8 && (
+              <div style={styles.formHint}>and {rows.length - 8} more categories.</div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function IndicatorBand({ requests, range, setRange }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
@@ -14139,6 +14546,8 @@ function IndicatorBand({ requests, range, setRange }) {
           unmeasured={resp.unmeasured}
         />
       </div>
+
+      <CategoryMix requests={requests} from={win.start} to={win.end} />
 
       {resp.avg !== null && (
         <div style={styles.bandFoot}>
@@ -15774,11 +16183,15 @@ const styles = {
     // The crests keep their white plate — they are printed artwork and need it —
     // but it now floats as a rounded card on the green rather than spanning the
     // full width as a separate band.
-    background: "#FFFFFF",
-    border: "1px solid rgba(255,255,255,.35)",
-    borderRadius: 13,
+    // The crests are printed artwork and need a light plate to read against, but
+    // a hard white slab on a green field looks pasted on. A soft, slightly
+    // translucent panel with a warm edge sits in the masthead rather than on it.
+    background: "rgba(255,255,255,.94)",
+    border: "1px solid rgba(255,255,255,.55)",
+    borderRadius: 14,
     margin: "10px 14px 2px",
     padding: "7px 13px",
+    boxShadow: "0 4px 14px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.9)",
     display: "grid",
     gridTemplateColumns: "1fr auto 1fr",
     alignItems: "center",
@@ -16330,17 +16743,20 @@ const styles = {
     fontStyle: "italic",
   },
 
+  // The opened card is the tile grown up: the same gradient, the same lit edge,
+  // the same soft shadow. It was still flat while the tiles around it had been
+  // rebuilt, so opening one felt like leaving the app.
   callCard: {
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "linear-gradient(180deg, #16232F, #0D151E)",
+    border: "1px solid rgba(255,255,255,.07)",
     borderLeft: "4px solid",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 10,
-    boxShadow: "0 6px 18px rgba(0,0,0,.28)",
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 12,
+    boxShadow: "0 14px 34px rgba(0,0,0,.45)",
   },
   callCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
-  callCardNature: { fontFamily: display, fontWeight: 700, fontSize: 16 },
+  callCardNature: { fontFamily: display, fontWeight: 780, fontSize: 19, letterSpacing: -0.4 },
   callCardMeta: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#9DB2C4" },
   callCardMetaItem: { display: "flex", alignItems: "center", gap: 4 },
   callCardActions: { display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" },
@@ -16990,7 +17406,7 @@ const styles = {
     background: "transparent",
     border: "1px solid #FF4D5E",
     color: "#FF7A86",
-    borderRadius: 8,
+    borderRadius: 999,
     padding: "6px 10px",
     cursor: "pointer",
     fontFamily: mono,
@@ -17315,6 +17731,23 @@ const styles = {
     gap: 10,
     marginTop: 10,
   },
+  mixCard: {
+    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    border: "1px solid rgba(255,255,255,.07)",
+    borderRadius: 18, padding: "13px 14px", marginTop: 10,
+    boxShadow: "0 8px 22px rgba(0,0,0,.38)",
+  },
+  mixBar: {
+    display: "flex", height: 12, borderRadius: 999, overflow: "hidden",
+    marginTop: 11, background: "#101A24",
+  },
+  mixList: { marginTop: 11, display: "flex", flexDirection: "column", gap: 6 },
+  mixRow: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5 },
+  mixDot: { width: 9, height: 9, borderRadius: 3, flex: "none" },
+  mixName: { flex: 1, minWidth: 0, color: "#D6E3EE", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  mixPct: { fontFamily: mono, fontWeight: 700, color: "#F2F7FB", minWidth: 38, textAlign: "right" },
+  mixN: { fontFamily: mono, color: "#61788C", minWidth: 28, textAlign: "right" },
+
   gaugeCard: {
     background: "linear-gradient(180deg, #131F2B, #0D151E)",
     border: "1px solid rgba(255,255,255,.07)",
@@ -17401,7 +17834,7 @@ const styles = {
   },
   relieveBtn: {
     background: "none", border: "1px solid #33475A", color: "#9DB2C4",
-    borderRadius: 6, padding: "2px 8px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+    borderRadius: 999, padding: "2px 8px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
   },
 
   reliefWait: {
@@ -17421,6 +17854,13 @@ const styles = {
   },
   ambulancePromptHead: { fontSize: 14, fontWeight: 800, color: "#8FE0F5", letterSpacing: 0.2 },
   ambulancePromptBody: { fontSize: 13, color: "#9DB2C4", lineHeight: 1.55, marginTop: 6 },
+
+  kindRow: { display: "flex", gap: 8, marginBottom: 12 },
+  kindBtn: {
+    flex: 1, minHeight: 48, borderRadius: 999, border: "1px solid",
+    background: "none", fontFamily: display, fontSize: 13.5, fontWeight: 700,
+    letterSpacing: 0.6, cursor: "pointer",
+  },
 
   needsDetail: {
     marginTop: 10, background: "rgba(233,196,106,.07)",
@@ -17451,6 +17891,38 @@ const styles = {
   checkTodayFlag: { fontSize: 12.5, color: "#FFB020", flex: 1, minWidth: 0 },
   checkTodayMissing: { fontSize: 12.5, color: "#FF7A86", fontWeight: 700 },
   checkTodayWho: { fontSize: 12, color: "#61788C", marginLeft: "auto" },
+
+  oosRefused: {
+    marginTop: 10, background: "linear-gradient(180deg,#3A1218,#220A0E)",
+    border: "1px solid #FF4D5E", borderRadius: 14, padding: 13,
+    fontSize: 13.5, color: "#FFD6DA", lineHeight: 1.5,
+  },
+  oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
+  oosRefusedAsked: { fontSize: 12.5, color: "#C6A9AD", marginTop: 6, marginBottom: 10 },
+
+  oosAsk: {
+    background: "linear-gradient(180deg,#2A2410,#181405)",
+    border: "1px solid #E9C46A", borderRadius: 16, padding: 14, marginBottom: 12,
+    boxShadow: "0 8px 22px rgba(233,196,106,.12)",
+  },
+  oosAskHead: { fontSize: 15, fontWeight: 800, color: "#FFD98A" },
+  oosAskWhy: { fontSize: 13.5, color: "#D6E3EE", marginTop: 6, lineHeight: 1.5 },
+  oosAskWho: { fontSize: 12, color: "#9DB2C4" },
+
+  oosPending: {
+    marginTop: 10, background: "rgba(255,176,32,.08)",
+    border: "1px solid rgba(255,176,32,.4)", borderRadius: 12,
+    padding: "10px 12px", fontSize: 13, color: "#FFD98A", lineHeight: 1.5,
+  },
+  oosCancel: {
+    marginLeft: 8, background: "none", border: "none", color: "#9DB2C4",
+    fontSize: 12.5, fontWeight: 700, cursor: "pointer", textDecoration: "underline",
+  },
+  oosForm: {
+    marginTop: 10, background: "#0D151E", border: "1px solid #2A3949",
+    borderRadius: 14, padding: 12,
+  },
+  oosFormHead: { fontSize: 11.5, fontWeight: 800, letterSpacing: 0.6, color: "#E9C46A" },
 
   checkOpenBtn: {
     background: "none", border: "1px dashed #33475A", color: "#9DB2C4",
@@ -17725,18 +18197,18 @@ const styles = {
 
   deskAssistBtn: {
     background: "none", border: "1px solid rgba(176,124,240,.5)", color: "#B07CF0",
-    borderRadius: 8, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
+    borderRadius: 999, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
     cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
 
   handOverBtn: {
     background: "none", border: "1px solid rgba(255,176,32,.45)", color: "#FFB020",
-    borderRadius: 8, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
+    borderRadius: 999, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
     cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
   handBackBtn: {
     background: "rgba(255,176,32,.10)", border: "1px solid rgba(255,176,32,.55)", color: "#FFC24D",
-    borderRadius: 8, padding: "6px 10px", fontSize: 13.5, fontWeight: 700,
+    borderRadius: 999, padding: "6px 10px", fontSize: 13.5, fontWeight: 700,
     cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
 
@@ -17823,12 +18295,12 @@ const styles = {
   archTab: {
     display: "inline-flex", alignItems: "center", gap: 8,
     background: "#131F2B", border: "1px solid #1E2A36", color: "#9DB2C4",
-    borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+    borderRadius: 999, padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer",
   },
   archTabOn: {
     display: "inline-flex", alignItems: "center", gap: 8,
     background: "#101A24", border: "1px solid #35C4E8", color: "#F2F7FB",
-    borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+    borderRadius: 999, padding: "8px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer",
   },
   archTabCount: { fontSize: 11.5, color: "#61788C", fontWeight: 600 },
   archDay: {
@@ -17946,17 +18418,19 @@ const styles = {
   editCrewBlock: { marginTop: 10 },
   editOpenBtn: {
     marginTop: 10,
-    background: "none",
+    background: "rgba(255,255,255,.03)",
     border: "1px solid #2A3949",
     color: "#9DB2C4",
-    borderRadius: 8,
-    padding: "6px 10px",
+    borderRadius: 999,
+    padding: "8px 14px",
+    minHeight: 38,
     fontSize: 13.5,
     fontWeight: 600,
+    fontFamily: display,
     cursor: "pointer",
     display: "inline-flex",
     alignItems: "center",
-    gap: 5,
+    gap: 6,
   },
   editPanel: {
     marginTop: 10,
@@ -18491,19 +18965,26 @@ const styles = {
     fontFamily: mono,
     fontSize: 15,
   },
+  // One button shape for the whole app: a pill, in the display face, with a
+  // real target height. The old ones were small mono-font rectangles left over
+  // from before the redesign, and every screen had a few.
   primaryBtnSm: {
-    background: "#35C4E8",
-    border: "none",
-    color: "#070D13",
-    fontWeight: 700,
-    borderRadius: 8,
-    padding: "6px 10px",
+    background: "linear-gradient(180deg,#12805E,#0A5540)",
+    border: "1px solid rgba(255,255,255,.16)",
+    color: "#FFFFFF",
+    fontWeight: 800,
+    borderRadius: 999,
+    padding: "9px 16px",
+    minHeight: 40,
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
-    display: "flex",
+    letterSpacing: -0.1,
+    display: "inline-flex",
     alignItems: "center",
-    gap: 5,
+    justifyContent: "center",
+    gap: 6,
+    boxShadow: "0 5px 14px rgba(14,107,79,.35)",
   },
   // The timeline button while the call is still missing its PCR author: still
   // legible, plainly not pressable, and in the same place it always is so the
@@ -18533,17 +19014,20 @@ const styles = {
     fontSize: 15,
   },
   ghostBtnSm: {
-    background: "transparent",
+    background: "rgba(255,255,255,.03)",
     border: "1px solid #2A3949",
     color: "#D6E3EE",
-    borderRadius: 8,
-    padding: "6px 10px",
+    borderRadius: 999,
+    padding: "9px 16px",
+    minHeight: 40,
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
-    display: "flex",
+    fontWeight: 600,
+    display: "inline-flex",
     alignItems: "center",
-    gap: 5,
+    justifyContent: "center",
+    gap: 6,
   },
   tabBtn: {
     flex: 1,
