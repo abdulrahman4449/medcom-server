@@ -725,6 +725,94 @@ function oosRequestOf(unit) {
   return r && r.status === "pending" ? r : null;
 }
 
+// ---------- who stood out ----------
+//
+// Three awards, each measuring a different kind of good. A department that only
+// ever celebrates the highest call count teaches its crews to chase calls; one
+// that only celebrates speed teaches them to hurry. So: the busiest, the
+// fastest, and the most reliable, side by side and equal.
+//
+// Punctuality is measured against the shift somebody signed on for, not against
+// the clock — a night crew signing on at 18:50 for a 19:00 tour is early, and
+// counting them late because it is not yet seven would be nonsense.
+const PUNCTUAL_GRACE_MS = 5 * 60 * 1000;
+
+function punctualityFor(log, win) {
+  const people = new Map();
+  (log || []).forEach((e) => {
+    const d = e && e.detail;
+    if (!d || d.kind !== "on" || d.role !== "team") return;
+    if (!d.shiftStart || !e.ts) return;
+    if (e.ts < win.start || e.ts >= win.end) return;
+    const key = (d.accountId || d.name || "").toUpperCase();
+    if (!key) return;
+    if (!people.has(key)) people.set(key, { id: d.accountId || "", name: d.name || "", on: 0, total: 0, lateMs: 0 });
+    const p = people.get(key);
+    p.total += 1;
+    const late = e.ts - d.shiftStart;
+    if (late <= PUNCTUAL_GRACE_MS) p.on += 1;
+    else p.lateMs += late;
+  });
+  return Array.from(people.values()).map((p) => ({
+    ...p,
+    pct: p.total ? (p.on / p.total) * 100 : 0,
+  }));
+}
+
+// Average response, per person, on the internal emergencies they ran.
+function responseByPerson(requests, units, log, win, now) {
+  const crewIndex = medicCrewIndex(units, log, now);
+  const people = new Map();
+  (requests || []).forEach((r) => {
+    if (!isInternalEmergency(r)) return;
+    if (r.createdAt < win.start || r.createdAt >= win.end) return;
+    const ms = responseMsFor(r);
+    if (ms === null) return;
+    const from = callStartTs(r);
+    const to = callEndTs(r, now);
+    (crewIndex.get(r.assignedUnitId) || []).forEach((c) => {
+      const w = stayWindow(c, now);
+      if (!w.start || w.start > (to || from) || w.end < from) return;
+      const key = (c.accountId || c.name || "").toUpperCase();
+      if (!key) return;
+      if (!people.has(key)) people.set(key, { id: c.accountId || "", name: c.name || "", total: 0, sum: 0 });
+      const p = people.get(key);
+      p.total += 1;
+      p.sum += ms;
+    });
+  });
+  return Array.from(people.values()).map((p) => ({ ...p, avg: p.sum / p.total }));
+}
+
+function topPerformers({ staff, requests, units, log, win, now }) {
+  // Busiest and hardest working, as one figure. Calls alone rewards short runs;
+  // UHU alone rewards long ones. The average of the two ranks somebody who did
+  // both above somebody who did one.
+  const ranked = staff
+    .filter((p) => p.calls > 0 || p.uhu > 0)
+    .map((p) => {
+      const maxCalls = Math.max(1, ...staff.map((x) => x.calls));
+      return { ...p, score: ((p.calls / maxCalls) * 100 + p.uhu) / 2 };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  // Fastest, but only among people with enough calls for it to mean anything.
+  // One lucky four-minute run is not a record.
+  const resp = responseByPerson(requests, units, log, win, now)
+    .filter((p) => p.total >= 3)
+    .sort((a, b) => a.avg - b.avg);
+
+  const punc = punctualityFor(log, win)
+    .filter((p) => p.total >= 3)
+    .sort((a, b) => b.pct - a.pct || b.total - a.total);
+
+  return {
+    workload: ranked[0] || null,
+    fastest: resp[0] || null,
+    punctual: punc[0] || null,
+  };
+}
+
 // ---------- emergency response compliance ----------
 //
 // The department's own standard: an internal emergency should be with the
@@ -14458,6 +14546,211 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
 // aiming for a particular share of dialysis transfers — so a gauge would look
 // impressive and say nothing. What the question actually is: what do we mostly
 // get called for. That is a proportion, so it is drawn as one.
+// The management report.
+//
+// Written as a styled document and handed to the browser to print, rather than
+// built with a PDF library. Three reasons: it adds no fifth file for IT to
+// vendor, it is the same print CSS anybody can later adjust, and "Save as PDF"
+// is a button every person in the organisation already knows.
+//
+// Photographs stay on the administrator's own device. A staff portrait is
+// personal data and does not belong in a board that every tablet reads.
+function buildStatisticsReport({ label, win, staff, origins, resp, mix, tops, photos, station }) {
+  const esc = (v) =>
+    String(v === null || v === undefined ? "" : v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  const award = (title, person, figure, note) => {
+    const key = person ? (person.id || person.name || "").toUpperCase() : "";
+    const photo = key && photos && photos[key] ? photos[key] : null;
+    return `
+      <div class="award">
+        <div class="portrait">${
+          photo
+            ? `<img src="${photo}" alt="">`
+            : `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="23" r="12"/><path d="M8 62c0-13 11-21 24-21s24 8 24 21z"/></svg>`
+        }</div>
+        <div class="award-body">
+          <div class="award-title">${esc(title)}</div>
+          <div class="award-name">${person ? esc(person.name) : "—"}</div>
+          ${person && person.id ? `<div class="award-id">${esc(person.id)}</div>` : ""}
+          <div class="award-figure">${person ? esc(figure) : "Not enough data this period"}</div>
+          ${person && note ? `<div class="award-note">${esc(note)}</div>` : ""}
+        </div>
+      </div>`;
+  };
+
+  const totalOrigin = origins.rows.reduce((n, r) => n + r.total, 0) || 1;
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>MEDCOM Dispatch — ${esc(label)}</title>
+<style>
+@page { size: A4; margin: 16mm 15mm; }
+*{box-sizing:border-box}
+body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:10pt;line-height:1.55;margin:0}
+h1{font-size:24pt;line-height:1.08;letter-spacing:-.8pt;margin:0 0 5pt;font-weight:800}
+h2{font-size:12pt;margin:19pt 0 8pt;font-weight:800;color:#0A5540;border-left:3pt solid #E9C46A;padding-left:8pt;page-break-after:avoid}
+p{margin:0 0 7pt}
+.eyebrow{font-size:8pt;letter-spacing:2pt;text-transform:uppercase;color:#0A5540;font-weight:800}
+.lede{font-size:11pt;color:#3B4A58}
+.rule{height:2pt;background:#0A5540;margin:11pt 0 15pt}
+.muted{color:#5A6B7B}
+.small{font-size:8.5pt}
+
+.stats{display:table;width:100%;border-spacing:6pt 0;margin:10pt 0 4pt}
+.stat{display:table-cell;width:25%;background:#F2F6F9;border-top:2.5pt solid #0A5540;padding:8pt 9pt}
+.stat .n{font-size:19pt;font-weight:800;color:#0A5540;line-height:1;letter-spacing:-.5pt}
+.stat .l{font-size:7.6pt;color:#5A6B7B;margin-top:3pt;line-height:1.35}
+
+.awards{display:table;width:100%;border-spacing:7pt 0;margin-top:4pt}
+.award{display:table-cell;width:33.33%;background:#FFFDF6;border:0.8pt solid #E9C46A;border-top:2.5pt solid #E9C46A;padding:10pt;vertical-align:top;page-break-inside:avoid}
+.portrait{width:46pt;height:46pt;border-radius:50%;overflow:hidden;background:#EEF3F7;border:1pt solid #DCE3E9;margin-bottom:7pt}
+.portrait img{width:100%;height:100%;object-fit:cover;display:block}
+.portrait svg{width:100%;height:100%;fill:#C2CFDA}
+.award-title{font-size:7.6pt;letter-spacing:1.2pt;text-transform:uppercase;color:#8A6D1F;font-weight:800}
+.award-name{font-size:12.5pt;font-weight:800;margin-top:3pt;letter-spacing:-.3pt}
+.award-id{font-size:8pt;color:#5A6B7B}
+.award-figure{font-size:10.5pt;font-weight:700;color:#0A5540;margin-top:5pt}
+.award-note{font-size:8.2pt;color:#5A6B7B;margin-top:2pt;line-height:1.4}
+
+table{width:100%;border-collapse:collapse;margin:7pt 0 10pt;font-size:8.8pt}
+th{text-align:left;background:#0A5540;color:#fff;padding:5pt 6pt;font-size:7.6pt;letter-spacing:.6pt;text-transform:uppercase;font-weight:800}
+td{padding:4.5pt 6pt;border-bottom:0.6pt solid #DCE3E9}
+tr:nth-child(even) td{background:#F5F8FA}
+tr{page-break-inside:avoid}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+
+.bar{height:7pt;background:#EEF3F7;border-radius:4pt;overflow:hidden;min-width:60pt}
+.bar i{display:block;height:100%;background:#0A5540}
+.mixbar{display:flex;height:11pt;border-radius:6pt;overflow:hidden;margin:8pt 0 10pt}
+.mixbar span{display:block;height:100%}
+
+.callout{background:#F2F6F9;border-left:3pt solid #0A5540;padding:8pt 10pt;margin:9pt 0;font-size:9pt}
+.foot{margin-top:15pt;border-top:0.8pt solid #C9D4DD;padding-top:7pt;font-size:7.8pt;color:#6C7B89}
+.pb{page-break-before:always}
+</style></head><body>
+
+<div class="eyebrow">Performance report</div>
+<h1>MEDCOM Dispatch</h1>
+<p class="lede">${esc(station || "All stations")} · ${esc(label)} · ${esc(win.label)}</p>
+<div class="rule"></div>
+
+<div class="stats">
+  <div class="stat"><div class="n">${resp.pct === null ? "—" : Math.round(resp.pct) + "%"}</div>
+    <div class="l">Emergency response within 10 minutes</div></div>
+  <div class="stat"><div class="n">${mix.total}</div><div class="l">Calls in the period</div></div>
+  <div class="stat"><div class="n">${staff.length}</div><div class="l">Staff with recorded duty</div></div>
+  <div class="stat"><div class="n">${resp.avg === null ? "—" : msDurationStr(resp.avg)}</div>
+    <div class="l">Average dispatch to arrival</div></div>
+</div>
+
+<h2>Recognition</h2>
+<div class="awards">
+  ${award(
+    "Workload and utilisation",
+    tops.workload,
+    tops.workload ? `${tops.workload.calls} calls · ${tops.workload.uhu.toFixed(1)}% UHU` : "",
+    "Ranked on calls completed and time on call together"
+  )}
+  ${award(
+    "Fastest emergency response",
+    tops.fastest,
+    tops.fastest ? msDurationStr(tops.fastest.avg) : "",
+    tops.fastest ? `Average over ${tops.fastest.total} internal emergencies` : ""
+  )}
+  ${award(
+    "Attendance and punctuality",
+    tops.punctual,
+    tops.punctual ? `${tops.punctual.pct.toFixed(0)}% on time` : "",
+    tops.punctual ? `${tops.punctual.on} of ${tops.punctual.total} shifts started on time` : ""
+  )}
+</div>
+
+<h2>Emergency response</h2>
+<p class="small muted">Measured from the moment dispatch raises an internal emergency to the moment the
+crew reaches the destination. The department's standard is ten minutes.</p>
+<table>
+  <tr><th>Measure</th><th class="n">Result</th></tr>
+  <tr><td>Calls measured</td><td class="n">${resp.total}</td></tr>
+  <tr><td>Within ten minutes</td><td class="n">${resp.within}</td></tr>
+  <tr><td>Compliance</td><td class="n">${resp.pct === null ? "—" : resp.pct.toFixed(1) + "%"}</td></tr>
+  <tr><td>Average response</td><td class="n">${resp.avg === null ? "—" : msDurationStr(resp.avg)}</td></tr>
+  ${resp.unmeasured ? `<tr><td>Not yet measurable</td><td class="n">${resp.unmeasured}</td></tr>` : ""}
+</table>
+
+<h2>What the department is called for</h2>
+<div class="mixbar">
+  ${mix.rows.map((r) => `<span style="width:${r.pct}%;background:${r.colour}"></span>`).join("")}
+</div>
+<table>
+  <tr><th>Call category</th><th class="n">Calls</th><th class="n">Share</th></tr>
+  ${mix.rows
+    .map((r) => `<tr><td>${esc(r.name)}</td><td class="n">${r.n}</td><td class="n">${r.pct.toFixed(1)}%</td></tr>`)
+    .join("")}
+</table>
+
+<div class="pb"></div>
+
+<h2>Where patients were collected from</h2>
+<table>
+  <tr><th>Location</th><th class="n">Main Office</th><th class="n">CCC</th><th class="n">Total</th><th class="n">Share</th></tr>
+  ${origins.rows
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.origin)}</td><td class="n">${r.main}</td><td class="n">${r.ccc}</td><td class="n">${r.total}</td><td class="n">${((r.total / totalOrigin) * 100).toFixed(1)}%</td></tr>`
+    )
+    .join("")}
+</table>
+${origins.unstated ? `<p class="small muted">${origins.unstated} call(s) with no location recorded.</p>` : ""}
+
+<h2>By employee</h2>
+<table>
+  <tr><th>ID</th><th>Name</th><th>Team</th><th class="n">UHU</th><th class="n">Checklist</th><th class="n">Calls</th><th class="n">Shifts</th></tr>
+  ${staff
+    .map(
+      (p) =>
+        `<tr><td>${esc(p.id)}</td><td>${esc(p.name)}</td><td>${esc(p.unitList)}</td>` +
+        `<td class="n">${p.uhu.toFixed(1)}%</td><td class="n">${p.checklistCompliance.toFixed(0)}%</td>` +
+        `<td class="n">${p.calls}</td><td class="n">${p.shiftsWorked}</td></tr>`
+    )
+    .join("")}
+</table>
+
+<div class="callout">
+  <strong>How these figures are produced.</strong> Every timestamp is recorded by the crew who ran
+  the call, on the vehicle, at the moment it happened — not entered afterwards from memory. UHU is
+  time on call as a share of the twelve-hour shifts worked. Checklist compliance is daily vehicle
+  checks filed against shifts worked.
+</div>
+
+<div class="foot">
+  MEDCOM Dispatch · KFSH&amp;RC Ambulance Services · Generated ${esc(gregDateTimeStr(Date.now()))}
+</div>
+</body></html>`;
+}
+
+// Shared by the panel and the report, so the two cannot disagree.
+function categoryMixOf(requests, from, to) {
+  const counts = new Map();
+  let total = 0;
+  (requests || []).forEach((r) => {
+    if (!r || r.createdAt < from || r.createdAt >= to) return;
+    const c = (r.callCategory || "").trim() || "Not stated";
+    counts.set(c, (counts.get(c) || 0) + 1);
+    total += 1;
+  });
+  const colourOf = (name) => {
+    const f = CATEGORY_FILLS[name];
+    return f ? `#${f[0].slice(2)}` : "#61788C";
+  };
+  const rows = Array.from(counts.entries())
+    .map(([name, n]) => ({ name, n, pct: total ? (n / total) * 100 : 0, colour: colourOf(name) }))
+    .sort((a, b) => b.n - a.n);
+  return { rows, total };
+}
+
 function CategoryMix({ requests, from, to }) {
   const counts = new Map();
   let total = 0;
@@ -14567,6 +14860,79 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
   const win = statRangeWindow(range, now);
   const resp = responseCompliance(requests, win.start, win.end);
   const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns);
+  const mix = categoryMixOf(requests, win.start, win.end);
+  const tops = topPerformers({ staff: allStaff, requests, units, log, win, now });
+
+  // Portraits, kept on this device only.
+  const [photos, setPhotos] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ems:portraits") || "{}");
+    } catch (e) {
+      return {};
+    }
+  });
+
+  async function attachPhoto(key, file) {
+    if (!file) return;
+    // Scaled down before it is stored: a phone photograph is several megabytes
+    // and the report prints it at the size of a stamp.
+    const dataUrl = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const size = 240;
+          const c = document.createElement("canvas");
+          c.width = size;
+          c.height = size;
+          const ctx = c.getContext("2d");
+          const side = Math.min(img.width, img.height);
+          ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+          resolve(c.toDataURL("image/jpeg", 0.82));
+        };
+        img.onerror = () => resolve(null);
+        img.src = reader.result;
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+    if (!dataUrl) return;
+    const next = { ...photos, [key]: dataUrl };
+    setPhotos(next);
+    try {
+      localStorage.setItem("ems:portraits", JSON.stringify(next));
+    } catch (e) {
+      window.alert("That photograph was too large to keep on this device.");
+    }
+  }
+
+  // Handed to the browser to print. "Save as PDF" sits in every print dialogue,
+  // so this needs no library and nothing more for IT to vendor.
+  function downloadReport() {
+    const html = buildStatisticsReport({
+      label: STAT_RANGES.find((x) => x.key === range).label,
+      win,
+      staff: allStaff,
+      origins,
+      resp,
+      mix,
+      tops,
+      photos,
+      station: null,
+    });
+    const w = window.open("", "_blank");
+    if (!w) {
+      window.alert("Allow pop-ups for this site to produce the report.");
+      return;
+    }
+    w.document.write(html);
+    w.document.close();
+    // A moment for the portraits to decode, or they print as empty circles.
+    setTimeout(() => {
+      w.focus();
+      w.print();
+    }, 400);
+  }
   // Searching by name or ID. On a department this size the list runs past a
   // screenful within a week, and the question is usually about one person.
   const q = (search || "").trim().toLowerCase();
@@ -14806,9 +15172,49 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
         </div>
       )}
 
-      <button style={{ ...styles.primaryBtnSm, marginTop: 14 }} onClick={download}>
-        <Share2 size={12} /> Download as Excel ({STAT_RANGES.find((x) => x.key === range).label})
-      </button>
+      {/* Two audiences, two files. The spreadsheet is for working with; the
+          report is for showing. */}
+      <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+        <button style={styles.primaryBtnSm} onClick={downloadReport}>
+          📄 Management report (PDF)
+        </button>
+        <button style={styles.ghostBtnSm} onClick={download}>
+          <Share2 size={12} /> Excel
+        </button>
+      </div>
+
+      {/* Portraits for the recognition page. Held on this device only — a staff
+          photograph is personal data and does not belong in a board every
+          tablet reads. */}
+      <InfoNote label="Add photographs to the report">
+        The report has a recognition page with three portraits. Attach a photograph for anybody who
+        appears there and it is used from then on. Photographs are kept on this device only, never
+        on the shared board, and the report prints a plain figure without one.
+      </InfoNote>
+      <div style={styles.photoRow}>
+        {[tops.workload, tops.fastest, tops.punctual]
+          .filter(Boolean)
+          .filter((p, i, a) => a.findIndex((x) => (x.id || x.name) === (p.id || p.name)) === i)
+          .map((p) => {
+            const key = (p.id || p.name || "").toUpperCase();
+            return (
+              <label key={key} style={styles.photoChip}>
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => attachPhoto(key, e.target.files && e.target.files[0])}
+                />
+                {photos[key] ? (
+                  <img src={photos[key]} alt="" style={styles.photoThumb} />
+                ) : (
+                  <span style={styles.photoBlank}>+</span>
+                )}
+                {p.name}
+              </label>
+            );
+          })}
+      </div>
     </FoldingSection>
   );
 }
@@ -17731,6 +18137,19 @@ const styles = {
     gap: 10,
     marginTop: 10,
   },
+  photoRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 },
+  photoChip: {
+    display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer",
+    background: "rgba(255,255,255,.03)", border: "1px solid #2A3949",
+    borderRadius: 999, padding: "6px 14px 6px 6px", fontSize: 12.5, color: "#D6E3EE",
+  },
+  photoThumb: { width: 28, height: 28, borderRadius: "50%", objectFit: "cover" },
+  photoBlank: {
+    width: 28, height: 28, borderRadius: "50%", background: "#101A24",
+    border: "1px dashed #33475A", color: "#61788C",
+    display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15,
+  },
+
   mixCard: {
     background: "linear-gradient(180deg, #131F2B, #0D151E)",
     border: "1px solid rgba(255,255,255,.07)",
