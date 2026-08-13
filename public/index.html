@@ -3856,7 +3856,7 @@ function dressSheet(sheet, headerRowIndex, firstDataCol) {
     if (!cell) continue;
     cell.s = {
       fill: { patternType: "solid", fgColor: { rgb: "FF0A5540" } },
-      font: { color: { rgb: "FFFFFFFF" }, bold: true, sz: 9 },
+      font: { color: { rgb: "FFFFFFFF" }, bold: true, sz: 10 },
       alignment: { horizontal: "center", vertical: "center", wrapText: true },
       border: {
         bottom: { style: "thin", color: { rgb: "FF063A2C" } },
@@ -3867,6 +3867,14 @@ function dressSheet(sheet, headerRowIndex, firstDataCol) {
   // Scrolling a month of calls with the headings off the top is how a column
   // gets read as the wrong column.
   sheet["!freeze"] = { xSplit: firstDataCol || 1, ySplit: headerRowIndex + 1 };
+  // Room for a wrapped name. At the default height a two-part surname was
+  // clipped rather than wrapped, and looked like it had run into the column
+  // beside it.
+  const rows = sheet["!rows"] || [];
+  for (let r = headerRowIndex; r <= XLSX.utils.decode_range(sheet["!ref"]).e.r; r++) {
+    rows[r] = { ...(rows[r] || {}), hpt: r === headerRowIndex ? 30 : 22 };
+  }
+  sheet["!rows"] = rows;
   sheet["!autofilter"] = {
     ref: XLSX.utils.encode_range(
       { r: headerRowIndex, c: range.s.c },
@@ -3898,6 +3906,7 @@ function gridLogSheet(sheet, headerRowIndex) {
       cell.s = {
         ...(cell.s || {}),
         border: { top: hair, bottom: hair, left: hair, right: hair },
+        font: { sz: 10, ...(((cell.s || {}).font) || {}) },
         alignment: {
           vertical: "center",
           wrapText: true,
@@ -4373,13 +4382,30 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
         Station: stationLabel(stationOf(entry)),
       };
     });
-  const eventLogSheet = autoFitSheet(
-    logRows.length > 0
-      ? XLSX.utils.json_to_sheet(logRows)
-      : XLSX.utils.aoa_to_sheet([["Nothing logged yet apart from shift changes — see the Shift Handover sheet."]]),
-    0
-  );
-  XLSX.utils.book_append_sheet(wb, eventLogSheet, "Event Log");
+  // One event sheet per station when the export covers both, as the dispatch
+  // log has. A single feed with a station column meant anybody reading CCC's day
+  // had to filter it before they could read it.
+  const eventGroups = station
+    ? [{ key: station, label: stationLabel(station) }]
+    : STATIONS.map((st) => ({ key: st.key, label: st.label }));
+  eventGroups.forEach((g) => {
+    const rows = logRows.filter((r) => !r.Station || r.Station === g.label);
+    const sheet = dressSheet(
+      autoFitSheet(
+        rows.length > 0
+          ? XLSX.utils.json_to_sheet(rows.map(({ Station, ...rest }) => rest))
+          : XLSX.utils.aoa_to_sheet([["Nothing logged for this station."]]),
+        0
+      ),
+      0,
+      1
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      sheet,
+      eventGroups.length > 1 ? `Event Log — ${stationShort(g.key)}` : "Event Log"
+    );
+  });
 
   // Sheet 3: UHU — how long each medic was tied up on calls, with a name stamp
   // against every one of them. A call still running is counted up to the moment
@@ -4401,58 +4427,113 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
   // reconstructed from a seat that is filled right now, or from unit.lastCrew,
   // with no shift line behind it — for those this sheet is the only record there
   // is, and dropping the columns would lose them rather than deduplicate them.
-  const uhuRows = [];
-  computeUhu(units, requests, exportedAt).forEach((row) => {
-    const stamps = crewIndex.get(row.unit.id) || [];
-    const totals = {
-      Calls: row.calls,
-      "Total Time On Call": msDurationStr(row.totalMs),
-      "Total Minutes On Call": Math.round(row.totalMs / 60000),
-      "On A Call Now": row.activeCall ? "Yes" : "No",
-    };
-    const blankTotals = { Calls: "", "Total Time On Call": "", "Total Minutes On Call": "", "On A Call Now": "" };
-    const identity = {
-      Medic: row.unit.name,
-      "Ambulance Number": row.unit.ambulanceNumber || "",
-    };
+  // Sheet 3: UHU — one sheet per station, ordered by truck and seat.
+  //
+  // Rebuilt around how the department reads it. Previously it listed whoever
+  // signed on first, so MEDIC 1's Alpha could sit six rows above its Bravo, and
+  // eight columns repeated things the reader already had: the seat was in the
+  // name stamp, the shift and its date were the same on every row, and "on duty
+  // now" and "on a call now" describe the second the file was made rather than
+  // the shift it documents.
+  //
+  // What is left is what somebody actually asks of this page: who was on which
+  // truck, in which seat, for how long, how much of that was on a call, and did
+  // they run over. Ordered MEDIC 1 Alpha, MEDIC 1 Bravo, MEDIC 2 Alpha — so the
+  // truck is read down the page rather than searched for.
+  const uhuGroups = station
+    ? [{ key: station, label: stationLabel(station) }]
+    : STATIONS.map((st) => ({ key: st.key, label: st.label }));
 
-    // A medic nobody has ever signed into still gets its line, said plainly, so
-    // an empty stamp is never mistaken for a missing row.
-    if (stamps.length === 0) {
-      uhuRows.push({
-        ...identity,
-        "Name Stamp": "No crew signed in",
-        "Crew Member": "",
-        "Employee ID": "",
-        Shift: "",
-        "Shift Date": "",
-        "Signed On": "",
-        "Signed Off": "",
-        Overtime: "",
-        "On Duty Now": "No",
-        ...totals,
-      });
-      return;
-    }
+  const seatOrder = { alpha: 0, bravo: 1 };
 
-    stamps.forEach((p, i) => {
-      uhuRows.push({
-        ...identity,
-        "Name Stamp": crewStampText(row.unit.name, p),
-        "Crew Member": p.name,
-        "Employee ID": p.accountId || "",
-        Shift: shiftLabelWithWindow(p.shift),
-        "Shift Date": shiftDateOf(p.shiftStart),
-        "Signed On": p.signedOnAt ? gregDateTimeStr(p.signedOnAt) : "",
-        "Signed Off": p.signedOffAt ? gregDateTimeStr(p.signedOffAt) : p.onDutyNow ? "Still signed on" : "",
-        Overtime: p.overtimeMs ? msDurationStr(p.overtimeMs) : "",
-        "On Duty Now": p.onDutyNow ? "Yes" : "No",
-        ...(i === 0 ? totals : blankTotals),
+  uhuGroups.forEach((g) => {
+    const stationUnitsForUhu = atStation(units, g.key).slice().sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
+    );
+
+    const rows = [];
+    stationUnitsForUhu.forEach((unit) => {
+      const row = computeUhu([unit], requests, exportedAt)[0];
+      const stamps = (crewIndex.get(unit.id) || [])
+        .slice()
+        .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
+
+      if (stamps.length === 0) {
+        rows.push({
+          Medic: unit.name,
+          Seat: "",
+          Name: "No crew signed in",
+          "Employee ID": "",
+          "Signed On": "",
+          "Signed Off": "",
+          Overtime: "",
+          Calls: 0,
+          "UHU %": 0,
+        });
+        return;
+      }
+
+      stamps.forEach((p) => {
+        // The share of the twelve hours this person was actually on a call.
+        // The same figure the admin statistics carry, so the two cannot differ.
+        const shiftMs = p.shiftStart && p.shiftEnd ? p.shiftEnd - p.shiftStart : SHIFT_MS;
+        const uhuPct = shiftMs > 0 ? Math.min(100, (row.totalMs / shiftMs) * 100) : 0;
+        rows.push({
+          Medic: unit.name,
+          Seat: p.seat ? seatLabel(p.seat) : "",
+          Name: p.name,
+          "Employee ID": p.accountId || "",
+          "Signed On": p.signedOnAt ? clockStr(p.signedOnAt) : "",
+          "Signed Off": p.signedOffAt ? clockStr(p.signedOffAt) : "Still signed on",
+          Overtime: p.overtimeMs ? msDurationStr(p.overtimeMs) : "",
+          Calls: row.calls,
+          "UHU %": Number(uhuPct.toFixed(1)),
+        });
       });
     });
+
+    // The date and shift, once, at the top — not repeated on every row.
+    const anyStamp = stationUnitsForUhu
+      .flatMap((u) => crewIndex.get(u.id) || [])
+      .find((p) => p.shiftStart);
+    const title =
+      `UHU — ${g.label.toUpperCase()}` +
+      (anyStamp ? ` · ${shiftDateOf(anyStamp.shiftStart)} · ${shiftLabelWithWindow(anyStamp.shift)}` : "");
+
+    const headers = ["Medic", "Seat", "Name", "Employee ID", "Signed On", "Signed Off", "Overtime", "Calls", "UHU %"];
+    const aoa = [
+      [title],
+      [],
+      headers,
+      ...rows.map((r) => headers.map((h) => r[h])),
+    ];
+
+    const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 2);
+    dressSheet(sheet, 2, 1);
+
+    // Overtime is the column an administrator is looking for, so it is the one
+    // that is marked. A blank cell stays blank — colouring every row would tell
+    // nobody anything.
+    const otCol = headers.indexOf("Overtime");
+    const range = XLSX.utils.decode_range(sheet["!ref"]);
+    for (let r = 3; r <= range.e.r; r++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r, c: otCol })];
+      if (!cell || !cell.v) continue;
+      cell.s = {
+        ...(cell.s || {}),
+        fill: { patternType: "solid", fgColor: { rgb: "FFFFE08A" } },
+        font: { bold: true, color: { rgb: "FF7A4E00" }, sz: 10 },
+        alignment: { horizontal: "center", vertical: "center" },
+      };
+    }
+    gridLogSheet(sheet, 2);
+
+    XLSX.utils.book_append_sheet(
+      wb,
+      sheet,
+      uhuGroups.length > 1 ? `UHU — ${stationShort(g.key)}` : "UHU"
+    );
   });
-  const uhuSheet = autoFitSheet(XLSX.utils.json_to_sheet(uhuRows), 0);
-  XLSX.utils.book_append_sheet(wb, uhuSheet, "UHU & Name Stamps");
 
   // Sheet 4: shift sign-ons, sign-offs, swaps and overtime — who was on which
   // shift, and who handed over to whom. The only place in the export that
@@ -4608,17 +4689,21 @@ async function exportArchivedDay(archive, liveRequests) {
   });
 
   // The event feed for the day, both stations, with the station on each line.
-  const eventRows = log
-    .slice()
-    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
-    .map((e) => ({
-      Time: e.ts ? gregDateTimeStr(e.ts) : e.time || "",
-      Station: stationLabel(stationOf(e)),
-      Type: (e.type || "").toUpperCase(),
-      Event: e.message || "",
-      "Logged By": e.actor && e.actor.name ? e.actor.name : "",
-      Post: actorPost(e.actor),
-    }));
+  // One sheet per station, as the dispatch log is. A single feed with a station
+  // column meant anybody reading CCC's day had to filter it first.
+  const eventRowsFor = (stationKey) =>
+    log
+      .filter((e) => !stationKey || stationOf(e) === stationKey)
+      .slice()
+      .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      .map((e) => ({
+        Time: e.ts ? gregDateTimeStr(e.ts) : e.time || "",
+        Type: (e.type || "").toUpperCase(),
+        Event: e.message || "",
+        "Logged By": e.actor && e.actor.name ? e.actor.name : "",
+        Post: actorPost(e.actor),
+      }));
+  const eventRows = eventRowsFor(station);
   XLSX.utils.book_append_sheet(
     wb,
     autoFitSheet(
@@ -6671,6 +6756,23 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
       // have it yet.
       actorStamp(session)
     );
+    // Signing on alone, confirmed.
+    //
+    // A truck with one seat filled is a truck that cannot run most calls, and
+    // the board shows it as crewed either way. If nobody has been named for the
+    // other seat, say so plainly before it is done.
+    if (!partnerAccount && slot === "alpha") {
+      const alone = window.confirm(
+        `Sign on to ${unit ? unit.name : "this medic"} without a partner?\n\n` +
+          `The truck will show as crewed with only ${seatLabel(slot)} filled. ` +
+          `Your partner can sign on from their own device at any time.`
+      );
+      if (!alone) {
+        setBusy(false);
+        return;
+      }
+    }
+
     // If a partner's ID was given, they take the other seat now — recorded in
     // their own name, with the same shift, and logged as its own sign-on so the
     // sheet shows two people on the truck rather than one.
@@ -6998,10 +7100,10 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                     <Users size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
                     SIGNING IN YOUR PARTNER TOO?
                   </div>
-                  <div style={styles.partnerNote}>
+                  <InfoNote>
                     If you are both working off this one tablet, put their ID in and they will be
                     signed into the other seat with you. Leave it blank if they have their own device.
-                  </div>
+                  </InfoNote>
                   <input
                     style={{ ...styles.input, marginTop: 8 }}
                     value={partnerId}
@@ -7299,10 +7401,10 @@ function ShiftChip({ user, onChangeShift }) {
               Swap to {SHIFTS[k].label} ({SHIFTS[k].window})
             </button>
           ))}
-          <div style={styles.shiftMenuHint}>
+          <InfoNote>
             Swapping re-bases your 12 hours on the new shift and records the swap — with any overtime
             carried over — on the log sheet.
-          </div>
+          </InfoNote>
         </div>
       )}
     </div>
@@ -8222,10 +8324,10 @@ function RefusalForm({ onSubmit, onCancel }) {
       <div style={styles.refusalPanelHead}>
         <Ban size={12} /> WHO IS REFUSING THE TRANSFER?
       </div>
-      <div style={styles.refusalPanelNote}>
+      <InfoNote>
         Taken at the bedside. The call stays yours and you still complete the remaining times as
         normal — it will be stamped AMBULANCE RESPONDED — NO TRANSPORT once this is signed.
-      </div>
+      </InfoNote>
 
       <div style={{ marginTop: 8 }}>
         <label style={styles.label}>Full name</label>
@@ -10742,11 +10844,11 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                       : "Time not known? They will call when the patient is ready"}
                   </button>
                   {awaitCall ? (
-                    <div style={styles.awaitCallNote}>
+                    <InfoNote>
                       Booked with no time on it. It waits at the top of the schedule until the ward calls —
                       then <strong>Patient ready — send it out now</strong> on the booking raises the call and
                       alerts the team. Nothing goes out on its own, so no reminder chimes for it either.
-                    </div>
+                    </InfoNote>
                   ) : (
                     <WhenPicker
                       value={when}
@@ -10907,8 +11009,12 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                   key={entry.id}
                   style={{
                     ...styles.callCard,
-                    borderLeftColor: priorityMeta.color,
+                    borderLeftColor: entry.status === "cancelled" ? "#FF4D5E" : priorityMeta.color,
                     ...(soon ? styles.callCardDueSoon : null),
+                    // A booking that was called off should not read the same as
+                    // one still coming. It stays legible — somebody may need to
+                    // see why — but it stops competing with live work.
+                    ...(entry.status === "cancelled" ? styles.schedCancelled : null),
                   }}
                 >
                   <div style={styles.callCardTop}>
@@ -11292,6 +11398,64 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       addLog,
     });
     if (done) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
+  }
+
+  // Answering a request to stand somebody down. Approving is what actually
+  // takes them off the seat — their hours close at that moment, not at the
+  // moment they asked, because they were on the truck until it was agreed.
+  async function answerStandDown(unit, approve) {
+    const rq = unit.standDownRequest;
+    if (!rq) return;
+    let note = "";
+    if (!approve) {
+      note = window.prompt(`Refuse? Say why — the crew sees this.\n\nThey asked: ${rq.reason}`);
+      if (note === null) return;
+      if (!note.trim()) {
+        window.alert("A refusal needs a reason.");
+        return;
+      }
+    }
+    const now = Date.now();
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(
+      fresh.map((u) => {
+        if (u.id !== unit.id) return u;
+        if (!approve) {
+          return {
+            ...u,
+            standDownRequest: { ...rq, status: "refused", answeredAt: now, answerNote: note.trim(), answeredBy: user.name || "Dispatch" },
+          };
+        }
+        const member = u[rq.seat];
+        return {
+          ...u,
+          [rq.seat]: null,
+          standDownRequest: null,
+          lastCrew: {
+            ...(u.lastCrew || {}),
+            [rq.seat]: member ? { ...member, signedOffAt: now, standDownReason: rq.reason } : null,
+          },
+        };
+      })
+    );
+    await addLog(
+      approve
+        ? `${unit.name} — ${rq.name} stood down from ${seatLabel(rq.seat)} by ${user.name || "Dispatch"}: ${rq.reason}`
+        : `${unit.name} — stand-down for ${rq.name} refused by ${user.name || "Dispatch"}: ${note.trim()}`,
+      "shift",
+      approve
+        ? {
+            kind: "off",
+            role: "team",
+            name: rq.name,
+            accountId: rq.accountId,
+            unitId: unit.id,
+            unitName: unit.name,
+            station: stationOf(unit),
+            seat: rq.seat,
+          }
+        : undefined
+    );
   }
 
   // Answering a truck that has asked to come off.
@@ -11727,6 +11891,36 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {onPage("board") && (
         <>
+      {/* Crews asking for a partner to be stood down. Same shape as the
+          out-of-service request, because it is the same kind of decision: who
+          is crewed, and the desk is answerable for it. */}
+      {stationUnits
+        .filter((u) => u.standDownRequest && u.standDownRequest.status === "pending")
+        .map((u) => {
+          const rq = u.standDownRequest;
+          return (
+            <div key={`sd-${u.id}`} style={styles.oosAsk}>
+              <div style={styles.oosAskHead}>
+                {u.name} asks to stand {rq.name} down from {seatLabel(rq.seat)}
+              </div>
+              <div style={styles.oosAskWhy}>
+                {rq.reason}
+                <span style={styles.oosAskWho}>
+                  {" "}· asked by {rq.byName} at {clockStr(rq.askedAt)}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                <button style={styles.primaryBtnSm} onClick={() => answerStandDown(u, true)}>
+                  Approve
+                </button>
+                <button style={styles.ghostBtnSm} onClick={() => answerStandDown(u, false)}>
+                  Refuse
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
       {/* Trucks asking to come off the run. Answered here because taking an
           ambulance off is a decision about the department's cover, and this is
           the screen where that cover is visible. */}
@@ -11807,7 +12001,18 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       <div style={styles.sectionHeaderRow}>
         <div style={styles.sectionHeader}>ACTIVE CALLS</div>
         {showForm && (
-          <button style={styles.ghostBtnSm} onClick={() => setShowForm(false)}>
+          <button
+            style={styles.ghostBtnSm}
+            onClick={() => {
+              // Nothing has been raised yet, so there is nothing to record —
+              // but a desk that has typed a location and a nature should not
+              // lose it to a mis-tap.
+              const typed =
+                locationFrom.trim() || locationTo.trim() || nature.trim() || mrn.trim() || callKind;
+              if (typed && !window.confirm("Discard this call? Nothing has been raised yet.")) return;
+              setShowForm(false);
+            }}
+          >
             Cancel
           </button>
         )}
@@ -11821,9 +12026,14 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
               fill the rest in later; the response indicator counts what was
               declared here, narrowed to internal once the category is set. */}
           <div style={styles.kindRow}>
+            {/* Internal is the one measured against the ten minutes, so it
+                carries the emergency red. External is an emergency too, but a
+                drive rather than a corridor — amber says urgent without saying
+                the same thing. */}
             {[
-              { key: "emergency", label: "EMERGENCY", color: "#FF4D5E" },
-              { key: "scheduled", label: "SCHEDULED CALL", color: "#35C4E8" },
+              { key: "internal", label: "EMERGENCY (INTERNAL)", color: "#FF4D5E", cat: "EMERGENCY (INTERNAL)" },
+              { key: "external", label: "EMERGENCY (EXTERNAL)", color: "#FFB020", cat: "EMERGENCY (EXTERNAL)" },
+              { key: "scheduled", label: "SCHEDULED CALL", color: "#35C4E8", cat: "ROUTINE" },
             ].map((k) => {
               const on = callKind === k.key;
               return (
@@ -11837,10 +12047,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   }}
                   onClick={() => {
                     setCallKind(k.key);
-                    // A sensible default the desk can still change below.
-                    if (k.key === "emergency" && !callCategory) setCallCategory("EMERGENCY (INTERNAL)");
-                    if (k.key === "scheduled" && !callCategory) setCallCategory("ROUTINE");
-                    if (k.key === "emergency") setPriority("critical");
+                    setCallCategory(k.cat);
+                    if (k.key !== "scheduled") setPriority("critical");
                   }}
                 >
                   {k.label}
@@ -12880,13 +13088,53 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const otherSeat = user.slot === "alpha" ? "bravo" : "alpha";
   const mySeatPartner = myUnit ? myUnit[otherSeat] : null;
 
+  // Standing a partner down is asked for, not done.
+  //
+  // It takes a person off the truck and off the record of the hours they are
+  // working, and the desk is the one answerable for who is crewed. So it goes
+  // the same way an out-of-service request does: the crew asks, the desk
+  // answers, and the seat is held until then.
   async function standPartnerDown() {
     if (!myUnit || !mySeatPartner) return;
     const ok = window.confirm(
-      `Stand ${mySeatPartner.name} down from ${seatLabel(otherSeat)}?\n\n` +
-        `Their hours are recorded up to now. You can sign somebody else into the seat straight after.`
+      `Ask the desk to stand ${mySeatPartner.name} down from ${seatLabel(otherSeat)}?\n\n` +
+        `They stay on the truck until the desk agrees. Their hours are recorded to the moment it ` +
+        `is approved, not to now.`
     );
     if (!ok) return;
+    const reason = window.prompt("Why are they coming off? The desk sees this.");
+    if (reason === null) return;
+    if (!reason.trim()) {
+      window.alert("The desk needs a reason.");
+      return;
+    }
+    const fresh0 = await readKey("ems:units", units);
+    await saveUnits(
+      fresh0.map((u) =>
+        u.id === myUnit.id
+          ? {
+              ...u,
+              standDownRequest: {
+                id: uid("sd"),
+                status: "pending",
+                seat: otherSeat,
+                name: mySeatPartner.name,
+                accountId: mySeatPartner.accountId,
+                reason: reason.trim(),
+                byName: user.name || "",
+                askedAt: Date.now(),
+              },
+            }
+          : u
+      )
+    );
+    await addLog(
+      `${myUnit.name} — ${user.name || "crew"} asked to stand ${mySeatPartner.name} down from ` +
+        `${seatLabel(otherSeat)}: ${reason.trim()}`,
+      "status"
+    );
+    return;
+    // eslint-disable-next-line no-unreachable
     const now = Date.now();
     const fresh = await readKey("ems:units", units);
     const unit = fresh.find((u) => u.id === myUnit.id);
@@ -13292,9 +13540,9 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             <Users size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
             {seatLabel(otherSeat).toUpperCase()} — {mySeatPartner.name}
           </div>
-          <div style={styles.partnerNote}>
+          <InfoNote>
             Signed on from this tablet. They sign off automatically when you do.
-          </div>
+          </InfoNote>
           <button style={{ ...styles.ghostBtnSm, marginTop: 8 }} onClick={standPartnerDown}>
             Stand them down
           </button>
@@ -14939,14 +15187,13 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
   const mix = categoryMixOf(requests, win.start, win.end);
   const tops = topPerformers({ staff: allStaff, requests, units, log, win, now });
 
-  // Portraits, kept on this device only.
-  const [photos, setPhotos] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("ems:portraits") || "{}");
-    } catch (e) {
-      return {};
-    }
-  });
+  // Portraits, for this report only.
+  //
+  // They were being kept on the device, so the next report reused whoever had
+  // been photographed last — including for a month they had nothing to do with.
+  // A portrait now belongs to the report it is attached for and is gone once it
+  // is printed, which is also the safer answer for a staff photograph.
+  const [photos, setPhotos] = useState({});
 
   async function attachPhoto(key, file) {
     if (!file) return;
@@ -14973,13 +15220,7 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
       reader.readAsDataURL(file);
     });
     if (!dataUrl) return;
-    const next = { ...photos, [key]: dataUrl };
-    setPhotos(next);
-    try {
-      localStorage.setItem("ems:portraits", JSON.stringify(next));
-    } catch (e) {
-      window.alert("That photograph was too large to keep on this device.");
-    }
+    setPhotos((prev) => ({ ...prev, [key]: dataUrl }));
   }
 
   // Handed to the browser to print. "Save as PDF" sits in every print dialogue,
@@ -15007,6 +15248,9 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
     setTimeout(() => {
       w.focus();
       w.print();
+      // Cleared once it is printed. The next report asks again, so a portrait
+      // never turns up on a month it was not chosen for.
+      setPhotos({});
     }, 400);
   }
   // Searching by name or ID. On a department this size the list runs past a
@@ -15264,8 +15508,8 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
           tablet reads. */}
       <InfoNote label="Add photographs to the report">
         The report has a recognition page with three portraits. Attach a photograph for anybody who
-        appears there and it is used from then on. Photographs are kept on this device only, never
-        on the shared board, and the report prints a plain figure without one.
+        appears there and it is used for this report only — nothing is kept afterwards, and nothing
+        is written to the shared board. Without one, a plain figure is printed instead.
       </InfoNote>
       <div style={styles.photoRow}>
         {[tops.workload, tops.fastest, tops.punctual]
@@ -15430,7 +15674,7 @@ function buildShiftReport({ sub, requests }) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>Dispatch log — ${esc(sub.dayLabel)} ${esc(sub.shiftLabel)}</title>
 <style>
-@page{size:A4 landscape;margin:12mm 10mm}
+@page{size:A4 landscape;margin:9mm 8mm 11mm 8mm}
 *{box-sizing:border-box}
 body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:8.5pt;line-height:1.4;margin:0}
 h1{font-size:19pt;margin:0 0 3pt;font-weight:800;letter-spacing:-.6pt}
@@ -15443,10 +15687,15 @@ h2{font-size:10.5pt;margin:14pt 0 6pt;font-weight:800;color:#0A5540;border-left:
 .stat{display:table-cell;width:20%;background:#F2F6F9;border-top:2.2pt solid #0A5540;padding:6pt 8pt}
 .stat .n{font-size:16pt;font-weight:800;color:#0A5540;line-height:1}
 .stat .l{font-size:7pt;color:#5A6B7B;margin-top:2pt;line-height:1.3}
-table{width:100%;border-collapse:collapse;margin:5pt 0 9pt;font-size:7.4pt}
-th{background:#0A5540;color:#fff;padding:4pt 4pt;font-size:6.6pt;letter-spacing:.4pt;text-transform:uppercase;
-   font-weight:800;text-align:left;border:0.5pt solid #063A2C}
-td{padding:3.4pt 4pt;border:0.5pt solid #C9D4DD}
+table{width:100%;border-collapse:collapse;margin:5pt 0 9pt;font-size:7.4pt;table-layout:fixed}
+th{background:#0A5540;color:#fff;padding:3.4pt 2.6pt;font-size:5.9pt;letter-spacing:.2pt;text-transform:uppercase;
+   font-weight:800;text-align:left;border:0.5pt solid #063A2C;word-break:break-word}
+td{padding:3pt 2.6pt;border:0.5pt solid #C9D4DD;word-break:break-word;overflow-wrap:anywhere}
+/* Twenty-eight columns on one landscape page. The type is small on purpose —
+   this is a record to be filed and consulted, not read across a room, and a
+   log split over two pages is far harder to follow than a small one. */
+table.log{font-size:5.9pt}
+table.log td{padding:2.4pt 2pt}
 tr{page-break-inside:avoid}
 thead{display:table-header-group}
 tr:nth-child(even) td{background:#F7FAFB}
@@ -15476,29 +15725,32 @@ td.night{background:#E4E4E4 !important}
 </div>
 
 <h2>Calls</h2>
-<table>
+<table class="log">
   <thead><tr>
-    <th style="width:2.6%">#</th><th style="width:11%">From</th><th style="width:11%">To</th>
-    <th style="width:6%">MRN</th><th style="width:5.4%">Dispatch</th><th style="width:5.4%">En route</th>
-    <th style="width:5.4%">On scene</th><th style="width:5.4%">Depart</th><th style="width:5.4%">Arrived</th>
-    <th style="width:5.4%">In service</th><th style="width:5%">Response</th>
-    <th style="width:7%">Team</th><th style="width:4.6%">Service</th>
-    <th style="width:10%">Category</th><th style="width:10%">E-PCR author</th>
+    <th>#</th><th>Origin</th><th>From</th><th>To</th><th>MRN</th>
+    <th>App.</th><th>Disp.</th><th>En route</th><th>Scene</th><th>Depart</th><th>Arrived</th><th>In svc</th>
+    <th>Resp.</th><th>Team</th><th>Truck</th><th>Svc</th><th>Km</th><th>Add</th>
+    <th>Cat.</th><th>Category</th><th>Code</th><th>E-PCR author</th><th>Bravo</th>
+    <th>Status</th><th>Outcome</th><th>Received by</th><th>Assist</th><th>Closed by</th>
   </tr></thead>
   <tbody>
   ${calls
     .map((r, i) => {
       const night = scheduledShiftKey(r.createdAt) === "night";
       const cls = night ? ' class="night"' : "";
+      const unit = (sub.units || []).find((u) => u.id === r.assignedUnitId) || {};
       const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
       const catStyle = fill
         ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"`
         : "";
+      const assist = assistOf(r);
       return `<tr>
         <td${cls}>${i + 1}</td>
+        <td${cls}>${esc(r.patientOrigin || "")}</td>
         <td${cls}>${esc(callFrom(r))}</td>
         <td${cls}>${esc(callTo(r))}</td>
         <td${cls}>${esc(r.mrn || "")}</td>
+        <td${cls}>${esc(clockStr(r.scheduledFor))}</td>
         <td${cls}>${esc(clockStr(r.createdAt))}</td>
         <td${cls}>${esc(clockStr(t(r).enroute))}</td>
         <td${cls}>${esc(clockStr(t(r).arrival))}</td>
@@ -15506,15 +15758,49 @@ td.night{background:#E4E4E4 !important}
         <td${cls}>${esc(clockStr(t(r).arrivalDestination))}</td>
         <td${cls}>${esc(clockStr(t(r).backInService))}</td>
         <td${cls} class="n">${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</td>
-        <td${cls}>${esc((sub.units || []).find((u) => u.id === r.assignedUnitId)?.name || "")}</td>
+        <td${cls}>${esc(unit.name || "")}</td>
+        <td${cls}>${esc(unit.ambulanceNumber || "")}</td>
         <td${cls}>${esc(serviceTypeFor(r))}</td>
+        <td${cls}>${esc(loadedKmFor(r))}</td>
+        <td${cls}>${esc(r.addedService || "")}</td>
+        <td${cls}>${esc(r.callType || "")}</td>
         <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
-        <td${cls}>${esc(pcrAuthorStamp(r, (sub.units || []).find((u) => u.id === r.assignedUnitId) || {}))}</td>
+        <td${cls}>${esc(r.emergencyCode || "")}</td>
+        <td${cls}>${esc(pcrAuthorStamp(r, unit))}</td>
+        <td${cls}>${esc(
+          r.pcrAuthor && r.pcrAuthor.seat === "alpha"
+            ? unit.bravo && unit.bravo.name
+            : unit.alpha && unit.alpha.name
+        )}</td>
+        <td${cls}>${esc(r.status ? REQ_STATUS[r.status].label : "")}</td>
+        <td${cls}>${esc(callOutcomeLabel(r))}</td>
+        <td${cls}>${esc(r.receiver ? `${r.receiver.name} (${r.receiver.receiverId})` : "")}</td>
+        <td${cls}>${esc(assist ? assistTeamNames(r, sub.units || []) : "")}</td>
+        <td${cls}>${esc(r.closedBy || "")}</td>
       </tr>`;
     })
     .join("")}
   </tbody>
 </table>
+
+${
+  (sub.requests || []).some((r) => r.refusal)
+    ? `<h2>Refusals</h2>
+<table class="keep">
+  <thead><tr><th style="width:22%">Call</th><th style="width:20%">Name</th><th style="width:16%">National ID</th>
+  <th style="width:16%">Relationship</th><th style="width:12%">Time</th></tr></thead>
+  <tbody>${calls
+    .filter((r) => r.refusal)
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.nature)}</td><td>${esc(r.refusal.name)}</td>` +
+        `<td>${esc(r.refusal.nationalId)}</td><td>${esc(r.refusal.relation)}</td>` +
+        `<td>${esc(clockStr((r.times || {})[REFUSAL_TIME_KEY]))}</td></tr>`
+    )
+    .join("")}</tbody>
+</table>`
+    : ""
+}
 
 ${
   gaps.length
@@ -17424,6 +17710,13 @@ const styles = {
     color: "#93C5FD",
     whiteSpace: "nowrap",
   },
+  schedCancelled: {
+    background: "linear-gradient(180deg, rgba(255,77,94,.10), rgba(255,77,94,.03))",
+    border: "1px solid rgba(255,77,94,.4)",
+    borderLeftWidth: 4,
+    opacity: 0.92,
+  },
+
   callCardDueSoon: {
     border: "1px solid rgba(245,158,11,0.45)",
     boxShadow: "0 0 0 1px rgba(245,158,11,0.12) inset",
@@ -18683,8 +18976,13 @@ const styles = {
   bottomTabOn: {
     flex: 1, minWidth: 0, position: "relative",
     display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-    background: "none", border: "none", cursor: "pointer",
-    fontSize: 9.5, letterSpacing: 0.4, color: "#F2F7FB", fontWeight: 700, padding: "6px 0",
+    // The page you are on, said twice: lit, and lifted onto its own panel.
+    // Tint alone is ambiguous in daylight through a windscreen.
+    background: "rgba(61,220,151,.12)",
+    border: "1px solid rgba(61,220,151,.35)",
+    borderRadius: 16,
+    cursor: "pointer",
+    fontSize: 9.5, letterSpacing: 0.4, color: "#F2F7FB", fontWeight: 800, padding: "6px 0",
   },
   bottomGlyph: { fontSize: 17, lineHeight: 1.1 },
   bottomBadge: {
