@@ -6208,24 +6208,31 @@ function App() {
             />
           )}
         </div>
-        <div style={styles.sideCol}>
-          {seesLogSheet ? (
-            <React.Fragment>
-              <UhuPanel
-                units={user.role === "admin" ? units : atStation(units, user.station || DEFAULT_STATION)}
-                requests={user.role === "admin" ? requests : atStation(requests, user.station || DEFAULT_STATION)}
-              />
-              <div style={{ height: 16 }} />
-              <LogSheet
-                log={log}
-                units={user.role === "admin" ? units : atStation(units, user.station || DEFAULT_STATION)}
-                station={user.role === "admin" ? null : user.station || DEFAULT_STATION}
-              />
-            </React.Fragment>
-          ) : (
-            <UhuPanel units={units} requests={requests} focusUnitId={user.unitId} />
-          )}
-        </div>
+        {/* Both of these are about the crews, so both live on the Teams page.
+            They were rendering beside every page — the board, the schedule, the
+            statistics — which put two long panels next to work that had nothing
+            to do with them, and made every screen longer than it needed to be. */}
+        {navTab === "teams" && (
+          <div style={styles.sideCol}>
+            {seesLogSheet ? (
+              <React.Fragment>
+                <UhuPanel
+                  units={user.role === "admin" ? units : atStation(units, user.station || DEFAULT_STATION)}
+                  requests={user.role === "admin" ? requests : atStation(requests, user.station || DEFAULT_STATION)}
+                />
+                <div style={{ height: 16 }} />
+                <LogSheet
+                  log={log}
+                  units={user.role === "admin" ? units : atStation(units, user.station || DEFAULT_STATION)}
+                  station={user.role === "admin" ? null : user.station || DEFAULT_STATION}
+                />
+              </React.Fragment>
+            ) : (
+              // A crew sees their own truck's figure, on their own truck's page.
+              <UhuPanel units={units} requests={requests} focusUnitId={user.unitId} />
+            )}
+          </div>
+        )}
       </div>
       {/* The bar. Each role gets the places it actually moves between, and the
           one action it starts things with — the desk raises calls, the crew
