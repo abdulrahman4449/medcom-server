@@ -3840,7 +3840,7 @@ function paintCategoryColumn(sheet, aoa, offset, colIndex) {
     cell.s = {
       ...(cell.s || {}),
       fill: { patternType: "solid", fgColor: { rgb: fill[0] } },
-      font: { ...((cell.s || {}).font || {}), color: { rgb: fill[1] }, bold: true, sz: 9 },
+      font: { name: XL_FONT, ...((cell.s || {}).font || {}), color: { rgb: fill[1] }, bold: true, sz: 10 },
       alignment: { horizontal: "center", vertical: "center" },
     };
   }
@@ -3848,6 +3848,37 @@ function paintCategoryColumn(sheet, aoa, offset, colIndex) {
 }
 
 // The header band, and the panes that keep it in view.
+// The workbook in the same house style as the report.
+//
+// The two were arriving looking like they came from different departments: the
+// PDF set in Helvetica with a green band and generous rows, the spreadsheet in
+// whatever Excel opened with. Somebody receiving both should not have to work
+// out they are the same document in two formats — so the font, the sizes, the
+// title block and the colours are set here once and used by every sheet.
+const XL_FONT = "Helvetica Neue";
+
+function titleSheet(sheet, title, subtitle) {
+  const t = sheet["A1"];
+  if (t) {
+    t.s = {
+      font: { name: XL_FONT, sz: 16, bold: true, color: { rgb: "FF16222E" } },
+      alignment: { vertical: "center" },
+    };
+  }
+  const sub = sheet["A2"];
+  if (sub) {
+    sub.s = {
+      font: { name: XL_FONT, sz: 10, color: { rgb: "FF5A6B7B" } },
+      alignment: { vertical: "center" },
+    };
+  }
+  const rows = sheet["!rows"] || [];
+  rows[0] = { ...(rows[0] || {}), hpt: 26 };
+  rows[1] = { ...(rows[1] || {}), hpt: 16 };
+  sheet["!rows"] = rows;
+  return sheet;
+}
+
 function dressSheet(sheet, headerRowIndex, firstDataCol) {
   if (!sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
@@ -3856,7 +3887,7 @@ function dressSheet(sheet, headerRowIndex, firstDataCol) {
     if (!cell) continue;
     cell.s = {
       fill: { patternType: "solid", fgColor: { rgb: "FF0A5540" } },
-      font: { color: { rgb: "FFFFFFFF" }, bold: true, sz: 10 },
+      font: { name: XL_FONT, color: { rgb: "FFFFFFFF" }, bold: true, sz: 10 },
       alignment: { horizontal: "center", vertical: "center", wrapText: true },
       border: {
         bottom: { style: "thin", color: { rgb: "FF063A2C" } },
@@ -3906,7 +3937,7 @@ function gridLogSheet(sheet, headerRowIndex) {
       cell.s = {
         ...(cell.s || {}),
         border: { top: hair, bottom: hair, left: hair, right: hair },
-        font: { sz: 10, ...(((cell.s || {}).font) || {}) },
+        font: { name: XL_FONT, sz: 10, ...(((cell.s || {}).font) || {}) },
         alignment: {
           vertical: "center",
           wrapText: true,
@@ -3920,6 +3951,7 @@ function gridLogSheet(sheet, headerRowIndex) {
 
 function dressLogSheet(sheet, aoa) {
   const headerRow = typeof aoa.headerRowIndex === "number" ? aoa.headerRowIndex : 4;
+  titleSheet(sheet);
   dressSheet(sheet, headerRow, 2);
   shadeNightRows(sheet, aoa, 0);
   paintCategoryColumn(sheet, aoa, 0, typeof aoa.categoryCol === "number" ? aoa.categoryCol : -1);
@@ -3952,7 +3984,7 @@ function shadeNightRows(sheet, aoa, offset) {
         // painful to read for the sake of a distinction that only needs to be
         // noticeable, not loud.
         fill: { patternType: "solid", fgColor: { rgb: "FFD9D9D9" } },
-        font: { ...((cell.s || {}).font || {}), color: { rgb: "FF1A1A1A" }, bold: false },
+        font: { name: XL_FONT, ...((cell.s || {}).font || {}), color: { rgb: "FF1A1A1A" }, bold: false, sz: 10 },
       };
     }
   });
@@ -4106,16 +4138,18 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
   // The date belongs at the top of the page, once, not repeated down a column
   // on every one of forty rows that all happened on the same day.
   const dayOf = sorted.length ? opDayStart(sorted[0].createdAt) : opDayStart(now);
+  // The same title block the report carries: what this is, then when and how
+  // much of it, then air. Two lines, not a banner spread across four columns.
   const out = [
     [
       station
-        ? `KFSH&RC AMBULANCE DISPATCH LOG — ${stationLabel(station).toUpperCase()}`
-        : "KFSH&RC AMBULANCE DISPATCH LOG — ALL STATIONS",
-      "",
-      "",
-      opDayLabel(dayOf),
+        ? `Dispatch log — ${stationLabel(station)}`
+        : "Dispatch log — all stations",
     ],
-    [`Operational day 07:00 → 07:00 · ${sorted.length} call${sorted.length === 1 ? "" : "s"}`],
+    [
+      `${opDayLabel(dayOf)} · operational day 07:00 → 07:00 · ` +
+        `${sorted.length} call${sorted.length === 1 ? "" : "s"}`,
+    ],
     [],
   ];
 
@@ -4496,27 +4530,30 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
     const anyStamp = stationUnitsForUhu
       .flatMap((u) => crewIndex.get(u.id) || [])
       .find((p) => p.shiftStart);
-    const title =
-      `UHU — ${g.label.toUpperCase()}` +
-      (anyStamp ? ` · ${shiftDateOf(anyStamp.shiftStart)} · ${shiftLabelWithWindow(anyStamp.shift)}` : "");
-
+    // Two lines, as the report has: what this is, then when.
     const headers = ["Medic", "Seat", "Name", "Employee ID", "Signed On", "Signed Off", "Overtime", "Calls", "UHU %"];
     const aoa = [
-      [title],
+      [`UHU — ${g.label}`],
+      [
+        anyStamp
+          ? `${shiftDateOf(anyStamp.shiftStart)} · ${shiftLabelWithWindow(anyStamp.shift)} · time on call by seat`
+          : "Time on call by seat",
+      ],
       [],
       headers,
       ...rows.map((r) => headers.map((h) => r[h])),
     ];
 
-    const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 2);
-    dressSheet(sheet, 2, 1);
+    const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 3);
+    titleSheet(sheet);
+    dressSheet(sheet, 3, 1);
 
     // Overtime is the column an administrator is looking for, so it is the one
     // that is marked. A blank cell stays blank — colouring every row would tell
     // nobody anything.
     const otCol = headers.indexOf("Overtime");
     const range = XLSX.utils.decode_range(sheet["!ref"]);
-    for (let r = 3; r <= range.e.r; r++) {
+    for (let r = 4; r <= range.e.r; r++) {
       const cell = sheet[XLSX.utils.encode_cell({ r, c: otCol })];
       if (!cell || !cell.v) continue;
       cell.s = {
@@ -4526,7 +4563,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
         alignment: { horizontal: "center", vertical: "center" },
       };
     }
-    gridLogSheet(sheet, 2);
+    gridLogSheet(sheet, 3);
 
     XLSX.utils.book_append_sheet(
       wb,
@@ -4573,6 +4610,10 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
         "Scheduled For": s.scheduledFor
           ? gregDateTimeStr(s.scheduledFor)
           : "No time — ward to call when patient ready",
+        // Blank on most bookings, and that is the honest answer: most transfers
+        // go out at the appointment time and have no separate departure.
+        "Dispatch Time": s.dispatchAt ? gregDateTimeStr(s.dispatchAt) : "",
+        "Call Raised At": s.dispatchAt ? gregDateTimeStr(s.dispatchAt - SCHED_LEAD_MS) : "",
         Shift: shiftKey ? shiftLabelWithWindow(shiftKey) : "",
         "Shift Date": shiftRun ? shiftDateOf(shiftRun.start) : "",
         Station: stationLabel(stationOf(s)),
@@ -5171,6 +5212,17 @@ function App() {
   // "History" still had the board above it and the teams below — which is not a
   // page, it is a long screen with a shortcut. Now a tab shows its own content
   // and nothing else, and the board is always one tap away.
+  // Every sign-in starts on the board.
+  //
+  // The tab lives in App, which does not unmount when somebody signs out — so
+  // the next person inherited whatever page the last one left it on. If that
+  // was "Submit", the effect below fired the moment they signed in and filed
+  // the shift without being asked. It looked like the app had pressed its own
+  // button, and in effect it had.
+  useEffect(() => {
+    setNavTab("board");
+  }, [user && user.accountId]);
+
   useEffect(() => {
     if (!user) return;
     // "Submit" is an action, not a place: it files the shift and drops straight
@@ -6956,11 +7008,6 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                       <div style={styles.roleBtnTitle}>
                         Continue as {foundAccount.role === "admin" ? "Admin" : "Dispatcher"}
                       </div>
-                      <div style={styles.roleBtnSub}>
-                        {foundAccount.role === "admin"
-                          ? "Manage IDs, units, and reports — around the clock, no shift to pick"
-                          : "Create calls, assign units, monitor the board"}
-                      </div>
                     </div>
                     <ChevronRight size={18} color="#9DB2C4" />
                   </button>
@@ -6973,7 +7020,6 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                   >
                     <div style={{ textAlign: "left" }}>
                       <div style={styles.roleBtnTitle}>Join a Team</div>
-                      <div style={styles.roleBtnSub}>Pick your shift, a unit, and take a seat as crew</div>
                     </div>
                     <ChevronRight size={18} color="#9DB2C4" />
                   </button>
@@ -9897,9 +9943,27 @@ function schedAwaitCall(s) {
 // Due out now. A booking awaiting a phone call has no time to fall due, so it is
 // excluded here rather than being treated as a booking for 1970 and released the
 // second it is saved.
+// When a booking should go out.
+//
+// A booking has an appointment time — when the patient is expected somewhere —
+// and, optionally, a dispatch time: when the ambulance has to leave to get them
+// there. Where a dispatch time is given, the call is raised fifteen minutes
+// before it, so the crew are told before they are needed rather than at the
+// moment they are already late.
+//
+// Optional on purpose. Most transfers within the campus need no lead time at
+// all, and a booking without one behaves exactly as it always has.
+const SCHED_LEAD_MS = 15 * 60 * 1000;
+
+function schedReleaseAt(s) {
+  if (!s) return 0;
+  if (s.dispatchAt) return s.dispatchAt - SCHED_LEAD_MS;
+  return s.scheduledFor || 0;
+}
+
 function schedDue(s, now) {
   if (schedAwaitCall(s)) return false;
-  return schedOpen(s, now) && (s.scheduledFor || 0) <= now;
+  return schedOpen(s, now) && schedReleaseAt(s) <= now;
 }
 
 // "Today 14:30" / "Tomorrow 07:00" / "Mon 3 Nov 19:00" — the dispatch time in
@@ -10476,6 +10540,9 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
   // A timestamp, not the string an <input type="datetime-local"> hands back —
   // see WhenPicker for why that input is no longer used here.
   const [when, setWhen] = useState(() => defaultScheduleTs(Date.now()));
+  // Optional: when the ambulance has to leave, if that is not the same as when
+  // the patient is expected.
+  const [dispatchWhen, setDispatchWhen] = useState(null);
   // Set when the ward can't say when the patient will be ready and will phone
   // the desk instead. The booking is then held with no time on it.
   const [awaitCall, setAwaitCall] = useState(false);
@@ -10573,12 +10640,14 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
     setCallType("");
     setLoadedKm("");
     setWhen(defaultScheduleTs(Date.now()));
+    setDispatchWhen(null);
     setAwaitCall(false);
     setError("");
   }
 
   async function book() {
     const ts = awaitCall ? null : when;
+    const dispatchTs = awaitCall ? null : dispatchWhen;
     if (!locationFrom.trim() || !nature.trim()) {
       setError("A pick-up location and the nature of the call are both needed.");
       return;
@@ -10615,6 +10684,12 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
       callType: callTypeMeta(callType) ? callType : null,
       loadedKm: loadedKmMeta(loadedKm) ? loadedKm : null,
       scheduledFor: ts,
+      // Optional. Where a transfer needs the ambulance to leave before the
+      // appointment — a distance, a lift, a patient who takes time to move —
+      // this is when it has to go, and the call is raised fifteen minutes
+      // before it. Left blank, the booking goes out at its appointment time as
+      // it always has.
+      dispatchAt: dispatchTs || null,
       // No time yet: the ward calls when the patient is ready and the desk sends
       // it out then. Nothing about it is automatic, which is the whole point.
       awaitCall: !!awaitCall,
@@ -10866,7 +10941,45 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                           : "Pick the day on the calendar, then set the hour and minute."
                       }
                     />
+
+                      
                   )}
+
+                  {/* Optional second time. Most transfers need only one —
+                          the patient is expected somewhere and the ambulance
+                          goes when it goes. A distance, a lift or a patient who
+                          takes time to move needs the truck to leave earlier
+                          than that, and this is where the desk says so. */}
+                      <div style={{ marginTop: 14 }}>
+                        <label style={styles.label}>
+                          Dispatch time — optional
+                        </label>
+                        {dispatchWhen ? (
+                          <>
+                            <WhenPicker
+                              value={dispatchWhen}
+                              onChange={setDispatchWhen}
+                              now={now}
+                              hint={`The call is raised at ${hhmm(
+                                dispatchWhen - SCHED_LEAD_MS
+                              )} — fifteen minutes before the ambulance has to leave.`}
+                            />
+                            <button
+                              style={{ ...styles.ghostBtnSm, marginTop: 8 }}
+                              onClick={() => setDispatchWhen(null)}
+                            >
+                              Remove dispatch time
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            style={styles.ghostBtnSm}
+                            onClick={() => setDispatchWhen(when || defaultScheduleTs(Date.now()))}
+                          >
+                            + Set a separate dispatch time
+                          </button>
+                        )}
+                      </div>
                 </div>
                 <div style={{ flex: 1, minWidth: 200 }}>
                   <label style={styles.label}>Priority</label>
@@ -11021,6 +11134,20 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                     <div style={styles.callCardNature}>{entry.nature}</div>
                     <span style={{ ...styles.pill, background: priorityMeta.color }}>{priorityMeta.label}</span>
                   </div>
+
+                  {/* Two times, said as two things. A card showing one time when
+                      the booking has two is a card somebody will misread. */}
+                  {entry.dispatchAt && (
+                    <div style={styles.twoTimes}>
+                      <span>
+                        Leaves <strong>{hhmm(entry.dispatchAt)}</strong>
+                      </span>
+                      <span style={styles.twoTimesDim}>
+                        · appointment {hhmm(entry.scheduledFor)} · call raised{" "}
+                        {hhmm(entry.dispatchAt - SCHED_LEAD_MS)}
+                      </span>
+                    </div>
+                  )}
 
                   <div style={styles.callCardMeta}>
                     {waiting ? (
@@ -12613,6 +12740,15 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     ? !assistTeam.acknowledgedAt
     : !!(myRequest && myRequest.status === "assigned" && !myRequest.acknowledged);
   const [ambulanceInput, setAmbulanceInput] = useState(myUnit ? myUnit.ambulanceNumber || "" : "");
+  // The board arrives a moment after this screen does, so the field was
+  // initialised from a unit that was still empty and then never caught up —
+  // which looked like the number had not been saved at all. It follows the
+  // board now, except while somebody is typing into it.
+  const ambulanceTouched = useRef(false);
+  useEffect(() => {
+    if (ambulanceTouched.current) return;
+    if (myUnit && myUnit.ambulanceNumber) setAmbulanceInput(myUnit.ambulanceNumber);
+  }, [myUnit && myUnit.ambulanceNumber]);
   // Whether the escalation thread on the live call is unfolded.
   const [escOpen, setEscOpen] = useState(false);
   // Whether the "these details are wrong" form is open on the live call.
@@ -12836,6 +12972,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         : u
     );
     await saveUnits(nextUnits);
+    ambulanceTouched.current = false;
     await addLog(
       `${myUnit.name} — ambulance #${n || "—"} recorded for ${shiftPhrase(user)} by ${user.name || "the crew"}`,
       "status"
@@ -13574,7 +13711,10 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         <input
           style={{ ...styles.input, maxWidth: 180 }}
           value={ambulanceInput}
-          onChange={(e) => setAmbulanceInput(e.target.value)}
+          onChange={(e) => {
+            ambulanceTouched.current = true;
+            setAmbulanceInput(e.target.value);
+          }}
           placeholder="e.g. A-207"
         />
         <button
@@ -15756,6 +15896,10 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
 .foot{margin-top:12pt;border-top:0.7pt solid #C9D4DD;padding-top:6pt;font-size:7pt;color:#6C7B89}
 .keep{break-inside:avoid;page-break-inside:avoid}
 .none{font-size:8pt;color:#5A6B7B;font-style:italic;margin:4pt 0 10pt}
+/* The call is named once and read twice: the nature in full, the route beneath
+   it in a quieter grey. Both tables carry it, so neither has to be read with a
+   finger on the other. */
+.dim{color:#5A6B7B;font-size:6.9pt}
 </style></head><body>
 
 <div class="eyebrow">Dispatch log</div>
@@ -15775,80 +15919,64 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
     <div class="l">Time with no coverage</div></div>
 </div>
 
-<h2>Calls <span class="sub">— what the call was</span></h2>
+<h2>Calls</h2>
 <table>
   <thead><tr>
-    <th class="c" style="width:3%">#</th><th style="width:15%">Patient coming from</th>
-    <th style="width:14%">From</th><th style="width:14%">To</th><th style="width:8%">MRN</th>
-    <th style="width:14%">Call category</th><th style="width:14%">Codes &amp; emergencies</th>
-    <th class="c" style="width:6%">Cat.</th><th class="c" style="width:6%">Service</th>
-    <th class="c" style="width:6%">Km</th>
-  </tr></thead>
-  <tbody>
-  ${calls
-    .map((r, i) => {
-      const cls = night(r);
-      const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
-      const catStyle = fill ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"` : "";
-      return `<tr>
-        <td class="c"${cls ? ' class="night c"' : ""}>${i + 1}</td>
-        <td${cls}>${esc(r.patientOrigin || "")}</td>
-        <td${cls}>${esc(callFrom(r))}</td>
-        <td${cls}>${esc(callTo(r))}</td>
-        <td${cls}>${esc(r.mrn || "")}</td>
-        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
-        <td${cls}>${esc(r.emergencyCode || "")}</td>
-        <td class="c">${esc(r.callType || "")}</td>
-        <td class="c">${esc(serviceTypeFor(r))}</td>
-        <td class="c">${esc(loadedKmFor(r))}</td>
-      </tr>`;
-    })
-    .join("")}
-  </tbody>
-</table>
-
-<h2>Calls <span class="sub">— when it happened, and who ran it</span></h2>
-<table>
-  <thead><tr>
-    <th class="c" style="width:3%">#</th>
-    <th class="c" style="width:7%">App.</th><th class="c" style="width:7%">Dispatch</th>
-    <th class="c" style="width:7%">En route</th><th class="c" style="width:7%">On scene</th>
-    <th class="c" style="width:7%">Departure</th><th class="c" style="width:7%">Arrived</th>
-    <th class="c" style="width:7%">In service</th><th class="c" style="width:7%">Response</th>
-    <th style="width:9%">Team</th><th style="width:14%">E-PCR author</th><th style="width:14%">Bravo</th>
+    <th class="c" style="width:2.5%">#</th>
+    <th style="width:19%">Call</th>
+    <th style="width:13%">Category</th>
+    <th class="c" style="width:5.5%">Disp.</th>
+    <th class="c" style="width:5.5%">En route</th>
+    <th class="c" style="width:5.5%">Scene</th>
+    <th class="c" style="width:5.5%">Depart</th>
+    <th class="c" style="width:5.5%">Arrived</th>
+    <th class="c" style="width:5.5%">In svc</th>
+    <th class="c" style="width:6%">Response</th>
+    <th style="width:8%">Team</th>
+    <th style="width:11%">E-PCR author</th>
+    <th style="width:7.5%">Outcome</th>
   </tr></thead>
   <tbody>
   ${calls
     .map((r, i) => {
       const cls = night(r);
       const u = unitOf(r);
+      const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
+      const catStyle = fill ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"` : "";
       return `<tr>
         <td class="c">${i + 1}</td>
-        <td class="c"${cls}>${esc(clockStr(r.scheduledFor))}</td>
+        <td${cls}><strong>${esc(r.nature)}</strong><br><span class="dim">${esc(callRoute(r))}</span></td>
+        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
         <td class="c"${cls}>${esc(clockStr(r.createdAt))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).enroute))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).arrival))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).departure))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).arrivalDestination))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).backInService))}</td>
-        <td class="c"${cls}>${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</td>
+        <td class="c"${cls}><strong>${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</strong></td>
         <td${cls}>${esc(u.name || "")}</td>
         <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
-        <td${cls}>${esc(
-          r.pcrAuthor && r.pcrAuthor.seat === "alpha" ? u.bravo && u.bravo.name : u.alpha && u.alpha.name
-        )}</td>
+        <td${cls}>${esc(callOutcomeLabel(r) || (r.status ? REQ_STATUS[r.status].label : ""))}</td>
       </tr>`;
     })
     .join("")}
   </tbody>
 </table>
 
-<h2>Calls <span class="sub">— outcome</span></h2>
+<h2>Call details <span class="sub">— the same calls, for coding and billing</span></h2>
 <table>
   <thead><tr>
-    <th class="c" style="width:3%">#</th><th style="width:14%">Status</th><th style="width:16%">Outcome</th>
-    <th style="width:20%">Received by</th><th style="width:16%">Assisting team</th>
-    <th style="width:16%">Closed by</th><th style="width:15%">Close reason</th>
+    <th class="c" style="width:2.5%">#</th>
+    <th style="width:19%">Call</th>
+    <th style="width:16%">Patient coming from</th>
+    <th style="width:8%">MRN</th>
+    <th class="c" style="width:5%">Cat.</th>
+    <th class="c" style="width:6%">Service</th>
+    <th class="c" style="width:4%">Km</th>
+    <th class="c" style="width:5%">Added</th>
+    <th style="width:12%">Codes &amp; emergencies</th>
+    <th style="width:11%">Received by</th>
+    <th style="width:11.5%">Closed by</th>
   </tr></thead>
   <tbody>
   ${calls
@@ -15856,12 +15984,16 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
       const cls = night(r);
       return `<tr>
         <td class="c">${i + 1}</td>
-        <td${cls}>${esc(r.status ? REQ_STATUS[r.status].label : "")}</td>
-        <td${cls}>${esc(callOutcomeLabel(r))}</td>
+        <td${cls}><strong>${esc(r.nature)}</strong></td>
+        <td${cls}>${esc(r.patientOrigin || "")}</td>
+        <td${cls}>${esc(r.mrn || "")}</td>
+        <td class="c"${cls}>${esc(r.callType || "")}</td>
+        <td class="c"${cls}>${esc(serviceTypeFor(r))}</td>
+        <td class="c"${cls}>${esc(loadedKmFor(r))}</td>
+        <td class="c"${cls}>${esc(r.addedService || "")}</td>
+        <td${cls}>${esc(r.emergencyCode || "")}</td>
         <td${cls}>${esc(r.receiver ? `${r.receiver.name} (${r.receiver.receiverId})` : "")}</td>
-        <td${cls}>${esc(assistTeamNames(r, units))}</td>
         <td${cls}>${esc(r.closedBy || "")}</td>
-        <td${cls}>${esc(r.status === "completed" ? callCloseReason(r) || "" : "")}</td>
       </tr>`;
     })
     .join("")}
@@ -17164,7 +17296,15 @@ function LogEntryRow({ entry, showStation }) {
 // San Francisco, on Android Roboto Mono and Roboto: designed for small screens,
 // rendered natively, and there whether there is signal or not.
 const mono = "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Roboto Mono', monospace";
-const display = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif";
+// Chosen for reading, not for character.
+//
+// The system stack resolves to San Francisco on iOS and Roboto on Android, both
+// drawn for screens at small sizes with open counters and unambiguous figures —
+// which is what matters on a board read at arm's length in a moving vehicle.
+// Nothing is downloaded, so nothing is missing when there is no signal.
+const display =
+  "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', " +
+  "Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif";
 
 const styles = {
   app: {
@@ -17846,6 +17986,12 @@ const styles = {
     color: "#93C5FD",
     whiteSpace: "nowrap",
   },
+  twoTimes: {
+    marginTop: 7, fontSize: 12.5, color: "#D6E3EE",
+    display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline",
+  },
+  twoTimesDim: { color: "#61788C", fontSize: 12 },
+
   schedCancelled: {
     background: "linear-gradient(180deg, rgba(255,77,94,.10), rgba(255,77,94,.03))",
     border: "1px solid rgba(255,77,94,.4)",
