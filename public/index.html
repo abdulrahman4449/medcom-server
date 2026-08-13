@@ -3687,9 +3687,13 @@ function uhuWindowStart(now) {
   return shiftWindowAt(now).start;
 }
 
-function computeUhu(units, requests, now) {
-  const from = uhuWindowStart(now);
-  const inShift = (requests || []).filter((r) => r && r.createdAt >= from);
+// `from` may be given explicitly. On a live board it is the shift running now;
+// on an archived shift printed days later it must be that shift's own window,
+// or every call falls outside it and the whole sheet reads nought calls and
+// nought per cent — which is exactly what the archive was printing.
+function computeUhu(units, requests, now, from) {
+  const cutoff = typeof from === "number" ? from : uhuWindowStart(now);
+  const inShift = (requests || []).filter((r) => r && r.createdAt >= cutoff);
   requests = inShift;
   return units.map((unit) => {
     const mine = requests.filter((r) => r.assignedUnitId === unit.id);
@@ -4341,7 +4345,7 @@ function autoFitSheet(ws, headerRow) {
 // exporting the department as a whole. When it is set, every sheet below is
 // that station's and nothing else — the two stations keep separate log sheets,
 // so an export that quietly mixed them would be worse than no export at all.
-async function exportAndShareLog(log, requests, units, scheduled, station, coverage) {
+async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom) {
   if (station) {
     units = atStation(units, station);
     requests = atStation(requests, station);
@@ -4487,7 +4491,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
 
     const rows = [];
     stationUnitsForUhu.forEach((unit) => {
-      const row = computeUhu([unit], requests, exportedAt)[0];
+      const row = computeUhu([unit], requests, exportedAt, uhuFrom)[0];
       const stamps = (crewIndex.get(unit.id) || [])
         .slice()
         .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
@@ -4781,79 +4785,32 @@ async function exportArchivedDay(archive, liveRequests) {
 
 // Downloading a submitted shift log. One station, one shift, one sheet — the
 // two stations are kept apart because they are submitted apart.
+// The archive's spreadsheet, built by the same route as the live export.
+//
+// It was producing two sheets — the dispatch log and the events — while the
+// Export button produced seven. A file downloaded from the archive should not
+// be a lesser version of the same shift, so it now goes through the same
+// builder with the submission's own data, and comes out with the same sheets in
+// the same order and the same house style.
 async function exportSubmission(sub, liveRequests) {
   if (!sub) return;
   const byId = new Map((liveRequests || []).filter((r) => r && r.id).map((r) => [r.id, r]));
-  let amended = 0;
   const requests = (sub.requests || []).map((snap) => {
     const live = byId.get(snap.id);
-    if (!live) return snap;
-    if (JSON.stringify(live) === JSON.stringify(snap)) return snap;
-    amended += 1;
-    return live;
+    return live && JSON.stringify(live) !== JSON.stringify(snap) ? live : snap;
   });
 
-  const units = sub.units || [];
-  const log = sub.log || [];
-  const at = sub.finalisedAt || sub.submittedAt;
-  const crewIndex = medicCrewIndex(units, log, at);
-
-  const wb = XLSX.utils.book_new();
-  const aoa = buildDispatchLogAOA(requests, units, crewIndex, sub.scheduled || [], at, sub.station, sub.coverage || []);
-  const subNightRows = aoa.nightRows || [];
-  aoa.splice(1, 0, [
-    `${sub.dayLabel} · ${sub.shiftLabel} · ${stationLabel(sub.station)}` +
-      ` · submitted ${gregDateTimeStr(sub.submittedAt)}${sub.submittedBy ? ` by ${sub.submittedBy}` : ""}` +
-      (sub.status === "open" ? " · STILL OPEN — waiting on a call to close" : "") +
-      (amended > 0 ? ` · UPDATED SINCE SUBMISSION (${amended} call${amended === 1 ? "" : "s"})` : ""),
-  ]);
-  XLSX.utils.book_append_sheet(
-    wb,
-    dressLogSheet(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4), aoa),
-    `${stationShort(sub.station)} ${sub.shiftKey === "night" ? "NIGHT" : "DAY"}`
+  await exportAndShareLog(
+    sub.log || [],
+    requests,
+    sub.units || [],
+    sub.scheduled || [],
+    sub.station,
+    sub.coverage || [],
+    // The shift this submission covers — without it the UHU sheet is measured
+    // against whatever shift is running today and comes out empty.
+    sub.windowStart
   );
-
-  const eventRows = log
-    .slice()
-    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
-    .map((e) => ({
-      Time: e.ts ? gregDateTimeStr(e.ts) : e.time || "",
-      Type: (e.type || "").toUpperCase(),
-      Event: e.message || "",
-      "Logged By": e.actor && e.actor.name ? e.actor.name : "",
-      Post: actorPost(e.actor),
-    }));
-  XLSX.utils.book_append_sheet(
-    wb,
-    autoFitSheet(
-      eventRows.length
-        ? XLSX.utils.json_to_sheet(eventRows)
-        : XLSX.utils.aoa_to_sheet([["No events recorded for this shift."]]),
-      0
-    ),
-    "Event Log"
-  );
-
-  const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const filename = `medcom-${sub.station}-${sub.shiftKey}-${sub.dayKey}.xlsx`;
-  const blob = new Blob([buffer], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
-  const file = new File([blob], filename, { type: blob.type });
-  try {
-    if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-      await navigator.share({ files: [file], title: `MEDCOM — ${sub.dayLabel} ${sub.shiftLabel}` });
-      return;
-    }
-  } catch (e) {}
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 // ---------- main app ----------
@@ -15838,7 +15795,9 @@ function buildShiftReport({ sub, requests }) {
     .slice()
     .sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" }))
     .forEach((u) => {
-      const row = computeUhu([u], calls, sub.finalisedAt || sub.submittedAt)[0];
+      // The shift this submission covers, not the shift running when it is
+      // printed.
+      const row = computeUhu([u], calls, sub.windowEnd || sub.submittedAt, sub.windowStart)[0];
       const stamps = (crewIndex.get(u.id) || [])
         .slice()
         .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
@@ -15930,18 +15889,20 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
 <table>
   <thead><tr>
     <th class="c" style="width:2.5%">#</th>
-    <th style="width:19%">Call</th>
-    <th style="width:13%">Category</th>
-    <th class="c" style="width:5.5%">Disp.</th>
-    <th class="c" style="width:5.5%">En route</th>
-    <th class="c" style="width:5.5%">Scene</th>
-    <th class="c" style="width:5.5%">Depart</th>
-    <th class="c" style="width:5.5%">Arrived</th>
-    <th class="c" style="width:5.5%">In svc</th>
-    <th class="c" style="width:6%">Response</th>
-    <th style="width:8%">Team</th>
-    <th style="width:11%">E-PCR author</th>
-    <th style="width:7.5%">Outcome</th>
+    <th style="width:13%">Patient coming from</th>
+    <th style="width:16%">From → To</th>
+    <th style="width:6.5%">MRN</th>
+    <th class="c" style="width:5%">App.</th>
+    <th class="c" style="width:5%">Dispatch</th>
+    <th class="c" style="width:5%">En route</th>
+    <th class="c" style="width:5%">On scene</th>
+    <th class="c" style="width:5%">Departure</th>
+    <th class="c" style="width:5%">Arrived</th>
+    <th class="c" style="width:5%">In service</th>
+    <th class="c" style="width:5.5%">Response</th>
+    <th style="width:7%">Medic team</th>
+    <th class="c" style="width:4.5%">Service</th>
+    <th style="width:9.5%">Call category</th>
   </tr></thead>
   <tbody>
   ${calls
@@ -15952,8 +15913,10 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
       const catStyle = fill ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"` : "";
       return `<tr>
         <td class="c">${i + 1}</td>
+        <td${cls}>${esc(r.patientOrigin || "")}</td>
         <td${cls}><strong>${esc(r.nature)}</strong><br><span class="dim">${esc(callRoute(r))}</span></td>
-        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
+        <td${cls}>${esc(r.mrn || "")}</td>
+        <td class="c"${cls}>${esc(clockStr(r.scheduledFor))}</td>
         <td class="c"${cls}>${esc(clockStr(r.createdAt))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).enroute))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).arrival))}</td>
@@ -15962,8 +15925,8 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td class="c"${cls}>${esc(clockStr(t(r).backInService))}</td>
         <td class="c"${cls}><strong>${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</strong></td>
         <td${cls}>${esc(u.name || "")}</td>
-        <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
-        <td${cls}>${esc(callOutcomeLabel(r) || (r.status ? REQ_STATUS[r.status].label : ""))}</td>
+        <td class="c"${cls}>${esc(serviceTypeFor(r))}</td>
+        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
       </tr>`;
     })
     .join("")}
@@ -15975,31 +15938,34 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
   <thead><tr>
     <th class="c" style="width:2.5%">#</th>
     <th style="width:19%">Call</th>
-    <th style="width:16%">Patient coming from</th>
-    <th style="width:8%">MRN</th>
-    <th class="c" style="width:5%">Cat.</th>
-    <th class="c" style="width:6%">Service</th>
-    <th class="c" style="width:4%">Km</th>
+    <th class="c" style="width:5%">Km</th>
     <th class="c" style="width:5%">Added</th>
-    <th style="width:12%">Codes &amp; emergencies</th>
-    <th style="width:11%">Received by</th>
-    <th style="width:11.5%">Closed by</th>
+    <th class="c" style="width:5%">Cat.</th>
+    <th style="width:13%">Codes &amp; emergencies</th>
+    <th style="width:12%">E-PCR author</th>
+    <th style="width:12%">Bravo</th>
+    <th style="width:9%">Status</th>
+    <th style="width:9%">Outcome</th>
+    <th style="width:11%">Closed by</th>
   </tr></thead>
   <tbody>
   ${calls
     .map((r, i) => {
       const cls = night(r);
+      const u2 = unitOf(r);
       return `<tr>
         <td class="c">${i + 1}</td>
         <td${cls}><strong>${esc(r.nature)}</strong></td>
-        <td${cls}>${esc(r.patientOrigin || "")}</td>
-        <td${cls}>${esc(r.mrn || "")}</td>
-        <td class="c"${cls}>${esc(r.callType || "")}</td>
-        <td class="c"${cls}>${esc(serviceTypeFor(r))}</td>
         <td class="c"${cls}>${esc(loadedKmFor(r))}</td>
         <td class="c"${cls}>${esc(r.addedService || "")}</td>
+        <td class="c"${cls}>${esc(r.callType || "")}</td>
         <td${cls}>${esc(r.emergencyCode || "")}</td>
-        <td${cls}>${esc(r.receiver ? `${r.receiver.name} (${r.receiver.receiverId})` : "")}</td>
+        <td${cls}>${esc(pcrAuthorStamp(r, u2))}</td>
+        <td${cls}>${esc(
+          r.pcrAuthor && r.pcrAuthor.seat === "alpha" ? u2.bravo && u2.bravo.name : u2.alpha && u2.alpha.name
+        )}</td>
+        <td${cls}>${esc(r.status ? REQ_STATUS[r.status].label : "")}</td>
+        <td${cls}>${esc(callOutcomeLabel(r))}</td>
         <td${cls}>${esc(r.closedBy || "")}</td>
       </tr>`;
     })
