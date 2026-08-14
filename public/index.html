@@ -10779,10 +10779,22 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
   async function book() {
     const ts = awaitCall ? null : when;
     const dispatchTs = awaitCall ? null : dispatchWhen;
-    if (!locationFrom.trim() || !nature.trim()) {
-      setError("A pick-up location and the nature of the call are both needed.");
+    // Which fields are missing, not just that something is. A message at the
+    // bottom of a long form makes a desk hunt for the blank; the blank should
+    // say so itself.
+    const missing = [];
+    if (!locationFrom.trim()) missing.push("locationFrom");
+    if (!nature.trim()) missing.push("nature");
+    if (missing.length) {
+      setMissingFields(missing);
+      setError(
+        missing.length === 1
+          ? "One field still needs an answer."
+          : `${missing.length} fields still need an answer.`
+      );
       return;
     }
+    setMissingFields([]);
     // A booking with no time is deliberate — the ward is going to phone — so the
     // time checks below only apply to one that is going out at a set time.
     if (!awaitCall) {
@@ -11578,7 +11590,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   const [locationFrom, setLocationFrom] = useState("");
   const [locationTo, setLocationTo] = useState("");
   const [nature, setNature] = useState("");
-  const [priority, setPriority] = useState("urgent");
+  // Nothing is urgent until somebody says so. The form opened on urgent, so a
+  // desk that never touched the field raised every call at a priority it had not
+  // chosen — and a board where most things are urgent tells nobody anything.
+  const [priority, setPriority] = useState("routine");
   const [mrn, setMrn] = useState("");
   const [requirements, setRequirements] = useState([]);
   // Free text for the "Other" requirement, and which call the desk has the
@@ -11588,6 +11603,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   const [patientOrigin, setPatientOrigin] = useState("");
   const [callCategory, setCallCategory] = useState("");
   const [callKind, setCallKind] = useState("");
+  const [missingFields, setMissingFields] = useState([]);
   const [editingCallId, setEditingCallId] = useState(null);
   const [selectedTeam, setSelectedTeam] = useState("");
   const [callType, setCallType] = useState("");
@@ -12364,7 +12380,15 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           <div style={styles.formRow}>
             <div style={{ flex: 1 }}>
               <label style={styles.label}>Location from (pick-up) — required</label>
-              <input style={styles.input} value={locationFrom} onChange={(e) => setLocationFrom(e.target.value)} placeholder="e.g. Ward 4B, Bed 12" />
+              <input
+                style={{ ...styles.input, ...(missingFields.includes("locationFrom") ? styles.inputMissing : null) }}
+                value={locationFrom}
+                onChange={(e) => {
+                  setLocationFrom(e.target.value);
+                  if (e.target.value.trim()) setMissingFields((m) => m.filter((x) => x !== "locationFrom"));
+                }}
+                placeholder="e.g. Ward 4B, Bed 12"
+              />
             </div>
             <div style={{ flex: 1 }}>
               <label style={styles.label}>Location to (destination)</label>
@@ -12374,7 +12398,15 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           <div style={styles.formRow}>
             <div style={{ flex: 1 }}>
               <label style={styles.label}>Nature of call</label>
-              <input style={styles.input} value={nature} onChange={(e) => setNature(e.target.value)} placeholder="e.g. Chest pain, 54M" />
+              <input
+                style={{ ...styles.input, ...(missingFields.includes("nature") ? styles.inputMissing : null) }}
+                value={nature}
+                onChange={(e) => {
+                  setNature(e.target.value);
+                  if (e.target.value.trim()) setMissingFields((m) => m.filter((x) => x !== "nature"));
+                }}
+                placeholder="e.g. Chest pain, 54M"
+              />
             </div>
             <div style={{ flex: 1 }}>
               <label style={styles.label}>Priority</label>
@@ -12478,23 +12510,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           finding the one the phone is about meant scrolling past the other
           eight. Tiles put them all in view at once; tapping one gives back
           exactly the card it always was. */}
-      {!active.some((r) => r.id === openCallId) && waiting.length > 0 && (
-          <div style={styles.waitList}>
-            {waiting
-              .map((r) => (
-                <button key={r.id} style={styles.waitRow} onClick={() => setOpenCallId(r.id)}>
-                  <span style={styles.waitDot} />
-                  <span style={styles.waitBody}>
-                    <span style={styles.waitNature}>{r.nature}</span>
-                    <span style={styles.waitRoute}>{callRoute(r)}</span>
-                  </span>
-                  <span style={styles.waitClock}>
-                    {shortDurationStr(Math.max(0, nowTick - callStartTs(r)))}
-                  </span>
-                </button>
-              ))}
-          </div>
-        )}
+
 
       {!active.some((r) => r.id === openCallId) && (
         <React.Fragment>
@@ -12522,6 +12538,24 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
               </div>
             </div>
           )}
+
+          {!active.some((r) => r.id === openCallId) && waiting.length > 0 && (
+          <div style={styles.waitList}>
+            {waiting
+              .map((r) => (
+                <button key={r.id} style={styles.waitRow} onClick={() => setOpenCallId(r.id)}>
+                  <span style={styles.waitDot} />
+                  <span style={styles.waitBody}>
+                    <span style={styles.waitNature}>{r.nature}</span>
+                    <span style={styles.waitRoute}>{callRoute(r)}</span>
+                  </span>
+                  <span style={styles.waitClock}>
+                    {shortDurationStr(Math.max(0, nowTick - callStartTs(r)))}
+                  </span>
+                </button>
+              ))}
+          </div>
+        )}
 
           {standing.length > 0 && (
             <div style={styles.standingRow}>
@@ -17557,7 +17591,7 @@ const styles = {
       "radial-gradient(900px 520px at 88% -8%, rgba(14,107,79,.20) 0%, transparent 62%), " +
       "radial-gradient(1200px 700px at 15% 8%, #101E2C 0%, transparent 58%), #07090C",
     color: "#F7F9FB",
-    fontFamily: mono,
+    fontFamily: display,
     display: "flex",
     flexDirection: "column",
   },
@@ -17568,7 +17602,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 15,
     letterSpacing: 1,
   },
@@ -17592,7 +17626,7 @@ const styles = {
     borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 15,
   },
   // The masthead stays on screen. A dispatch board is scrolled all day — down
@@ -17720,7 +17754,7 @@ const styles = {
     borderRadius: 999,
     padding: "13px 26px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 15.5,
     display: "flex",
     alignItems: "center",
@@ -17733,24 +17767,18 @@ const styles = {
   sectionHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "20px 0 10px" },
   // Section headings in the organisation's own idiom: a gold marker, the label
   // beside it, plenty of air above. It is the pattern staff already scan for.
+  // A heading, not a rule with a gold tab on it. The bar and the letter-spacing
+  // were doing the work a size and a weight should do.
   sectionHeader: {
-    borderLeft: "3px solid #E9C46A",
-    paddingLeft: 10,
     fontFamily: display,
-    fontSize: 14,
-    letterSpacing: 1.2,
-    color: "#93A2B1",
-    margin: "24px 0 10px",
-    fontWeight: 700,
+    fontSize: 20,
+    fontWeight: 650,
+    letterSpacing: -0.42,
+    color: "#F7F9FB",
+    margin: "26px 0 10px",
   },
 
-  statusBoard: {
-    padding: "14px 15px 13px",
-    background: "linear-gradient(180deg, #141A21, #0E1217)",
-    border: "1px solid rgba(255,255,255,.07)",
-    borderRadius: 18,
-    boxShadow: "0 10px 26px rgba(0,0,0,.42)",
-  },
+  statusBoard: { padding: "6px 2px 2px" },
   statusBoardItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },
   statusBoardCount: { fontWeight: 700, color: "#F7F9FB" },
   statusBoardLabel: { color: "#93A2B1", letterSpacing: 0.5 },
@@ -17781,7 +17809,7 @@ const styles = {
     borderRadius: 8,
     padding: "7px 12px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13,
     fontWeight: 700,
     letterSpacing: 0.4,
@@ -17811,7 +17839,7 @@ const styles = {
     borderRadius: 999,
     padding: "4px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 12.5,
     fontWeight: 700,
     letterSpacing: 0.4,
@@ -17841,7 +17869,7 @@ const styles = {
     borderRadius: 999,
     padding: "5px 11px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     letterSpacing: 0.4,
   },
@@ -17852,7 +17880,7 @@ const styles = {
     color: "#BFDBFE",
     padding: "8px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     fontWeight: 700,
     textAlign: "left",
@@ -17877,7 +17905,7 @@ const styles = {
     borderRadius: 8,
     padding: "7px 12px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13,
     fontWeight: 700,
     letterSpacing: 0.4,
@@ -17900,6 +17928,12 @@ const styles = {
   formRow: { display: "flex", gap: 10, flexWrap: "wrap" },
   label: { fontSize: 12, color: "#93A2B1", letterSpacing: 0.5, display: "block", marginBottom: 4 },
   formHint: { fontSize: 12.5, color: "#5A6775", marginTop: -4, marginBottom: 4 },
+  inputMissing: {
+    borderColor: "#FF453A",
+    background: "rgba(255,69,58,.07)",
+    boxShadow: "0 0 0 3px rgba(255,69,58,.12)",
+  },
+
   input: {
     width: "100%",
     background: "#07090C",
@@ -17907,7 +17941,7 @@ const styles = {
     borderRadius: 8,
     color: "#F7F9FB",
     padding: "9px 10px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 15,
   },
 
@@ -18033,7 +18067,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    fontFamily: mono,
+    fontFamily: display,
   },
   alarmFootnote: { fontSize: 12.5, color: "#FCA5A5", marginTop: 4 },
   alarmFootnoteMuted: {
@@ -18073,7 +18107,7 @@ const styles = {
     borderRadius: 999,
     padding: "5px 11px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     letterSpacing: 0.4,
   },
@@ -18101,7 +18135,7 @@ const styles = {
     color: "#F7F9FB",
     padding: "8px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     textAlign: "left",
   },
@@ -18257,7 +18291,7 @@ const styles = {
     borderRadius: 999,
     padding: "3px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 12.5,
   },
 
@@ -18314,7 +18348,7 @@ const styles = {
     width: 26,
     height: 26,
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 17,
     lineHeight: 1,
   },
@@ -18334,7 +18368,7 @@ const styles = {
     borderRadius: 8,
     padding: "7px 0",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 14,
     fontVariantNumeric: "tabular-nums",
   },
@@ -18373,7 +18407,7 @@ const styles = {
     borderRadius: 8,
     padding: "6px 8px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 12.5,
   },
   rescheduleBox: {
@@ -18412,7 +18446,7 @@ const styles = {
     fontSize: 13.5,
     color: "#93A2B1",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     textAlign: "left",
   },
   reasonPillActive: {
@@ -18424,7 +18458,7 @@ const styles = {
     color: "#FFC24D",
     fontWeight: 600,
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     textAlign: "left",
   },
   // The reason read back on a cancelled card — the same amber it was typed in,
@@ -18438,7 +18472,7 @@ const styles = {
     borderRadius: 8,
     padding: "6px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     display: "flex",
     alignItems: "center",
@@ -18457,7 +18491,7 @@ const styles = {
     padding: "9px 11px",
     marginBottom: 8,
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     textAlign: "left",
     display: "flex",
@@ -18474,7 +18508,7 @@ const styles = {
     padding: "9px 11px",
     marginBottom: 8,
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     fontWeight: 700,
     textAlign: "left",
@@ -18506,7 +18540,7 @@ const styles = {
     borderRadius: 8,
     padding: "7px 11px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     display: "inline-flex",
     alignItems: "center",
@@ -18540,7 +18574,7 @@ const styles = {
     borderRadius: 8,
     padding: "4px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 12.5,
   },
   preAlertRow: {
@@ -18569,7 +18603,7 @@ const styles = {
     padding: 0,
     color: "#93C5FD",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 12.5,
     textDecoration: "underline",
   },
@@ -18668,7 +18702,7 @@ const styles = {
     borderRadius: 8,
     padding: "8px 12px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     fontWeight: 600,
     display: "flex",
@@ -18682,7 +18716,7 @@ const styles = {
     borderRadius: 8,
     padding: "8px 12px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     fontWeight: 700,
     display: "flex",
@@ -18739,7 +18773,7 @@ const styles = {
     borderRadius: 8,
     padding: "6px 9px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     display: "flex",
     alignItems: "baseline",
     gap: 5,
@@ -18751,7 +18785,7 @@ const styles = {
     borderRadius: 8,
     padding: "6px 9px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontWeight: 700,
     display: "flex",
     alignItems: "baseline",
@@ -18874,7 +18908,7 @@ const styles = {
     borderRadius: 999,
     padding: "6px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     fontWeight: 600,
     display: "flex",
@@ -18888,7 +18922,7 @@ const styles = {
     borderRadius: 8,
     padding: "6px 10px",
     cursor: "default",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     fontWeight: 600,
     display: "flex",
@@ -18940,7 +18974,7 @@ const styles = {
     border: "1px dashed #3A4552",
     borderRadius: 4,
     padding: "3px 8px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
@@ -18955,7 +18989,7 @@ const styles = {
     border: "1px solid",
     borderRadius: 4,
     padding: "3px 8px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
@@ -19050,7 +19084,7 @@ const styles = {
     borderRadius: 8,
     color: "#F7F9FB",
     padding: "8px 10px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 14.5,
     lineHeight: 1.5,
     resize: "vertical",
@@ -19463,7 +19497,7 @@ const styles = {
   truckRow: {
     display: "block", width: "100%", textAlign: "left", background: "none",
     border: "none", borderBottom: "0.5px solid rgba(255,255,255,.055)",
-    padding: "14px 16px 15px", cursor: "pointer", position: "relative", color: "#F7F9FB",
+    padding: "11px 14px 12px", cursor: "pointer", position: "relative", color: "#F7F9FB",
   },
   truckIdle: { opacity: 0.62 },
   truckEdge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
@@ -19478,7 +19512,7 @@ const styles = {
     fontVariantNumeric: "tabular-nums",
   },
   truckJob: {
-    fontSize: 14, color: "#93A2B1", marginTop: 5, letterSpacing: -0.1,
+    fontSize: 13.5, color: "#93A2B1", marginTop: 4, letterSpacing: -0.1,
     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
   },
   truckJobNature: { color: "#F7F9FB", fontWeight: 600 },
@@ -19488,11 +19522,14 @@ const styles = {
     padding: "2px 9px", borderRadius: 999, background: "#1C242D", color: "#93A2B1",
   },
   truckChipFree: { background: "rgba(48,209,88,.14)", color: "#30D158" },
-  rail: { display: "flex", gap: 3, marginTop: 11 },
+  rail: { display: "flex", gap: 3, marginTop: 8 },
   railSeg: { flex: 1, height: 3, borderRadius: 2 },
-  railLabels: { display: "flex", justifyContent: "space-between", marginTop: 6 },
-  railLabel: { fontSize: 10.5, color: "#5A6775" },
-  railLabelOn: { fontSize: 10.5, color: "#93A2B1", fontWeight: 600 },
+  // Only the stage the crew is at is named. Five labels under every row was a
+  // second sentence of the same information, and on six trucks that is thirty
+  // words of chrome.
+  railLabels: { marginTop: 5 },
+  railLabel: { display: "none" },
+  railLabelOn: { fontSize: 11, color: "#93A2B1", fontWeight: 600, letterSpacing: 0.1 },
 
   callTile: {
     position: "relative",
@@ -19584,7 +19621,7 @@ const styles = {
   ribbonFill: { height: "100%", borderRadius: "0 3px 3px 0", transition: "width 1s linear" },
   callTilePill: {
     alignSelf: "flex-start", marginTop: 5,
-    fontFamily: mono, fontSize: 9.5, letterSpacing: 1.3, textTransform: "uppercase",
+    fontFamily: display, fontSize: 9.5, letterSpacing: 1.3, textTransform: "uppercase",
     padding: "3px 8px", borderRadius: 999, border: "1px solid",
   },
   callTileNature: {
@@ -20114,7 +20151,7 @@ const styles = {
     outline: "none",
     color: "#F7F9FB",
     padding: "8px 0",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 14.5,
   },
   // ---- the history's Gregorian day filter ----
@@ -20128,7 +20165,7 @@ const styles = {
     borderRadius: 8,
     color: "#93A2B1",
     padding: "7px 10px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 14,
     cursor: "pointer",
     whiteSpace: "nowrap",
@@ -20142,7 +20179,7 @@ const styles = {
     borderRadius: 8,
     color: "#93C5FD",
     padding: "7px 10px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 14,
     cursor: "pointer",
     whiteSpace: "nowrap",
@@ -20169,7 +20206,7 @@ const styles = {
     color: "#93A2B1",
     padding: "6px 12px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13,
     whiteSpace: "nowrap",
   },
@@ -20183,7 +20220,7 @@ const styles = {
     color: "#93C5FD",
     padding: "6px 12px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13,
     whiteSpace: "nowrap",
   },
@@ -20251,7 +20288,7 @@ const styles = {
     color: "#F7F9FB",
     borderRadius: 8,
     padding: "6px 8px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 14,
   },
   assignedTag: { fontSize: 13.5, color: "#0A84FF", fontWeight: 600 },
@@ -20512,7 +20549,7 @@ const styles = {
     color: "#FF7A86",
     borderRadius: 5,
     padding: "3px 7px",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     lineHeight: 1.2,
     display: "flex",
@@ -20527,7 +20564,7 @@ const styles = {
     borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 15,
   },
   // One button shape for the whole app: a pill, in the display face, with a
@@ -20562,7 +20599,7 @@ const styles = {
     borderRadius: 8,
     padding: "6px 10px",
     cursor: "not-allowed",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
     display: "flex",
     alignItems: "center",
@@ -20575,7 +20612,7 @@ const styles = {
     borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 15,
   },
   ghostBtnSm: {
@@ -20602,7 +20639,7 @@ const styles = {
     borderRadius: 8,
     padding: "7px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
   },
   tabBtnActive: {
@@ -20613,7 +20650,7 @@ const styles = {
     borderRadius: 8,
     padding: "7px 10px",
     cursor: "pointer",
-    fontFamily: mono,
+    fontFamily: display,
     fontSize: 13.5,
   },
 };
