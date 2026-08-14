@@ -1536,11 +1536,36 @@ const SERVICE_LEVELS = {
   cct: { label: "CCT", color: "var(--hold)", desc: "Critical care transfer" },
 };
 
+// The level of care a call needs, which is what a desk is actually choosing.
+//
+// Critical / urgent / routine described how a call felt to whoever took it;
+// ALS / BLS / CCT describes what the patient needs, and that is the thing that
+// decides which truck and which crew. It is also the vocabulary already used on
+// the sheet, in the e-PCR and on the radio, so nobody has to translate.
+//
+// Boards written before this change hold the old words. They are kept here so
+// those calls still render, and mapped to the nearest level: a critical call
+// was an ALS run, a routine one was BLS.
 const PRIORITY = {
-  critical: { label: "CRITICAL", color: "var(--crit)" },
-  urgent: { label: "URGENT", color: "var(--hold)" },
-  routine: { label: "ROUTINE", color: "#64748B" },
+  als: { label: "ALS", color: "var(--crit)", desc: "Advanced life support" },
+  cct: { label: "CCT", color: "var(--hold)", desc: "Critical care transfer" },
+  bls: { label: "BLS", color: "var(--flow)", desc: "Basic life support" },
+  // Retired, kept readable.
+  critical: { label: "ALS", color: "var(--crit)", legacy: true },
+  urgent: { label: "CCT", color: "var(--hold)", legacy: true },
+  routine: { label: "BLS", color: "var(--flow)", legacy: true },
 };
+
+// The three a desk may choose. The retired words never appear in a picker.
+const PRIORITY_CHOICES = ["als", "cct", "bls"];
+
+function priorityKeyOf(req) {
+  const k = (req && req.priority) || "bls";
+  if (k === "critical") return "als";
+  if (k === "urgent") return "cct";
+  if (k === "routine") return "bls";
+  return PRIORITY[k] ? k : "bls";
+}
 
 const REQUIREMENTS = [
   { key: "vent", label: "Vent" },
@@ -3083,7 +3108,7 @@ function requestAlertPermission() {
 function notifyAssignedCall(request, unitName) {
   try {
     if (!alertsSupported() || Notification.permission !== "granted") return null;
-    const priority = PRIORITY[request.priority] ? PRIORITY[request.priority].label : "CALL";
+    const priority = PRIORITY[priorityKeyOf(request)] ? PRIORITY[priorityKeyOf(request)].label : "CALL";
     const title = `${priority} — ${unitName || "your team"}`;
     const options = {
       body: `${request.nature}\n${callRoute(request)}`,
@@ -4162,6 +4187,10 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "KILO METER",
     "ADDED SERVICE",
     "CAT. OF CALL",
+    // What the desk judged the call needed when it raised it, beside what it
+    // was actually run as. They usually agree; where they do not, that is worth
+    // being able to see.
+    "LEVEL REQUESTED",
     "CALL CATEGORY",
     "CODES AND EMERGENCIES",
     "E-PCR AUTHOR",
@@ -4222,6 +4251,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       loadedKmFor(r),
       r.addedService || "",
       r.callType || "",
+      (PRIORITY[priorityKeyOf(r)] || {}).label || "",
       r.callCategory || "",
       r.emergencyCode || "",
       pcrAuthorStamp(r, unit),
@@ -4783,7 +4813,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
         "Nature of Call": s.nature || "",
         "Location From": callFrom(s),
         "Location To": callTo(s),
-        Priority: PRIORITY[s.priority] ? PRIORITY[s.priority].label : "",
+        Priority: PRIORITY[priorityKeyOf(s)] ? PRIORITY[priorityKeyOf(s)].label : "",
         MRN: s.mrn || "",
         Requirements: reqLabels(s).join(", "),
         Team: unit ? unit.name : "",
@@ -8458,7 +8488,7 @@ function FleetRow({ unit, req, onOpen, now }) {
 }
 
 function CallTile({ req, unit, onOpen, dim, now }) {
-  const p = PRIORITY[req.priority] || {};
+  const p = PRIORITY[priorityKeyOf(req)] || {};
   const started = callStartTs(req);
   const elapsed = Math.max(0, (now || Date.now()) - started);
   const ribbon = ribbonFor(elapsed);
@@ -9972,8 +10002,8 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
                           onToggle={() => setEscFor(escFor === req.id ? null : req.id)}
                         />
                       )}
-                      <span style={{ ...styles.pill, background: PRIORITY[req.priority] ? PRIORITY[req.priority].color : "#64748B" }}>
-                        {PRIORITY[req.priority] ? PRIORITY[req.priority].label : "—"}
+                      <span style={{ ...styles.pill, background: PRIORITY[priorityKeyOf(req)] ? PRIORITY[priorityKeyOf(req)].color : "#64748B" }}>
+                        {PRIORITY[priorityKeyOf(req)] ? PRIORITY[priorityKeyOf(req)].label : "—"}
                       </span>
                     </div>
                   </div>
@@ -10865,7 +10895,7 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
   const [locationFrom, setLocationFrom] = useState("");
   const [locationTo, setLocationTo] = useState("");
   const [nature, setNature] = useState("");
-  const [priority, setPriority] = useState("routine");
+  const [priority, setPriority] = useState("bls");
   const [mrn, setMrn] = useState("");
   const [requirements, setRequirements] = useState([]);
   const [team, setTeam] = useState("");
@@ -11340,10 +11370,12 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                       </div>
                 </div>
                 <div style={{ flex: 1, minWidth: 200 }}>
-                  <label style={styles.label}>Priority</label>
+                  <label style={styles.label}>Level of care</label>
                   <select style={styles.input} value={priority} onChange={(e) => setPriority(e.target.value)}>
-                    {Object.entries(PRIORITY).map(([k, v]) => (
-                      <option key={k} value={k}>{v.label}</option>
+                    {PRIORITY_CHOICES.map((k) => [k, PRIORITY[k]]).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v.label}{v.desc ? ` — ${v.desc}` : ""}
+                      </option>
                     ))}
                   </select>
                   <AlertToneCheck
@@ -11463,7 +11495,7 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                 (entry.scheduledFor || 0) - now > 0 &&
                 (entry.scheduledFor || 0) - now <= SCHED_PREALERT_MS &&
                 bookingInUserShift(entry, user);
-              const priorityMeta = PRIORITY[entry.priority] || PRIORITY.routine;
+              const priorityMeta = PRIORITY[priorityKeyOf(entry)];
               const releasedCall = entry.releasedRequestId
                 ? (requests || []).find((r) => r.id === entry.releasedRequestId)
                 : null;
@@ -11800,7 +11832,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Nothing is urgent until somebody says so. The form opened on urgent, so a
   // desk that never touched the field raised every call at a priority it had not
   // chosen — and a board where most things are urgent tells nobody anything.
-  const [priority, setPriority] = useState("routine");
+  const [priority, setPriority] = useState("bls");
   const [mrn, setMrn] = useState("");
   const [requirements, setRequirements] = useState([]);
   // Free text for the "Other" requirement, and which call the desk has the
@@ -12542,7 +12574,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   onClick={() => {
                     setCallKind(k.key);
                     setCallCategory(k.cat);
-                    if (k.key !== "scheduled") setPriority("critical");
+                    // An emergency, inside the campus or out, is an ALS run.
+                    if (k.key !== "scheduled") setPriority("als");
                   }}
                 >
                   {k.label}
@@ -12616,10 +12649,12 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
               />
             </div>
             <div style={{ flex: 1 }}>
-              <label style={styles.label}>Priority</label>
+              <label style={styles.label}>Level of care</label>
               <select style={styles.input} value={priority} onChange={(e) => setPriority(e.target.value)}>
-                {Object.entries(PRIORITY).map(([k, v]) => (
-                  <option key={k} value={k}>{v.label}</option>
+                {PRIORITY_CHOICES.map((k) => [k, PRIORITY[k]]).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v.label}{v.desc ? ` — ${v.desc}` : ""}
+                  </option>
                 ))}
               </select>
               {/* The desk sets the priority but the crew's tablet is what has to
@@ -12756,7 +12791,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   <span
                     style={{
                       ...styles.waitDot,
-                      background: (PRIORITY[r.priority] || PRIORITY.routine).color,
+                      background: (PRIORITY[priorityKeyOf(r)]).color,
                     }}
                   />
                   <span style={styles.waitBody}>
@@ -12793,10 +12828,10 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         {active.filter((r) => r.id === openCallId).map((req) => {
           const assignedUnit = units.find((u) => u.id === req.assignedUnitId);
           return (
-            <div key={req.id} style={{ ...styles.callCard, borderLeftColor: PRIORITY[req.priority].color }}>
+            <div key={req.id} style={{ ...styles.callCard, borderLeftColor: PRIORITY[priorityKeyOf(req)].color }}>
               <div style={styles.callCardTop}>
                 <div style={styles.callCardNature}>{req.nature}</div>
-                <span style={{ ...styles.pill, background: PRIORITY[req.priority].color }}>{PRIORITY[req.priority].label}</span>
+                <span style={{ ...styles.pill, background: PRIORITY[priorityKeyOf(req)].color }}>{PRIORITY[priorityKeyOf(req)].label}</span>
               </div>
               <div style={styles.callCardMeta}>
                 <CallRoute req={req} />
@@ -14249,7 +14284,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       {!myRequest ? (
         <div style={styles.emptyState}>No active call. You'll be notified here the moment dispatch assigns one.</div>
       ) : (
-        <div style={{ ...styles.callCard, borderLeftColor: PRIORITY[myRequest.priority].color, animation: "slide-in 0.25s ease" }}>
+        <div style={{ ...styles.callCard, borderLeftColor: PRIORITY[priorityKeyOf(myRequest)].color, animation: "slide-in 0.25s ease" }}>
           <div style={styles.callCardTop}>
             <div style={styles.callCardNature}>{myRequest.nature}</div>
             <div style={styles.callCardTopRight}>
@@ -14266,7 +14301,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
                   onToggle={() => setEscOpen((v) => !v)}
                 />
               )}
-              <span style={{ ...styles.pill, background: PRIORITY[myRequest.priority].color }}>{PRIORITY[myRequest.priority].label}</span>
+              <span style={{ ...styles.pill, background: PRIORITY[priorityKeyOf(myRequest)].color }}>{PRIORITY[priorityKeyOf(myRequest)].label}</span>
             </div>
           </div>
           <div style={styles.callCardMeta}>
@@ -14778,8 +14813,8 @@ function AlarmOverlay({ request, onAcknowledge, assisting, withUnit }) {
             Second ambulance requested{withUnit ? ` by ${withUnit}` : ""} — go to this call
           </div>
         )}
-        <div style={{ ...styles.alarmPriority, background: PRIORITY[request.priority].color }}>
-          {PRIORITY[request.priority].label}
+        <div style={{ ...styles.alarmPriority, background: PRIORITY[priorityKeyOf(request)].color }}>
+          {PRIORITY[priorityKeyOf(request)].label}
         </div>
         <div style={styles.alarmNature}>{request.nature}</div>
         <div style={styles.alarmRoute}>
@@ -17400,7 +17435,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         {active.filter((r) => r.id === adminOpenId).map((req) => {
           const unit = units.find((u) => u.id === req.assignedUnitId);
           return (
-            <div key={req.id} style={{ ...styles.callCard, borderLeftColor: PRIORITY[req.priority].color }}>
+            <div key={req.id} style={{ ...styles.callCard, borderLeftColor: PRIORITY[priorityKeyOf(req)].color }}>
               <div style={styles.callCardTop}>
                 <div style={styles.callCardNature}>{req.nature}</div>
                 <div style={styles.callCardTopRight}>
@@ -17410,7 +17445,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
                     open={escFor === req.id}
                     onToggle={() => setEscFor(escFor === req.id ? null : req.id)}
                   />
-                  <span style={{ ...styles.pill, background: PRIORITY[req.priority].color }}>{PRIORITY[req.priority].label}</span>
+                  <span style={{ ...styles.pill, background: PRIORITY[priorityKeyOf(req)].color }}>{PRIORITY[priorityKeyOf(req)].label}</span>
                 </div>
               </div>
               <div style={styles.callCardMeta}>
