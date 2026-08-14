@@ -11557,6 +11557,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Which page the bar is showing. Everything the desk needs to answer a call
   // stays on the board; the rest lives on its own page.
   const onPage = (k) => !page || page === k;
+
+
   // One clock for the whole board. A board where nothing counts reads as
   // broken, and the elapsed time is the question the desk is being asked all
   // shift — so it moves. A single ticker rather than one per tile, because
@@ -11618,7 +11620,18 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   const active = stationRequests
     .filter((r) => r.status !== "completed")
     .sort((a, b) => b.createdAt - a.createdAt);
-  // Every team that isn't already out on a call, whatever their status board
+
+  // Three groups, worked out once: trucks on a call, calls with no truck yet,
+  // and trucks standing by. The board shows the first two in full and the third
+  // as a single line of names.
+  const working = stationUnits
+    .map((unit) => ({ unit, req: active.find((r) => r.assignedUnitId === unit.id) }))
+    .filter((x) => x.req)
+    .sort((a, b) => callStartTs(a.req) - callStartTs(b.req));
+  const waiting = active.filter((r) => !r.assignedUnitId);
+  const standing = stationUnits.filter(
+    (u) => isStaffed(u) && !active.some((r) => r.assignedUnitId === u.id)
+  );  // Every team that isn't already out on a call, whatever their status board
   // colour says. Dispatch needs the full list to be able to send anyone at all:
   // filtering to "available" only meant a signed-on crew whose status hadn't
   // been reset was invisible from the desk.
@@ -12465,13 +12478,9 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           finding the one the phone is about meant scrolling past the other
           eight. Tiles put them all in view at once; tapping one gives back
           exactly the card it always was. */}
-      {/* Waiting for a team. These have no truck, so they cannot sit in the
-          fleet — and putting them above it would push the trucks off screen. */}
-      {!active.some((r) => r.id === openCallId) &&
-        active.filter((r) => !r.assignedUnitId).length > 0 && (
+      {!active.some((r) => r.id === openCallId) && waiting.length > 0 && (
           <div style={styles.waitList}>
-            {active
-              .filter((r) => !r.assignedUnitId)
+            {waiting
               .map((r) => (
                 <button key={r.id} style={styles.waitRow} onClick={() => setOpenCallId(r.id)}>
                   <span style={styles.waitDot} />
@@ -12488,20 +12497,42 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         )}
 
       {!active.some((r) => r.id === openCallId) && (
-        <div style={styles.fleetList}>
-          {stationUnits.map((u) => {
-            const on = active.find((r) => r.assignedUnitId === u.id);
-            return (
-              <FleetRow
-                key={u.id}
-                unit={u}
-                req={on}
-                now={nowTick}
-                onOpen={() => on && setOpenCallId(on.id)}
-              />
-            );
-          })}
-        </div>
+        <React.Fragment>
+          {/* Only the trucks that are working. A standing ambulance needs no
+              row of its own — it needs one word, once, at the bottom. */}
+          {working.length > 0 && (
+            <div style={styles.fleetList}>
+              {working.map(({ unit, req }) => (
+                <FleetRow
+                  key={unit.id}
+                  unit={unit}
+                  req={req}
+                  now={nowTick}
+                  onOpen={() => setOpenCallId(req.id)}
+                />
+              ))}
+            </div>
+          )}
+
+          {working.length === 0 && waiting.length === 0 && (
+            <div style={styles.calmBoard}>
+              <div style={styles.calmTitle}>Nothing running</div>
+              <div style={styles.calmSub}>
+                {standing.length} {standing.length === 1 ? "team" : "teams"} at station.
+              </div>
+            </div>
+          )}
+
+          {standing.length > 0 && (
+            <div style={styles.standingRow}>
+              {standing.map((u) => (
+                <span key={u.id} style={styles.standingChip}>
+                  {u.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </React.Fragment>
       )}
 
       {active.some((r) => r.id === openCallId) && (
@@ -17582,14 +17613,15 @@ const styles = {
     // The lit edge of the screen. A highlight in the top corner gives the
     // gradient somewhere to come from, so it reads as a surface catching light
     // rather than as a coloured rectangle.
-    background:
-      "radial-gradient(120% 90% at 85% -20%, rgba(61,220,151,.20) 0%, transparent 55%), " +
-      "linear-gradient(165deg, #0E6B4F 0%, #0A5540 52%, #08402F 100%)",
+    // Translucent, blurred, flat to the edge. The curved green slab was the
+    // loudest thing on every screen and said nothing that changes; the board
+    // underneath is now visible through the bar as it scrolls.
+    background: "rgba(14,18,23,.78)",
+    backdropFilter: "saturate(180%) blur(24px)",
+    WebkitBackdropFilter: "saturate(180%) blur(24px)",
+    borderBottom: "0.5px solid rgba(255,255,255,.055)",
     paddingTop: "env(safe-area-inset-top)",
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
-    boxShadow: "0 18px 44px rgba(0,0,0,.55)",
-    marginBottom: 2,
+    marginBottom: 0,
   },
   // The masthead: a white plate the full width of the board, a crest hard
   // against each end and the service name held in the middle of it. Three grid
@@ -17602,12 +17634,12 @@ const styles = {
     // The crests are printed artwork and need a light plate to read against, but
     // a hard white slab on a green field looks pasted on. A soft, slightly
     // translucent panel with a warm edge sits in the masthead rather than on it.
-    background: "rgba(255,255,255,.94)",
-    border: "1px solid rgba(255,255,255,.55)",
-    borderRadius: 14,
-    margin: "10px 14px 2px",
-    padding: "7px 13px",
-    boxShadow: "0 4px 14px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.9)",
+    background: "transparent",
+    border: "none",
+    borderRadius: 0,
+    margin: "10px 16px 0",
+    padding: 0,
+    boxShadow: "none",
     display: "grid",
     gridTemplateColumns: "1fr auto 1fr",
     alignItems: "center",
@@ -17622,21 +17654,25 @@ const styles = {
   },
   brandTitle: {
     fontFamily: display,
-    fontWeight: 700,
-    fontSize: 22,
-    letterSpacing: 2.4,
-    color: "#07090C",
+    fontWeight: 600,
+    fontSize: 13,
+    letterSpacing: 1.6,
+    color: "#5A6775",
+    textTransform: "uppercase",
     whiteSpace: "nowrap",
   },
   // Read from across a control room, so the crests are sized to be recognised
   // at that distance rather than to sit politely in a corner.
-  brandLogoWide: { height: 74, width: "auto", display: "block", justifySelf: "start" },
-  brandLogoBadge: { height: 84, width: "auto", display: "block", justifySelf: "end" },
+  // Sized to identify, not to announce. At 74 and 84 pixels the crests were the
+  // largest thing on a phone screen and pushed the board below the fold; the
+  // department knows whose app this is.
+  brandLogoWide: { height: 26, width: "auto", display: "block", justifySelf: "start", opacity: 0.9 },
+  brandLogoBadge: { height: 28, width: "auto", display: "block", justifySelf: "end", opacity: 0.9 },
   headerBar: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "8px 20px",
+    padding: "2px 16px 12px",
     flexWrap: "wrap",
     gap: 10,
   },
@@ -19577,6 +19613,22 @@ const styles = {
   callTileHandover: {
     fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#FF9F0A",
   },
+  calmBoard: {
+    textAlign: "center", padding: "38px 20px",
+    border: "0.5px dashed rgba(255,255,255,.10)", borderRadius: 18, marginTop: 4,
+  },
+  calmTitle: { fontSize: 17, fontWeight: 600, color: "#93A2B1", letterSpacing: -0.25 },
+  calmSub: { fontSize: 14, color: "#5A6775", marginTop: 5 },
+  standingRow: {
+    display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12, alignItems: "center",
+  },
+  standingChip: {
+    fontSize: 12.5, fontWeight: 600, letterSpacing: -0.1,
+    padding: "6px 12px", borderRadius: 999,
+    background: "rgba(48,209,88,.11)", color: "#30D158",
+    border: "0.5px solid rgba(48,209,88,.26)",
+  },
+
   waitList: {
     background: "rgba(255,159,10,.06)",
     border: "0.5px solid rgba(255,159,10,.28)",
@@ -20379,27 +20431,29 @@ const styles = {
     minHeight: "100vh",
     // The same lit ground as the board behind it, so signing in feels like the
     // front door of one building rather than a separate app.
-    background:
-      "radial-gradient(760px 460px at 82% -12%, rgba(14,107,79,.30) 0%, transparent 60%), " +
-      "radial-gradient(900px 620px at 12% 12%, #101E2C 0%, transparent 58%), #07090C",
+    // No card, no gradient, no plate. The sign-in is a front door: a name, a
+    // question, three large targets. A dialogue box floating on a coloured field
+    // is what an app looked like when every screen had to be a window.
+    background: "#07090C",
     display: "flex",
-    alignItems: "center",
+    flexDirection: "column",
     justifyContent: "center",
-    fontFamily: mono,
+    fontFamily: display,
     color: "#F7F9FB",
-    padding: 20,
+    padding: "40px 22px calc(40px + env(safe-area-inset-bottom))",
   },
   loginCard: {
     width: "100%",
-    maxWidth: 400,
-    background: "linear-gradient(180deg, #141A21, #0E1217)",
-    border: "1px solid rgba(255,255,255,.09)",
-    borderRadius: 24,
-    padding: 26,
-    boxShadow: "0 24px 60px rgba(0,0,0,.6)",
+    maxWidth: 460,
+    margin: "0 auto",
+    background: "none",
+    border: "none",
+    borderRadius: 0,
+    padding: 0,
+    boxShadow: "none",
   },
   loginHeader: { display: "flex", alignItems: "center", gap: 8 },
-  loginHospitalLogo: { height: 68, width: "auto", display: "block" },
+  loginHospitalLogo: { height: 34, width: "auto", display: "block" },
   loginDeptLogo: { height: 96, width: "auto", display: "block" },
   loginLogoDivider: { width: 1, alignSelf: "stretch", background: "#D8DCE1" },
   logoPlateLogin: {
@@ -20416,11 +20470,11 @@ const styles = {
   loginHeaderText: { fontFamily: display, fontWeight: 700, fontSize: 18, letterSpacing: 0.5 },
   loginSub: { color: "#93A2B1", fontSize: 14, marginTop: 6 },
   roleBtn: {
-    background: "linear-gradient(180deg, #16232F, #11161C)",
-    border: "1px solid rgba(255,255,255,.09)",
-    borderRadius: 16,
-    padding: "16px 16px",
-    minHeight: 64,
+    background: "#0E1217",
+    border: "0.5px solid rgba(255,255,255,.08)",
+    borderRadius: 18,
+    padding: "20px",
+    minHeight: 78,
     color: "#F7F9FB",
     display: "flex",
     justifyContent: "space-between",
@@ -20431,7 +20485,7 @@ const styles = {
     boxShadow: "0 6px 18px rgba(0,0,0,.3)",
     transition: "transform .16s cubic-bezier(.22,1,.36,1), border-color .16s",
   },
-  roleBtnTitle: { fontWeight: 750, fontSize: 16.5, letterSpacing: -0.2 },
+  roleBtnTitle: { fontWeight: 600, fontSize: 20, letterSpacing: -0.42 },
   roleBtnSub: { fontSize: 13, color: "#93A2B1", marginTop: 2 },
   loginActions: { display: "flex", gap: 8, marginTop: 16 },
   loginFootnote: { fontSize: 12.5, color: "#5A6775", marginTop: 20, lineHeight: 1.5 },
