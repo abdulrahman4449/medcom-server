@@ -7536,7 +7536,16 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
           return (
             <button
               key={key}
-              style={{ ...styles.roleBtn, borderColor: key === suggested ? meta.color : "var(--hair-2)" }}
+              style={{
+                ...styles.roleBtn,
+                ...(key === suggested
+                  ? {
+                      borderColor: meta.color,
+                      borderWidth: 2,
+                      background: `color-mix(in srgb, ${meta.color} 14%, var(--panel))`,
+                    }
+                  : { borderColor: "var(--hair-2)" }),
+              }}
               disabled={busy}
               onClick={() => onPick(key)}
             >
@@ -7544,6 +7553,7 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
                 <div style={styles.roleBtnTitle}>
                   <span style={{ color: meta.color, marginRight: 6 }}>{meta.glyph}</span>
                   {meta.label} · {meta.window}
+                  {key === suggested && <span style={styles.shiftNowTag}>NOW</span>}
                 </div>
                 <div style={styles.roleBtnSub}>{state}</div>
               </div>
@@ -12021,6 +12031,70 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
     if (done) setCoverage((await readKey(COVERAGE_KEY, [])) || []);
   }
 
+  // Confirming a call a crew opened themselves.
+  //
+  // Confirming leaves it exactly as it is and marks it acknowledged. Declining
+  // closes it with a reason — the crew were somewhere doing something, so it
+  // does not simply vanish; it ends up on the log as a call that was stood down,
+  // which is the honest record of what happened.
+  async function confirmCrewRaise(req, confirm) {
+    const now = Date.now();
+    const fresh = await readKey("ems:requests", requests);
+    if (!confirm) {
+      const why = window.prompt(
+        `Not a call?\n\n${req.nature}\n\nSay why — the crew see this, and it goes on the log.`
+      );
+      if (why === null) return;
+      if (!why.trim()) {
+        window.alert("The crew need a reason.");
+        return;
+      }
+      await saveRequests(
+        fresh.map((r) =>
+          r.id === req.id
+            ? {
+                ...r,
+                status: "completed",
+                closedBy: user.name || "Dispatch",
+                closeReason: `Not a call — ${why.trim()}`,
+                crewRaise: { ...r.crewRaise, status: "declined", answerNote: why.trim() },
+                times: { ...(r.times || {}), backInService: now },
+              }
+            : r
+        )
+      );
+      const freshUnits = await readKey("ems:units", units);
+      await saveUnits(
+        freshUnits.map((u) =>
+          u.id === req.assignedUnitId ? { ...u, status: "available", assignedRequestId: null } : u
+        )
+      );
+      await addLog(`Crew-raised call closed by ${user.name || "Dispatch"} — ${why.trim()}`, "status");
+      return;
+    }
+    await saveRequests(
+      fresh.map((r) =>
+        r.id === req.id
+          ? {
+              ...r,
+              crewRaise: {
+                ...r.crewRaise,
+                status: "confirmed",
+                answeredAt: now,
+                answeredBy: user.name || "Dispatch",
+              },
+            }
+          : r
+      )
+    );
+    await addLog(
+      `${req.nature} confirmed onto the board by ${user.name || "Dispatch"} — raised by ${
+        req.crewRaise.byName || "the crew"
+      }`,
+      "assign"
+    );
+  }
+
   // Answering a request to stand somebody down. Approving is what actually
   // takes them off the seat — their hours close at that moment, not at the
   // moment they asked, because they were on the truck until it was agreed.
@@ -12526,6 +12600,37 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {onPage("board") && (
         <>
+      {/* A crew have come across something and started the clock themselves.
+          The desk confirms it onto the board — the call is already running, so
+          this is an acknowledgement, not a permission. */}
+      {stationRequests
+        .filter((r) => r.crewRaise && r.crewRaise.status === "pending")
+        .map((r) => {
+          const u = stationUnits.find((x) => x.id === r.assignedUnitId);
+          return (
+            <div key={`cr-${r.id}`} style={styles.crewRaiseAsk}>
+              <div style={styles.crewRaiseHead}>
+                🚨 {u ? u.name : "A team"} found an emergency
+              </div>
+              <div style={styles.crewRaiseWhat}>
+                <strong>{r.nature}</strong>
+                {r.locationFrom ? ` · ${r.locationFrom}` : ""}
+                <span style={styles.oosAskWho}>
+                  {" "}· {r.crewRaise.byName} at {clockStr(r.crewRaise.at)}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                <button style={styles.primaryBtnSm} onClick={() => confirmCrewRaise(r, true)}>
+                  Confirm — put it on the board
+                </button>
+                <button style={styles.ghostBtnSm} onClick={() => confirmCrewRaise(r, false)}>
+                  Not a call
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
       {/* Crews asking for a partner to be stood down. Same shape as the
           out-of-service request, because it is the same kind of decision: who
           is crewed, and the desk is answerable for it. */}
@@ -13448,7 +13553,19 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       createdBy: user.name || "Crew",
       // Raised by the crew who are already standing on it, so the first three
       // stamps are true at the moment it opens.
+      //
+      // Pending the desk's confirmation, not the desk's permission. The crew
+      // are with a patient either way and their clock is already running — what
+      // the desk confirms is that the call is on the board, has a number, and
+      // is being counted. A crew waiting for a yes before they start treating
+      // is the one outcome this must never produce.
       raisedByCrew: true,
+      crewRaise: {
+        status: "pending",
+        byName: user.name || "",
+        byAccountId: user.accountId || "",
+        at: now,
+      },
       assignedUnitId: myUnit.id,
       assignedAt: now,
       times: { enroute: now, arrival: now },
@@ -14243,6 +14360,16 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           <Circle size={10} fill={statusMeta(myUnit.status).color} color={statusMeta(myUnit.status).color} />
           <span style={{ fontSize: 17, fontWeight: 700, color: statusMeta(myUnit.status).color }}>{statusMeta(myUnit.status).label}</span>
         </div>
+        {/* Waiting on the desk to acknowledge a call the crew opened. The clock
+            is already running and the patient is already theirs — this only
+            says the board has not caught up yet. */}
+        {myRequest && myRequest.crewRaise && myRequest.crewRaise.status === "pending" && (
+          <div style={styles.oosPending}>
+            <Clock size={12} style={{ verticalAlign: -1, marginRight: 6 }} />
+            Waiting for the desk to confirm this onto the board. Carry on — your times are recording.
+          </div>
+        )}
+
         {/* The desk's answer, where the crew will see it.
             A refusal in particular must reach them — they asked for a reason,
             and being told no without one teaches only not to ask. It stays until
@@ -19948,6 +20075,14 @@ const styles = {
   oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
   oosRefusedAsked: { fontSize: 12.5, color: "#C6A9AD", marginTop: 6, marginBottom: 10 },
 
+  crewRaiseAsk: {
+    background: "color-mix(in srgb, var(--crit) 14%, var(--panel))",
+    border: "1px solid color-mix(in srgb, var(--crit) 55%, transparent)",
+    borderRadius: 16, padding: 14, marginBottom: 12,
+  },
+  crewRaiseHead: { fontSize: 15.5, fontWeight: 800, color: "var(--crit)" },
+  crewRaiseWhat: { fontSize: 13.5, color: "var(--ink-2)", marginTop: 6, lineHeight: 1.5 },
+
   oosAsk: {
     background: "linear-gradient(180deg,#2A2410,#181405)",
     border: "1px solid var(--gold)", borderRadius: 16, padding: 14, marginBottom: 12,
@@ -20366,10 +20501,13 @@ const styles = {
     gap: 12,
     marginTop: 10,
     padding: "16px 16px",
-    background: "linear-gradient(180deg, #1B3B4B, #142B38)",
-    border: "1px solid rgba(53,196,232,.55)",
+    // Filled with the moving colour and written on in white, in both themes.
+    // It was a dark slab with light text, which on a white ground left the
+    // writing barely there — on the one button a crew presses at speed.
+    background: "linear-gradient(180deg, var(--flow), color-mix(in srgb, var(--flow) 78%, black))",
+    border: "1px solid color-mix(in srgb, var(--flow) 70%, black)",
     borderRadius: 12,
-    color: "var(--ink)",
+    color: "#FFFFFF",
     fontSize: 17,
     fontWeight: 800,
     letterSpacing: -0.2,
@@ -21083,6 +21221,11 @@ const styles = {
     textAlign: "left",
     boxShadow: "0 6px 18px var(--lift)",
     transition: "transform .16s cubic-bezier(.22,1,.36,1), border-color .16s",
+  },
+  shiftNowTag: {
+    marginLeft: 8, fontSize: 11, fontWeight: 800, letterSpacing: 0.8,
+    padding: "2px 8px", borderRadius: 999,
+    background: "var(--ink)", color: "var(--panel)",
   },
   roleBtnTitle: { fontWeight: 600, fontSize: 20, letterSpacing: -0.42 },
   roleBtnSub: { fontSize: 13, color: "var(--ink-3)", marginTop: 2 },
