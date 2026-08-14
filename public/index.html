@@ -3861,7 +3861,9 @@ const SERVICE_FILLS = {
 const CALLTYPE_FILLS = {
   A: ["FF2E7D32", "FFFFFFFF"],
   B: ["FF1565C0", "FFFFFFFF"],
-  C: ["FFF2C037", "FF1A1A1A"],
+  // C is the critical call; CCT is the critical transfer. Same level of work,
+  // so the same red — a reader should not have to learn two colours for one idea.
+  C: ["FFC62828", "FFFFFFFF"],
   D: ["FF6A1B9A", "FFFFFFFF"],
   E: ["FF8D6E63", "FFFFFFFF"],
   NA: ["FF4A4A4A", "FFFFFFFF"],
@@ -3918,19 +3920,22 @@ function titleSheet(sheet, title, subtitle) {
   if (t) {
     t.s = {
       font: { name: XL_FONT, sz: 16, bold: true, color: { rgb: "FF16222E" } },
-      alignment: { vertical: "center" },
+      alignment: { vertical: "center", horizontal: "left", wrapText: false },
     };
   }
   const sub = sheet["A2"];
   if (sub) {
     sub.s = {
       font: { name: XL_FONT, sz: 10, color: { rgb: "FF5A6B7B" } },
-      alignment: { vertical: "center" },
+      alignment: { vertical: "center", horizontal: "left", wrapText: false },
     };
   }
+  // Room for the title at its own size. The row was 26 points high carrying
+  // 16-point type, so a station name with a descender in it was being clipped
+  // rather than shown.
   const rows = sheet["!rows"] || [];
-  rows[0] = { ...(rows[0] || {}), hpt: 26 };
-  rows[1] = { ...(rows[1] || {}), hpt: 16 };
+  rows[0] = { ...(rows[0] || {}), hpt: 34 };
+  rows[1] = { ...(rows[1] || {}), hpt: 20 };
   sheet["!rows"] = rows;
   return sheet;
 }
@@ -3994,7 +3999,11 @@ function gridLogSheet(sheet, headerRowIndex) {
         ...(cell.s || {}),
         border: { top: hair, bottom: hair, left: hair, right: hair },
         font: { name: XL_FONT, sz: 10, ...(((cell.s || {}).font) || {}) },
+        // Centred, horizontally and vertically. A sheet of times, codes and
+        // short names reads as a grid when the values line up on an axis; left
+        // alignment leaves every column looking ragged against its heading.
         alignment: {
+          horizontal: "center",
           vertical: "center",
           wrapText: true,
           ...(((cell.s || {}).alignment) || {}),
@@ -7228,10 +7237,6 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
           </div>
         )}
 
-        <div style={styles.loginFootnote}>
-          This is a shared board — anyone signed in can see units, calls, and the log. The service
-          runs 24 hours in two 12-hour shifts: day {SHIFTS.day.window}, night {SHIFTS.night.window}.
-        </div>
       </div>
     </div>
   );
@@ -14164,11 +14169,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
               req={myRequest}
               onSet={setCoding}
               missing={codingBlocking}
-              hint={
-                assisting
-                  ? "You are the second ambulance on this call, so this is usually a D. Set the loaded kilometers for the distance you ran — the desk can correct either code."
-                  : "Set these while the call is in front of you — both are required before you can go back in service. The desk can set or correct them too, and they go straight onto the CAT. OF CALL and KILO METER columns of the dispatch log."
-              }
+              hint={assisting ? "Second ambulance — usually a D." : ""}
             />
           )}
 
@@ -17141,23 +17142,46 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         STATIONS.map((st) => {
           const fleet = atStation(units, st.key);
           if (!fleet.length) return null;
+          // Working trucks only, as the desk sees it. A standing ambulance is a
+          // name in a line, not a row of its own.
+          const busy = fleet
+            .map((unit) => ({ unit, req: active.find((r) => r.assignedUnitId === unit.id) }))
+            .filter((x) => x.req)
+            .sort((a, b) => callStartTs(a.req) - callStartTs(b.req));
+          const idle = fleet.filter(
+            (u) => isStaffed(u) && !active.some((r) => r.assignedUnitId === u.id)
+          );
           return (
-            <div key={`fleet-${st.key}`} style={{ marginTop: 12 }}>
+            <div key={`fleet-${st.key}`} style={{ marginTop: 14 }}>
               <div style={styles.uhuStationHead}>{st.label}</div>
-              <div style={styles.fleetList}>
-                {fleet.map((u) => {
-                  const on = active.find((r) => r.assignedUnitId === u.id);
-                  return (
+              {busy.length > 0 && (
+                <div style={styles.fleetList}>
+                  {busy.map(({ unit, req }) => (
                     <FleetRow
-                      key={u.id}
-                      unit={u}
-                      req={on}
+                      key={unit.id}
+                      unit={unit}
+                      req={req}
                       now={adminTick}
-                      onOpen={() => on && setAdminOpenId(on.id)}
+                      onOpen={() => setAdminOpenId(req.id)}
                     />
-                  );
-                })}
-              </div>
+                  ))}
+                </div>
+              )}
+              {busy.length === 0 && (
+                <div style={styles.calmBoard}>
+                  <div style={styles.calmTitle}>Nothing running</div>
+                  <div style={styles.calmSub}>
+                    {idle.length} {idle.length === 1 ? "team" : "teams"} at station.
+                  </div>
+                </div>
+              )}
+              {idle.length > 0 && busy.length > 0 && (
+                <div style={styles.standingRow}>
+                  {idle.map((u) => (
+                    <span key={u.id} style={styles.standingChip}>{u.name}</span>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
