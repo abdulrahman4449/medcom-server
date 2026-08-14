@@ -4128,7 +4128,6 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "BOOKING NOTES",
     "CLOSED BY",
     "CLOSE REASON",
-    "STATION",
   ];
 
   const rowFor = (r) => {
@@ -4187,7 +4186,6 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       r.bookingNotes || "",
       r.closedBy || "",
       r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
-      stationLabel(stationOf(r)),
     ];
   };
 
