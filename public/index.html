@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>MEDCOM Dispatch</title>
 <style>
-  html, body, #root { height: 100%; margin: 0; background: #070D13; }
+  html, body, #root { height: 100%; margin: 0; background: #07090C; }
   * { box-sizing: border-box; }
 </style>
 
@@ -879,9 +879,9 @@ const CHECKLIST_PARTS = [
 ];
 
 const CHECK_ANSWERS = [
-  { key: "available", label: "Available", short: "Available", color: "#3DDC97" },
-  { key: "unavailable", label: "Not available", short: "Missing", color: "#FF4D5E" },
-  { key: "incomplete", label: "Not complete", short: "Partial", color: "#FFB020" },
+  { key: "available", label: "Available", short: "Available", color: "#30D158" },
+  { key: "unavailable", label: "Not available", short: "Missing", color: "#FF453A" },
+  { key: "incomplete", label: "Not complete", short: "Partial", color: "#FF9F0A" },
 ];
 
 function checklistPartForSeat(seat) {
@@ -1508,17 +1508,17 @@ function useSoundLevel() {
 // ---------- constants ----------
 
 const STATUS = {
-  available: { label: "AVAILABLE", color: "#3DDC97" },
-  dispatched: { label: "DISPATCHED", color: "#FFB020" },
-  enroute: { label: "EN ROUTE", color: "#35C4E8" },
-  onscene: { label: "ON SCENE", color: "#FF4D5E" },
+  available: { label: "AVAILABLE", color: "#30D158" },
+  dispatched: { label: "DISPATCHED", color: "#FF9F0A" },
+  enroute: { label: "EN ROUTE", color: "#0A84FF" },
+  onscene: { label: "ON SCENE", color: "#FF453A" },
   transporting: { label: "TRANSPORTING", color: "#8B5CF6" },
   oos: { label: "OUT OF SERVICE", color: "#64748B" },
 };
 
 const PRIORITY = {
-  critical: { label: "CRITICAL", color: "#FF4D5E" },
-  urgent: { label: "URGENT", color: "#FFB020" },
+  critical: { label: "CRITICAL", color: "#FF453A" },
+  urgent: { label: "URGENT", color: "#FF9F0A" },
   routine: { label: "ROUTINE", color: "#64748B" },
 };
 
@@ -1749,10 +1749,10 @@ async function verifyCallEditOn({ req, entry, accept, who, requests, saveRequest
 }
 
 const REQ_STATUS = {
-  pending: { label: "PENDING", color: "#FFB020" },
-  assigned: { label: "ASSIGNED", color: "#35C4E8" },
-  enroute: { label: "EN ROUTE", color: "#35C4E8" },
-  onscene: { label: "ON SCENE", color: "#FF4D5E" },
+  pending: { label: "PENDING", color: "#FF9F0A" },
+  assigned: { label: "ASSIGNED", color: "#0A84FF" },
+  enroute: { label: "EN ROUTE", color: "#0A84FF" },
+  onscene: { label: "ON SCENE", color: "#FF453A" },
   transporting: { label: "TRANSPORTING", color: "#8B5CF6" },
   arrived: { label: "ARRIVED AT DESTINATION", color: "#14B8A6" },
   completed: { label: "COMPLETED", color: "#64748B" },
@@ -1900,9 +1900,9 @@ const ADMITTED_UNDER = fromSheetList([
 ]);
 
 const CALL_TYPES = [
-  { key: "A", name: "ALS", desc: "Advanced life support", color: "#FF4D5E" },
-  { key: "B", name: "BLS", desc: "Basic life support", color: "#35C4E8" },
-  { key: "C", name: "CRITICAL", desc: "Critical care", color: "#FF4D5E" },
+  { key: "A", name: "ALS", desc: "Advanced life support", color: "#FF453A" },
+  { key: "B", name: "BLS", desc: "Basic life support", color: "#0A84FF" },
+  { key: "C", name: "CRITICAL", desc: "Critical care", color: "#FF453A" },
   { key: "D", name: "AUXILIARY", desc: "Additional ambulance (auxiliary)", color: "#8B5CF6" },
   { key: "E", name: "NO TRANSPORT", desc: "Ambulance responded — no transport", color: NO_TRANSPORT.color },
   { key: "NA", name: "N/A", desc: "Not applicable", color: "#64748B" },
@@ -2195,7 +2195,7 @@ const SHIFT_MS = SHIFT_HOURS * 60 * 60 * 1000;
 const SHIFTS = {
   day: {
     key: "day", label: "DAY SHIFT", short: "DAY", glyph: "☀",
-    startHour: 7, window: "07:00 – 19:00", color: "#FFB020",
+    startHour: 7, window: "07:00 – 19:00", color: "#FF9F0A",
   },
   night: {
     key: "night", label: "NIGHT SHIFT", short: "NIGHT", glyph: "☾",
@@ -2206,10 +2206,10 @@ const SHIFT_KEYS = ["day", "night"];
 
 // What each kind of shift entry on the log sheet is called.
 const SHIFT_EVENTS = {
-  on: { label: "SIGNED ON", color: "#3DDC97" },
-  off: { label: "SIGNED OFF", color: "#9DB2C4" },
-  swap: { label: "SHIFT SWAP", color: "#35C4E8" },
-  overtime: { label: "OVERTIME", color: "#FF4D5E" },
+  on: { label: "SIGNED ON", color: "#30D158" },
+  off: { label: "SIGNED OFF", color: "#93A2B1" },
+  swap: { label: "SHIFT SWAP", color: "#0A84FF" },
+  overtime: { label: "OVERTIME", color: "#FF453A" },
 };
 
 // How long after a seat is vacated a fresh sign-on still counts as taking
@@ -2587,16 +2587,16 @@ function escalationAwaitsAdmin(esc) {
 // of it: the crew are waiting to hear back, the admins are looking for the ones
 // nobody has answered yet.
 function escalationStateMeta(esc, role) {
-  if (!escalationIsOpen(esc)) return { key: "resolved", label: "RESOLVED", color: "#3DDC97" };
+  if (!escalationIsOpen(esc)) return { key: "resolved", label: "RESOLVED", color: "#30D158" };
   // Answered, and then written back on: it is waiting on the admins again, and
   // saying "REPLIED" on it would read as dealt with when it is not.
   if (escalationAwaitsAdmin(esc) && lastAdminReply(esc)) {
-    return { key: "reopened", label: role === "admin" ? "CREW REPLIED" : "WITH ADMIN", color: "#FFB020" };
+    return { key: "reopened", label: role === "admin" ? "CREW REPLIED" : "WITH ADMIN", color: "#FF9F0A" };
   }
   if (lastAdminReply(esc)) {
-    return { key: "answered", label: role === "admin" ? "REPLIED" : "ADMIN REPLIED", color: "#35C4E8" };
+    return { key: "answered", label: role === "admin" ? "REPLIED" : "ADMIN REPLIED", color: "#0A84FF" };
   }
-  return { key: "open", label: role === "admin" ? "NEEDS A REPLY" : "WITH ADMIN", color: "#FFB020" };
+  return { key: "open", label: role === "admin" ? "NEEDS A REPLY" : "WITH ADMIN", color: "#FF9F0A" };
 }
 
 // Who this board is, as far as escalations are concerned. Built once per view
@@ -6311,9 +6311,9 @@ function GlobalFont() {
       * { box-sizing: border-box; }
       body { margin: 0; }
       ::-webkit-scrollbar { width: 8px; height: 8px; }
-      ::-webkit-scrollbar-thumb { background: #2A3949; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb { background: #28323D; border-radius: 4px; }
       button:focus-visible, select:focus-visible, input:focus-visible {
-        outline: 2px solid #35C4E8;
+        outline: 2px solid #0A84FF;
         outline-offset: 2px;
       }
       @keyframes pulse-dot {
@@ -6920,7 +6920,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
           <img src={DEPT_LOGO} alt="KFSH&RC Ambulance EMS" style={styles.loginDeptLogo} />
         </div>
         <div style={styles.loginHeader}>
-          <Radio size={22} color="#35C4E8" />
+          <Radio size={22} color="#0A84FF" />
           <span style={styles.loginHeaderText}>MEDCOM DISPATCH</span>
         </div>
         <InfoNote label="What is this?">
@@ -6934,19 +6934,19 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Dispatcher</div>
               </div>
-              <ChevronRight size={18} color="#9DB2C4" />
+              <ChevronRight size={18} color="#93A2B1" />
             </button>
             <button style={styles.roleBtn} onClick={() => setRole("team")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Team</div>
               </div>
-              <ChevronRight size={18} color="#9DB2C4" />
+              <ChevronRight size={18} color="#93A2B1" />
             </button>
             <button style={styles.roleBtn} onClick={() => setRole("admin")}>
               <div style={{ textAlign: "left" }}>
                 <div style={styles.roleBtnTitle}>Admin</div>
               </div>
-              <ChevronRight size={18} color="#9DB2C4" />
+              <ChevronRight size={18} color="#93A2B1" />
             </button>
           </div>
         )}
@@ -7036,7 +7036,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                         Continue as {foundAccount.role === "admin" ? "Admin" : "Dispatcher"}
                       </div>
                     </div>
-                    <ChevronRight size={18} color="#9DB2C4" />
+                    <ChevronRight size={18} color="#93A2B1" />
                   </button>
                   <button
                     style={styles.roleBtn}
@@ -7048,7 +7048,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                     <div style={{ textAlign: "left" }}>
                       <div style={styles.roleBtnTitle}>Join a Team</div>
                     </div>
-                    <ChevronRight size={18} color="#9DB2C4" />
+                    <ChevronRight size={18} color="#93A2B1" />
                   </button>
                 </div>
                 <div style={styles.loginActions}>
@@ -7078,7 +7078,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                             {count} {count === 1 ? "medic" : "medics"} on this station
                           </div>
                         </div>
-                        <ChevronRight size={18} color="#9DB2C4" />
+                        <ChevronRight size={18} color="#93A2B1" />
                       </button>
                     );
                   })}
@@ -7104,7 +7104,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                           {crewShiftSummary(u) ? ` · on duty: ${crewShiftSummary(u)}` : ""}
                         </div>
                       </div>
-                      <ChevronRight size={18} color="#9DB2C4" />
+                      <ChevronRight size={18} color="#93A2B1" />
                     </button>
                   ))}
                 </div>
@@ -7150,7 +7150,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog }) {
                                 " — take over"}
                           </div>
                         </div>
-                        <ChevronRight size={18} color="#9DB2C4" />
+                        <ChevronRight size={18} color="#93A2B1" />
                       </button>
                     );
                   })}
@@ -7264,7 +7264,7 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
           return (
             <button
               key={key}
-              style={{ ...styles.roleBtn, borderColor: key === suggested ? meta.color : "#2A3949" }}
+              style={{ ...styles.roleBtn, borderColor: key === suggested ? meta.color : "#28323D" }}
               disabled={busy}
               onClick={() => onPick(key)}
             >
@@ -7275,7 +7275,7 @@ function ShiftPicker({ subject, busy, onPick, onBack }) {
                 </div>
                 <div style={styles.roleBtnSub}>{state}</div>
               </div>
-              <ChevronRight size={18} color="#9DB2C4" />
+              <ChevronRight size={18} color="#93A2B1" />
             </button>
           );
         })}
@@ -7325,15 +7325,15 @@ function Header({ user, clock, onLogout, onChangeShift }) {
         <div style={styles.headerBarGroup}>
           <ShiftChip user={user} onChangeShift={onChangeShift} />
           <div style={styles.clock}>
-            <Clock size={14} color="#9DB2C4" />
+            <Clock size={14} color="#93A2B1" />
             <span>{clock}</span>
           </div>
         </div>
         <div style={styles.headerBarGroup}>
           <SoundChip />
           <div style={styles.userBadge}>
-            <span style={{ color: "#9DB2C4" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
-            <span style={{ color: "#F2F7FB", fontWeight: 600 }}>{user.name}</span>
+            <span style={{ color: "#93A2B1" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
+            <span style={{ color: "#F7F9FB", fontWeight: 600 }}>{user.name}</span>
           </div>
           <button style={styles.iconBtn} onClick={onLogout} title="Sign out">
             <LogOut size={16} />
@@ -7364,8 +7364,8 @@ function SoundChip() {
       <button
         style={{
           ...styles.soundChip,
-          borderColor: muted ? "#FFB020" : "#2A3949",
-          color: muted ? "#FFC24D" : "#F2F7FB",
+          borderColor: muted ? "#FF9F0A" : "#28323D",
+          color: muted ? "#FFC24D" : "#F7F9FB",
         }}
         onClick={() => setOpen((s) => !s)}
         title={
@@ -7439,8 +7439,8 @@ function ShiftChip({ user, onChangeShift }) {
       <button
         style={{
           ...styles.shiftChip,
-          borderColor: ot > 0 ? "#FF4D5E" : meta.color,
-          color: ot > 0 ? "#FCA5A5" : "#F2F7FB",
+          borderColor: ot > 0 ? "#FF453A" : meta.color,
+          color: ot > 0 ? "#FCA5A5" : "#F7F9FB",
         }}
         onClick={() => setOpen((s) => !s)}
         title={`${meta.label} ${shiftWindowStr(user)} — tap to swap shift`}
@@ -7505,9 +7505,9 @@ function StatusBoard({ units }) {
   return (
     <div style={styles.statusBoard}>
       <div style={styles.statusHeadline}>
-        <span style={{ ...styles.statusBig, color: free === 0 ? "#FF4D5E" : "#F2F7FB" }}>{free}</span>
+        <span style={{ ...styles.statusBig, color: free === 0 ? "#FF453A" : "#F7F9FB" }}>{free}</span>
         <span style={styles.statusOf}>
-          of {total} {total === 1 ? "team" : "teams"} free
+          of {total} available
         </span>
       </div>
 
@@ -7709,7 +7709,7 @@ function CallCodingBlock({ req, onSet, title, hint, missing }) {
               type="button"
               style={{
                 ...(on ? styles.codeChoiceOn : styles.codeChoice),
-                borderColor: on ? t.color : isSuggested ? "rgba(245,158,11,0.7)" : "#2A3949",
+                borderColor: on ? t.color : isSuggested ? "rgba(245,158,11,0.7)" : "#28323D",
                 ...(on ? { color: t.color } : null),
               }}
               title={`${t.key} — ${t.desc}`}
@@ -7745,7 +7745,7 @@ function CallCodingBlock({ req, onSet, title, hint, missing }) {
               type="button"
               style={{
                 ...(on ? styles.codeChoiceOn : styles.codeChoice),
-                borderColor: on ? LOADED_KM_COLOR : "#2A3949",
+                borderColor: on ? LOADED_KM_COLOR : "#28323D",
                 ...(on ? { color: LOADED_KM_COLOR } : null),
               }}
               title={`${k.key} — ${k.desc}`}
@@ -8114,7 +8114,7 @@ const RIBBON_REFERENCE_MS = 20 * 60 * 1000;
 
 function ribbonFor(elapsedMs) {
   const pct = Math.max(3, Math.min(100, (elapsedMs / RIBBON_REFERENCE_MS) * 100));
-  const color = pct >= 85 ? "#FF4D5E" : pct >= 55 ? "#FFB020" : "#3DDC97";
+  const color = pct >= 85 ? "#FF453A" : pct >= 55 ? "#FF9F0A" : "#30D158";
   return { pct, color };
 }
 
@@ -8154,6 +8154,110 @@ function BottomBar({ tabs, active, onSelect, action }) {
         );
       })}
     </nav>
+  );
+}
+
+// One row per ambulance.
+//
+// A dispatcher does not ask what calls are running — they ask who can be sent,
+// and the answer is always a truck. So the truck is the row, in the same order
+// and the same place every shift, whether it is out or standing. Rows that
+// reorder as work starts and finishes make the desk find the truck again each
+// time; rows that hold still get learned in a week and read by position alone.
+const CALL_STAGES = [
+  { key: "createdAt", label: "Dispatched" },
+  { key: "enroute", label: "En route" },
+  { key: "arrival", label: "On scene" },
+  { key: "departure", label: "Departed" },
+  { key: "arrivalDestination", label: "Arrived" },
+];
+
+function stageIndexOf(req) {
+  const t = (req && req.times) || {};
+  let i = 0;
+  if (t.enroute) i = 1;
+  if (t.arrival) i = 2;
+  if (t.departure) i = 3;
+  if (t.arrivalDestination) i = 4;
+  return i;
+}
+
+const FLEET_TONES = { crit: "#FF453A", hold: "#FF9F0A", flow: "#0A84FF", ok: "#30D158" };
+
+function fleetToneFor(req) {
+  if (!req) return null;
+  if (assistPending(req)) return "hold";
+  if ((req.priority || "").toLowerCase() === "critical" || isInternalEmergency(req)) return "crit";
+  const t = req.times || {};
+  if (t.departure && !t.arrivalDestination) return "flow";
+  return "ok";
+}
+
+function FleetRow({ unit, req, onOpen, now }) {
+  const tone = fleetToneFor(req);
+  const colour = tone ? FLEET_TONES[tone] : null;
+  const stage = req ? stageIndexOf(req) : -1;
+  const crew = [unit.alpha && unit.alpha.name, unit.bravo && unit.bravo.name]
+    .filter(Boolean)
+    .join(" · ");
+  const elapsed = req ? Math.max(0, (now || Date.now()) - callStartTs(req)) : null;
+
+  return (
+    <button style={{ ...styles.truckRow, ...(req ? null : styles.truckIdle) }} onClick={onOpen}>
+      <span style={{ ...styles.truckEdge, background: colour || "transparent" }} />
+
+      <div style={styles.truckHead}>
+        <span style={styles.truckName}>{unit.name}</span>
+        <span style={styles.truckCrew}>{crew || "No crew signed on"}</span>
+        <span style={{ ...styles.truckClock, color: req ? "#F7F9FB" : "#5A6775" }}>
+          {req ? shortDurationStr(elapsed) : "—"}
+        </span>
+      </div>
+
+      {req ? (
+        <React.Fragment>
+          <div style={styles.truckJob}>
+            <strong style={styles.truckJobNature}>{req.nature}</strong>
+            <span style={styles.truckJobRoute}> · {callRoute(req)}</span>
+          </div>
+
+          {/* The five stamps, filled as far as the crew has got. Always in the
+              same place, so the fleet reads as a set of shapes rather than a
+              column of sentences. */}
+          <div style={styles.rail}>
+            {CALL_STAGES.map((st, i) => (
+              <span
+                key={st.key}
+                style={{
+                  ...styles.railSeg,
+                  background: i <= stage ? colour : "#1C242D",
+                  opacity: i < stage ? 0.7 : 1,
+                }}
+              />
+            ))}
+          </div>
+          <div style={styles.railLabels}>
+            {CALL_STAGES.map((st, i) => (
+              <span key={st.key} style={i === stage ? styles.railLabelOn : styles.railLabel}>
+                {st.label}
+              </span>
+            ))}
+          </div>
+        </React.Fragment>
+      ) : (
+        <div style={styles.truckJob}>
+          <span
+            style={{
+              ...styles.truckChip,
+              ...(unit.status === "available" ? styles.truckChipFree : null),
+            }}
+          >
+            {statusMeta(unit.status).label}
+          </span>
+          {unit.ambulanceNumber ? <span style={styles.truckJobRoute}> · {unit.ambulanceNumber}</span> : null}
+        </div>
+      )}
+    </button>
   );
 }
 
@@ -8240,8 +8344,8 @@ function ChecklistCard({ part, items, onSubmit, onCancel }) {
                     style={{
                       ...styles.checkAnswerBtn,
                       ...(on
-                        ? { background: a.color, color: "#070D13", borderColor: a.color }
-                        : { color: "#61788C", borderColor: "#2A3949" }),
+                        ? { background: a.color, color: "#07090C", borderColor: a.color }
+                        : { color: "#5A6775", borderColor: "#28323D" }),
                     }}
                     onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
                   >
@@ -8610,7 +8714,7 @@ function CallRoute({ req, size }) {
       <span style={styles.routeFrom}>{from || "—"}</span>
       {to && (
         <React.Fragment>
-          <ArrowRight size={glyph} style={{ color: "#61788C" }} />
+          <ArrowRight size={glyph} style={{ color: "#5A6775" }} />
           <span style={styles.routeTo}>{to}</span>
         </React.Fragment>
       )}
@@ -9532,7 +9636,7 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
           somebody has to think of. */}
       <div style={styles.historyFilters}>
         <div style={styles.historyFilterInputWrap}>
-          <Search size={12} style={{ color: "#61788C" }} />
+          <Search size={12} style={{ color: "#5A6775" }} />
           <input
             style={styles.historyFilterInput}
             value={query}
@@ -9882,9 +9986,9 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
 // pre-assigned to it is dispatched, their screen alarms, and the call runs
 // through the normal timeline.
 const SCHED_STATUS = {
-  scheduled: { label: "SCHEDULED", color: "#35C4E8" },
-  releasing: { label: "DISPATCHING…", color: "#FFB020" },
-  released: { label: "DISPATCHED", color: "#3DDC97" },
+  scheduled: { label: "SCHEDULED", color: "#0A84FF" },
+  releasing: { label: "DISPATCHING…", color: "#FF9F0A" },
+  released: { label: "DISPATCHED", color: "#30D158" },
   cancelled: { label: "CANCELLED", color: "#64748B" },
 };
 
@@ -11149,7 +11253,7 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                   key={entry.id}
                   style={{
                     ...styles.callCard,
-                    borderLeftColor: entry.status === "cancelled" ? "#FF4D5E" : priorityMeta.color,
+                    borderLeftColor: entry.status === "cancelled" ? "#FF453A" : priorityMeta.color,
                     ...(soon ? styles.callCardDueSoon : null),
                     // A booking that was called off should not read the same as
                     // one still coming. It stays legible — somebody may need to
@@ -12153,7 +12257,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           now; a second control here saying the same thing in different words is
           how a desk ends up unsure which one is real. */}
       <div style={styles.sectionHeaderRow}>
-        <div style={styles.sectionHeader}>ACTIVE CALLS</div>
+        <div style={styles.sectionHeader}>FLEET</div>
         {showForm && (
           <button
             style={styles.ghostBtnSm}
@@ -12185,9 +12289,9 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                 drive rather than a corridor — amber says urgent without saying
                 the same thing. */}
             {[
-              { key: "internal", label: "EMERGENCY (INTERNAL)", color: "#FF4D5E", cat: "EMERGENCY (INTERNAL)" },
-              { key: "external", label: "EMERGENCY (EXTERNAL)", color: "#FFB020", cat: "EMERGENCY (EXTERNAL)" },
-              { key: "scheduled", label: "SCHEDULED CALL", color: "#35C4E8", cat: "ROUTINE" },
+              { key: "internal", label: "EMERGENCY (INTERNAL)", color: "#FF453A", cat: "EMERGENCY (INTERNAL)" },
+              { key: "external", label: "EMERGENCY (EXTERNAL)", color: "#FF9F0A", cat: "EMERGENCY (EXTERNAL)" },
+              { key: "scheduled", label: "SCHEDULED CALL", color: "#0A84FF", cat: "ROUTINE" },
             ].map((k) => {
               const on = callKind === k.key;
               return (
@@ -12196,7 +12300,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   style={{
                     ...styles.kindBtn,
                     ...(on
-                      ? { background: k.color, color: "#070D13", borderColor: k.color, fontWeight: 800 }
+                      ? { background: k.color, color: "#07090C", borderColor: k.color, fontWeight: 800 }
                       : { color: k.color, borderColor: `${k.color}55` }),
                   }}
                   onClick={() => {
@@ -12361,17 +12465,42 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           finding the one the phone is about meant scrolling past the other
           eight. Tiles put them all in view at once; tapping one gives back
           exactly the card it always was. */}
-      {active.length > 0 && !active.some((r) => r.id === openCallId) && (
-        <div style={styles.callTileGrid}>
-          {active.map((req) => (
-            <CallTile
-              key={req.id}
-              req={req}
-              unit={units.find((u) => u.id === req.assignedUnitId)}
-              onOpen={() => setOpenCallId(req.id)}
-              now={nowTick}
-            />
-          ))}
+      {/* Waiting for a team. These have no truck, so they cannot sit in the
+          fleet — and putting them above it would push the trucks off screen. */}
+      {!active.some((r) => r.id === openCallId) &&
+        active.filter((r) => !r.assignedUnitId).length > 0 && (
+          <div style={styles.waitList}>
+            {active
+              .filter((r) => !r.assignedUnitId)
+              .map((r) => (
+                <button key={r.id} style={styles.waitRow} onClick={() => setOpenCallId(r.id)}>
+                  <span style={styles.waitDot} />
+                  <span style={styles.waitBody}>
+                    <span style={styles.waitNature}>{r.nature}</span>
+                    <span style={styles.waitRoute}>{callRoute(r)}</span>
+                  </span>
+                  <span style={styles.waitClock}>
+                    {shortDurationStr(Math.max(0, nowTick - callStartTs(r)))}
+                  </span>
+                </button>
+              ))}
+          </div>
+        )}
+
+      {!active.some((r) => r.id === openCallId) && (
+        <div style={styles.fleetList}>
+          {stationUnits.map((u) => {
+            const on = active.find((r) => r.assignedUnitId === u.id);
+            return (
+              <FleetRow
+                key={u.id}
+                unit={u}
+                req={on}
+                now={nowTick}
+                onOpen={() => on && setOpenCallId(on.id)}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -14168,9 +14297,9 @@ function CrewShiftCard({ user, unit, onCall }) {
   const partnerMeta = partner ? shiftMeta(partner.shift) : null;
 
   return (
-    <div style={{ ...styles.shiftCard, borderLeftColor: ot > 0 ? "#FF4D5E" : meta ? meta.color : "#2A3949" }}>
+    <div style={{ ...styles.shiftCard, borderLeftColor: ot > 0 ? "#FF453A" : meta ? meta.color : "#28323D" }}>
       <div style={styles.shiftCardTop}>
-        <span style={{ ...styles.shiftCardTitle, color: meta ? meta.color : "#9DB2C4" }}>
+        <span style={{ ...styles.shiftCardTitle, color: meta ? meta.color : "#93A2B1" }}>
           {meta ? `${meta.glyph} ${meta.label}` : "SHIFT NOT RECORDED"}
         </span>
         <span style={styles.shiftCardWindow}>
@@ -14179,7 +14308,7 @@ function CrewShiftCard({ user, unit, onCall }) {
       </div>
       {ot > 0 ? (
         <div style={styles.shiftCardOvertime}>
-          <Circle size={8} fill="#FF4D5E" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
+          <Circle size={8} fill="#FF453A" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
           <span style={styles.shiftCardOvertimeLabel}>ON OVERTIME</span>
           <span style={styles.shiftCardOvertimeTime}>{msDurationStr(ot)}</span>
         </div>
@@ -14227,7 +14356,7 @@ function AlertToneCheck({ audioCtxRef, priority, label, style }) {
         </span>
         <button
           type="button"
-          style={{ ...styles.toneCheckBtn, borderColor: "#FFB020", color: "#FFC24D" }}
+          style={{ ...styles.toneCheckBtn, borderColor: "#FF9F0A", color: "#FFC24D" }}
           onClick={() => {
             setSoundLevel("full");
             soundCallAlert(audioCtxRef, priority || "routine");
@@ -15002,7 +15131,7 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
 
   const has = pct !== null && pct !== undefined;
   const value = has ? Math.max(0, Math.min(100, pct)) : 0;
-  const color = !has ? "#33475A" : value >= good ? "#3DDC97" : value >= good - 20 ? "#FFB020" : "#FF4D5E";
+  const color = !has ? "#33475A" : value >= good ? "#30D158" : value >= good - 20 ? "#FF9F0A" : "#FF453A";
 
   return (
     <div style={styles.gaugeCard}>
@@ -15013,7 +15142,7 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
           {/* Where the target sits, so the number is read against something. */}
           <path
             d={arc(start + sweep * (good / 100) - 0.6, start + sweep * (good / 100) + 0.6)}
-            stroke="#61788C"
+            stroke="#5A6775"
             strokeWidth={stroke + 4}
             fill="none"
           />
@@ -15029,7 +15158,7 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
           )}
         </svg>
         <div style={styles.gaugeCentre}>
-          <div style={{ ...styles.gaugeValue, color: has ? "#F2F7FB" : "#61788C" }}>
+          <div style={{ ...styles.gaugeValue, color: has ? "#F7F9FB" : "#5A6775" }}>
             {has ? Math.round(value) : "—"}
             {has && <span style={styles.gaugePct}>%</span>}
           </div>
@@ -15268,7 +15397,7 @@ function categoryMixOf(requests, from, to) {
   });
   const colourOf = (name) => {
     const f = CATEGORY_FILLS[name];
-    return f ? `#${f[0].slice(2)}` : "#61788C";
+    return f ? `#${f[0].slice(2)}` : "#5A6775";
   };
   const rows = Array.from(counts.entries())
     .map(([name, n]) => ({ name, n, pct: total ? (n / total) * 100 : 0, colour: colourOf(name) }))
@@ -15291,7 +15420,7 @@ function CategoryMix({ requests, from, to }) {
 
   const colourOf = (name) => {
     const f = CATEGORY_FILLS[name];
-    return f ? `#${f[0].slice(2)}` : "#61788C";
+    return f ? `#${f[0].slice(2)}` : "#5A6775";
   };
 
   return (
@@ -15649,8 +15778,8 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
                         width: `${Math.max(2, p.checklistCompliance)}%`,
                         background:
                           p.checklistCompliance >= 80
-                            ? "linear-gradient(90deg,#3DDC97,#2FBF82)"
-                            : "linear-gradient(90deg,#FFB020,#FF7A86)",
+                            ? "linear-gradient(90deg,#30D158,#2FBF82)"
+                            : "linear-gradient(90deg,#FF9F0A,#FF7A86)",
                       }}
                     />
                   </div>
@@ -15671,7 +15800,7 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
         <div style={styles.emptyState}>Nothing recorded against a location yet.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ ...styles.statOriginRow, color: "#61788C", fontWeight: 700 }}>
+          <div style={{ ...styles.statOriginRow, color: "#5A6775", fontWeight: 700 }}>
             <span style={{ flex: 1 }}>LOCATION</span>
             <span style={styles.statOriginNum}>MAIN</span>
             <span style={styles.statOriginNum}>CCC</span>
@@ -16931,7 +17060,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         only="active"
       />
 
-      <div style={styles.sectionHeader}>LIVE MONITOR — ACTIVE CALLS</div>
+      <div style={styles.sectionHeader}>LIVE FLEET</div>
 
       {/* An admin watching the board can send the second ambulance too, rather
           than having to find a dispatcher to do it. */}
@@ -16948,19 +17077,30 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
 
       {/* Tiles here too. An administrator watching both stations has the most
           calls on screen of anybody, so this is the view that benefits most. */}
-      {active.length > 0 && !active.some((r) => r.id === adminOpenId) && (
-        <div style={styles.callTileGrid}>
-          {active.map((req) => (
-            <CallTile
-              key={req.id}
-              req={req}
-              unit={units.find((u) => u.id === req.assignedUnitId)}
-              onOpen={() => setAdminOpenId(req.id)}
-              now={adminTick}
-            />
-          ))}
-        </div>
-      )}
+      {!active.some((r) => r.id === adminOpenId) &&
+        STATIONS.map((st) => {
+          const fleet = atStation(units, st.key);
+          if (!fleet.length) return null;
+          return (
+            <div key={`fleet-${st.key}`} style={{ marginTop: 12 }}>
+              <div style={styles.uhuStationHead}>{st.label}</div>
+              <div style={styles.fleetList}>
+                {fleet.map((u) => {
+                  const on = active.find((r) => r.assignedUnitId === u.id);
+                  return (
+                    <FleetRow
+                      key={u.id}
+                      unit={u}
+                      req={on}
+                      now={adminTick}
+                      onOpen={() => on && setAdminOpenId(on.id)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
 
       {active.some((r) => r.id === adminOpenId) && (
         <button style={styles.tileBackBtn} onClick={() => setAdminOpenId(null)}>
@@ -17096,7 +17236,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
   return (
     <div style={styles.uhuPanel}>
       <div style={styles.logHeader}>
-        <Clock size={13} color="#9DB2C4" />
+        <Clock size={13} color="#93A2B1" />
         <span>UHU — TIME ON CALL</span>
         <span style={styles.uhuScope}>this shift</span>
       </div>
@@ -17111,7 +17251,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
           {focus.activeCall ? (
             <div style={styles.uhuLiveBox}>
               <div style={styles.uhuLiveRow}>
-                <Circle size={8} fill="#FF4D5E" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
+                <Circle size={8} fill="#FF453A" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
                 <span style={styles.uhuLiveLabel}>ON A CALL NOW</span>
                 <span style={styles.uhuLiveTime}>{msDurationStr(focus.activeMs)}</span>
               </div>
@@ -17135,7 +17275,7 @@ function UhuPanel({ units, requests, focusUnitId }) {
                 <div style={styles.uhuRowMain}>
                   <span style={styles.uhuRowName}>{row.unit.name}</span>
                   {row.activeCall && (
-                    <Circle size={7} fill="#FF4D5E" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
+                    <Circle size={7} fill="#FF453A" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
                   )}
                 </div>
                 <div style={styles.uhuRowRight}>
@@ -17165,18 +17305,18 @@ function UhuPanel({ units, requests, focusUnitId }) {
 // ---------- log sheet ----------
 
 const LOG_COLORS = {
-  call: "#FFB020",
-  assign: "#35C4E8",
-  status: "#9DB2C4",
-  clear: "#3DDC97",
+  call: "#FF9F0A",
+  assign: "#0A84FF",
+  status: "#93A2B1",
+  clear: "#30D158",
   shift: "#818CF8",
 };
 
 // The two lines the log sheet still carries, colour-coded so a desk can tell
 // them apart down the edge of the panel without reading the sentence.
 const BOARD_EVENTS = {
-  ack: { label: "ACKNOWLEDGED", color: "#3DDC97" },
-  enroute: { label: "EN ROUTE", color: "#35C4E8" },
+  ack: { label: "ACKNOWLEDGED", color: "#30D158" },
+  enroute: { label: "EN ROUTE", color: "#0A84FF" },
 };
 
 // The log sheet doubles as the shift record: every sign-on, sign-off, swap and
@@ -17384,16 +17524,16 @@ const styles = {
     // screen look printed rather than lit.
     background:
       "radial-gradient(900px 520px at 88% -8%, rgba(14,107,79,.20) 0%, transparent 62%), " +
-      "radial-gradient(1200px 700px at 15% 8%, #101E2C 0%, transparent 58%), #070D13",
-    color: "#F2F7FB",
+      "radial-gradient(1200px 700px at 15% 8%, #101E2C 0%, transparent 58%), #07090C",
+    color: "#F7F9FB",
     fontFamily: mono,
     display: "flex",
     flexDirection: "column",
   },
   loadingScreen: {
     minHeight: "100vh",
-    background: "#070D13",
-    color: "#9DB2C4",
+    background: "#07090C",
+    color: "#93A2B1",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -17406,17 +17546,17 @@ const styles = {
     maxWidth: 340,
     textAlign: "left",
     padding: 24,
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 12,
   },
   connectErrorTitle: { fontFamily: display, fontWeight: 700, fontSize: 17, color: "#F5F7FA", marginBottom: 8 },
-  connectErrorBody: { fontSize: 14.5, color: "#9DB2C4", lineHeight: 1.5, marginBottom: 10 },
-  connectErrorList: { fontSize: 14, color: "#D6E3EE", lineHeight: 1.7, paddingLeft: 18, margin: "0 0 16px" },
+  connectErrorBody: { fontSize: 14.5, color: "#93A2B1", lineHeight: 1.5, marginBottom: 10 },
+  connectErrorList: { fontSize: 14, color: "#D3DCE5", lineHeight: 1.7, paddingLeft: 18, margin: "0 0 16px" },
   connectRetryBtn: {
-    background: "#35C4E8",
+    background: "#0A84FF",
     border: "none",
-    color: "#070D13",
+    color: "#07090C",
     fontWeight: 700,
     borderRadius: 8,
     padding: "9px 16px",
@@ -17485,7 +17625,7 @@ const styles = {
     fontWeight: 700,
     fontSize: 22,
     letterSpacing: 2.4,
-    color: "#070D13",
+    color: "#07090C",
     whiteSpace: "nowrap",
   },
   // Read from across a control room, so the crests are sized to be recognised
@@ -17505,8 +17645,8 @@ const styles = {
   userBadge: { display: "flex", flexDirection: "column", fontSize: 13, lineHeight: 1.3, textAlign: "right" },
   iconBtn: {
     background: "transparent",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 8,
     padding: 7,
     cursor: "pointer",
@@ -17525,7 +17665,7 @@ const styles = {
     left: 14,
     right: 14,
     background: "rgba(17,28,38,.96)",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 22,
     padding: "10px 14px",
     display: "flex",
@@ -17563,27 +17703,27 @@ const styles = {
     fontFamily: display,
     fontSize: 14,
     letterSpacing: 1.2,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     margin: "24px 0 10px",
     fontWeight: 700,
   },
 
   statusBoard: {
     padding: "14px 15px 13px",
-    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    background: "linear-gradient(180deg, #141A21, #0E1217)",
     border: "1px solid rgba(255,255,255,.07)",
     borderRadius: 18,
     boxShadow: "0 10px 26px rgba(0,0,0,.42)",
   },
   statusBoardItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },
-  statusBoardCount: { fontWeight: 700, color: "#F2F7FB" },
-  statusBoardLabel: { color: "#9DB2C4", letterSpacing: 0.5 },
+  statusBoardCount: { fontWeight: 700, color: "#F7F9FB" },
+  statusBoardLabel: { color: "#93A2B1", letterSpacing: 0.5 },
 
-  staffingLine: { marginTop: 8, fontSize: 13.5, color: "#9DB2C4", letterSpacing: 0.3 },
-  staffingStrong: { color: "#F2F7FB", fontWeight: 700 },
-  staffingWarn: { color: "#FFB020", fontWeight: 600 },
-  selectHint: { fontSize: 12.5, color: "#61788C", marginTop: 5, lineHeight: 1.4 },
-  unitCardNoCrew: { fontSize: 12, color: "#FFB020", fontWeight: 600, letterSpacing: 0.4 },
+  staffingLine: { marginTop: 8, fontSize: 13.5, color: "#93A2B1", letterSpacing: 0.3 },
+  staffingStrong: { color: "#F7F9FB", fontWeight: 700 },
+  staffingWarn: { color: "#FF9F0A", fontWeight: 600 },
+  selectHint: { fontSize: 12.5, color: "#5A6775", marginTop: 5, lineHeight: 1.4 },
+  unitCardNoCrew: { fontSize: 12, color: "#FF9F0A", fontWeight: 600, letterSpacing: 0.4 },
 
   alertNotice: {
     marginTop: 10,
@@ -17597,11 +17737,11 @@ const styles = {
     gap: 12,
     flexWrap: "wrap",
   },
-  alertNoticeText: { fontSize: 13.5, color: "#FFB020", lineHeight: 1.5, flex: 1, minWidth: 220 },
+  alertNoticeText: { fontSize: 13.5, color: "#FF9F0A", lineHeight: 1.5, flex: 1, minWidth: 220 },
   alertNoticeBtn: {
-    background: "#FFB020",
+    background: "#FF9F0A",
     border: "none",
-    color: "#070D13",
+    color: "#07090C",
     borderRadius: 8,
     padding: "7px 12px",
     cursor: "pointer",
@@ -17627,11 +17767,11 @@ const styles = {
     gap: 5,
     fontSize: 12.5,
     letterSpacing: 0.4,
-    color: "#9DB2C4",
+    color: "#93A2B1",
   },
   toneCheckBtn: {
     background: "transparent",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
     padding: "4px 10px",
     cursor: "pointer",
@@ -17661,7 +17801,7 @@ const styles = {
     alignItems: "center",
     gap: 6,
     background: "#111823",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
     padding: "5px 11px",
     cursor: "pointer",
@@ -17671,7 +17811,7 @@ const styles = {
   },
   soundMenuBtnOn: {
     background: "rgba(59,130,246,0.16)",
-    border: "1px solid #35C4E8",
+    border: "1px solid #0A84FF",
     borderRadius: 7,
     color: "#BFDBFE",
     padding: "8px 10px",
@@ -17684,7 +17824,7 @@ const styles = {
   alertNoticeMuted: {
     marginTop: 10,
     background: "rgba(245,158,11,0.12)",
-    border: "1px solid #FFB020",
+    border: "1px solid #FF9F0A",
     borderRadius: 10,
     padding: "10px 12px",
     display: "flex",
@@ -17695,9 +17835,9 @@ const styles = {
   },
   alertNoticeMutedText: { fontSize: 13.5, color: "#FFC24D", lineHeight: 1.5, flex: 1, minWidth: 220 },
   alertNoticeMutedBtn: {
-    background: "#FFB020",
+    background: "#FF9F0A",
     border: "none",
-    color: "#070D13",
+    color: "#07090C",
     borderRadius: 8,
     padding: "7px 12px",
     cursor: "pointer",
@@ -17712,8 +17852,8 @@ const styles = {
   },
 
   requestForm: {
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     padding: 14,
     marginBottom: 14,
@@ -17722,14 +17862,14 @@ const styles = {
     gap: 10,
   },
   formRow: { display: "flex", gap: 10, flexWrap: "wrap" },
-  label: { fontSize: 12, color: "#9DB2C4", letterSpacing: 0.5, display: "block", marginBottom: 4 },
-  formHint: { fontSize: 12.5, color: "#61788C", marginTop: -4, marginBottom: 4 },
+  label: { fontSize: 12, color: "#93A2B1", letterSpacing: 0.5, display: "block", marginBottom: 4 },
+  formHint: { fontSize: 12.5, color: "#5A6775", marginTop: -4, marginBottom: 4 },
   input: {
     width: "100%",
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 8,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     padding: "9px 10px",
     fontFamily: mono,
     fontSize: 15,
@@ -17740,50 +17880,50 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     cursor: "pointer",
   },
   checkPillActive: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#1E2A36",
-    border: "1px solid #35C4E8",
+    background: "#1C242D",
+    border: "1px solid #0A84FF",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     fontWeight: 600,
     cursor: "pointer",
   },
-  checkboxInput: { accentColor: "#35C4E8", width: 13, height: 13 },
+  checkboxInput: { accentColor: "#0A84FF", width: 13, height: 13 },
   reqBadge: {
     fontSize: 12,
-    color: "#9DB2C4",
-    border: "1px solid #2A3949",
+    color: "#93A2B1",
+    border: "1px solid #28323D",
     borderRadius: 4,
     padding: "2px 7px",
   },
-  mrnRow: { fontSize: 13, color: "#9DB2C4", marginTop: 6 },
+  mrnRow: { fontSize: 13, color: "#93A2B1", marginTop: 6 },
   timesRow: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 },
   timeChip: {
     display: "flex",
     flexDirection: "column",
-    background: "#070D13",
-    border: "1px solid #1E2A36",
+    background: "#07090C",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     padding: "5px 9px",
     minWidth: 92,
   },
-  timeChipLabel: { fontSize: 11, color: "#61788C", letterSpacing: 0.3 },
-  timeChipValue: { fontSize: 14, color: "#D6E3EE", fontWeight: 600, marginTop: 2 },
-  pendingAckTag: { fontSize: 13.5, color: "#FFB020", fontWeight: 600 },
-  ackTag: { fontSize: 13.5, color: "#3DDC97", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 },
+  timeChipLabel: { fontSize: 11, color: "#5A6775", letterSpacing: 0.3 },
+  timeChipValue: { fontSize: 14, color: "#D3DCE5", fontWeight: 600, marginTop: 2 },
+  pendingAckTag: { fontSize: 13.5, color: "#FF9F0A", fontWeight: 600 },
+  ackTag: { fontSize: 13.5, color: "#30D158", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 },
 
   alarmOverlay: {
     position: "fixed",
@@ -17800,8 +17940,8 @@ const styles = {
   alarmCard: {
     width: "100%",
     maxWidth: 420,
-    background: "#131F2B",
-    border: "2px solid #FF4D5E",
+    background: "#141A21",
+    border: "2px solid #FF453A",
     borderRadius: 14,
     padding: "28px 24px",
     textAlign: "center",
@@ -17816,28 +17956,28 @@ const styles = {
     width: 14,
     height: 14,
     borderRadius: "50%",
-    background: "#FF4D5E",
+    background: "#FF453A",
     animation: "pulse-dot 0.8s ease-in-out infinite",
   },
   alarmTitle: { fontFamily: display, fontWeight: 800, fontSize: 22, letterSpacing: 1.5, color: "#FCA5A5" },
   alarmAssistLine: { fontSize: 14, color: "#A5B4FC", fontWeight: 600, letterSpacing: 0.3 },
-  alarmPriority: { fontSize: 13, fontWeight: 800, color: "#070D13", padding: "4px 10px", borderRadius: 5, letterSpacing: 0.6 },
+  alarmPriority: { fontSize: 13, fontWeight: 800, color: "#07090C", padding: "4px 10px", borderRadius: 5, letterSpacing: 0.6 },
   alarmNature: { fontFamily: display, fontWeight: 700, fontSize: 20, color: "#F5F7FA", marginTop: 4 },
-  alarmLocation: { display: "flex", alignItems: "center", gap: 6, fontSize: 15.5, color: "#F2F7FB" },
+  alarmLocation: { display: "flex", alignItems: "center", gap: 6, fontSize: 15.5, color: "#F7F9FB" },
   alarmRoute: { display: "flex", flexDirection: "column", gap: 4, alignItems: "center" },
   alarmLocationLabel: {
     fontSize: 11,
     letterSpacing: 1,
     fontWeight: 700,
-    color: "#9DB2C4",
-    border: "1px solid #2A3949",
+    color: "#93A2B1",
+    border: "1px solid #28323D",
     borderRadius: 4,
     padding: "1px 5px",
   },
-  alarmMrn: { fontSize: 14, color: "#D6E3EE" },
+  alarmMrn: { fontSize: 14, color: "#D3DCE5" },
   alarmReqBadge: {
     fontSize: 12.5,
-    color: "#070D13",
+    color: "#07090C",
     background: "#F5F7FA",
     borderRadius: 4,
     padding: "3px 8px",
@@ -17874,17 +18014,17 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     padding: 12,
     flexWrap: "wrap",
   },
-  unitCardAmbulance: { fontSize: 12.5, color: "#61788C" },
+  unitCardAmbulance: { fontSize: 12.5, color: "#5A6775" },
   unitMemberRow: { display: "flex", justifyContent: "space-between", fontSize: 13, gap: 6 },
-  unitMemberLabel: { color: "#61788C", letterSpacing: 0.4 },
+  unitMemberLabel: { color: "#5A6775", letterSpacing: 0.4 },
   unitMemberRight: { display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" },
-  unitMemberName: { color: "#D6E3EE", fontWeight: 600 },
+  unitMemberName: { color: "#D3DCE5", fontWeight: 600 },
 
   // ---- shifts ----
   shiftChipWrap: { position: "relative" },
@@ -17893,7 +18033,7 @@ const styles = {
     alignItems: "center",
     gap: 6,
     background: "#111823",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
     padding: "5px 11px",
     cursor: "pointer",
@@ -17901,14 +18041,14 @@ const styles = {
     fontSize: 13.5,
     letterSpacing: 0.4,
   },
-  shiftChipTime: { color: "#9DB2C4", fontVariantNumeric: "tabular-nums" },
+  shiftChipTime: { color: "#93A2B1", fontVariantNumeric: "tabular-nums" },
   shiftMenu: {
     position: "absolute",
     top: "calc(100% + 8px)",
     right: 0,
     width: 268,
     background: "#111823",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 10,
     padding: 10,
     display: "flex",
@@ -17917,19 +18057,19 @@ const styles = {
     zIndex: 40,
     boxShadow: "0 12px 28px rgba(0,0,0,0.45)",
   },
-  shiftMenuHead: { fontSize: 12.5, color: "#9DB2C4", letterSpacing: 0.4, lineHeight: 1.5 },
+  shiftMenuHead: { fontSize: 12.5, color: "#93A2B1", letterSpacing: 0.4, lineHeight: 1.5 },
   shiftMenuBtn: {
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 7,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     padding: "8px 10px",
     cursor: "pointer",
     fontFamily: mono,
     fontSize: 13.5,
     textAlign: "left",
   },
-  shiftMenuHint: { fontSize: 12, color: "#61788C", lineHeight: 1.5 },
+  shiftMenuHint: { fontSize: 12, color: "#5A6775", lineHeight: 1.5 },
   shiftTag: {
     border: "1px solid",
     borderRadius: 999,
@@ -17940,7 +18080,7 @@ const styles = {
     whiteSpace: "nowrap",
   },
   otTag: {
-    border: "1px solid #FF4D5E",
+    border: "1px solid #FF453A",
     color: "#FCA5A5",
     background: "rgba(239,68,68,0.12)",
     borderRadius: 999,
@@ -17952,7 +18092,7 @@ const styles = {
   },
   shiftCard: {
     background: "#111823",
-    border: "1px solid #1E2A36",
+    border: "1px solid #1C242D",
     borderLeft: "3px solid",
     borderRadius: 10,
     padding: "12px 14px",
@@ -17962,37 +18102,37 @@ const styles = {
   },
   shiftCardTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
   shiftCardTitle: { fontFamily: display, fontWeight: 700, fontSize: 15, letterSpacing: 0.8 },
-  shiftCardWindow: { fontSize: 13.5, color: "#9DB2C4", fontVariantNumeric: "tabular-nums" },
-  shiftCardRemaining: { fontSize: 15, color: "#F2F7FB", fontVariantNumeric: "tabular-nums" },
+  shiftCardWindow: { fontSize: 13.5, color: "#93A2B1", fontVariantNumeric: "tabular-nums" },
+  shiftCardRemaining: { fontSize: 15, color: "#F7F9FB", fontVariantNumeric: "tabular-nums" },
   shiftCardOvertime: { display: "flex", alignItems: "center", gap: 8 },
-  shiftCardOvertimeLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#FF4D5E" },
+  shiftCardOvertimeLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#FF453A" },
   shiftCardOvertimeTime: { marginLeft: "auto", fontSize: 16, color: "#F5F7FA", fontVariantNumeric: "tabular-nums" },
-  shiftCardNote: { fontSize: 13, color: "#9DB2C4", lineHeight: 1.5 },
+  shiftCardNote: { fontSize: 13, color: "#93A2B1", lineHeight: 1.5 },
   shiftBanner: {
     display: "flex",
     alignItems: "center",
     gap: 8,
     flexWrap: "wrap",
     padding: "9px 12px",
-    borderBottom: "1px solid #1E2A36",
+    borderBottom: "1px solid #1C242D",
   },
-  shiftBannerWindow: { fontSize: 12.5, color: "#9DB2C4", fontVariantNumeric: "tabular-nums" },
-  shiftBannerCrew: { fontSize: 12.5, color: "#61788C", marginLeft: "auto" },
+  shiftBannerWindow: { fontSize: 12.5, color: "#93A2B1", fontVariantNumeric: "tabular-nums" },
+  shiftBannerCrew: { fontSize: 12.5, color: "#5A6775", marginLeft: "auto" },
   shiftBannerDate: {
     fontSize: 12,
-    color: "#61788C",
+    color: "#5A6775",
     padding: "0 12px 8px",
-    borderBottom: "1px solid #1E2A36",
+    borderBottom: "1px solid #1C242D",
     fontVariantNumeric: "tabular-nums",
   },
   logScopeNote: {
     fontSize: 12.5,
     lineHeight: 1.5,
-    color: "#61788C",
+    color: "#5A6775",
     padding: "8px 12px",
-    borderBottom: "1px solid #1E2A36",
+    borderBottom: "1px solid #1C242D",
   },
-  logTabs: { display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid #1E2A36" },
+  logTabs: { display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid #1C242D" },
   shiftDetailRow: { display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", marginTop: 6 },
   shiftEventTag: {
     border: "1px solid",
@@ -18003,17 +18143,17 @@ const styles = {
     letterSpacing: 0.5,
   },
   shiftDetailChip: {
-    background: "#070D13",
-    border: "1px solid #1E2A36",
+    background: "#07090C",
+    border: "1px solid #1C242D",
     borderRadius: 4,
     padding: "1px 5px",
     fontSize: 11.5,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     whiteSpace: "nowrap",
   },
 
   emptyState: {
-    color: "#61788C",
+    color: "#5A6775",
     fontSize: 14.5,
     padding: "18px 4px",
     fontStyle: "italic",
@@ -18023,7 +18163,7 @@ const styles = {
   // the same soft shadow. It was still flat while the tiles around it had been
   // rebuilt, so opening one felt like leaving the app.
   callCard: {
-    background: "linear-gradient(180deg, #16232F, #0D151E)",
+    background: "linear-gradient(180deg, #16232F, #0E1217)",
     border: "1px solid rgba(255,255,255,.07)",
     borderLeft: "4px solid",
     borderRadius: 20,
@@ -18033,21 +18173,21 @@ const styles = {
   },
   callCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
   callCardNature: { fontFamily: display, fontWeight: 780, fontSize: 19, letterSpacing: -0.4 },
-  callCardMeta: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#9DB2C4" },
+  callCardMeta: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#93A2B1" },
   callCardMetaItem: { display: "flex", alignItems: "center", gap: 4 },
   callCardActions: { display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" },
 
-  routeFrom: { color: "#D6E3EE" },
-  routeTo: { color: "#F2F7FB", fontWeight: 600 },
+  routeFrom: { color: "#D3DCE5" },
+  routeTo: { color: "#F7F9FB", fontWeight: 600 },
 
-  historyNote: { fontSize: 13, color: "#61788C", lineHeight: 1.5 },
-  historyDuration: { fontSize: 13, color: "#9DB2C4", fontVariantNumeric: "tabular-nums" },
-  historyClosedBy: { fontSize: 12.5, color: "#61788C", marginTop: 8 },
+  historyNote: { fontSize: 13, color: "#5A6775", lineHeight: 1.5 },
+  historyDuration: { fontSize: 13, color: "#93A2B1", fontVariantNumeric: "tabular-nums" },
+  historyClosedBy: { fontSize: 12.5, color: "#5A6775", marginTop: 8 },
   scheduledTag: {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
     padding: "1px 7px",
     fontSize: 11.5,
@@ -18057,10 +18197,10 @@ const styles = {
     whiteSpace: "nowrap",
   },
   twoTimes: {
-    marginTop: 7, fontSize: 12.5, color: "#D6E3EE",
+    marginTop: 7, fontSize: 12.5, color: "#D3DCE5",
     display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline",
   },
-  twoTimesDim: { color: "#61788C", fontSize: 12 },
+  twoTimesDim: { color: "#5A6775", fontSize: 12 },
 
   schedCancelled: {
     background: "linear-gradient(180deg, rgba(255,77,94,.10), rgba(255,77,94,.03))",
@@ -18076,8 +18216,8 @@ const styles = {
   quickPickRow: { display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" },
   quickPickBtn: {
     background: "transparent",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 999,
     padding: "3px 10px",
     cursor: "pointer",
@@ -18087,8 +18227,8 @@ const styles = {
 
   // ---- the Gregorian date/time picker ----
   whenPicker: {
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 8,
     padding: 10,
   },
@@ -18099,41 +18239,41 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
     paddingBottom: 10,
-    borderBottom: "1px solid #1E2A36",
+    borderBottom: "1px solid #1C242D",
   },
   whenReadoutTime: {
     fontFamily: display,
     fontWeight: 700,
     fontSize: 26,
     lineHeight: 1,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     fontVariantNumeric: "tabular-nums",
   },
-  whenReadoutDate: { fontSize: 13.5, color: "#9DB2C4", marginTop: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  whenReadoutDate: { fontSize: 13.5, color: "#93A2B1", marginTop: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
   whenCalTag: {
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
     padding: "1px 6px",
     fontSize: 11,
     letterSpacing: 0.4,
-    color: "#61788C",
+    color: "#5A6775",
   },
   whenReadoutSide: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 },
-  whenReadoutUntil: { fontSize: 13.5, color: "#35C4E8", fontWeight: 600, fontVariantNumeric: "tabular-nums" },
+  whenReadoutUntil: { fontSize: 13.5, color: "#0A84FF", fontWeight: 600, fontVariantNumeric: "tabular-nums" },
   whenSection: { marginTop: 10 },
   whenSectionLabel: {
     fontSize: 11.5,
     letterSpacing: 0.6,
-    color: "#61788C",
+    color: "#5A6775",
     fontWeight: 700,
     marginBottom: 6,
   },
   calHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 },
-  calMonthLabel: { fontFamily: display, fontWeight: 700, fontSize: 15, color: "#F2F7FB", letterSpacing: 0.3 },
+  calMonthLabel: { fontFamily: display, fontWeight: 700, fontSize: 15, color: "#F7F9FB", letterSpacing: 0.3 },
   calNavBtn: {
-    background: "#131F2B",
-    border: "1px solid #2A3949",
-    color: "#D6E3EE",
+    background: "#141A21",
+    border: "1px solid #28323D",
+    color: "#D3DCE5",
     borderRadius: 8,
     width: 26,
     height: 26,
@@ -18147,14 +18287,14 @@ const styles = {
     textAlign: "center",
     fontSize: 11,
     letterSpacing: 0.4,
-    color: "#61788C",
+    color: "#5A6775",
     padding: "2px 0 4px",
     fontWeight: 700,
   },
   calDay: {
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
-    color: "#D6E3EE",
+    background: "#141A21",
+    border: "1px solid #1C242D",
+    color: "#D3DCE5",
     borderRadius: 8,
     padding: "7px 0",
     cursor: "pointer",
@@ -18163,9 +18303,9 @@ const styles = {
     fontVariantNumeric: "tabular-nums",
   },
   calDayOutside: { color: "#3A4551", background: "transparent" },
-  calDayPast: { color: "#2A3949", cursor: "not-allowed", background: "transparent", borderColor: "#141C24" },
-  calDayToday: { borderColor: "#35C4E8", color: "#93C5FD" },
-  calDaySelected: { background: "#35C4E8", borderColor: "#35C4E8", color: "#070D13", fontWeight: 700 },
+  calDayPast: { color: "#28323D", cursor: "not-allowed", background: "transparent", borderColor: "#141C24" },
+  calDayToday: { borderColor: "#0A84FF", color: "#93C5FD" },
+  calDaySelected: { background: "#0A84FF", borderColor: "#0A84FF", color: "#07090C", fontWeight: 700 },
   calDayHeading: {
     display: "flex",
     alignItems: "baseline",
@@ -18173,27 +18313,27 @@ const styles = {
     gap: 10,
     marginTop: 6,
     paddingBottom: 4,
-    borderBottom: "1px solid #1E2A36",
+    borderBottom: "1px solid #1C242D",
   },
-  calDayHeadingText: { fontFamily: display, fontWeight: 700, fontSize: 14, color: "#D6E3EE", letterSpacing: 0.3 },
-  calDayHeadingCount: { fontSize: 12, color: "#61788C" },
+  calDayHeadingText: { fontFamily: display, fontWeight: 700, fontSize: 14, color: "#D3DCE5", letterSpacing: 0.3 },
+  calDayHeadingCount: { fontSize: 12, color: "#5A6775" },
   whenTimeRow: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
   whenTimeSelect: {
-    background: "#131F2B",
-    border: "1px solid #2A3949",
-    color: "#F2F7FB",
+    background: "#141A21",
+    border: "1px solid #28323D",
+    color: "#F7F9FB",
     borderRadius: 8,
     padding: "8px 10px",
     fontFamily: mono,
     fontSize: 18,
     fontVariantNumeric: "tabular-nums",
   },
-  whenTimeColon: { fontFamily: mono, fontSize: 18, color: "#61788C" },
+  whenTimeColon: { fontFamily: mono, fontSize: 18, color: "#5A6775" },
   whenNudgeGroup: { display: "flex", gap: 4, marginLeft: 4, flexWrap: "wrap" },
   whenNudgeBtn: {
-    background: "#131F2B",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    background: "#141A21",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 8,
     padding: "6px 8px",
     cursor: "pointer",
@@ -18203,7 +18343,7 @@ const styles = {
   rescheduleBox: {
     marginTop: 10,
     paddingTop: 10,
-    borderTop: "1px solid #1E2A36",
+    borderTop: "1px solid #1C242D",
   },
 
   // ---- the cancellation banner ----
@@ -18227,21 +18367,21 @@ const styles = {
     alignItems: "center",
     gap: 6,
   },
-  cancelReasonNote: { fontSize: 12.5, color: "#9DB2C4", lineHeight: 1.5, margin: "6px 0 8px" },
+  cancelReasonNote: { fontSize: 12.5, color: "#93A2B1", lineHeight: 1.5, margin: "6px 0 8px" },
   reasonPill: {
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     cursor: "pointer",
     fontFamily: mono,
     textAlign: "left",
   },
   reasonPillActive: {
     background: "#2A1C06",
-    border: "1px solid #FFB020",
+    border: "1px solid #FF9F0A",
     borderRadius: 20,
     padding: "6px 12px",
     fontSize: 13.5,
@@ -18274,9 +18414,9 @@ const styles = {
   // desk it is the first thing to reach for when the ward says "we'll call you".
   awaitCallToggle: {
     width: "100%",
-    background: "#131F2B",
-    border: "1px dashed #2A3949",
-    color: "#9DB2C4",
+    background: "#141A21",
+    border: "1px dashed #28323D",
+    color: "#93A2B1",
     borderRadius: 7,
     padding: "9px 11px",
     marginBottom: 8,
@@ -18307,7 +18447,7 @@ const styles = {
     gap: 7,
     lineHeight: 1.4,
   },
-  awaitCallNote: { fontSize: 13, color: "#9DB2C4", lineHeight: 1.55 },
+  awaitCallNote: { fontSize: 13, color: "#93A2B1", lineHeight: 1.55 },
   awaitCallTag: {
     display: "inline-flex",
     alignItems: "center",
@@ -18323,9 +18463,9 @@ const styles = {
     whiteSpace: "nowrap",
   },
   readyNowBtn: {
-    background: "#FFB020",
+    background: "#FF9F0A",
     border: "none",
-    color: "#070D13",
+    color: "#07090C",
     fontWeight: 700,
     borderRadius: 8,
     padding: "7px 11px",
@@ -18356,11 +18496,11 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
-  preAlertCount: { fontSize: 13, color: "#D6E3EE", flex: 1, minWidth: 140 },
+  preAlertCount: { fontSize: 13, color: "#D3DCE5", flex: 1, minWidth: 140 },
   preAlertDismiss: {
     background: "transparent",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 8,
     padding: "4px 10px",
     cursor: "pointer",
@@ -18374,19 +18514,19 @@ const styles = {
     flexWrap: "wrap",
     marginTop: 8,
     fontSize: 13.5,
-    color: "#9DB2C4",
+    color: "#93A2B1",
   },
   preAlertTime: {
     fontFamily: display,
     fontWeight: 700,
     fontSize: 17,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     fontVariantNumeric: "tabular-nums",
   },
   preAlertIn: { fontSize: 13, color: "#93C5FD", fontWeight: 600 },
-  preAlertNature: { color: "#F2F7FB", fontWeight: 600 },
-  preAlertRoute: { color: "#9DB2C4" },
-  preAlertFoot: { marginTop: 8, fontSize: 12.5, color: "#61788C", lineHeight: 1.5 },
+  preAlertNature: { color: "#F7F9FB", fontWeight: 600 },
+  preAlertRoute: { color: "#93A2B1" },
+  preAlertFoot: { marginTop: 8, fontSize: 12.5, color: "#5A6775", lineHeight: 1.5 },
   preAlertArmBtn: {
     background: "transparent",
     border: "none",
@@ -18412,7 +18552,7 @@ const styles = {
     whiteSpace: "nowrap",
   },
 
-  pill: { fontSize: 11.5, fontWeight: 700, color: "#070D13", padding: "3px 7px", borderRadius: 4, letterSpacing: 0.4 },
+  pill: { fontSize: 11.5, fontWeight: 700, color: "#07090C", padding: "3px 7px", borderRadius: 4, letterSpacing: 0.4 },
 
   // ---- responded, nobody transported ----
   noTransportTag: {
@@ -18479,7 +18619,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     marginBottom: 8,
   },
   pcrChoices: { display: "flex", flexWrap: "wrap", gap: 8 },
@@ -18487,7 +18627,7 @@ const styles = {
   // and picking the wrong crew member puts the report on the wrong person.
   pcrChoice: {
     background: "transparent",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     color: "#C7D0DA",
     borderRadius: 8,
     padding: "8px 12px",
@@ -18501,7 +18641,7 @@ const styles = {
   },
   pcrChoiceOn: {
     background: "rgba(59,130,246,0.16)",
-    border: "1px solid #35C4E8",
+    border: "1px solid #0A84FF",
     color: "#93C5FD",
     borderRadius: 8,
     padding: "8px 12px",
@@ -18513,7 +18653,7 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
-  pcrNote: { fontSize: 13.5, color: "#9DB2C4", marginTop: 8, lineHeight: 1.5 },
+  pcrNote: { fontSize: 13.5, color: "#93A2B1", marginTop: 8, lineHeight: 1.5 },
 
   // ---- category of call and loaded kilometers ----
   //
@@ -18550,16 +18690,16 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     marginBottom: 8,
   },
-  codingRowLabel: { fontSize: 11, color: "#61788C", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
-  codingRowLabelRequired: { fontSize: 11, color: "#FFB020", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
+  codingRowLabel: { fontSize: 11, color: "#5A6775", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
+  codingRowLabelRequired: { fontSize: 11, color: "#FF9F0A", letterSpacing: 0.6, marginBottom: 6, fontWeight: 700 },
   codingChoices: { display: "flex", flexWrap: "wrap", gap: 6 },
   codeChoice: {
     background: "transparent",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 8,
     padding: "6px 9px",
     cursor: "pointer",
@@ -18571,7 +18711,7 @@ const styles = {
   codeChoiceOn: {
     background: "rgba(148,163,184,0.1)",
     border: "1px solid",
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     borderRadius: 8,
     padding: "6px 9px",
     cursor: "pointer",
@@ -18584,8 +18724,8 @@ const styles = {
   codeChoiceKey: { fontSize: 15, fontWeight: 700, letterSpacing: 0.5 },
   codeChoiceName: { fontSize: 12, letterSpacing: 0.3, opacity: 0.85 },
   codingSuggestion: { fontSize: 12.5, color: "#FFC24D", marginTop: 6, lineHeight: 1.5 },
-  codingNote: { fontSize: 12.5, color: "#61788C", marginTop: 8, lineHeight: 1.5 },
-  codingNoteRequired: { fontSize: 13.5, color: "#9DB2C4", marginTop: 8, lineHeight: 1.5 },
+  codingNote: { fontSize: 12.5, color: "#5A6775", marginTop: 8, lineHeight: 1.5 },
+  codingNoteRequired: { fontSize: 13.5, color: "#93A2B1", marginTop: 8, lineHeight: 1.5 },
   codingClosedRow: {
     display: "flex",
     alignItems: "center",
@@ -18617,11 +18757,11 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#61788C",
+    color: "#5A6775",
     whiteSpace: "nowrap",
   },
-  pcrEmpty: { fontSize: 13.5, color: "#FFB020", lineHeight: 1.5 },
-  pcrPendingNote: { fontSize: 13.5, color: "#FFB020", fontWeight: 600, flex: 1, minWidth: 180 },
+  pcrEmpty: { fontSize: 13.5, color: "#FF9F0A", lineHeight: 1.5 },
+  pcrPendingNote: { fontSize: 13.5, color: "#FF9F0A", fontWeight: 600, flex: 1, minWidth: 180 },
   pcrAuthorTag: {
     display: "inline-flex",
     alignItems: "center",
@@ -18640,7 +18780,7 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    border: "1px solid #FFB020",
+    border: "1px solid #FF9F0A",
     background: "rgba(245,158,11,0.12)",
     borderRadius: 4,
     padding: "2px 7px",
@@ -18656,7 +18796,7 @@ const styles = {
   exceptionBlock: {
     marginTop: 18,
     paddingTop: 10,
-    borderTop: "1px dashed #2A3949",
+    borderTop: "1px dashed #28323D",
   },
   exceptionHeader: {
     display: "flex",
@@ -18693,7 +18833,7 @@ const styles = {
   // ---- a second ambulance on the same call ----
   assistBtn: {
     background: "transparent",
-    border: "1px solid #FF4D5E",
+    border: "1px solid #FF453A",
     color: "#FF7A86",
     borderRadius: 999,
     padding: "6px 10px",
@@ -18737,7 +18877,7 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    border: "1px solid #FF4D5E",
+    border: "1px solid #FF453A",
     background: "rgba(239,68,68,0.14)",
     borderRadius: 4,
     padding: "2px 7px",
@@ -18748,7 +18888,7 @@ const styles = {
     whiteSpace: "nowrap",
     animation: "pulse-dot 1.6s ease-in-out infinite",
   },
-  assistNote: { fontSize: 13.5, color: "#9DB2C4", flex: 1, minWidth: 180, lineHeight: 1.5 },
+  assistNote: { fontSize: 13.5, color: "#93A2B1", flex: 1, minWidth: 180, lineHeight: 1.5 },
 
   // ---- escalations: the corner banner and the thread it opens ----
   //
@@ -18801,7 +18941,7 @@ const styles = {
   escPanel: {
     marginTop: 14,
     paddingTop: 10,
-    borderTop: "1px dashed #2A3949",
+    borderTop: "1px dashed #28323D",
   },
   escPanelHead: {
     display: "flex",
@@ -18817,33 +18957,33 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#9DB2C4",
+    color: "#93A2B1",
   },
-  escEmpty: { fontSize: 13.5, color: "#61788C", fontStyle: "italic", marginBottom: 8 },
+  escEmpty: { fontSize: 13.5, color: "#5A6775", fontStyle: "italic", marginBottom: 8 },
   escItem: {
-    background: "#070D13",
-    border: "1px solid #1E2A36",
+    background: "#07090C",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     padding: 10,
     marginBottom: 8,
   },
   escItemHead: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 },
-  escItemWhen: { fontSize: 12.5, color: "#9DB2C4", fontVariantNumeric: "tabular-nums" },
-  escItemWho: { fontSize: 12.5, color: "#D6E3EE", fontWeight: 600 },
+  escItemWhen: { fontSize: 12.5, color: "#93A2B1", fontVariantNumeric: "tabular-nums" },
+  escItemWho: { fontSize: 12.5, color: "#D3DCE5", fontWeight: 600 },
   escAfterTag: {
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
     padding: "1px 7px",
     fontSize: 11,
     fontWeight: 700,
     letterSpacing: 0.3,
-    color: "#9DB2C4",
+    color: "#93A2B1",
   },
-  escMessage: { fontSize: 14.5, color: "#F2F7FB", lineHeight: 1.55, whiteSpace: "pre-wrap" },
+  escMessage: { fontSize: 14.5, color: "#F7F9FB", lineHeight: 1.55, whiteSpace: "pre-wrap" },
   escPreview: {
     marginTop: 8,
     fontSize: 14,
-    color: "#D6E3EE",
+    color: "#D3DCE5",
     lineHeight: 1.5,
     display: "-webkit-box",
     WebkitLineClamp: 2,
@@ -18853,26 +18993,26 @@ const styles = {
   escReplies: { display: "flex", flexDirection: "column", gap: 6, marginTop: 8 },
   escReplyAdmin: {
     background: "rgba(59,130,246,0.10)",
-    borderLeft: "2px solid #35C4E8",
+    borderLeft: "2px solid #0A84FF",
     borderRadius: 4,
     padding: "6px 8px",
   },
   escReplyTeam: {
-    background: "#131F2B",
+    background: "#141A21",
     borderLeft: "2px solid #3A4552",
     borderRadius: 4,
     padding: "6px 8px",
   },
-  escReplyHead: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4, color: "#9DB2C4", marginBottom: 3 },
-  escReplyBody: { fontSize: 14, color: "#F2F7FB", lineHeight: 1.5, whiteSpace: "pre-wrap" },
-  escResolvedNote: { fontSize: 12.5, color: "#3DDC97", marginTop: 8 },
+  escReplyHead: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4, color: "#93A2B1", marginBottom: 3 },
+  escReplyBody: { fontSize: 14, color: "#F7F9FB", lineHeight: 1.5, whiteSpace: "pre-wrap" },
+  escResolvedNote: { fontSize: 12.5, color: "#30D158", marginTop: 8 },
   escItemActions: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 },
   escTextarea: {
     width: "100%",
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 8,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     padding: "8px 10px",
     fontFamily: mono,
     fontSize: 14.5,
@@ -18883,7 +19023,7 @@ const styles = {
   refusalPanel: {
     marginTop: 10,
     background: "#1A0E0E",
-    border: "1px solid #FF4D5E",
+    border: "1px solid #FF453A",
     borderRadius: 16,
     padding: 12,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
@@ -18897,7 +19037,7 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
-  refusalPanelNote: { fontSize: 13.5, color: "#9DB2C4", lineHeight: 1.5, marginTop: 6 },
+  refusalPanelNote: { fontSize: 13.5, color: "#93A2B1", lineHeight: 1.5, marginTop: 6 },
   refusalPanelActions: {
     marginTop: 12,
     display: "flex",
@@ -18907,7 +19047,7 @@ const styles = {
     flexWrap: "wrap",
   },
   refusalConfirmBtn: {
-    background: "#FF4D5E",
+    background: "#FF453A",
     border: "none",
     color: "#fff",
     borderRadius: 8,
@@ -18924,18 +19064,18 @@ const styles = {
     width: "100%",
     display: "flex",
     alignItems: "center",
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 9,
     padding: "11px 13px",
-    color: "#D6E3EE",
+    color: "#D3DCE5",
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.7,
     cursor: "pointer",
     textAlign: "left",
   },
-  foldCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: "#61788C", letterSpacing: 0.3 },
+  foldCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: "#5A6775", letterSpacing: 0.3 },
   foldBody: { paddingTop: 10 },
 
   handoverTag: {
@@ -18943,7 +19083,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.3,
-    color: "#FFB020",
+    color: "#FF9F0A",
     background: "rgba(255,176,32,.08)",
     border: "1px solid rgba(255,176,32,.35)",
     borderRadius: 8,
@@ -18973,25 +19113,25 @@ const styles = {
   receiverDone: {
     marginTop: 10, background: "rgba(61,220,151,.07)",
     border: "1px solid rgba(61,220,151,.35)", borderRadius: 10,
-    padding: "10px 12px", fontSize: 13.5, color: "#D6E3EE", lineHeight: 1.5,
+    padding: "10px 12px", fontSize: 13.5, color: "#D3DCE5", lineHeight: 1.5,
   },
-  receiverBy: { color: "#61788C", fontSize: 12.5 },
+  receiverBy: { color: "#5A6775", fontSize: 12.5 },
   receiverEdit: {
-    marginLeft: 8, background: "none", border: "none", color: "#6FD6F0",
+    marginLeft: 8, background: "none", border: "none", color: "#5AC8FA",
     fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0,
   },
   receiverPanel: {
-    marginTop: 10, background: "#070D13", border: "1px solid #3DDC97",
+    marginTop: 10, background: "#07090C", border: "1px solid #30D158",
     borderRadius: 16, padding: 12,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   receiverHead: {
-    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#3DDC97",
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#30D158",
   },
 
   // A row of indicators, sized so more can be added without rearranging.
   bandWrap: {
-    background: "linear-gradient(180deg, #16232F, #0D151E)",
+    background: "linear-gradient(180deg, #16232F, #0E1217)",
     border: "1px solid rgba(255,255,255,.09)",
     borderRadius: 20,
     padding: "14px 14px 12px",
@@ -19005,14 +19145,14 @@ const styles = {
   },
   bandPeriods: { marginLeft: "auto", display: "flex", gap: 5 },
   bandPeriod: {
-    background: "none", border: "1px solid #2A3949", color: "#9DB2C4",
+    background: "none", border: "1px solid #28323D", color: "#93A2B1",
     borderRadius: 999, padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer",
   },
   bandPeriodOn: {
-    background: "#101A24", border: "1px solid #35C4E8", color: "#F2F7FB",
+    background: "#11161C", border: "1px solid #0A84FF", color: "#F7F9FB",
     borderRadius: 999, padding: "5px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer",
   },
-  bandFoot: { fontSize: 12.5, color: "#9DB2C4", marginTop: 10, lineHeight: 1.5 },
+  bandFoot: { fontSize: 12.5, color: "#93A2B1", marginTop: 10, lineHeight: 1.5 },
 
   gaugeRow: {
     display: "grid",
@@ -19023,35 +19163,35 @@ const styles = {
   photoRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 },
   photoChip: {
     display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer",
-    background: "rgba(255,255,255,.03)", border: "1px solid #2A3949",
-    borderRadius: 999, padding: "6px 14px 6px 6px", fontSize: 12.5, color: "#D6E3EE",
+    background: "rgba(255,255,255,.03)", border: "1px solid #28323D",
+    borderRadius: 999, padding: "6px 14px 6px 6px", fontSize: 12.5, color: "#D3DCE5",
   },
   photoThumb: { width: 28, height: 28, borderRadius: "50%", objectFit: "cover" },
   photoBlank: {
-    width: 28, height: 28, borderRadius: "50%", background: "#101A24",
-    border: "1px dashed #33475A", color: "#61788C",
+    width: 28, height: 28, borderRadius: "50%", background: "#11161C",
+    border: "1px dashed #33475A", color: "#5A6775",
     display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15,
   },
 
   mixCard: {
-    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    background: "linear-gradient(180deg, #141A21, #0E1217)",
     border: "1px solid rgba(255,255,255,.07)",
     borderRadius: 18, padding: "13px 14px", marginTop: 10,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   mixBar: {
     display: "flex", height: 12, borderRadius: 999, overflow: "hidden",
-    marginTop: 11, background: "#101A24",
+    marginTop: 11, background: "#11161C",
   },
   mixList: { marginTop: 11, display: "flex", flexDirection: "column", gap: 6 },
   mixRow: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5 },
   mixDot: { width: 9, height: 9, borderRadius: 3, flex: "none" },
-  mixName: { flex: 1, minWidth: 0, color: "#D6E3EE", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  mixPct: { fontFamily: mono, fontWeight: 700, color: "#F2F7FB", minWidth: 38, textAlign: "right" },
-  mixN: { fontFamily: mono, color: "#61788C", minWidth: 28, textAlign: "right" },
+  mixName: { flex: 1, minWidth: 0, color: "#D3DCE5", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  mixPct: { fontFamily: mono, fontWeight: 700, color: "#F7F9FB", minWidth: 38, textAlign: "right" },
+  mixN: { fontFamily: mono, color: "#5A6775", minWidth: 28, textAlign: "right" },
 
   gaugeCard: {
-    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    background: "linear-gradient(180deg, #141A21, #0E1217)",
     border: "1px solid rgba(255,255,255,.07)",
     borderRadius: 18,
     padding: "14px 12px 12px",
@@ -19059,7 +19199,7 @@ const styles = {
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   gaugeLabel: {
-    fontSize: 11, fontWeight: 800, letterSpacing: 0.9, color: "#9DB2C4",
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.9, color: "#93A2B1",
     textTransform: "uppercase", lineHeight: 1.4,
   },
   gaugeCentre: {
@@ -19070,64 +19210,64 @@ const styles = {
     fontFamily: mono, fontSize: 34, fontWeight: 700, letterSpacing: -1.6,
     lineHeight: 1, fontVariantNumeric: "tabular-nums",
   },
-  gaugePct: { fontSize: 15, fontWeight: 600, color: "#61788C", marginLeft: 1 },
-  gaugeCaption: { fontSize: 11, color: "#61788C", marginTop: 5, maxWidth: 108, lineHeight: 1.35 },
-  gaugeNote: { fontSize: 11, color: "#61788C", marginTop: 8, lineHeight: 1.45 },
+  gaugePct: { fontSize: 15, fontWeight: 600, color: "#5A6775", marginLeft: 1 },
+  gaugeCaption: { fontSize: 11, color: "#5A6775", marginTop: 5, maxWidth: 108, lineHeight: 1.35 },
+  gaugeNote: { fontSize: 11, color: "#5A6775", marginTop: 8, lineHeight: 1.45 },
 
   statRow: {
     display: "flex", alignItems: "center", gap: 12,
-    background: "#131F2B", border: "1px solid #1E2A36", borderRadius: 12,
+    background: "#141A21", border: "1px solid #1C242D", borderRadius: 12,
     padding: "10px 12px",
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
-  statName: { fontSize: 14, fontWeight: 700, color: "#F2F7FB" },
-  statId: { fontSize: 12, fontWeight: 600, color: "#61788C", marginLeft: 6 },
-  statMeta: { fontSize: 12, color: "#61788C", marginTop: 3 },
-  statBarTrack: { height: 8, background: "#070D13", border: "1px solid #1E2A36", borderRadius: 6, overflow: "hidden" },
-  statBarFill: { height: "100%", background: "linear-gradient(90deg,#3DDC97,#35C4E8)" },
-  statValue: { fontSize: 13, fontWeight: 800, color: "#F2F7FB", textAlign: "right", marginTop: 4 },
-  statCalls: { fontSize: 22, fontWeight: 800, color: "#F2F7FB", minWidth: 52, textAlign: "right" },
+  statName: { fontSize: 14, fontWeight: 700, color: "#F7F9FB" },
+  statId: { fontSize: 12, fontWeight: 600, color: "#5A6775", marginLeft: 6 },
+  statMeta: { fontSize: 12, color: "#5A6775", marginTop: 3 },
+  statBarTrack: { height: 8, background: "#07090C", border: "1px solid #1C242D", borderRadius: 6, overflow: "hidden" },
+  statBarFill: { height: "100%", background: "linear-gradient(90deg,#30D158,#0A84FF)" },
+  statValue: { fontSize: 13, fontWeight: 800, color: "#F7F9FB", textAlign: "right", marginTop: 4 },
+  statCalls: { fontSize: 22, fontWeight: 800, color: "#F7F9FB", minWidth: 52, textAlign: "right" },
   statOriginRow: {
     display: "flex", alignItems: "center", gap: 8, fontSize: 13,
-    color: "#D6E3EE", padding: "6px 10px", background: "#0D151E",
-    border: "1px solid #1E2A36", borderRadius: 8,
+    color: "#D3DCE5", padding: "6px 10px", background: "#0E1217",
+    border: "1px solid #1C242D", borderRadius: 8,
   },
   statOriginNum: { width: 58, textAlign: "right", fontVariantNumeric: "tabular-nums" },
 
   reviewChangedTag: {
     marginLeft: 7, fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
-    color: "#FFB020", border: "1px solid rgba(255,176,32,.45)",
+    color: "#FF9F0A", border: "1px solid rgba(255,176,32,.45)",
     borderRadius: 4, padding: "1px 5px",
   },
   reviewNewTag: {
     marginLeft: 7, fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
-    color: "#3DDC97", border: "1px solid rgba(61,220,151,.45)",
+    color: "#30D158", border: "1px solid rgba(61,220,151,.45)",
     borderRadius: 4, padding: "1px 5px",
   },
 
   logHeaderBtn: {
     width: "100%", display: "flex", alignItems: "center", background: "none",
-    border: "none", borderBottom: "1px solid #1E2A36", color: "#D6E3EE",
+    border: "none", borderBottom: "1px solid #1C242D", color: "#D3DCE5",
     padding: "12px 14px", fontSize: 12.5, fontWeight: 800, letterSpacing: 0.9,
     cursor: "pointer", textAlign: "left",
   },
-  logHeaderCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#61788C" },
+  logHeaderCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#5A6775" },
 
   infoDot: {
     display: "inline-flex", alignItems: "center", gap: 6,
     background: "none", border: "none", padding: 0, cursor: "pointer",
-    color: "#61788C", fontSize: 12.5, fontWeight: 600,
+    color: "#5A6775", fontSize: 12.5, fontWeight: 600,
   },
   infoGlyph: {
     width: 17, height: 17, borderRadius: "50%",
-    border: "1px solid #33475A", color: "#9DB2C4",
+    border: "1px solid #33475A", color: "#93A2B1",
     fontSize: 11, fontWeight: 800, fontStyle: "italic",
     display: "inline-flex", alignItems: "center", justifyContent: "center",
     flex: "none",
   },
   infoBody: {
-    marginTop: 7, fontSize: 13, color: "#9DB2C4", lineHeight: 1.55,
-    borderLeft: "2px solid #2A3949", paddingLeft: 10,
+    marginTop: 7, fontSize: 13, color: "#93A2B1", lineHeight: 1.55,
+    borderLeft: "2px solid #28323D", paddingLeft: 10,
   },
 
   reliefTag: {
@@ -19135,7 +19275,7 @@ const styles = {
     border: "1px solid rgba(233,196,106,.45)", borderRadius: 5, padding: "1px 6px",
   },
   relieveBtn: {
-    background: "none", border: "1px solid #33475A", color: "#9DB2C4",
+    background: "none", border: "1px solid #33475A", color: "#93A2B1",
     borderRadius: 999, padding: "2px 8px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
   },
 
@@ -19145,17 +19285,17 @@ const styles = {
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   reliefWaitHead: { fontSize: 14.5, fontWeight: 800, color: "#FFD98A", letterSpacing: 0.2 },
-  reliefWaitBody: { fontSize: 13.5, color: "#D6E3EE", lineHeight: 1.6, marginTop: 8 },
-  reliefWaitCall: { fontSize: 13, color: "#9DB2C4", marginTop: 8, fontWeight: 600 },
+  reliefWaitBody: { fontSize: 13.5, color: "#D3DCE5", lineHeight: 1.6, marginTop: 8 },
+  reliefWaitCall: { fontSize: 13, color: "#93A2B1", marginTop: 8, fontWeight: 600 },
 
   ambulancePrompt: {
     background: "linear-gradient(180deg,#123246,#0C2233)",
-    border: "1px solid #35C4E8", borderRadius: 14,
+    border: "1px solid #0A84FF", borderRadius: 14,
     padding: "12px 14px", marginBottom: 10,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   ambulancePromptHead: { fontSize: 14, fontWeight: 800, color: "#8FE0F5", letterSpacing: 0.2 },
-  ambulancePromptBody: { fontSize: 13, color: "#9DB2C4", lineHeight: 1.55, marginTop: 6 },
+  ambulancePromptBody: { fontSize: 13, color: "#93A2B1", lineHeight: 1.55, marginTop: 6 },
 
   kindRow: { display: "flex", gap: 8, marginBottom: 12 },
   kindBtn: {
@@ -19171,12 +19311,12 @@ const styles = {
   },
   checkAdminRow: {
     display: "flex", alignItems: "center", gap: 8,
-    background: "#0D151E", border: "1px solid #1E2A36", borderRadius: 10,
-    padding: "9px 11px", fontSize: 13.5, color: "#F2F7FB",
+    background: "#0E1217", border: "1px solid #1C242D", borderRadius: 10,
+    padding: "9px 11px", fontSize: 13.5, color: "#F7F9FB",
   },
-  checkAdminNum: { fontSize: 11.5, color: "#61788C", fontWeight: 700, minWidth: 16 },
+  checkAdminNum: { fontSize: 11.5, color: "#5A6775", fontWeight: 700, minWidth: 16 },
   checkMoveBtn: {
-    background: "none", border: "1px solid #2A3949", color: "#9DB2C4",
+    background: "none", border: "1px solid #28323D", color: "#93A2B1",
     borderRadius: 6, width: 26, height: 26, cursor: "pointer", fontSize: 12,
   },
   checkRemoveBtn: {
@@ -19185,18 +19325,18 @@ const styles = {
   },
   checkTodayRow: {
     display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-    background: "#0D151E", border: "1px solid #1E2A36", borderRadius: 10, padding: "8px 11px",
+    background: "#0E1217", border: "1px solid #1C242D", borderRadius: 10, padding: "8px 11px",
   },
-  checkTodayUnit: { fontSize: 13.5, fontWeight: 700, color: "#F2F7FB" },
-  checkTodayStation: { fontSize: 10.5, color: "#61788C", marginLeft: 6, fontWeight: 700 },
-  checkTodayOk: { fontSize: 12.5, color: "#3DDC97" },
-  checkTodayFlag: { fontSize: 12.5, color: "#FFB020", flex: 1, minWidth: 0 },
+  checkTodayUnit: { fontSize: 13.5, fontWeight: 700, color: "#F7F9FB" },
+  checkTodayStation: { fontSize: 10.5, color: "#5A6775", marginLeft: 6, fontWeight: 700 },
+  checkTodayOk: { fontSize: 12.5, color: "#30D158" },
+  checkTodayFlag: { fontSize: 12.5, color: "#FF9F0A", flex: 1, minWidth: 0 },
   checkTodayMissing: { fontSize: 12.5, color: "#FF7A86", fontWeight: 700 },
-  checkTodayWho: { fontSize: 12, color: "#61788C", marginLeft: "auto" },
+  checkTodayWho: { fontSize: 12, color: "#5A6775", marginLeft: "auto" },
 
   oosRefused: {
     marginTop: 10, background: "linear-gradient(180deg,#3A1218,#220A0E)",
-    border: "1px solid #FF4D5E", borderRadius: 14, padding: 13,
+    border: "1px solid #FF453A", borderRadius: 14, padding: 13,
     fontSize: 13.5, color: "#FFD6DA", lineHeight: 1.5,
   },
   oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
@@ -19208,8 +19348,8 @@ const styles = {
     boxShadow: "0 8px 22px rgba(233,196,106,.12)",
   },
   oosAskHead: { fontSize: 15, fontWeight: 800, color: "#FFD98A" },
-  oosAskWhy: { fontSize: 13.5, color: "#D6E3EE", marginTop: 6, lineHeight: 1.5 },
-  oosAskWho: { fontSize: 12, color: "#9DB2C4" },
+  oosAskWhy: { fontSize: 13.5, color: "#D3DCE5", marginTop: 6, lineHeight: 1.5 },
+  oosAskWho: { fontSize: 12, color: "#93A2B1" },
 
   oosPending: {
     marginTop: 10, background: "rgba(255,176,32,.08)",
@@ -19217,28 +19357,28 @@ const styles = {
     padding: "10px 12px", fontSize: 13, color: "#FFD98A", lineHeight: 1.5,
   },
   oosCancel: {
-    marginLeft: 8, background: "none", border: "none", color: "#9DB2C4",
+    marginLeft: 8, background: "none", border: "none", color: "#93A2B1",
     fontSize: 12.5, fontWeight: 700, cursor: "pointer", textDecoration: "underline",
   },
   oosForm: {
-    marginTop: 10, background: "#0D151E", border: "1px solid #2A3949",
+    marginTop: 10, background: "#0E1217", border: "1px solid #28323D",
     borderRadius: 14, padding: 12,
   },
   oosFormHead: { fontSize: 11.5, fontWeight: 800, letterSpacing: 0.6, color: "#E9C46A" },
 
   checkOpenBtn: {
-    background: "none", border: "1px dashed #33475A", color: "#9DB2C4",
+    background: "none", border: "1px dashed #33475A", color: "#93A2B1",
     borderRadius: 999, padding: "8px 14px", fontSize: 13, fontWeight: 700,
     cursor: "pointer", whiteSpace: "nowrap",
   },
   checkDoneTag: {
     display: "inline-flex", alignItems: "center", gap: 5,
-    fontSize: 12.5, fontWeight: 700, color: "#3DDC97",
+    fontSize: 12.5, fontWeight: 700, color: "#30D158",
     border: "1px solid rgba(61,220,151,.4)", background: "rgba(61,220,151,.08)",
     borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap",
   },
   checkCard: {
-    background: "#0D151E", border: "1px solid #2A3949", borderRadius: 14,
+    background: "#0E1217", border: "1px solid #28323D", borderRadius: 14,
     padding: 12, marginTop: 10,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
@@ -19247,14 +19387,14 @@ const styles = {
     fontSize: 12.5, fontWeight: 800, color: "#E9C46A", letterSpacing: 0.5,
     textTransform: "uppercase",
   },
-  checkCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#61788C" },
+  checkCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#5A6775" },
   checkList: { marginTop: 10, display: "flex", flexDirection: "column", gap: 1,
-    background: "#1E2A36", border: "1px solid #1E2A36", borderRadius: 10, overflow: "hidden" },
+    background: "#1C242D", border: "1px solid #1C242D", borderRadius: 10, overflow: "hidden" },
   checkItem: {
-    background: "#131F2B", padding: "9px 11px",
+    background: "#141A21", padding: "9px 11px",
     display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
   },
-  checkItemText: { fontSize: 13.5, color: "#F2F7FB", lineHeight: 1.4, flex: 1, minWidth: 120 },
+  checkItemText: { fontSize: 13.5, color: "#F7F9FB", lineHeight: 1.4, flex: 1, minWidth: 120 },
   checkItemBtns: { display: "flex", gap: 4, marginLeft: "auto" },
   checkAnswerBtn: {
     background: "none", border: "1px solid", borderRadius: 8,
@@ -19270,31 +19410,65 @@ const styles = {
   },
   checkSubmitOff: {
     minHeight: 42, padding: "0 18px",
-    background: "#101A24", border: "1px dashed #33475A", borderRadius: 999,
-    color: "#61788C", fontSize: 14, fontWeight: 700, cursor: "not-allowed",
+    background: "#11161C", border: "1px dashed #33475A", borderRadius: 999,
+    color: "#5A6775", fontSize: 14, fontWeight: 700, cursor: "not-allowed",
   },
   checkDone: {
     background: "rgba(61,220,151,.07)", border: "1px solid rgba(61,220,151,.35)",
     borderRadius: 14, padding: "11px 13px", marginBottom: 12,
   },
-  checkDoneHead: { fontSize: 13.5, fontWeight: 700, color: "#D6E3EE" },
-  checkAllGood: { fontSize: 12.5, color: "#61788C", marginTop: 5 },
+  checkDoneHead: { fontSize: 13.5, fontWeight: 700, color: "#D3DCE5" },
+  checkAllGood: { fontSize: 12.5, color: "#5A6775", marginTop: 5 },
   checkFlagList: { marginTop: 8, display: "flex", flexDirection: "column", gap: 5 },
-  checkFlagRow: { fontSize: 13, color: "#D6E3EE", display: "flex", gap: 8, alignItems: "baseline" },
+  checkFlagRow: { fontSize: 13, color: "#D3DCE5", display: "flex", gap: 8, alignItems: "baseline" },
   checkFlagTag: { fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, flex: "none" },
-  checkNoteShown: { fontSize: 12.5, color: "#9DB2C4", marginTop: 7, fontStyle: "italic" },
+  checkNoteShown: { fontSize: 12.5, color: "#93A2B1", marginTop: 7, fontStyle: "italic" },
+
+  truckRow: {
+    display: "block", width: "100%", textAlign: "left", background: "none",
+    border: "none", borderBottom: "0.5px solid rgba(255,255,255,.055)",
+    padding: "14px 16px 15px", cursor: "pointer", position: "relative", color: "#F7F9FB",
+  },
+  truckIdle: { opacity: 0.62 },
+  truckEdge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
+  truckHead: { display: "flex", alignItems: "baseline", gap: 9 },
+  truckName: { fontSize: 17, fontWeight: 650, letterSpacing: -0.35, minWidth: 78 },
+  truckCrew: {
+    fontSize: 13, color: "#5A6775", flex: 1, minWidth: 0,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  truckClock: {
+    fontFamily: mono, fontSize: 17, fontWeight: 500, letterSpacing: -0.7,
+    fontVariantNumeric: "tabular-nums",
+  },
+  truckJob: {
+    fontSize: 14, color: "#93A2B1", marginTop: 5, letterSpacing: -0.1,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  truckJobNature: { color: "#F7F9FB", fontWeight: 600 },
+  truckJobRoute: { color: "#93A2B1" },
+  truckChip: {
+    display: "inline-block", fontSize: 11, fontWeight: 600, letterSpacing: 0.2,
+    padding: "2px 9px", borderRadius: 999, background: "#1C242D", color: "#93A2B1",
+  },
+  truckChipFree: { background: "rgba(48,209,88,.14)", color: "#30D158" },
+  rail: { display: "flex", gap: 3, marginTop: 11 },
+  railSeg: { flex: 1, height: 3, borderRadius: 2 },
+  railLabels: { display: "flex", justifyContent: "space-between", marginTop: 6 },
+  railLabel: { fontSize: 10.5, color: "#5A6775" },
+  railLabelOn: { fontSize: 10.5, color: "#93A2B1", fontWeight: 600 },
 
   callTile: {
     position: "relative",
     overflow: "hidden",
     textAlign: "left",
-    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    background: "linear-gradient(180deg, #141A21, #0E1217)",
     border: "1px solid rgba(255,255,255,.07)",
     borderLeft: "4px solid",
     borderRadius: 16,
     padding: "13px 13px 14px",
     cursor: "pointer",
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     display: "flex",
     flexDirection: "column",
     gap: 5,
@@ -19323,7 +19497,7 @@ const styles = {
     flex: 1, minWidth: 0, position: "relative",
     display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
     background: "none", border: "none", cursor: "pointer",
-    fontSize: 9.5, letterSpacing: 0.4, color: "#61788C", padding: "6px 0",
+    fontSize: 9.5, letterSpacing: 0.4, color: "#5A6775", padding: "6px 0",
   },
   bottomTabOn: {
     flex: 1, minWidth: 0, position: "relative",
@@ -19334,12 +19508,12 @@ const styles = {
     border: "1px solid rgba(61,220,151,.35)",
     borderRadius: 16,
     cursor: "pointer",
-    fontSize: 9.5, letterSpacing: 0.4, color: "#F2F7FB", fontWeight: 800, padding: "6px 0",
+    fontSize: 9.5, letterSpacing: 0.4, color: "#F7F9FB", fontWeight: 800, padding: "6px 0",
   },
   bottomGlyph: { fontSize: 17, lineHeight: 1.1 },
   bottomBadge: {
     position: "absolute", top: 0, right: "22%",
-    background: "#FF4D5E", color: "#fff", fontSize: 9, fontWeight: 800,
+    background: "#FF453A", color: "#fff", fontSize: 9, fontWeight: 800,
     borderRadius: 999, padding: "1px 5px", minWidth: 15, textAlign: "center",
   },
   bottomCta: {
@@ -19357,13 +19531,13 @@ const styles = {
     fontSize: 34, fontWeight: 800, letterSpacing: -1.6, lineHeight: 1,
     fontVariantNumeric: "tabular-nums",
   },
-  statusOf: { fontSize: 13.5, fontWeight: 600, color: "#61788C" },
+  statusOf: { fontSize: 13.5, fontWeight: 600, color: "#5A6775" },
   statusBar: { display: "flex", gap: 3, marginTop: 11 },
   statusSeg: { height: 5, borderRadius: 3, flex: 1, opacity: 0.9 },
   statusLegend: { display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10 },
   statusLegendItem: {
     display: "inline-flex", alignItems: "center", gap: 6,
-    fontSize: 11.5, color: "#9DB2C4", fontWeight: 600,
+    fontSize: 11.5, color: "#93A2B1", fontWeight: 600,
   },
   statusLegendDot: { width: 6, height: 6, borderRadius: "50%" },
 
@@ -19386,14 +19560,14 @@ const styles = {
     letterSpacing: -0.8, fontVariantNumeric: "tabular-nums", lineHeight: 1,
   },
   callTileRoute: {
-    fontSize: 12, color: "#9DB2C4", lineHeight: 1.4,
+    fontSize: 12, color: "#93A2B1", lineHeight: 1.4,
     display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
   },
   callTileFoot: {
     marginTop: "auto", display: "flex", alignItems: "flex-end", gap: 8,
   },
   callTileUnit: {
-    fontFamily: mono, fontSize: 11.5, fontWeight: 600, letterSpacing: 0.6, color: "#6FD6F0",
+    fontFamily: mono, fontSize: 11.5, fontWeight: 600, letterSpacing: 0.6, color: "#5AC8FA",
   },
   callTileTags: { display: "flex", gap: 5, flexWrap: "wrap" },
   callTileTag: { fontSize: 10, fontWeight: 800, letterSpacing: 0.4 },
@@ -19401,15 +19575,45 @@ const styles = {
     fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#B07CF0",
   },
   callTileHandover: {
-    fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#FFB020",
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#FF9F0A",
   },
+  waitList: {
+    background: "rgba(255,159,10,.06)",
+    border: "0.5px solid rgba(255,159,10,.28)",
+    borderRadius: 18, overflow: "hidden", marginTop: 4, marginBottom: 12,
+  },
+  waitRow: {
+    display: "flex", alignItems: "center", gap: 13, width: "100%",
+    background: "none", border: "none",
+    borderBottom: "0.5px solid rgba(255,255,255,.055)",
+    padding: "13px 16px", cursor: "pointer", textAlign: "left", color: "#F7F9FB",
+  },
+  waitDot: { width: 7, height: 7, borderRadius: "50%", background: "#FF9F0A", flex: "none" },
+  waitBody: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 },
+  waitNature: { fontSize: 15.5, fontWeight: 550, letterSpacing: -0.25 },
+  waitRoute: {
+    fontSize: 13, color: "#5A6775",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  waitClock: {
+    fontFamily: mono, fontSize: 15, color: "#FF9F0A", fontVariantNumeric: "tabular-nums",
+  },
+
+  fleetList: {
+    background: "#0E1217",
+    border: "0.5px solid rgba(255,255,255,.055)",
+    borderRadius: 18,
+    overflow: "hidden",
+    marginTop: 4,
+  },
+
   callTileGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
     gap: 8,
   },
   tileBackBtn: {
-    background: "none", border: "1px solid #2A3949", color: "#9DB2C4",
+    background: "none", border: "1px solid #28323D", color: "#93A2B1",
     borderRadius: 999, padding: "6px 12px", fontSize: 12.5, fontWeight: 700,
     cursor: "pointer", marginBottom: 10,
   },
@@ -19421,11 +19625,11 @@ const styles = {
   },
   needsDetailHead: { fontSize: 14.5, fontWeight: 800, color: "#FFD98A", lineHeight: 1.45 },
   needsDetailBulb: { marginRight: 7, fontSize: 15 },
-  needsDetailBody: { fontSize: 13, color: "#9DB2C4", lineHeight: 1.55, marginTop: 6 },
+  needsDetailBody: { fontSize: 13, color: "#93A2B1", lineHeight: 1.55, marginTop: 6 },
   needsDetailList: { marginTop: 9, display: "flex", flexDirection: "column", gap: 5 },
   needsDetailItem: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" },
-  needsDetailNature: { fontSize: 13.5, fontWeight: 700, color: "#F2F7FB" },
-  needsDetailWhat: { fontSize: 12.5, color: "#9DB2C4" },
+  needsDetailNature: { fontSize: 13.5, fontWeight: 700, color: "#F7F9FB" },
+  needsDetailWhat: { fontSize: 12.5, color: "#93A2B1" },
   needsDetailTag: {
     marginTop: 8, fontSize: 12.5, fontWeight: 700, color: "#FFD98A",
     background: "rgba(233,196,106,.08)", border: "1px solid rgba(233,196,106,.4)",
@@ -19434,26 +19638,26 @@ const styles = {
 
   coverageRow: { marginBottom: 12 },
   coverageTotal: {
-    background: "#131F2B", border: "1px solid #2A3949", borderRadius: 12,
+    background: "#141A21", border: "1px solid #28323D", borderRadius: 12,
     padding: "10px 14px", minWidth: 150,
   },
-  coverageTotalName: { fontSize: 11.5, fontWeight: 700, color: "#9DB2C4", letterSpacing: 0.4 },
-  coverageTotalVal: { fontSize: 19, fontWeight: 800, color: "#F2F7FB", marginTop: 3 },
-  coverageTotalMeta: { fontSize: 12, color: "#61788C", marginTop: 2 },
+  coverageTotalName: { fontSize: 11.5, fontWeight: 700, color: "#93A2B1", letterSpacing: 0.4 },
+  coverageTotalVal: { fontSize: 19, fontWeight: 800, color: "#F7F9FB", marginTop: 3 },
+  coverageTotalMeta: { fontSize: 12, color: "#5A6775", marginTop: 2 },
   coverageRowPast: {
     display: "flex", alignItems: "center", gap: 10,
-    background: "#0D151E", border: "1px solid #1E2A36", borderRadius: 12, padding: "10px 12px",
+    background: "#0E1217", border: "1px solid #1C242D", borderRadius: 12, padding: "10px 12px",
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   coverageRowLive: {
     display: "flex", alignItems: "center", gap: 10,
-    background: "rgba(255,77,94,.10)", border: "1px solid #FF4D5E", borderRadius: 12, padding: "10px 12px",
+    background: "rgba(255,77,94,.10)", border: "1px solid #FF453A", borderRadius: 12, padding: "10px 12px",
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
-  coverageRowHead: { fontSize: 14, fontWeight: 700, color: "#F2F7FB", display: "flex", gap: 8, flexWrap: "wrap" },
-  coverageRowWhen: { fontSize: 12, fontWeight: 600, color: "#61788C" },
-  coverageRowMeta: { fontSize: 12.5, color: "#9DB2C4", marginTop: 3 },
-  coverageDur: { fontSize: 15, fontWeight: 800, color: "#D6E3EE", minWidth: 78, textAlign: "right" },
+  coverageRowHead: { fontSize: 14, fontWeight: 700, color: "#F7F9FB", display: "flex", gap: 8, flexWrap: "wrap" },
+  coverageRowWhen: { fontSize: 12, fontWeight: 600, color: "#5A6775" },
+  coverageRowMeta: { fontSize: 12.5, color: "#93A2B1", marginTop: 3 },
+  coverageDur: { fontSize: 15, fontWeight: 800, color: "#D3DCE5", minWidth: 78, textAlign: "right" },
   coverageDurLive: { fontSize: 15, fontWeight: 800, color: "#FF7A86", minWidth: 78, textAlign: "right" },
   coverageBtn: {
     display: "inline-flex", alignItems: "center", gap: 7,
@@ -19463,14 +19667,14 @@ const styles = {
   },
   coverageBtnQuiet: {
     display: "inline-flex", alignItems: "center", gap: 7,
-    background: "none", border: "1px solid #2A3949",
-    color: "#61788C", borderRadius: 999, padding: "10px 16px",
+    background: "none", border: "1px solid #28323D",
+    color: "#5A6775", borderRadius: 999, padding: "10px 16px",
     fontSize: 13.5, fontWeight: 700, cursor: "pointer",
   },
-  coverageHint: { fontSize: 11.5, fontWeight: 600, color: "#61788C", marginLeft: 4 },
+  coverageHint: { fontSize: 11.5, fontWeight: 600, color: "#5A6775", marginLeft: 4 },
   coverageOn: {
     background: "linear-gradient(180deg,#7F1D26,#4A0F16)",
-    border: "1px solid #FF4D5E", borderRadius: 14,
+    border: "1px solid #FF453A", borderRadius: 14,
     padding: "12px 14px", color: "#FFFFFF",
     fontSize: 15, fontWeight: 800, letterSpacing: 0.3,
     boxShadow: "0 8px 24px rgba(255,77,94,.22)",
@@ -19478,27 +19682,27 @@ const styles = {
   coverageSince: { display: "block", fontSize: 12.5, fontWeight: 600, color: "rgba(255,255,255,.75)", marginTop: 4 },
 
   partnerManage: {
-    background: "#131F2B", border: "1px solid #2A3949", borderRadius: 14,
+    background: "#141A21", border: "1px solid #28323D", borderRadius: 14,
     padding: 12, marginBottom: 12,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   partnerManageHead: { fontSize: 12, fontWeight: 800, letterSpacing: 0.5, color: "#E9C46A" },
 
   partnerBox: {
-    marginTop: 14, background: "#070D13", border: "1px dashed #2A3949",
+    marginTop: 14, background: "#07090C", border: "1px dashed #28323D",
     borderRadius: 14, padding: 12,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   partnerHead: { fontSize: 11, fontWeight: 800, letterSpacing: 0.7, color: "#E9C46A" },
-  partnerNote: { fontSize: 13, color: "#9DB2C4", lineHeight: 1.55, marginTop: 6 },
-  partnerFound: { marginTop: 8, fontSize: 13, fontWeight: 600, color: "#3DDC97" },
+  partnerNote: { fontSize: 13, color: "#93A2B1", lineHeight: 1.55, marginTop: 6 },
+  partnerFound: { marginTop: 8, fontSize: 13, fontWeight: 600, color: "#30D158" },
 
   ackBtnBusy: {
     opacity: 0.6, cursor: "wait",
   },
   alarmAckBtnBusy: {
     width: "100%", background: "#2A3441", border: "1px solid #33475A",
-    color: "#9DB2C4", borderRadius: 12, padding: "18px 16px",
+    color: "#93A2B1", borderRadius: 12, padding: "18px 16px",
     fontSize: 18, fontWeight: 800, letterSpacing: 0.5, cursor: "wait",
   },
 
@@ -19509,7 +19713,7 @@ const styles = {
   },
 
   handOverBtn: {
-    background: "none", border: "1px solid rgba(255,176,32,.45)", color: "#FFB020",
+    background: "none", border: "1px solid rgba(255,176,32,.45)", color: "#FF9F0A",
     borderRadius: 999, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
     cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
@@ -19530,7 +19734,7 @@ const styles = {
     background: "linear-gradient(180deg, #1B3B4B, #142B38)",
     border: "1px solid rgba(53,196,232,.55)",
     borderRadius: 12,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     fontSize: 17,
     fontWeight: 800,
     letterSpacing: -0.2,
@@ -19546,10 +19750,10 @@ const styles = {
     gap: 12,
     marginTop: 10,
     padding: "16px 16px",
-    background: "#101A24",
+    background: "#11161C",
     border: "1px dashed #33475A",
     borderRadius: 12,
-    color: "#61788C",
+    color: "#5A6775",
     fontSize: 17,
     fontWeight: 700,
     cursor: "not-allowed",
@@ -19559,7 +19763,7 @@ const styles = {
     fontSize: 10.5,
     fontWeight: 800,
     letterSpacing: 1.2,
-    color: "#6FD6F0",
+    color: "#5AC8FA",
     border: "1px solid rgba(111,214,240,.45)",
     borderRadius: 5,
     padding: "2px 6px",
@@ -19568,78 +19772,78 @@ const styles = {
 
   uhuScope: {
     marginLeft: "auto", fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
-    color: "#61788C", textTransform: "uppercase",
+    color: "#5A6775", textTransform: "uppercase",
   },
 
   uhuStationHead: {
-    fontSize: 11, fontWeight: 800, letterSpacing: 0.8, color: "#6FD6F0",
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.8, color: "#5AC8FA",
     textTransform: "uppercase", padding: "10px 0 4px",
   },
 
   issueRow: {
-    background: "#131F2B", border: "1px solid #1E2A36", borderRadius: 16, padding: "11px 12px",
+    background: "#141A21", border: "1px solid #1C242D", borderRadius: 16, padding: "11px 12px",
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
   issueHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   issueOpen: {
-    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#FFB020",
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#FF9F0A",
     border: "1px solid rgba(255,176,32,.45)", borderRadius: 5, padding: "1px 6px",
   },
   issueClosed: {
-    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#3DDC97",
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "#30D158",
     border: "1px solid rgba(61,220,151,.4)", borderRadius: 5, padding: "1px 6px",
   },
-  issueWho: { fontSize: 12.5, fontWeight: 700, color: "#D6E3EE" },
-  issueWhen: { fontSize: 12, color: "#61788C", marginLeft: "auto" },
-  issueText: { fontSize: 14, color: "#F2F7FB", lineHeight: 1.55, marginTop: 7 },
-  issueCall: { fontSize: 12, color: "#61788C", marginTop: 5 },
+  issueWho: { fontSize: 12.5, fontWeight: 700, color: "#D3DCE5" },
+  issueWhen: { fontSize: 12, color: "#5A6775", marginLeft: "auto" },
+  issueText: { fontSize: 14, color: "#F7F9FB", lineHeight: 1.55, marginTop: 7 },
+  issueCall: { fontSize: 12, color: "#5A6775", marginTop: 5 },
   issueReply: {
-    fontSize: 13, color: "#9DB2C4", marginTop: 7, paddingLeft: 9,
-    borderLeft: "2px solid #2A3949",
+    fontSize: 13, color: "#93A2B1", marginTop: 7, paddingLeft: 9,
+    borderLeft: "2px solid #28323D",
   },
 
   archTabs: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
   archTab: {
     display: "inline-flex", alignItems: "center", gap: 8,
-    background: "#131F2B", border: "1px solid #1E2A36", color: "#9DB2C4",
+    background: "#141A21", border: "1px solid #1C242D", color: "#93A2B1",
     borderRadius: 999, padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer",
   },
   archTabOn: {
     display: "inline-flex", alignItems: "center", gap: 8,
-    background: "#101A24", border: "1px solid #35C4E8", color: "#F2F7FB",
+    background: "#11161C", border: "1px solid #0A84FF", color: "#F7F9FB",
     borderRadius: 999, padding: "8px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer",
   },
-  archTabCount: { fontSize: 11.5, color: "#61788C", fontWeight: 600 },
+  archTabCount: { fontSize: 11.5, color: "#5A6775", fontWeight: 600 },
   archDay: {
-    fontSize: 12, fontWeight: 800, letterSpacing: 0.7, color: "#6FD6F0",
+    fontSize: 12, fontWeight: 800, letterSpacing: 0.7, color: "#5AC8FA",
     marginBottom: 7, textTransform: "uppercase",
   },
   archOpenTag: {
     marginLeft: 8, fontSize: 11, fontWeight: 700, letterSpacing: 0.4,
-    color: "#FFB020", border: "1px solid rgba(245,158,11,.4)", borderRadius: 5,
+    color: "#FF9F0A", border: "1px solid rgba(245,158,11,.4)", borderRadius: 5,
     padding: "1px 6px",
   },
 
-  savedNote: { fontSize: 13.5, color: "#9DB2C4", lineHeight: 1.55, marginTop: 8 },
+  savedNote: { fontSize: 13.5, color: "#93A2B1", lineHeight: 1.55, marginTop: 8 },
   savedRow: {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 16,
     padding: "10px 12px",
     flexWrap: "wrap",
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
   },
-  savedDay: { fontSize: 14, fontWeight: 700, color: "#F2F7FB" },
-  savedMeta: { fontSize: 12.5, color: "#61788C", marginTop: 3 },
+  savedDay: { fontSize: 14, fontWeight: 700, color: "#F7F9FB" },
+  savedMeta: { fontSize: 12.5, color: "#5A6775", marginTop: 3 },
 
   stationBoardLabel: {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.6,
-    color: "#6FD6F0",
+    color: "#5AC8FA",
     marginBottom: 4,
   },
 
@@ -19647,19 +19851,19 @@ const styles = {
     fontSize: 11,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#6FD6F0",
+    color: "#5AC8FA",
     border: "1px solid #24425F",
     borderRadius: 4,
     padding: "1px 4px",
   },
 
-  stationCount: { marginLeft: 8, fontSize: 12.5, fontWeight: 600, color: "#61788C", letterSpacing: 0.3 },
+  stationCount: { marginLeft: 8, fontSize: 12.5, fontWeight: 600, color: "#5A6775", letterSpacing: 0.3 },
   addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
 
   offlineBanner: {
     background: "#3A1A0A",
-    borderTop: "1px solid #FFB020",
-    borderBottom: "1px solid #FFB020",
+    borderTop: "1px solid #FF9F0A",
+    borderBottom: "1px solid #FF9F0A",
     color: "#FFC24D",
     fontSize: 14,
     fontWeight: 700,
@@ -19670,7 +19874,7 @@ const styles = {
   syncingBanner: {
     background: "#0E2233",
     borderBottom: "1px solid #24425F",
-    color: "#6FD6F0",
+    color: "#5AC8FA",
     fontSize: 14,
     fontWeight: 600,
     padding: "7px 14px",
@@ -19680,21 +19884,21 @@ const styles = {
   stationBanner: {
     display: "flex",
     alignItems: "center",
-    background: "#101A24",
+    background: "#11161C",
     border: "1px solid #24425F",
     borderRadius: 8,
     padding: "7px 10px",
     fontSize: 14,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#6FD6F0",
+    color: "#5AC8FA",
     marginBottom: 10,
   },
 
   editInbox: {
     marginTop: 12,
     background: "#1C1408",
-    border: "1px solid #FFB020",
+    border: "1px solid #FF9F0A",
     borderRadius: 16,
     padding: 12,
   },
@@ -19702,32 +19906,32 @@ const styles = {
     fontSize: 13,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     display: "flex",
     alignItems: "center",
     gap: 6,
   },
-  editInboxNote: { fontSize: 13.5, color: "#9DB2C4", lineHeight: 1.5, marginTop: 6 },
+  editInboxNote: { fontSize: 13.5, color: "#93A2B1", lineHeight: 1.5, marginTop: 6 },
   editInboxCall: {
     marginTop: 10,
     borderTop: "1px solid #2A2110",
     paddingTop: 8,
   },
   editInboxCallHead: { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 },
-  editInboxNature: { fontSize: 15.5, fontWeight: 700, color: "#F2F7FB" },
-  editInboxMeta: { fontSize: 13, color: "#9DB2C4" },
+  editInboxNature: { fontSize: 15.5, fontWeight: 700, color: "#F7F9FB" },
+  editInboxMeta: { fontSize: 13, color: "#93A2B1" },
 
   mrnMissingRow: {
     fontSize: 13.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     marginTop: 4,
   },
   editCrewBlock: { marginTop: 10 },
   editOpenBtn: {
     marginTop: 10,
     background: "rgba(255,255,255,.03)",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 999,
     padding: "8px 14px",
     minHeight: 38,
@@ -19741,8 +19945,8 @@ const styles = {
   },
   editPanel: {
     marginTop: 10,
-    background: "#070D13",
-    border: "1px solid #35C4E8",
+    background: "#07090C",
+    border: "1px solid #0A84FF",
     borderRadius: 16,
     padding: 12,
     boxShadow: "0 8px 22px rgba(0,0,0,.38)",
@@ -19751,10 +19955,10 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#35C4E8",
+    color: "#0A84FF",
     marginBottom: 6,
   },
-  editPanelNote: { fontSize: 13.5, color: "#9DB2C4", lineHeight: 1.5, marginBottom: 4 },
+  editPanelNote: { fontSize: 13.5, color: "#93A2B1", lineHeight: 1.5, marginBottom: 4 },
   editPanelActions: {
     marginTop: 12,
     display: "flex",
@@ -19763,11 +19967,11 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  editPanelCount: { fontSize: 13, color: "#61788C" },
+  editPanelCount: { fontSize: 13, color: "#5A6775" },
   editReview: {
     marginTop: 10,
     background: "#1C1408",
-    border: "1px solid #FFB020",
+    border: "1px solid #FF9F0A",
     borderRadius: 16,
     padding: 10,
   },
@@ -19775,7 +19979,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     marginBottom: 8,
     display: "flex",
     alignItems: "center",
@@ -19789,16 +19993,16 @@ const styles = {
     borderTop: "1px solid #2A2110",
     flexWrap: "wrap",
   },
-  editReviewField: { fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: "#9DB2C4" },
+  editReviewField: { fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: "#93A2B1" },
   editReviewChange: { fontSize: 15, marginTop: 2 },
-  editReviewFrom: { color: "#9DB2C4", textDecoration: "line-through" },
-  editReviewTo: { color: "#F2F7FB", fontWeight: 700 },
-  editReviewBy: { fontSize: 13, color: "#61788C", marginTop: 3 },
+  editReviewFrom: { color: "#93A2B1", textDecoration: "line-through" },
+  editReviewTo: { color: "#F7F9FB", fontWeight: 700 },
+  editReviewBy: { fontSize: 13, color: "#5A6775", marginTop: 3 },
   editHistory: { marginTop: 8 },
-  editHistoryRow: { fontSize: 13, color: "#61788C", lineHeight: 1.6 },
+  editHistoryRow: { fontSize: 13, color: "#5A6775", lineHeight: 1.6 },
   editPendingNote: {
     fontSize: 13.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     background: "#1C1408",
     border: "1px solid #2A2110",
     borderRadius: 8,
@@ -19809,7 +20013,7 @@ const styles = {
 
   escComposer: {
     background: "#1C1408",
-    border: "1px dashed #FFB020",
+    border: "1px dashed #FF9F0A",
     borderRadius: 8,
     padding: 10,
     marginTop: 14,
@@ -19818,7 +20022,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.5,
-    color: "#FFB020",
+    color: "#FF9F0A",
     marginBottom: 6,
   },
   escComposerActions: {
@@ -19829,8 +20033,8 @@ const styles = {
     flexWrap: "wrap",
     marginTop: 8,
   },
-  escPrivacyNote: { fontSize: 12.5, color: "#61788C", lineHeight: 1.5, flex: 1, minWidth: 200 },
-  escByTag: { fontSize: 13, color: "#D6E3EE", fontWeight: 600 },
+  escPrivacyNote: { fontSize: 12.5, color: "#5A6775", lineHeight: 1.5, flex: 1, minWidth: 200 },
+  escByTag: { fontSize: 13, color: "#D3DCE5", fontWeight: 600 },
 
   // ---- finding a call again ----
   historyFilters: {
@@ -19844,8 +20048,8 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 8,
     padding: "0 10px",
     flex: 1,
@@ -19856,7 +20060,7 @@ const styles = {
     background: "transparent",
     border: "none",
     outline: "none",
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     padding: "8px 0",
     fontFamily: mono,
     fontSize: 14.5,
@@ -19867,10 +20071,10 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 6,
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 8,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     padding: "7px 10px",
     fontFamily: mono,
     fontSize: 14,
@@ -19882,7 +20086,7 @@ const styles = {
     alignItems: "center",
     gap: 6,
     background: "rgba(59,130,246,0.12)",
-    border: "1px solid #35C4E8",
+    border: "1px solid #0A84FF",
     borderRadius: 8,
     color: "#93C5FD",
     padding: "7px 10px",
@@ -19897,8 +20101,8 @@ const styles = {
     top: "calc(100% + 6px)",
     left: 0,
     width: 268,
-    background: "#070D13",
-    border: "1px solid #2A3949",
+    background: "#07090C",
+    border: "1px solid #28323D",
     borderRadius: 8,
     padding: 10,
     boxShadow: "0 12px 30px rgba(0,0,0,0.55)",
@@ -19908,9 +20112,9 @@ const styles = {
     alignItems: "center",
     gap: 5,
     background: "transparent",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     borderRadius: 999,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     padding: "6px 12px",
     cursor: "pointer",
     fontFamily: mono,
@@ -19922,7 +20126,7 @@ const styles = {
     alignItems: "center",
     gap: 5,
     background: "rgba(59,130,246,0.14)",
-    border: "1px solid #35C4E8",
+    border: "1px solid #0A84FF",
     borderRadius: 999,
     color: "#93C5FD",
     padding: "6px 12px",
@@ -19946,8 +20150,8 @@ const styles = {
     color: "#A5B4FC",
     fontWeight: 600,
   },
-  assistStatusStood: { color: "#9DB2C4" },
-  assistStatusDone: { color: "#61788C" },
+  assistStatusStood: { color: "#93A2B1" },
+  assistStatusDone: { color: "#5A6775" },
   assistPanel: {
     marginTop: 10,
     background: "rgba(239,68,68,0.08)",
@@ -19966,7 +20170,7 @@ const styles = {
     alignItems: "center",
     gap: 5,
   },
-  assistPanelCount: { fontSize: 13, color: "#D6E3EE", flex: 1, minWidth: 160 },
+  assistPanelCount: { fontSize: 13, color: "#D3DCE5", flex: 1, minWidth: 160 },
   assistTaskRow: {
     marginTop: 8,
     paddingTop: 8,
@@ -19982,28 +20186,28 @@ const styles = {
     fontFamily: display,
     fontWeight: 700,
     fontSize: 16,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
   },
-  assistTaskNature: { color: "#F2F7FB", fontWeight: 600 },
-  assistTaskRoute: { color: "#9DB2C4" },
+  assistTaskNature: { color: "#F7F9FB", fontWeight: 600 },
+  assistTaskRoute: { color: "#93A2B1" },
   assistTaskWaiting: { color: "#FF7A86", fontWeight: 600 },
   assistTaskActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
 
   assignSelect: {
-    background: "#070D13",
-    border: "1px solid #2A3949",
-    color: "#F2F7FB",
+    background: "#07090C",
+    border: "1px solid #28323D",
+    color: "#F7F9FB",
     borderRadius: 8,
     padding: "6px 8px",
     fontFamily: mono,
     fontSize: 14,
   },
-  assignedTag: { fontSize: 13.5, color: "#35C4E8", fontWeight: 600 },
+  assignedTag: { fontSize: 13.5, color: "#0A84FF", fontWeight: 600 },
 
   unitGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 },
   unitCard: {
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     boxShadow: "0 6px 18px rgba(0,0,0,.28)",
     borderRadius: 16,
     padding: "10px 12px",
@@ -20014,8 +20218,8 @@ const styles = {
   unitCardName: { fontSize: 14.5, fontWeight: 600 },
 
   myUnitCard: {
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     padding: 14,
     display: "flex",
@@ -20027,8 +20231,8 @@ const styles = {
 
   logPanel: {
     boxShadow: "0 6px 18px rgba(0,0,0,.28)",
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 16,
     display: "flex",
     flexDirection: "column",
@@ -20039,17 +20243,17 @@ const styles = {
     alignItems: "center",
     gap: 6,
     padding: "10px 12px",
-    borderBottom: "1px solid #1E2A36",
+    borderBottom: "1px solid #1C242D",
     fontSize: 13,
     letterSpacing: 1,
-    color: "#9DB2C4",
+    color: "#93A2B1",
     fontWeight: 700,
   },
   logList: { overflowY: "auto", padding: "6px 0" },
-  logEmpty: { color: "#61788C", fontSize: 14, padding: "12px", fontStyle: "italic" },
+  logEmpty: { color: "#5A6775", fontSize: 14, padding: "12px", fontStyle: "italic" },
   logEntry: { borderLeft: "2px solid", padding: "6px 12px", fontSize: 13.5 },
   logTopRow: { display: "flex", alignItems: "center", gap: 8 },
-  logTime: { color: "#61788C", fontSize: 12 },
+  logTime: { color: "#5A6775", fontSize: 12 },
   // The name stamp. Pushed to the end of the time row so the eye can run down
   // the right-hand edge of the log and read who did what without re-reading
   // every sentence — the name in white, where they were posted beside it.
@@ -20059,13 +20263,13 @@ const styles = {
     alignItems: "center",
     gap: 5,
     maxWidth: "62%",
-    background: "#070D13",
-    border: "1px solid #1E2A36",
+    background: "#07090C",
+    border: "1px solid #1C242D",
     borderRadius: 999,
     padding: "1px 7px",
   },
   logStampName: {
-    color: "#D6E3EE",
+    color: "#D3DCE5",
     fontSize: 12,
     fontWeight: 700,
     letterSpacing: 0.2,
@@ -20074,25 +20278,25 @@ const styles = {
     textOverflow: "ellipsis",
   },
   logStampPost: {
-    color: "#61788C",
+    color: "#5A6775",
     fontSize: 11,
     letterSpacing: 0.5,
     whiteSpace: "nowrap",
-    borderLeft: "1px solid #1E2A36",
+    borderLeft: "1px solid #1C242D",
     paddingLeft: 5,
   },
-  logMessage: { color: "#D6E3EE", marginTop: 2, lineHeight: 1.4 },
+  logMessage: { color: "#D3DCE5", marginTop: 2, lineHeight: 1.4 },
 
   uhuPanel: {
     boxShadow: "0 6px 18px rgba(0,0,0,.28)",
-    background: "#131F2B",
-    border: "1px solid #1E2A36",
+    background: "#141A21",
+    border: "1px solid #1C242D",
     borderRadius: 16,
     display: "flex",
     flexDirection: "column",
   },
   uhuFocus: { padding: "16px 14px" },
-  uhuFocusUnit: { fontFamily: display, fontSize: 15, fontWeight: 700, letterSpacing: 1, color: "#9DB2C4" },
+  uhuFocusUnit: { fontFamily: display, fontSize: 15, fontWeight: 700, letterSpacing: 1, color: "#93A2B1" },
   uhuFocusTotal: {
     fontSize: 34,
     fontWeight: 600,
@@ -20101,7 +20305,7 @@ const styles = {
     margin: "6px 0 2px",
     fontVariantNumeric: "tabular-nums",
   },
-  uhuFocusCaption: { fontSize: 13.5, color: "#61788C" },
+  uhuFocusCaption: { fontSize: 13.5, color: "#5A6775" },
   uhuLiveBox: {
     marginTop: 14,
     padding: "10px 12px",
@@ -20110,17 +20314,17 @@ const styles = {
     borderRadius: 8,
   },
   uhuLiveRow: { display: "flex", alignItems: "center", gap: 8 },
-  uhuLiveLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#FF4D5E" },
+  uhuLiveLabel: { fontSize: 12.5, letterSpacing: 1, fontWeight: 700, color: "#FF453A" },
   uhuLiveTime: { marginLeft: "auto", fontSize: 16, color: "#F5F7FA", fontVariantNumeric: "tabular-nums" },
-  uhuLiveNature: { fontSize: 13.5, color: "#D6E3EE", marginTop: 5 },
+  uhuLiveNature: { fontSize: 13.5, color: "#D3DCE5", marginTop: 5 },
   uhuIdleBox: {
     marginTop: 14,
     padding: "10px 12px",
-    background: "#070D13",
-    border: "1px solid #1E2A36",
+    background: "#07090C",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     fontSize: 13.5,
-    color: "#61788C",
+    color: "#5A6775",
   },
   uhuList: { padding: "4px 0", maxHeight: 320, overflowY: "auto" },
   uhuRow: {
@@ -20132,30 +20336,30 @@ const styles = {
     borderBottom: "1px solid #141B23",
   },
   uhuRowMain: { display: "flex", alignItems: "center", gap: 7, minWidth: 0 },
-  uhuRowName: { fontSize: 14, fontWeight: 600, color: "#F2F7FB" },
+  uhuRowName: { fontSize: 14, fontWeight: 600, color: "#F7F9FB" },
   uhuRowRight: { textAlign: "right" },
   uhuRowTime: { display: "block", fontSize: 15, color: "#F5F7FA", fontVariantNumeric: "tabular-nums" },
-  uhuRowCalls: { display: "block", fontSize: 12, color: "#61788C", marginTop: 1 },
+  uhuRowCalls: { display: "block", fontSize: 12, color: "#5A6775", marginTop: 1 },
   uhuFooter: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
     padding: "10px 12px",
-    borderTop: "1px solid #1E2A36",
+    borderTop: "1px solid #1C242D",
     fontSize: 12.5,
     letterSpacing: 1,
     fontWeight: 700,
-    color: "#9DB2C4",
+    color: "#93A2B1",
   },
-  uhuFooterTime: { color: "#F2F7FB", letterSpacing: 0.5, fontVariantNumeric: "tabular-nums" },
+  uhuFooterTime: { color: "#F7F9FB", letterSpacing: 0.5, fontVariantNumeric: "tabular-nums" },
 
   toast: {
     position: "fixed",
     top: "calc(16px + env(safe-area-inset-top))",
     right: 16,
-    background: "#FFB020",
-    color: "#070D13",
+    background: "#FF9F0A",
+    color: "#07090C",
     borderRadius: 10,
     padding: "10px 12px",
     display: "flex",
@@ -20168,7 +20372,7 @@ const styles = {
   },
   toastTitle: { fontWeight: 800, fontSize: 13.5, letterSpacing: 0.5 },
   toastBody: { fontSize: 14, marginTop: 2 },
-  toastClose: { background: "none", border: "none", color: "#070D13", fontSize: 18, cursor: "pointer", lineHeight: 1 },
+  toastClose: { background: "none", border: "none", color: "#07090C", fontSize: 18, cursor: "pointer", lineHeight: 1 },
 
   // login
   loginWrap: {
@@ -20177,18 +20381,18 @@ const styles = {
     // front door of one building rather than a separate app.
     background:
       "radial-gradient(760px 460px at 82% -12%, rgba(14,107,79,.30) 0%, transparent 60%), " +
-      "radial-gradient(900px 620px at 12% 12%, #101E2C 0%, transparent 58%), #070D13",
+      "radial-gradient(900px 620px at 12% 12%, #101E2C 0%, transparent 58%), #07090C",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     fontFamily: mono,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     padding: 20,
   },
   loginCard: {
     width: "100%",
     maxWidth: 400,
-    background: "linear-gradient(180deg, #131F2B, #0D151E)",
+    background: "linear-gradient(180deg, #141A21, #0E1217)",
     border: "1px solid rgba(255,255,255,.09)",
     borderRadius: 24,
     padding: 26,
@@ -20210,14 +20414,14 @@ const styles = {
     boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
   },
   loginHeaderText: { fontFamily: display, fontWeight: 700, fontSize: 18, letterSpacing: 0.5 },
-  loginSub: { color: "#9DB2C4", fontSize: 14, marginTop: 6 },
+  loginSub: { color: "#93A2B1", fontSize: 14, marginTop: 6 },
   roleBtn: {
-    background: "linear-gradient(180deg, #16232F, #101A24)",
+    background: "linear-gradient(180deg, #16232F, #11161C)",
     border: "1px solid rgba(255,255,255,.09)",
     borderRadius: 16,
     padding: "16px 16px",
     minHeight: 64,
-    color: "#F2F7FB",
+    color: "#F7F9FB",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -20228,9 +20432,9 @@ const styles = {
     transition: "transform .16s cubic-bezier(.22,1,.36,1), border-color .16s",
   },
   roleBtnTitle: { fontWeight: 750, fontSize: 16.5, letterSpacing: -0.2 },
-  roleBtnSub: { fontSize: 13, color: "#9DB2C4", marginTop: 2 },
+  roleBtnSub: { fontSize: 13, color: "#93A2B1", marginTop: 2 },
   loginActions: { display: "flex", gap: 8, marginTop: 16 },
-  loginFootnote: { fontSize: 12.5, color: "#61788C", marginTop: 20, lineHeight: 1.5 },
+  loginFootnote: { fontSize: 12.5, color: "#5A6775", marginTop: 20, lineHeight: 1.5 },
   loginError: { fontSize: 13.5, color: "#FF7A86", marginTop: 8 },
   accountList: { display: "flex", flexDirection: "column", gap: 6, marginTop: 14 },
   accountRow: {
@@ -20238,16 +20442,16 @@ const styles = {
     alignItems: "center",
     gap: 10,
     flexWrap: "wrap",
-    background: "#070D13",
-    border: "1px solid #1E2A36",
+    background: "#07090C",
+    border: "1px solid #1C242D",
     borderRadius: 8,
     padding: "7px 10px",
     fontSize: 13.5,
   },
-  accountRowName: { fontWeight: 700, color: "#F2F7FB" },
-  accountRowMeta: { color: "#9DB2C4" },
-  accountActiveTag: { marginLeft: "auto", color: "#3DDC97", fontSize: 12.5, fontWeight: 700 },
-  accountPendingTag: { marginLeft: "auto", color: "#FFB020", fontSize: 12.5, fontWeight: 700 },
+  accountRowName: { fontWeight: 700, color: "#F7F9FB" },
+  accountRowMeta: { color: "#93A2B1" },
+  accountActiveTag: { marginLeft: "auto", color: "#30D158", fontSize: 12.5, fontWeight: 700 },
+  accountPendingTag: { marginLeft: "auto", color: "#FF9F0A", fontSize: 12.5, fontWeight: 700 },
   removeBtn: {
     background: "transparent",
     border: "1px solid #3A2429",
@@ -20262,9 +20466,9 @@ const styles = {
   },
 
   primaryBtn: {
-    background: "#35C4E8",
+    background: "#0A84FF",
     border: "none",
-    color: "#070D13",
+    color: "#07090C",
     fontWeight: 700,
     borderRadius: 8,
     padding: "9px 16px",
@@ -20298,7 +20502,7 @@ const styles = {
   // crew are not hunting for it once the name is on.
   primaryBtnSmBlocked: {
     background: "#1B2430",
-    border: "1px solid #2A3949",
+    border: "1px solid #28323D",
     color: "#5E6B7A",
     fontWeight: 700,
     borderRadius: 8,
@@ -20312,8 +20516,8 @@ const styles = {
   },
   ghostBtn: {
     background: "transparent",
-    border: "1px solid #2A3949",
-    color: "#D6E3EE",
+    border: "1px solid #28323D",
+    color: "#D3DCE5",
     borderRadius: 8,
     padding: "9px 16px",
     cursor: "pointer",
@@ -20322,8 +20526,8 @@ const styles = {
   },
   ghostBtnSm: {
     background: "rgba(255,255,255,.03)",
-    border: "1px solid #2A3949",
-    color: "#D6E3EE",
+    border: "1px solid #28323D",
+    color: "#D3DCE5",
     borderRadius: 999,
     padding: "9px 16px",
     minHeight: 40,
@@ -20339,8 +20543,8 @@ const styles = {
   tabBtn: {
     flex: 1,
     background: "transparent",
-    border: "1px solid #2A3949",
-    color: "#9DB2C4",
+    border: "1px solid #28323D",
+    color: "#93A2B1",
     borderRadius: 8,
     padding: "7px 10px",
     cursor: "pointer",
@@ -20349,9 +20553,9 @@ const styles = {
   },
   tabBtnActive: {
     flex: 1,
-    background: "#1E2A36",
-    border: "1px solid #35C4E8",
-    color: "#F2F7FB",
+    background: "#1C242D",
+    border: "1px solid #0A84FF",
+    color: "#F7F9FB",
     borderRadius: 8,
     padding: "7px 10px",
     cursor: "pointer",
