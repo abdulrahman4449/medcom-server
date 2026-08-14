@@ -7758,15 +7758,18 @@ function CallCodingBlock({ req, onSet, title, hint, missing }) {
         })}
       </div>
 
-      <div style={required ? styles.codingNoteRequired : styles.codingNote}>
-        {required
-          ? `Set ${needType && needKm ? "both codes" : needType ? "the category of call" : "the loaded kilometers"} ` +
-            "to go back in service. The dispatcher can still correct either one afterwards, but the call does not close without them."
-          : hint ||
-            "Either the team or the dispatcher can set these, and either can correct the other's. They go straight onto the CAT. OF CALL and KILO METER columns of the dispatch log."}
-        {type && req.callTypeBy ? ` · Type ${type.key} by ${req.callTypeBy}` : ""}
-        {km && req.loadedKmBy ? ` · Km ${km.key} by ${req.loadedKmBy}` : ""}
-      </div>
+      {/* Only when something is outstanding, and then only what is outstanding.
+          The standing paragraph explaining who may set the codes appeared on
+          every call and was read once, by everybody, months ago. */}
+      {(required || hint || (type && req.callTypeBy) || (km && req.loadedKmBy)) && (
+        <div style={required ? styles.codingNoteRequired : styles.codingNote}>
+          {required
+            ? `${needType && needKm ? "Both codes" : needType ? "Category of call" : "Loaded kilometers"} needed to go back in service.`
+            : hint || ""}
+          {type && req.callTypeBy ? `${required || hint ? " · " : ""}Type ${type.key} by ${req.callTypeBy}` : ""}
+          {km && req.loadedKmBy ? ` · Km ${km.key} by ${req.loadedKmBy}` : ""}
+        </div>
+      )}
     </div>
   );
 }
@@ -11190,10 +11193,6 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                     </option>
                   ))}
                 </select>
-                <InfoNote label="About pencilling in a team">
-                  A team can be pencilled in for a future shift even if nobody is signed on to it yet.
-                  Whoever is holding the seats when the booking goes out gets the alert.
-                </InfoNote>
               </div>
 
               <div>
@@ -11207,10 +11206,6 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                 loadedKm={loadedKm}
                 setLoadedKm={setLoadedKm}
               />
-              <InfoNote label="About these two codes">
-                Both can be left for later — the crew or the desk can set them on the call once it is
-                running, and either can correct the other.
-              </InfoNote>
 
               {error && <div style={styles.loginError}>{error}</div>}
               <div style={{ display: "flex", gap: 8 }}>
@@ -17700,8 +17695,10 @@ const styles = {
   // Sized to identify, not to announce. At 74 and 84 pixels the crests were the
   // largest thing on a phone screen and pushed the board below the fold; the
   // department knows whose app this is.
-  brandLogoWide: { height: 26, width: "auto", display: "block", justifySelf: "start", opacity: 0.9 },
-  brandLogoBadge: { height: 28, width: "auto", display: "block", justifySelf: "end", opacity: 0.9 },
+  // Big enough to be read, small enough not to be the headline. 74 and 84 was a
+  // banner; 26 was a footnote.
+  brandLogoWide: { height: 42, width: "auto", display: "block", justifySelf: "start" },
+  brandLogoBadge: { height: 46, width: "auto", display: "block", justifySelf: "end" },
   headerBar: {
     display: "flex",
     alignItems: "center",
@@ -20490,7 +20487,7 @@ const styles = {
     boxShadow: "none",
   },
   loginHeader: { display: "flex", alignItems: "center", gap: 8 },
-  loginHospitalLogo: { height: 34, width: "auto", display: "block" },
+  loginHospitalLogo: { height: 58, width: "auto", display: "block" },
   loginDeptLogo: { height: 96, width: "auto", display: "block" },
   loginLogoDivider: { width: 1, alignSelf: "stretch", background: "#D8DCE1" },
   logoPlateLogin: {
