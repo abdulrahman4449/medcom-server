@@ -3978,7 +3978,7 @@ function dressSheet(sheet, headerRowIndex, firstDataCol) {
   // beside it.
   const rows = sheet["!rows"] || [];
   for (let r = headerRowIndex; r <= XLSX.utils.decode_range(sheet["!ref"]).e.r; r++) {
-    rows[r] = { ...(rows[r] || {}), hpt: r === headerRowIndex ? 30 : 22 };
+    rows[r] = { ...(rows[r] || {}), hpt: r === headerRowIndex ? 34 : 30 };
   }
   sheet["!rows"] = rows;
   sheet["!autofilter"] = {
@@ -4258,17 +4258,21 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     if (gaps.length) {
       out.push([]);
       out.push([`${stationLabel(g.key).toUpperCase()} — NO COVERAGE`]);
+      // The teams-out list takes the first content column, which is the widest
+      // on the sheet because the dispatch log puts a ward name there. In the old
+      // order it landed in the MRN column and "MEDIC 1, MEDIC 2, MEDIC 3" was cut
+      // off — column widths belong to the sheet, not to one table on it.
       out.push([
-        "#", "STARTED", "ENDED", "DURATION", "TEAMS OUT", "DECLARED BY", "ENDED BY", "CALL CATEGORY", "DATE",
+        "#", "TEAMS OUT", "STARTED", "ENDED", "DURATION", "DECLARED BY", "ENDED BY", "CALL CATEGORY", "DATE",
       ]);
       gaps.forEach((c, idx) => {
         coverageRows.push(out.length);
         out.push([
           idx + 1,
+          (c.unitsOut || []).join(", "),
           clockStr(c.startedAt),
           c.endedAt ? clockStr(c.endedAt) : "STILL RUNNING",
           c.endedAt ? durationStr(c.startedAt, c.endedAt) : "",
-          (c.unitsOut || []).join(", "),
           c.startedBy || "",
           c.endedBy || "",
           "NO COVERAGE",
@@ -4376,6 +4380,22 @@ function xlTextWidth(text) {
 // a few columns that are always short are capped outright.
 const NARROW_COLUMNS = {
   "#": 4.5,
+  // Five characters of content. Sized by the heading above them they came out
+  // three times the width of the value in them.
+  "App. Time": 9,
+  "Dispatch time": 9,
+  "En-route time": 9,
+  "On-scene time": 9,
+  "Departure time": 9,
+  "Arrived on destination": 9,
+  "Back in service": 9,
+  "RESPONSE TIME": 9,
+  "PT. REFUSED TIME": 9,
+  "READY CALL TAKEN": 9,
+  "ASSIST REQ. TIME": 9,
+  STARTED: 9,
+  ENDED: 9,
+  DURATION: 9,
   MRN: 12,
   TRUCK: 9,
   "KILO METER": 8,
@@ -4654,18 +4674,6 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
       uhuGroups.length > 1 ? `UHU — ${stationShort(g.key)}` : "UHU"
     );
   });
-
-  // Sheet 4: shift sign-ons, sign-offs, swaps and overtime — who was on which
-  // shift, and who handed over to whom. The only place in the export that
-  // carries a shift line.
-  const handoverRows = buildShiftHandoverRows(log);
-  const handoverSheet = autoFitSheet(
-    handoverRows.length > 0
-      ? XLSX.utils.json_to_sheet(handoverRows)
-      : XLSX.utils.aoa_to_sheet([["No shift changes recorded yet."]]),
-    0
-  );
-  XLSX.utils.book_append_sheet(wb, handoverSheet, "Shift Handover");
 
   // Sheet 5: the forward book — the bookings that have not gone out yet, the
   // ones still waiting on the ward's phone call, and the ones that were
@@ -16160,21 +16168,23 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
 <h2>Calls</h2>
 <table>
   <thead><tr>
-    <th class="c" style="width:2.5%">#</th>
-    <th style="width:13%">Patient coming from</th>
-    <th style="width:16%">From → To</th>
-    <th style="width:6.5%">MRN</th>
-    <th class="c" style="width:5%">App.</th>
-    <th class="c" style="width:5%">Dispatch</th>
-    <th class="c" style="width:5%">En route</th>
-    <th class="c" style="width:5%">On scene</th>
-    <th class="c" style="width:5%">Departure</th>
-    <th class="c" style="width:5%">Arrived</th>
-    <th class="c" style="width:5%">In service</th>
-    <th class="c" style="width:5.5%">Response</th>
-    <th style="width:7%">Medic team</th>
-    <th class="c" style="width:4.5%">Service</th>
-    <th style="width:9.5%">Call category</th>
+    <th class="c" style="width:2.4%">#</th>
+    <th style="width:11%">Patient coming from</th>
+    <th style="width:15%">Call</th>
+    <th style="width:6%">MRN</th>
+    <th class="c" style="width:4.4%">Disp.</th>
+    <th class="c" style="width:4.4%">En route</th>
+    <th class="c" style="width:4.4%">Scene</th>
+    <th class="c" style="width:4.4%">Depart</th>
+    <th class="c" style="width:4.4%">Arrived</th>
+    <th class="c" style="width:4.4%">In svc</th>
+    <th class="c" style="width:4.8%">Resp.</th>
+    <th style="width:6.5%">Team</th>
+    <th class="c" style="width:4%">Svc</th>
+    <th class="c" style="width:3.2%">Km</th>
+    <th style="width:9%">Call category</th>
+    <th style="width:8%">E-PCR author</th>
+    <th style="width:8.7%">Outcome</th>
   </tr></thead>
   <tbody>
   ${calls
@@ -16188,7 +16198,6 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td${cls}>${esc(r.patientOrigin || "")}</td>
         <td${cls}><strong>${esc(r.nature)}</strong><br><span class="dim">${esc(callRoute(r))}</span></td>
         <td${cls}>${esc(r.mrn || "")}</td>
-        <td class="c"${cls}>${esc(clockStr(r.scheduledFor))}</td>
         <td class="c"${cls}>${esc(clockStr(r.createdAt))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).enroute))}</td>
         <td class="c"${cls}>${esc(clockStr(t(r).arrival))}</td>
@@ -16198,69 +16207,15 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td class="c"${cls}><strong>${esc(durationStr(r.createdAt, t(r).arrivalDestination))}</strong></td>
         <td${cls}>${esc(u.name || "")}</td>
         <td class="c"${cls}>${esc(serviceTypeFor(r))}</td>
-        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
-      </tr>`;
-    })
-    .join("")}
-  </tbody>
-</table>
-
-<h2>Call details <span class="sub">— the same calls, for coding and billing</span></h2>
-<table>
-  <thead><tr>
-    <th class="c" style="width:2.5%">#</th>
-    <th style="width:19%">Call</th>
-    <th class="c" style="width:5%">Km</th>
-    <th class="c" style="width:5%">Added</th>
-    <th class="c" style="width:5%">Cat.</th>
-    <th style="width:13%">Codes &amp; emergencies</th>
-    <th style="width:12%">E-PCR author</th>
-    <th style="width:12%">Bravo</th>
-    <th style="width:9%">Status</th>
-    <th style="width:9%">Outcome</th>
-    <th style="width:11%">Closed by</th>
-  </tr></thead>
-  <tbody>
-  ${calls
-    .map((r, i) => {
-      const cls = night(r);
-      const u2 = unitOf(r);
-      return `<tr>
-        <td class="c">${i + 1}</td>
-        <td${cls}><strong>${esc(r.nature)}</strong></td>
         <td class="c"${cls}>${esc(loadedKmFor(r))}</td>
-        <td class="c"${cls}>${esc(r.addedService || "")}</td>
-        <td class="c"${cls}>${esc(r.callType || "")}</td>
-        <td${cls}>${esc(r.emergencyCode || "")}</td>
-        <td${cls}>${esc(pcrAuthorStamp(r, u2))}</td>
-        <td${cls}>${esc(
-          r.pcrAuthor && r.pcrAuthor.seat === "alpha" ? u2.bravo && u2.bravo.name : u2.alpha && u2.alpha.name
-        )}</td>
-        <td${cls}>${esc(r.status ? REQ_STATUS[r.status].label : "")}</td>
-        <td${cls}>${esc(callOutcomeLabel(r))}</td>
-        <td${cls}>${esc(r.closedBy || "")}</td>
+        <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
+        <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
+        <td${cls}>${esc(callOutcomeLabel(r) || (r.status ? REQ_STATUS[r.status].label : ""))}</td>
       </tr>`;
     })
     .join("")}
   </tbody>
 </table>
-
-${
-  refusals.length
-    ? `<h2>Refusals</h2>
-<table class="keep">
-  <thead><tr><th style="width:26%">Call</th><th style="width:22%">Signed by</th>
-  <th style="width:18%">National ID</th><th style="width:18%">Relationship</th><th class="c" style="width:16%">Time</th></tr></thead>
-  <tbody>${refusals
-    .map(
-      (r) =>
-        `<tr><td>${esc(r.nature)}</td><td>${esc(r.refusal.name)}</td><td>${esc(r.refusal.nationalId)}</td>` +
-        `<td>${esc(r.refusal.relation)}</td><td class="c">${esc(clockStr((r.times || {})[REFUSAL_TIME_KEY]))}</td></tr>`
-    )
-    .join("")}</tbody>
-</table>`
-    : ""
-}
 
 <h2>UHU <span class="sub">— time on call, by seat</span></h2>
 <table>
@@ -16282,59 +16237,6 @@ ${
     .join("")}
   </tbody>
 </table>
-
-<h2>Shift handover</h2>
-${
-  handover.length
-    ? `<table>
-  <thead><tr>${Object.keys(handover[0]).map((k) => `<th>${esc(k)}</th>`).join("")}</tr></thead>
-  <tbody>${handover
-    .map((row) => `<tr>${Object.values(row).map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`)
-    .join("")}</tbody>
-</table>`
-    : `<p class="none">No shift changes recorded on this shift.</p>`
-}
-
-<h2>Scheduled requests</h2>
-${
-  bookings.length
-    ? `<table>
-  <thead><tr><th class="c" style="width:9%">Time</th><th style="width:18%">Nature</th>
-  <th style="width:16%">From</th><th style="width:16%">To</th><th style="width:9%">MRN</th>
-  <th style="width:10%">Team</th><th style="width:10%">Status</th><th style="width:12%">Booked by</th></tr></thead>
-  <tbody>${bookings
-    .map((b) => {
-      const cls = b.status === "cancelled" ? ' class="cancelled"' : "";
-      const u = units.find((x) => x.id === b.assignedUnitId);
-      return `<tr${cls}><td class="c">${esc(b.scheduledFor ? clockStr(b.scheduledFor) : "On call")}</td>` +
-        `<td>${esc(b.nature || "")}</td><td>${esc(callFrom(b))}</td><td>${esc(callTo(b))}</td>` +
-        `<td>${esc(b.mrn || "")}</td><td>${esc(u ? u.name : "")}</td>` +
-        `<td>${esc((b.status || "").toUpperCase())}</td><td>${esc(b.scheduledBy || "")}</td></tr>`;
-    })
-    .join("")}</tbody>
-</table>`
-    : `<p class="none">No bookings on this shift.</p>`
-}
-
-<h2>No coverage</h2>
-${
-  gaps.length
-    ? `<table class="keep">
-  <thead><tr><th class="c" style="width:5%">#</th><th class="c" style="width:11%">Started</th>
-  <th class="c" style="width:11%">Ended</th><th class="c" style="width:11%">Duration</th>
-  <th style="width:36%">Teams out</th><th style="width:26%">Declared by</th></tr></thead>
-  <tbody>${gaps
-    .map(
-      (c, i) =>
-        `<tr class="gap"><td class="c">${i + 1}</td><td class="c">${esc(clockStr(c.startedAt))}</td>` +
-        `<td class="c">${c.endedAt ? esc(clockStr(c.endedAt)) : "still running"}</td>` +
-        `<td class="c">${c.endedAt ? esc(msDurationStr(c.endedAt - c.startedAt)) : ""}</td>` +
-        `<td>${esc((c.unitsOut || []).join(", "))}</td><td>${esc(c.startedBy || "")}</td></tr>`
-    )
-    .join("")}</tbody>
-</table>`
-    : `<p class="none">The station had an ambulance available throughout this shift.</p>`
-}
 
 <div class="foot">
   MEDCOM Dispatch · KFSH&amp;RC Ambulance Services · Shaded rows are night-shift calls ·
