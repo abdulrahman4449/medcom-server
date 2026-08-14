@@ -9079,10 +9079,7 @@ function EscalationInbox({ requests, units, viewer, saveRequests, addLog, embedd
 
       {shownRows.length === 0 ? (
         <div style={styles.emptyState}>
-          Nothing waiting. Anything a crew escalates on a call — live or closed — lands here and drops
-          off again as soon as you reply to it or mark it resolved. Answered and resolved issues stay on
-          their call and are found under "Escalated only" in the call list below, whether that call is
-          still running or long since closed.
+          Nothing waiting
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -9698,46 +9695,20 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
         {filtering
           ? completed.length === 0
             ? escOnly
-              ? "Nothing has been escalated on any call you can see. This filter is every call carrying an issue a " +
-                "team raised — running or closed, answered, resolved or still waiting, cancelled ones included."
+              ? "Nothing escalated"
               : cancelledOnly
-                ? "No cancelled call matches that. A call counts as cancelled by the reason it was closed for — " +
-                  "stood down, called off, a duplicate, nobody at the pickup point."
-                : "No call matches that. Searching looks across every call on the record you can see — " +
-                  "the medic, the ward, the nature, the name on the report and anything escalated on it."
-            : `${completed.length} call${completed.length === 1 ? "" : "s"} match` +
-              `${completed.length === 1 ? "es" : ""}` +
+                ? "No cancelled call matches"
+                : "No call matches"
+            : `${completed.length} match${completed.length === 1 ? "" : "es"}` +
               `${day ? ` on ${gregDateStr(new Date(`${day}T12:00:00`).getTime())}` : ""}` +
-              `${
-                escOnly
-                  ? " — every one of them with an issue escalated on it, answered or not." +
-                    (liveCount > 0
-                      ? ` ${liveCount} ${liveCount === 1 ? "is" : "are"} still running and ${liveCount === 1 ? "is" : "are"} at the top.`
-                      : "")
-                  : cancelledOnly
-                    ? " — every one of them called off rather than run." +
-                      (escalatedCount > 0
-                        ? ` ${escalatedCount} carr${escalatedCount === 1 ? "ies" : "y"} an escalated issue as well — ` +
-                          `open the card to read it, or press "Escalated only" for the rest of them.`
-                        : "")
-                    : escalatedCount > 0
-                      ? ` · ${escalatedCount} with an escalated issue.`
-                      : "."
-              }`
+              `${liveCount > 0 ? ` · ${liveCount} still running` : ""}` +
+              `${!escOnly && escalatedCount > 0 ? ` · ${escalatedCount} escalated` : ""}`
           : completed.length === 0
-            ? windowed
-              ? `Nothing closed on this shift yet. Every call ${myUnitName || "your medic"} finishes ` +
-                `on the ${shiftLabel || "shift"} (${shiftHours}) stays here with its full timeline until the shift ends.`
-              : unitId
-                ? "Nothing closed yet. Every call you finish stays here with its full timeline — it is never cleared off your tablet."
-                : "Nothing closed yet. A call stays on this list once it is completed — it is never cleared off the board."
+            ? "Nothing closed on this shift"
             : windowed
-              ? `${completed.length} closed by ${myUnitName || "your medic"} on the ${shiftLabel || "shift"} running now ` +
-                `(${shiftHours}). Earlier shifts are on "All history" or behind a date — search by name, by medic or by ` +
-                "date to find a call from any day you have worked."
+              ? `${completed.length} closed this shift`
               : unitId
-                ? `${completed.length} closed call${completed.length === 1 ? "" : "s"} on the record for you. ` +
-                  "Search by name, by medic or by date, or filter to the ones you escalated an issue on."
+                ? `${completed.length} closed`
                 : `${todayCount} completed today. Closed calls stay here with their full timeline for dispatch and admin.` +
                   (cancelledCount > 0
                     ? ` ${cancelledCount} of them ${cancelledCount === 1 ? "was" : "were"} cancelled rather than run — "Cancelled requests" has ${cancelledCount === 1 ? "it" : "those"} on ${cancelledCount === 1 ? "its" : "their"} own.`
@@ -11020,12 +10991,10 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
 
       <div style={styles.historyNote}>
         {upcoming.length === 0
-          ? "Nothing booked ahead. Requests scheduled here are held off the live board and dispatched automatically at their time — and anything booked inside your own shift chimes here 15 minutes before it goes out. A request nobody can put a time on yet can be booked without one: it waits here until the ward calls to say the patient is ready."
+          ? "Nothing booked ahead"
           : `${upcoming.length} booked ahead${dueSoon.length > 0 ? ` · ${dueSoon.length} due within the half hour` : ""}${
-              awaiting.length > 0 ? ` · ${awaiting.length} waiting on their call, no time yet` : ""
-            }${
-              unassigned.length > 0 ? ` · ${unassigned.length} still without a team` : ""
-            } · all times Gregorian, 24h. You are reminded 15 minutes before anything in your own shift goes out.`}
+              awaiting.length > 0 ? ` · ${awaiting.length} waiting on their call` : ""
+            }${unassigned.length > 0 ? ` · ${unassigned.length} without a team` : ""}`}
       </div>
 
       <SchedulePreAlert
@@ -15223,9 +15192,9 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
             {has ? Math.round(value) : "—"}
             {has && <span style={styles.gaugePct}>%</span>}
           </div>
-          {caption && <div style={styles.gaugeCaption}>{caption}</div>}
         </div>
       </div>
+      {caption && <div style={styles.gaugeCaption}>{caption}</div>}
       {unmeasured > 0 && (
         <div style={styles.gaugeNote}>
           {unmeasured} not yet measurable — still running, or closed without arriving
@@ -19302,7 +19271,9 @@ const styles = {
     lineHeight: 1, fontVariantNumeric: "tabular-nums",
   },
   gaugePct: { fontSize: 15, fontWeight: 600, color: "#5A6775", marginLeft: 1 },
-  gaugeCaption: { fontSize: 11, color: "#5A6775", marginTop: 5, maxWidth: 108, lineHeight: 1.35 },
+  gaugeCaption: {
+    fontSize: 11.5, color: "#93A2B1", marginTop: 8, lineHeight: 1.4, textAlign: "center",
+  },
   gaugeNote: { fontSize: 11, color: "#5A6775", marginTop: 8, lineHeight: 1.45 },
 
   statRow: {
