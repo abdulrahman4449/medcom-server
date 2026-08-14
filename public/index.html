@@ -1516,6 +1516,17 @@ const STATUS = {
   oos: { label: "OUT OF SERVICE", color: "#64748B" },
 };
 
+// What the call needs, not how it feels.
+//
+// Critical / urgent / routine described a desk's impression; the crew and the
+// sheet both want the level of care, which is the thing that decides which
+// truck and which crew. An emergency, internal or external, is an ALS run.
+const SERVICE_LEVELS = {
+  als: { label: "ALS", color: "#FF453A", desc: "Advanced life support" },
+  bls: { label: "BLS", color: "#0A84FF", desc: "Basic life support" },
+  cct: { label: "CCT", color: "#FF9F0A", desc: "Critical care transfer" },
+};
+
 const PRIORITY = {
   critical: { label: "CRITICAL", color: "#FF453A" },
   urgent: { label: "URGENT", color: "#FF9F0A" },
@@ -3509,7 +3520,26 @@ function medicCrewStamps(unit, log, now) {
   // One stay per employee, per seat, per shift they worked that seat. A crew
   // member who swapped from day to night without leaving the truck really did
   // work two shifts on that medic, so they are listed for both.
-  const keyOf = (p) => [p.accountId || p.name || "?", p.seat || "", p.shift || ""].join("|");
+  //
+  // Identity is resolved before it is keyed. The key used to be
+  // `accountId || name`, so a sign-on line carrying the employee ID and a
+  // sign-off line carrying only the name became two different people on the same
+  // truck in the same seat — each holding half the record, which is why one name
+  // appeared twice with different overtime against each. Names seen alongside an
+  // ID are mapped to it first, so every line about one person lands on one key.
+  const idByName = new Map();
+  (log || []).forEach((e) => {
+    const d = e && e.detail;
+    if (d && d.role === "team" && d.accountId && d.name) {
+      idByName.set(d.name.trim().toLowerCase(), d.accountId);
+    }
+  });
+  const identityOf = (p) =>
+    p.accountId ||
+    idByName.get((p.name || "").trim().toLowerCase()) ||
+    (p.name || "?").trim().toLowerCase();
+
+  const keyOf = (p) => [identityOf(p), p.seat || "", p.shift || ""].join("|");
 
   const earlier = (a, b) => (a && b ? Math.min(a, b) : a || b || null);
   const later = (a, b) => (a && b ? Math.max(a, b) : a || b || null);
@@ -3534,6 +3564,8 @@ function medicCrewStamps(unit, log, now) {
       shiftEnd: prev.shiftEnd || p.shiftEnd,
       signedOnAt: earlier(prev.signedOnAt, p.signedOnAt),
       signedOffAt: later(prev.signedOffAt, p.signedOffAt),
+      // Two half-records merging: take the larger overtime rather than the
+      // first, since either line may be the one that carried it.
       overtimeMs: Math.max(prev.overtimeMs || 0, p.overtimeMs || 0),
       onDutyNow: prev.onDutyNow || p.onDutyNow,
     });
@@ -4007,7 +4039,14 @@ function gridLogSheet(sheet, headerRowIndex) {
   for (let r = headerRowIndex; r <= range.e.r; r++) {
     for (let c = range.s.c; c <= range.e.c; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = sheet[addr];
+      let cell = sheet[addr];
+      // A blank cell reads as something nobody filled in. NA reads as an
+      // answer — no assisting team was needed, no refusal was taken — which is
+      // what the blank actually means on most of these columns.
+      if (r > headerRowIndex && (!cell || cell.v === "" || cell.v === null || cell.v === undefined)) {
+        sheet[addr] = { t: "s", v: "NA" };
+        cell = sheet[addr];
+      }
       if (!cell) continue;
       cell.s = {
         ...(cell.s || {}),
@@ -4115,7 +4154,6 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "RECEIVED BY (NAME)",
     "RECEIVER ID",
     "RECEIVER RECORDED BY",
-    "MEDIC CREW (NAME STAMPS)",
     "ASSISTING TEAM(S)",
     "ASSIST REQ. TIME",
     "ASSIST REQ. BY",
@@ -4176,7 +4214,6 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       r.receiver ? r.receiver.name : "",
       r.receiver ? r.receiver.receiverId : "",
       r.receiver ? r.receiver.takenBy : "",
-      medicCrewStampsDuring(unit, crewIndex, callStartTs(r), callEndTs(r, now), now),
       assistTeamNames(r, units),
       assist ? clockStr(assist.requestedAt) : "",
       assist ? assist.requestedByUnitName || assist.requestedBy || "" : "",
@@ -4260,9 +4297,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       // on the sheet because the dispatch log puts a ward name there. In the old
       // order it landed in the MRN column and "MEDIC 1, MEDIC 2, MEDIC 3" was cut
       // off — column widths belong to the sheet, not to one table on it.
-      out.push([
-        "#", "TEAMS OUT", "STARTED", "ENDED", "DURATION", "DECLARED BY", "ENDED BY", "CALL CATEGORY", "DATE",
-      ]);
+      out.push(["#", "TEAMS OUT", "STARTED", "ENDED", "DURATION", "DECLARED BY", "ENDED BY"]);
       gaps.forEach((c, idx) => {
         coverageRows.push(out.length);
         out.push([
@@ -4271,10 +4306,10 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
           clockStr(c.startedAt),
           c.endedAt ? clockStr(c.endedAt) : "STILL RUNNING",
           c.endedAt ? durationStr(c.startedAt, c.endedAt) : "",
-          c.startedBy || "",
-          c.endedBy || "",
-          "NO COVERAGE",
-          gregDateStr(c.startedAt),
+          // The board raises these itself. "Automatic" said in one word is
+          // clearer than a sentence explaining that nobody declared it.
+          /Automatic/i.test(c.startedBy || "") ? "Automatic" : c.startedBy || "Automatic",
+          /Automatic/i.test(c.endedBy || "") || !c.endedBy ? "Automatic" : c.endedBy,
         ]);
       });
     }
@@ -7844,15 +7879,18 @@ function AssistStatusLine({ req, units }) {
     <div style={styles.assistStatusLine}>
       {a.status === "pending" && (
         <span style={styles.assistStatusWaiting}>
-          <HandRaised size={11} /> Additional ambulance requested {clockStr(a.requestedAt)}
-          {a.requestedByUnitName ? ` by ${a.requestedByUnitName}` : ""} — waiting for dispatch to send a
-          team
+          <HandRaised size={11} /> Second ambulance asked for at {clockStr(a.requestedAt)}
+          {a.requestedByUnitName ? ` by ${a.requestedByUnitName}` : ""}
+          {a.detail ? ` — ${a.detail}` : ""}
         </span>
       )}
       {a.status === "cancelled" && (
         <span style={styles.assistStatusStood}>
-          Assist request stood down{a.cancelledBy ? ` — ${a.cancelledBy}` : ""}
+          Assist stood down{a.cancelledBy ? ` by ${a.cancelledBy}` : ""}
           {a.cancelledAt ? ` at ${clockStr(a.cancelledAt)}` : ""}
+          {/* The desk's reason, in their words, where the crew who asked will
+              see it. */}
+          {a.cancelledReason ? <strong style={styles.assistReason}>“{a.cancelledReason}”</strong> : null}
         </span>
       )}
       {helping.map((t) => {
@@ -7992,11 +8030,22 @@ function AssistanceTasks({ user, units, requests, saveUnits, saveRequests, addLo
     const freshRequests = await readKey("ems:requests", requests);
     const req = freshRequests.find((r) => r.id === reqId);
     if (!req) return;
-    const ok = window.confirm(
+    // A refusal has to say why.
+    //
+    // A crew asked for a second ambulance for a reason — a lift, a patient
+    // going off — and being told only that none is coming teaches them nothing
+    // except not to ask. The desk may have a good answer; the crew should hear it.
+    const asked = assistOf(req);
+    const why = window.prompt(
       `Stand down the request for a second ambulance on "${req.nature}"?\n\n` +
-        "The crew who asked for it will see that no team is coming."
+        (asked && asked.detail ? `They asked for: ${asked.detail}\n\n` : "") +
+        "Say why. The crew sees this on their call."
     );
-    if (!ok) return;
+    if (why === null) return;
+    if (!why.trim()) {
+      window.alert("The crew needs a reason.");
+      return;
+    }
     const at = Date.now();
     const nextRequests = freshRequests.map((r) =>
       r.id === reqId
@@ -8007,15 +8056,14 @@ function AssistanceTasks({ user, units, requests, saveUnits, saveRequests, addLo
               status: "cancelled",
               cancelledAt: at,
               cancelledBy: user && user.name ? user.name : "Dispatch",
+              cancelledReason: why.trim(),
             },
           }
         : r
     );
     await saveRequests(nextRequests);
     await addLog(
-      `Assist request stood down — ${req.nature} (${callRoute(req)}) will be run by ${
-        assistOf(req) && assistOf(req).requestedByUnitName ? assistOf(req).requestedByUnitName : "the assigned team"
-      } alone`,
+      `Assist request stood down by ${user && user.name ? user.name : "Dispatch"} — ${req.nature}: ${why.trim()}`,
       "clear"
     );
   }
@@ -9472,6 +9520,7 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
   // same shape the coding picker uses, and for the same reason: this list is a
   // map over calls, so the state that belongs to a row has to live up here.
   const [escFor, setEscFor] = useState(null);
+  const [openCards, setOpenCards] = useState([]);
 
   // The four ways of finding a call again: a word (a name, a medic, a ward, a
   // nature), the day it closed on, whether an issue was ever raised on it, and
@@ -9748,6 +9797,14 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
               // time on call is read up to now rather than up to its last stamp.
               const busy = callBusyMs(req, live ? Date.now() : closedAt);
               const statusMeta = REQ_STATUS[req.status] || { label: String(req.status || "").toUpperCase() || "OPEN", color: "#64748B" };
+              // Closed calls open on demand.
+              //
+              // A shift closes twenty calls and each card runs to a screen of
+              // times, codes, corrections and receipts. As a list of folded
+              // lines the whole shift is visible at once and any one of them is
+              // a tap away; a running call stays open, because that one is being
+              // worked.
+              const isOpen = live || openCards.includes(req.id);
               return (
                 <div
                   key={req.id}
@@ -9755,8 +9812,32 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
                     ...styles.callCard,
                     borderLeftColor: live ? statusMeta.color : REQ_STATUS.completed.color,
                     opacity: live ? 1 : 0.92,
+                    ...(isOpen ? null : styles.callCardFolded),
                   }}
                 >
+                  {!isOpen && (
+                    <button
+                      style={styles.foldedRow}
+                      onClick={() => setOpenCards((v) => [...v, req.id])}
+                    >
+                      <span style={styles.foldedNature}>{req.nature}</span>
+                      <span style={styles.foldedRoute}>{callRoute(req)}</span>
+                      <span style={styles.foldedTime}>{clockStr(req.createdAt)}</span>
+                      {missingLogFields(req).length > 0 && <span style={styles.foldedFlag}>💡</span>}
+                    </button>
+                  )}
+
+                  {isOpen && !live && (
+                    <button
+                      style={styles.foldBack}
+                      onClick={() => setOpenCards((v) => v.filter((x) => x !== req.id))}
+                    >
+                      Close
+                    </button>
+                  )}
+
+                  {isOpen && (
+                  <>
                   <div style={styles.callCardTop}>
                     <div style={styles.callCardNature}>{req.nature}</div>
                     <div style={styles.callCardTopRight}>
@@ -9957,6 +10038,8 @@ function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, s
                       addLog={addLog}
                       onClose={() => setEscFor(null)}
                     />
+                  )}
+                  </>
                   )}
                 </div>
               );
@@ -10653,6 +10736,10 @@ function SchedulePreAlert({ entries, units, now, onDismiss, audioCtxRef }) {
 // their screen at its dispatch time, exactly like any other call.
 function ScheduledRequests({ user, units, requests, scheduled, allScheduled, saveScheduled, addLog, audioCtxRef }) {
   const [open, setOpen] = useState(false);
+  // This form's own missing-field marks. It had been calling the dispatch
+  // form's setter, which does not exist in this component — so pressing Book
+  // threw before it reached the write, and the booking silently never happened.
+  const [bookMissing, setBookMissing] = useState([]);
   const [tab, setTab] = useState("upcoming");
   const [showForm, setShowForm] = useState(false);
   const [locationFrom, setLocationFrom] = useState("");
@@ -10785,7 +10872,7 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
     if (!locationFrom.trim()) missing.push("locationFrom");
     if (!nature.trim()) missing.push("nature");
     if (missing.length) {
-      setMissingFields(missing);
+      setBookMissing(missing);
       setError(
         missing.length === 1
           ? "One field still needs an answer."
@@ -10793,7 +10880,7 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
       );
       return;
     }
-    setMissingFields([]);
+    setBookMissing([]);
     // A booking with no time is deliberate — the ward is going to phone — so the
     // time checks below only apply to one that is going out at a set time.
     if (!awaitCall) {
@@ -12275,7 +12362,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           now; a second control here saying the same thing in different words is
           how a desk ends up unsure which one is real. */}
       <div style={styles.sectionHeaderRow}>
-        <div style={styles.sectionHeader}>FLEET</div>
+        <div style={styles.sectionHeader}>Active calls</div>
         {showForm && (
           <button
             style={styles.ghostBtnSm}
@@ -12533,7 +12620,14 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             {waiting
               .map((r) => (
                 <button key={r.id} style={styles.waitRow} onClick={() => setOpenCallId(r.id)}>
-                  <span style={styles.waitDot} />
+                  {/* The dot carries what the call needs, so a queue of ten is
+                      read by colour before it is read by word. */}
+                  <span
+                    style={{
+                      ...styles.waitDot,
+                      background: (PRIORITY[r.priority] || PRIORITY.routine).color,
+                    }}
+                  />
                   <span style={styles.waitBody}>
                     <span style={styles.waitNature}>{r.nature}</span>
                     <span style={styles.waitRoute}>{callRoute(r)}</span>
@@ -16043,11 +16137,13 @@ function IssuesRaised({ requests, viewer, units, saveRequests, addLog, only }) {
 // and every other sheet of the workbook follows as its own section. Long tables
 // simply run on to the next page with their headings repeated.
 function buildShiftReport({ sub, requests }) {
-  const esc = (v) =>
-    String(v === null || v === undefined ? "" : v)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+  // Blank means "not applicable" on most of these columns, and the spreadsheet
+  // now says so. The two files should not disagree about the same cell.
+  const esc = (v) => {
+    const raw = v === null || v === undefined ? "" : String(v);
+    const text = raw.trim() === "" ? "NA" : raw;
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  };
 
   const byId = new Map((requests || []).filter((r) => r && r.id).map((r) => [r.id, r]));
   const calls = (sub.requests || [])
@@ -16106,7 +16202,10 @@ function buildShiftReport({ sub, requests }) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>Dispatch log — ${esc(sub.dayLabel)} ${esc(sub.shiftLabel)}</title>
 <style>
-@page{size:A4 landscape;margin:11mm 10mm 12mm 10mm}
+/* A3 landscape. The calls table is 17 columns of real content and would not
+   fit A4 without type too small to read; on A3 it sits at a comfortable size,
+   and any printer scales it down to A4 on its own if that is what is loaded. */
+@page{size:A3 landscape;margin:10mm 9mm 11mm 9mm}
 *{box-sizing:border-box}
 body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;color:#16222E;font-size:8.5pt;line-height:1.45;margin:0}
 h1{font-size:19pt;margin:0 0 3pt;font-weight:800;letter-spacing:-.6pt}
@@ -17006,7 +17105,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         only="active"
       />
 
-      <div style={styles.sectionHeader}>LIVE FLEET</div>
+      <div style={styles.sectionHeader}>Active calls</div>
 
       {/* An admin watching the board can send the second ambulance too, rather
           than having to find a dispatcher to do it. */}
@@ -18147,6 +18246,23 @@ const styles = {
     marginBottom: 12,
     boxShadow: "0 14px 34px rgba(0,0,0,.45)",
   },
+  callCardFolded: { padding: "0", background: "none", boxShadow: "none" },
+  foldedRow: {
+    display: "flex", alignItems: "baseline", gap: 10, width: "100%",
+    background: "none", border: "none", padding: "11px 14px",
+    cursor: "pointer", textAlign: "left", color: "#F7F9FB",
+  },
+  foldedNature: { fontSize: 14.5, fontWeight: 600, letterSpacing: -0.2, flex: "none", maxWidth: "42%",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  foldedRoute: { fontSize: 12.5, color: "#5A6775", flex: 1, minWidth: 0,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  foldedTime: { fontFamily: mono, fontSize: 13, color: "#93A2B1", fontVariantNumeric: "tabular-nums" },
+  foldedFlag: { fontSize: 12 },
+  foldBack: {
+    float: "right", background: "none", border: "0.5px solid #28323D", color: "#93A2B1",
+    borderRadius: 999, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+  },
+
   callCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
   callCardNature: { fontFamily: display, fontWeight: 780, fontSize: 19, letterSpacing: -0.4 },
   callCardMeta: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#93A2B1" },
@@ -19579,17 +19695,19 @@ const styles = {
     border: "0.5px solid rgba(255,159,10,.28)",
     borderRadius: 18, overflow: "hidden", marginTop: 4, marginBottom: 12,
   },
+  // Tighter, because a busy morning puts a dozen of these on one screen and a
+  // desk needs to see the bottom of the list without scrolling.
   waitRow: {
-    display: "flex", alignItems: "center", gap: 13, width: "100%",
+    display: "flex", alignItems: "center", gap: 10, width: "100%",
     background: "none", border: "none",
     borderBottom: "0.5px solid rgba(255,255,255,.055)",
-    padding: "13px 16px", cursor: "pointer", textAlign: "left", color: "#F7F9FB",
+    padding: "9px 14px", cursor: "pointer", textAlign: "left", color: "#F7F9FB",
   },
   waitDot: { width: 7, height: 7, borderRadius: "50%", background: "#FF9F0A", flex: "none" },
   waitBody: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 },
-  waitNature: { fontSize: 15.5, fontWeight: 550, letterSpacing: -0.25 },
+  waitNature: { fontSize: 14.5, fontWeight: 550, letterSpacing: -0.22 },
   waitRoute: {
-    fontSize: 13, color: "#5A6775",
+    fontSize: 12, color: "#5A6775",
     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
   },
   waitClock: {
@@ -20147,6 +20265,7 @@ const styles = {
     color: "#A5B4FC",
     fontWeight: 600,
   },
+  assistReason: { display: "block", marginTop: 4, color: "#F7F9FB", fontWeight: 600 },
   assistStatusStood: { color: "#93A2B1" },
   assistStatusDone: { color: "#5A6775" },
   assistPanel: {
