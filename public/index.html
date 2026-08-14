@@ -954,6 +954,15 @@ function stationHasCoverage(units, requests, station) {
   return fleet.some((u) => !liveRequestFor(u, requests));
 }
 
+// Who declared or ended a gap. Anything the board wrote itself reads as
+// Automatic; a person's name is kept as it is.
+function coverageActor(text) {
+  const t = (text || "").trim();
+  if (!t) return "Automatic";
+  if (/automatic|first team back|every team|detected/i.test(t)) return "Automatic";
+  return t;
+}
+
 function openCoverageGap(list, station) {
   return (list || []).find((c) => c && c.station === station && !c.endedAt) || null;
 }
@@ -4032,18 +4041,24 @@ function dressSheet(sheet, headerRowIndex, firstDataCol) {
 // coloured categories were landing with their borders stripped and the sheet
 // lost its grid wherever it was most colourful. Borders go on last, merged into
 // whatever style each cell already has.
-function gridLogSheet(sheet, headerRowIndex) {
+function gridLogSheet(sheet, headerRowIndex, dataRows) {
   if (!sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
   const hair = { style: "thin", color: { rgb: "FFB7C2CC" } };
+  // Only rows that are a call. A blank on a call means "not applicable" and is
+  // worth saying; a blank on a spacer row, or on a sheet with no calls at all,
+  // means there is nothing there — and writing NA across it made an empty day
+  // look like a day full of gaps.
+  const isDataRow = (r) =>
+    dataRows ? dataRows.has(r) : r > headerRowIndex;
   for (let r = headerRowIndex; r <= range.e.r; r++) {
     for (let c = range.s.c; c <= range.e.c; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
       let cell = sheet[addr];
-      // A blank cell reads as something nobody filled in. NA reads as an
-      // answer — no assisting team was needed, no refusal was taken — which is
-      // what the blank actually means on most of these columns.
-      if (r > headerRowIndex && (!cell || cell.v === "" || cell.v === null || cell.v === undefined)) {
+      if (
+        isDataRow(r) &&
+        (!cell || cell.v === "" || cell.v === null || cell.v === undefined)
+      ) {
         sheet[addr] = { t: "s", v: "NA" };
         cell = sheet[addr];
       }
@@ -4076,7 +4091,7 @@ function dressLogSheet(sheet, aoa) {
   paintCodedColumn(sheet, typeof aoa.serviceCol === "number" ? aoa.serviceCol : -1, SERVICE_FILLS, headerRow);
   paintCodedColumn(sheet, typeof aoa.callTypeCol === "number" ? aoa.callTypeCol : -1, CALLTYPE_FILLS, headerRow);
   // Last, so nothing painted above can strip it back off again.
-  gridLogSheet(sheet, headerRow);
+  gridLogSheet(sheet, headerRow, aoa.callRows instanceof Set ? aoa.callRows : null);
   return sheet;
 }
 
@@ -4271,6 +4286,9 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
 
   // Which rows are night calls, so the sheet can be shaded after it is built.
   const nightRows = [];
+  // Which rows are a call, so the blanks on them can be answered and the blanks
+  // everywhere else left alone.
+  const callRows = new Set();
   let firstHeaderRow = 4;
   // And which are periods with no ambulance available — these are the rows the
   // department will be asked about, so they are marked in red and carry the
@@ -4284,6 +4302,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     out.push(["#", ...header]);
     g.rows.forEach((r, idx) => {
       if (isNightCall(r)) nightRows.push(out.length);
+      callRows.add(out.length);
       out.push([idx + 1, ...rowFor(r)]);
     });
 
@@ -4308,8 +4327,12 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
           c.endedAt ? durationStr(c.startedAt, c.endedAt) : "",
           // The board raises these itself. "Automatic" said in one word is
           // clearer than a sentence explaining that nobody declared it.
-          /Automatic/i.test(c.startedBy || "") ? "Automatic" : c.startedBy || "Automatic",
-          /Automatic/i.test(c.endedBy || "") || !c.endedBy ? "Automatic" : c.endedBy,
+          // Both of these are usually the board itself. It writes a sentence
+          // about how it decided; the column only wants to know who, and the
+          // answer is nobody — so it says Automatic and leaves the sentence to
+          // the event log.
+          coverageActor(c.startedBy),
+          coverageActor(c.endedBy),
         ]);
       });
     }
@@ -4321,6 +4344,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
   // guessed at by the code that dresses the sheet — it is the only thing that
   // knows how many title lines it wrote.
   out.headerRowIndex = firstHeaderRow;
+  out.callRows = callRows;
   out.categoryCol = header.indexOf("CALL CATEGORY") + 1; // +1 for the "#" column
   out.serviceCol = header.indexOf("TYPE OF SERVICE") + 1;
   out.callTypeCol = header.indexOf("CAT. OF CALL") + 1;
@@ -16241,7 +16265,16 @@ function buildShiftReport({ sub, requests }) {
   const measured = emergencies.filter((r) => responseMsFor(r) !== null);
   const within = measured.filter((r) => responseMsFor(r) <= RESPONSE_TARGET_MS).length;
   const gaps = sub.coverage || [];
-  const gapMs = gaps.reduce((n, c) => n + ((c.endedAt || c.startedAt) - c.startedAt), 0);
+  // A gap still running at the end of the shift is measured to the end of the
+  // shift, not to its own start. Measured the old way it contributed nothing,
+  // so a station that ran out of ambulances and stayed out until changeover
+  // reported no time without coverage at all — the worst case reading as the
+  // best one.
+  const gapEnd = sub.windowEnd || sub.finalisedAt || sub.submittedAt || Date.now();
+  const gapMs = gaps.reduce(
+    (n, c) => n + Math.max(0, (c.endedAt || gapEnd) - c.startedAt),
+    0
+  );
 
   // UHU, ordered by truck and seat exactly as the spreadsheet is.
   const crewIndex = medicCrewIndex(units, sub.log || [], sub.finalisedAt || sub.submittedAt);
@@ -16340,8 +16373,10 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
   <div class="stat"><div class="n">${emergencies.length}</div><div class="l">Internal emergencies</div></div>
   <div class="stat"><div class="n">${measured.length ? Math.round((within / measured.length) * 100) + "%" : "—"}</div>
     <div class="l">Within 10 minutes</div></div>
-  <div class="stat"><div class="n">${gaps.length ? msDurationStr(gapMs) : "None"}</div>
-    <div class="l">Time with no coverage</div></div>
+  <div class="stat"><div class="n">${gapMs > 0 ? msDurationStr(gapMs) : "None"}</div>
+    <div class="l">Time with no coverage${
+      gaps.length ? ` · ${gaps.length} period${gaps.length === 1 ? "" : "s"}` : ""
+    }</div></div>
 </div>
 
 <h2>Calls</h2>
@@ -17672,9 +17707,11 @@ const styles = {
     // One light source, top right, so the masthead reads as the lit edge and
     // everything below it sits in its shadow. A flat ground is what makes a
     // screen look printed rather than lit.
-    background:
-      "radial-gradient(900px 520px at 88% -8%, rgba(14,107,79,.20) 0%, transparent 62%), " +
-      "radial-gradient(1200px 700px at 15% 8%, #101E2C 0%, transparent 58%), var(--ground)",
+    // Flat. The lit corner read as depth on black and as a dirty smudge on
+    // white — and it sat directly under the status board, which is the one
+    // place on the screen that has to be legible at a glance. Depth now comes
+    // from the panels sitting on the ground, which works in both themes.
+    background: "var(--ground)",
     color: "var(--ink)",
     fontFamily: display,
     display: "flex",
@@ -17735,7 +17772,7 @@ const styles = {
     // Translucent, blurred, flat to the edge. The curved green slab was the
     // loudest thing on every screen and said nothing that changes; the board
     // underneath is now visible through the bar as it scrolls.
-    background: "rgba(14,18,23,.78)",
+    background: "var(--bar)",
     backdropFilter: "saturate(180%) blur(24px)",
     WebkitBackdropFilter: "saturate(180%) blur(24px)",
     borderBottom: "0.5px solid var(--veil)",
@@ -17828,7 +17865,7 @@ const styles = {
     bottom: "calc(12px + env(safe-area-inset-bottom))",
     left: 14,
     right: 14,
-    background: "rgba(17,28,38,.96)",
+    background: "var(--bar)",
     border: "1px solid var(--hair-2)",
     borderRadius: 22,
     padding: "10px 14px",
@@ -19667,7 +19704,7 @@ const styles = {
     left: 12,
     right: 12,
     bottom: "calc(12px + env(safe-area-inset-bottom))",
-    background: "rgba(13,21,30,.86)",
+    background: "var(--bar)",
     backdropFilter: "blur(18px) saturate(140%)",
     WebkitBackdropFilter: "blur(18px) saturate(140%)",
     border: "1px solid var(--veil-2)",
