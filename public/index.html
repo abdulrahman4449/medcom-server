@@ -3660,6 +3660,11 @@ function medicCrewStamps(unit, log, now) {
   const blank = (d) => ({
     name: d.name || "",
     accountId: d.accountId || "",
+    // Where this stamp was made. Carried on the stamp itself so the sheet can
+    // refuse it if it ever reaches the wrong station's page — the check does not
+    // depend on the matching above being right.
+    station: d.station || null,
+    unitId: d.unitId || null,
     seat: d.seat || null,
     shift: d.shift || null,
     shiftStart: d.shiftStart || null,
@@ -3690,12 +3695,23 @@ function medicCrewStamps(unit, log, now) {
     // there is not, the name must agree with the station as well.
     .filter((e) => {
       const d = e.detail || {};
+
+      // The id decides, and nothing overrides it.
+      //
+      // A line that names a unit id belongs to that unit and to no other. The
+      // old code fell through to a name comparison whenever the id was absent
+      // on either side, and a renamed truck made that fallback dangerous:
+      // rename CCC's MEDIC 1 to MEDIC 7 and a stale line could still find its
+      // way onto the wrong sheet. Where both sides have ids, only the id counts.
       if (d.unitId && unit.id) return d.unitId === unit.id;
+
+      // Neither side has an id: this is a board from before ids existed, and
+      // those boards had one station. The name must match AND the line must be
+      // from this truck's station — a line with no station recorded is treated
+      // as the default station, never as "matches anywhere".
       if ((d.unitName || "") !== unit.name) return false;
-      // No id on the line: it only belongs to this truck if it was written at
-      // this truck's station.
-      const lineStation = d.station || stationOf(e) || null;
-      return !lineStation || lineStation === stationOf(unit);
+      const lineStation = d.station || DEFAULT_STATION;
+      return lineStation === stationOf(unit);
     })
     .slice()
     .sort((a, b) => (a.ts || 0) - (b.ts || 0))
@@ -5381,7 +5397,20 @@ function App() {
       const withoutRetiredDefaults = seeded
         ? unitsToUse
         : unitsToUse.filter((x) => !(x.name === "RESCUE 1" && !x.assignedRequestId));
-      const patched = withoutRetiredDefaults.map((x) => {
+      // No two trucks may share an id.
+      //
+      // Renaming CCC's MEDIC 1 to MEDIC 7 made the seeding see "ccc::MEDIC 1"
+      // as missing and add it back — with the same id the renamed truck already
+      // held. Two units with one id put the same crew on two sheets. The first
+      // one wins, which is the one the administrator curated.
+      const seenIds = new Set();
+      const deduped = withoutRetiredDefaults.filter((x) => {
+        if (!x || !x.id) return true;
+        if (seenIds.has(x.id)) return false;
+        seenIds.add(x.id);
+        return true;
+      });
+      const patched = deduped.map((x) => {
         // Anything from before stations existed is Main Office — that is where
         // the original medics run from.
         const needsStation = !x.station;
@@ -5397,8 +5426,8 @@ function App() {
       });
       const changed =
         missing.length > 0 ||
-        withoutRetiredDefaults.length !== unitsToUse.length ||
-        patched.some((x, i) => x !== withoutRetiredDefaults[i]);
+        deduped.length !== unitsToUse.length ||
+        patched.some((x, i) => x !== deduped[i]);
       if (changed) {
         unitsToUse = [...patched, ...missing];
         await writeKey("ems:units", unitsToUse);
@@ -16762,7 +16791,11 @@ function buildShiftReport({ sub, requests }) {
       // The shift this submission covers, not the shift running when it is
       // printed.
       const row = computeUhu([u], calls, sub.windowEnd || sub.submittedAt, sub.windowStart)[0];
+      // Belt and braces: a stamp recorded at one station can never print on
+      // another station's sheet, whatever happened upstream. This is the check
+      // that would have caught a Main Office medic appearing under CCC.
       const stamps = (crewIndex.get(u.id) || [])
+        .filter((p) => !p.station || p.station === stationOf(u))
         .slice()
         .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
       if (!stamps.length) {
