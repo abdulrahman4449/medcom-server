@@ -6564,7 +6564,7 @@ function GlobalFont() {
         --ok:#30D158; --flow:#0A84FF; --hold:#FF9F0A; --crit:#FF453A;
         --info:#5AC8FA; --gold:#E9C46A; --crit-2:#FF7A86; --hold-2:#FFC24D;
         --hold-3:#FFD98A; --flow-2:#93C5FD; --info-2:#6FD6F0; --move:#A78BFA; --land:#2DD4BF;
-        --logo-blend:screen; --logo-filter:brightness(1.9) contrast(1.15);
+        --logo-plate:rgba(255,255,255,.92); --logo-pad:5px 9px; --logo-radius:9px;
         --veil:rgba(255,255,255,.055); --veil-2:rgba(255,255,255,.10);
         --lift:rgba(0,0,0,.38); --lift-2:rgba(0,0,0,.55);
         --bar:rgba(14,18,23,.78);
@@ -6580,7 +6580,7 @@ function GlobalFont() {
         --ok:#1E9E42; --flow:#0866CC; --hold:#B87200; --crit:#CC2A21;
         --info:#0E86B8; --gold:#9A7B1E; --crit-2:#C23B45; --hold-2:#9A6B00;
         --hold-3:#8A6410; --flow-2:#2563A8; --info-2:#0E7FA8; --move:#6D28D9; --land:#0F766E;
-        --logo-blend:normal; --logo-filter:none;
+        --logo-plate:transparent; --logo-pad:0; --logo-radius:0;
         --veil:rgba(0,0,0,.07); --veil-2:rgba(0,0,0,.12);
         --lift:rgba(15,23,33,.10); --lift-2:rgba(15,23,33,.16);
         --bar:rgba(255,255,255,.82);
@@ -18310,11 +18310,13 @@ const styles = {
   // banner; 26 was a footnote.
   brandLogoWide: {
     height: 42, width: "auto", display: "block", justifySelf: "start",
-    mixBlendMode: "var(--logo-blend)", filter: "var(--logo-filter)",
+    background: "var(--logo-plate)", padding: "var(--logo-pad)",
+    borderRadius: "var(--logo-radius)",
   },
   brandLogoBadge: {
     height: 46, width: "auto", display: "block", justifySelf: "end",
-    mixBlendMode: "var(--logo-blend)", filter: "var(--logo-filter)",
+    background: "var(--logo-plate)", padding: "var(--logo-pad)",
+    borderRadius: "var(--logo-radius)",
   },
   headerBar: {
     display: "flex",
@@ -21189,7 +21191,8 @@ const styles = {
   loginHeader: { display: "flex", alignItems: "center", gap: 8 },
   loginHospitalLogo: {
     height: 58, width: "auto", display: "block",
-    mixBlendMode: "var(--logo-blend)", filter: "var(--logo-filter)",
+    background: "var(--logo-plate)", padding: "var(--logo-pad)",
+    borderRadius: "var(--logo-radius)",
   },
   loginDeptLogo: { height: 96, width: "auto", display: "block" },
   loginLogoDivider: { width: 1, alignSelf: "stretch", background: "var(--ink-2)" },
