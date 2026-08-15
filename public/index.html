@@ -18498,7 +18498,7 @@ const styles = {
     background: "rgba(59,130,246,0.16)",
     border: "1px solid var(--flow)",
     borderRadius: 7,
-    color: "#BFDBFE",
+    color: "var(--flow-2)",
     padding: "8px 10px",
     cursor: "pointer",
     fontFamily: display,
@@ -18658,8 +18658,8 @@ const styles = {
     background: "var(--crit)",
     animation: "pulse-dot 0.8s ease-in-out infinite",
   },
-  alarmTitle: { fontFamily: display, fontWeight: 800, fontSize: 22, letterSpacing: 1.5, color: "#FCA5A5" },
-  alarmAssistLine: { fontSize: 14, color: "#A5B4FC", fontWeight: 600, letterSpacing: 0.3 },
+  alarmTitle: { fontFamily: display, fontWeight: 800, fontSize: 22, letterSpacing: 1.5, color: "var(--crit-2)" },
+  alarmAssistLine: { fontSize: 14, color: "var(--flow-2)", fontWeight: 600, letterSpacing: 0.3 },
   alarmPriority: { fontSize: 13, fontWeight: 800, color: "var(--ground)", padding: "4px 10px", borderRadius: 5, letterSpacing: 0.6 },
   alarmNature: { fontFamily: display, fontWeight: 700, fontSize: 20, color: "var(--ink-alt)", marginTop: 4 },
   alarmLocation: { display: "flex", alignItems: "center", gap: 6, fontSize: 15.5, color: "var(--ink)" },
@@ -18685,7 +18685,7 @@ const styles = {
   alarmAckBtn: {
     marginTop: 12,
     background: "var(--ink-alt)",
-    color: "#7F0E0E",
+    color: "#FFFFFF",
     border: "none",
     borderRadius: 10,
     padding: "13px 22px",
@@ -18698,7 +18698,7 @@ const styles = {
     gap: 8,
     fontFamily: display,
   },
-  alarmFootnote: { fontSize: 12.5, color: "#FCA5A5", marginTop: 4 },
+  alarmFootnote: { fontSize: 12.5, color: "var(--crit-2)", marginTop: 4 },
   alarmFootnoteMuted: {
     fontSize: 12.5,
     color: "var(--hold-2)",
@@ -18795,7 +18795,7 @@ const styles = {
   },
   otTag: {
     border: "1px solid var(--crit)",
-    color: "#FCA5A5",
+    color: "var(--crit-2)",
     background: "rgba(239,68,68,0.12)",
     borderRadius: 999,
     padding: "1px 6px",
@@ -19033,7 +19033,7 @@ const styles = {
     fontSize: 14,
     fontVariantNumeric: "tabular-nums",
   },
-  calDayOutside: { color: "#3A4551", background: "transparent" },
+  calDayOutside: { color: "var(--ink-4)", background: "transparent" },
   calDayPast: { color: "var(--hair-2)", cursor: "not-allowed", background: "transparent", borderColor: "var(--panel)" },
   calDayToday: { borderColor: "var(--flow)", color: "var(--flow-2)" },
   calDaySelected: { background: "var(--flow)", borderColor: "var(--flow)", color: "var(--ground)", fontWeight: 700 },
@@ -19111,7 +19111,7 @@ const styles = {
     textAlign: "left",
   },
   reasonPillActive: {
-    background: "#2A1C06",
+    background: "color-mix(in srgb, var(--hold) 18%, var(--panel))",
     border: "1px solid var(--hold)",
     borderRadius: 20,
     padding: "6px 12px",
@@ -19124,11 +19124,11 @@ const styles = {
   },
   // The reason read back on a cancelled card — the same amber it was typed in,
   // so it is picked out of the grey line it sits on.
-  cancelReasonSaid: { color: "#D9A441" },
+  cancelReasonSaid: { color: "var(--hold-3)" },
   dangerBtnSm: {
-    background: "#B91C1C",
+    background: "var(--crit)",
     border: "none",
-    color: "#FEE2E2",
+    color: "#FFFFFF",
     fontWeight: 700,
     borderRadius: 8,
     padding: "6px 10px",
@@ -19164,7 +19164,7 @@ const styles = {
     width: "100%",
     background: "rgba(245,158,11,0.12)",
     border: "1px solid rgba(245,158,11,0.55)",
-    color: "#FCD34D",
+    color: "var(--hold-2)",
     borderRadius: 7,
     padding: "9px 11px",
     marginBottom: 8,
@@ -19190,7 +19190,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#FCD34D",
+    color: "var(--hold-2)",
     whiteSpace: "nowrap",
   },
   readyNowBtn: {
@@ -19312,7 +19312,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#94A3B8",
+    color: "var(--ink-3)",
     whiteSpace: "nowrap",
   },
   // ---- who is writing the patient care report ----
@@ -19340,7 +19340,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#6B7785",
+    color: "var(--ink-3)",
     marginBottom: 8,
   },
   pcrHeaderRequired: {
@@ -19359,7 +19359,7 @@ const styles = {
   pcrChoice: {
     background: "transparent",
     border: "1px solid var(--hair-2)",
-    color: "#C7D0DA",
+    color: "var(--ink-2)",
     borderRadius: 8,
     padding: "8px 12px",
     cursor: "pointer",
@@ -19411,7 +19411,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#6B7785",
+    color: "var(--ink-3)",
     marginBottom: 8,
   },
   codingHeaderRequired: {
@@ -19504,7 +19504,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#CBD5E1",
+    color: "var(--ink-2)",
     whiteSpace: "nowrap",
   },
   pcrAuthorTagPending: {
@@ -19536,7 +19536,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.5,
-    color: "#6B7785",
+    color: "var(--ink-3)",
     marginBottom: 8,
   },
   exceptionActions: {
@@ -19601,7 +19601,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#A5B4FC",
+    color: "var(--flow-2)",
     whiteSpace: "nowrap",
   },
   assistTagUrgent: {
@@ -19639,7 +19639,7 @@ const styles = {
     fontSize: 11.5,
     fontWeight: 700,
     letterSpacing: 0.4,
-    color: "#6B7785",
+    color: "var(--ink-3)",
     cursor: "pointer",
     whiteSpace: "nowrap",
   },
@@ -20027,7 +20027,7 @@ const styles = {
     padding: "12px 14px", marginBottom: 10,
     boxShadow: "0 8px 22px var(--lift)",
   },
-  ambulancePromptHead: { fontSize: 14, fontWeight: 800, color: "#8FE0F5", letterSpacing: 0.2 },
+  ambulancePromptHead: { fontSize: 14, fontWeight: 800, color: "var(--info)", letterSpacing: 0.2 },
   ambulancePromptBody: { fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55, marginTop: 6 },
 
   kindRow: { display: "flex", gap: 8, marginBottom: 12 },
@@ -20070,10 +20070,10 @@ const styles = {
   oosRefused: {
     marginTop: 10, background: "linear-gradient(180deg,#3A1218,#220A0E)",
     border: "1px solid var(--crit)", borderRadius: 14, padding: 13,
-    fontSize: 13.5, color: "#FFD6DA", lineHeight: 1.5,
+    fontSize: 13.5, color: "var(--crit-2)", lineHeight: 1.5,
   },
   oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
-  oosRefusedAsked: { fontSize: 12.5, color: "#C6A9AD", marginTop: 6, marginBottom: 10 },
+  oosRefusedAsked: { fontSize: 12.5, color: "var(--ink-3)", marginTop: 6, marginBottom: 10 },
 
   crewRaiseAsk: {
     background: "color-mix(in srgb, var(--crit) 14%, var(--panel))",
@@ -20324,7 +20324,7 @@ const styles = {
   callTileTags: { display: "flex", gap: 5, flexWrap: "wrap" },
   callTileTag: { fontSize: 10, fontWeight: 800, letterSpacing: 0.4 },
   callTileAssist: {
-    fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "#B07CF0",
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "var(--move)",
   },
   callTileHandover: {
     fontSize: 10, fontWeight: 800, letterSpacing: 0.4, color: "var(--hold)",
@@ -20471,13 +20471,13 @@ const styles = {
     opacity: 0.6, cursor: "wait",
   },
   alarmAckBtnBusy: {
-    width: "100%", background: "#2A3441", border: "1px solid var(--hair-3)",
+    width: "100%", background: "var(--hair-2)", border: "1px solid var(--hair-3)",
     color: "var(--ink-3)", borderRadius: 12, padding: "18px 16px",
     fontSize: 18, fontWeight: 800, letterSpacing: 0.5, cursor: "wait",
   },
 
   deskAssistBtn: {
-    background: "none", border: "1px solid rgba(176,124,240,.5)", color: "#B07CF0",
+    background: "none", border: "1px solid rgba(176,124,240,.5)", color: "var(--move)",
     borderRadius: 999, padding: "6px 10px", fontSize: 13.5, fontWeight: 600,
     cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
   },
@@ -20634,7 +20634,7 @@ const styles = {
   addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
 
   offlineBanner: {
-    background: "#3A1A0A",
+    background: "color-mix(in srgb, var(--hold) 22%, var(--panel))",
     borderTop: "1px solid var(--hold)",
     borderBottom: "1px solid var(--hold)",
     color: "var(--hold-2)",
@@ -20920,7 +20920,7 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     gap: 5,
-    color: "#A5B4FC",
+    color: "var(--flow-2)",
     fontWeight: 600,
   },
   assistReason: { display: "block", marginTop: 4, color: "var(--ink)", fontWeight: 600 },
@@ -21192,7 +21192,7 @@ const styles = {
     mixBlendMode: "var(--logo-blend)", filter: "var(--logo-filter)",
   },
   loginDeptLogo: { height: 96, width: "auto", display: "block" },
-  loginLogoDivider: { width: 1, alignSelf: "stretch", background: "#D8DCE1" },
+  loginLogoDivider: { width: 1, alignSelf: "stretch", background: "var(--ink-2)" },
   logoPlateLogin: {
     background: "#FFFFFF",
     borderRadius: 12,
@@ -21299,7 +21299,7 @@ const styles = {
   primaryBtnSmBlocked: {
     background: "var(--raised)",
     border: "1px solid var(--hair-2)",
-    color: "#5E6B7A",
+    color: "var(--ink-4)",
     fontWeight: 700,
     borderRadius: 8,
     padding: "6px 10px",
