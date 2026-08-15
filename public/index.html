@@ -3681,11 +3681,22 @@ function medicCrewStamps(unit, log, now) {
     // the figures entirely. They had done the calls; they simply were not
     // findable. The id is the thing that is actually unique, so it decides, and
     // the name is only a fallback for older lines that predate it.
-    .filter((e) =>
-      e.detail.unitId && unit.id
-        ? e.detail.unitId === unit.id
-        : (e.detail.unitName || "") === unit.name
-    )
+    // The name fallback must also match the station.
+    //
+    // Both stations run a MEDIC 1. A log line written before unit ids existed
+    // carries only a name, so falling back to the name alone put Main Office's
+    // crew onto CCC's UHU sheet and the other way round — somebody appeared on a
+    // station they had never worked. Where there is an id it decides; where
+    // there is not, the name must agree with the station as well.
+    .filter((e) => {
+      const d = e.detail || {};
+      if (d.unitId && unit.id) return d.unitId === unit.id;
+      if ((d.unitName || "") !== unit.name) return false;
+      // No id on the line: it only belongs to this truck if it was written at
+      // this truck's station.
+      const lineStation = d.station || stationOf(e) || null;
+      return !lineStation || lineStation === stationOf(unit);
+    })
     .slice()
     .sort((a, b) => (a.ts || 0) - (b.ts || 0))
     .forEach((e) => {
@@ -4238,7 +4249,8 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "TYPE OF SERVICE",
     "KILO METER",
     "ADDED SERVICE",
-    "CAT. OF CALL",
+    // Category of call and type of service said the same thing in two
+    // vocabularies — A and ALS, C and CCT. The service column carries it now.
     // What the desk judged the call needed when it raised it, beside what it
     // was actually run as. They usually agree; where they do not, that is worth
     "CALL CATEGORY",
@@ -4300,7 +4312,6 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       serviceTypeFor(r),
       loadedKmFor(r),
       r.addedService || "",
-      r.callType || "",
       r.callCategory || "",
       r.emergencyCode || "",
       pcrAuthorStamp(r, unit),
@@ -4311,7 +4322,13 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       // one the department is judged on.
       durationStr(r.createdAt, t.arrivalDestination),
       // The sheet's own completeness check: a row with every time on it is done.
-      t.enroute && t.arrival && t.backInService ? "Completed" : "Incomplete",
+      // Complete when the fields this particular call needs are filled.
+      //
+      // It used to demand three timestamps and nothing else, which called a
+      // fully coded call incomplete for want of a stamp and a half-empty one
+      // complete. And a blank that reads NA — no refusal, no assisting team —
+      // is an answer, not a gap: it must not hold the row open.
+      missingLogFields(r).length === 0 && t.backInService ? "Completed" : "Incomplete",
       shift ? shift.short : "",
       r.status ? REQ_STATUS[r.status].label : "",
       callOutcomeLabel(r),
@@ -4440,7 +4457,9 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
   out.callRows = callRows;
   out.categoryCol = header.indexOf("CALL CATEGORY") + 1; // +1 for the "#" column
   out.serviceCol = header.indexOf("TYPE OF SERVICE") + 1;
-  out.callTypeCol = header.indexOf("CAT. OF CALL") + 1;
+  // The service column now carries the level, so it is the one that gets the
+  // colour. There is no separate category-of-call column any more.
+  out.callTypeCol = -1;
   return out;
 }
 
@@ -4552,7 +4571,7 @@ const NARROW_COLUMNS = {
   "ADDED SERVICE": 9,
   "TYPE OF SERVICE": 11,
   "MEDIC TEAM": 12,
-  "CAT. OF CALL": 11,
+
   // Names, not codes. Capped short they spilled into the column beside them.
   BRAVO: 22,
   "E-PCR AUTHOR": 22,
@@ -4659,8 +4678,6 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
       return {
         Timestamp: ts ? gregDateTimeStr(ts) : entry.time,
         Shift: w ? shiftLabelWithWindow(w.key) : "",
-        "Shift Date": w ? shiftDateOf(w.start) : "",
-        "Shift Ran": w ? `${gregDateTimeStr(w.start)} – ${gregDateTimeStr(w.end)}` : "",
         Type: entry.type || "",
         Message: entry.message || "",
         "On Log Sheet": isBoardLogEntry(entry) ? "Yes" : "No",
@@ -4884,6 +4901,13 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
             : "",
       };
     });
+  // Which rows are a cancelled booking, so they can be marked after the sheet
+  // is built. A cancelled row that reads like a live one is the kind of thing
+  // somebody acts on by mistake.
+  const cancelledRows = [];
+  scheduledRows.forEach((r, i) => {
+    if ((r.Status || "").toUpperCase().includes("CANCEL")) cancelledRows.push(i + 1);
+  });
   const scheduledSheet = autoFitSheet(
     scheduledRows.length > 0
       ? XLSX.utils.json_to_sheet(scheduledRows)
@@ -4892,6 +4916,9 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
         ]),
     0
   );
+  dressSheet(scheduledSheet, 0, 1);
+  paintRows(scheduledSheet, cancelledRows, 0, "FFF4B6B6", "FF7F0000");
+  gridLogSheet(scheduledSheet, 0, null);
   XLSX.utils.book_append_sheet(wb, scheduledSheet, "Scheduled Requests");
 
   const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
@@ -4957,7 +4984,15 @@ async function exportArchivedDay(archive, liveRequests) {
     const stationRequests = atStation(requests, st.key);
     const stationUnits = atStation(units, st.key);
     const stationScheduled = atStation(scheduled, st.key);
-    const aoa = buildDispatchLogAOA(stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key, []);
+    // The gaps this station actually had. An empty array was being passed here,
+    // so an archived sheet never carried a no-coverage table and anything
+    // reading it concluded the station never ran out of ambulances.
+    const stationCoverage = (archive.coverage || []).filter(
+      (c) => c && c.station === st.key
+    );
+    const aoa = buildDispatchLogAOA(
+      stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key, stationCoverage
+    );
     const nightRows = aoa.nightRows || [];
     // A line at the top of each sheet saying what this book is and whether it
     // has changed since the day was closed.
@@ -5322,11 +5357,30 @@ function App() {
       // Units are matched on station AND name, never name alone: both stations
       // run a MEDIC 1, and matching on the name by itself would decide CCC's
       // medics already existed and never create them.
+      // Only ever once.
+      //
+      // This exists to bring old boards up to the current fleet. Run on every
+      // load it undoes the administrator: a truck they removed comes back, and
+      // a truck they renamed reappears under its old name as a second vehicle —
+      // which is exactly what was happening. Once a board has been topped up it
+      // is marked, and the fleet is theirs from then on.
+      const seeded = (() => {
+        try {
+          return localStorage.getItem("ems:fleetSeeded") === "1";
+        } catch (e) {
+          return false;
+        }
+      })();
       const existingKeys = new Set(unitsToUse.map((x) => `${stationOf(x)}::${x.name}`));
-      const missing = DEFAULT_UNITS.filter((d) => !existingKeys.has(`${stationOf(d)}::${d.name}`));
-      const withoutRetiredDefaults = unitsToUse.filter(
-        (x) => !(x.name === "RESCUE 1" && !x.assignedRequestId)
-      );
+      const missing = seeded
+        ? []
+        : DEFAULT_UNITS.filter((d) => !existingKeys.has(`${stationOf(d)}::${d.name}`));
+      try {
+        localStorage.setItem("ems:fleetSeeded", "1");
+      } catch (e) {}
+      const withoutRetiredDefaults = seeded
+        ? unitsToUse
+        : unitsToUse.filter((x) => !(x.name === "RESCUE 1" && !x.assignedRequestId));
       const patched = withoutRetiredDefaults.map((x) => {
         // Anything from before stations existed is Main Office — that is where
         // the original medics run from.
@@ -6564,7 +6618,7 @@ function GlobalFont() {
         --ok:#30D158; --flow:#0A84FF; --hold:#FF9F0A; --crit:#FF453A;
         --info:#5AC8FA; --gold:#E9C46A; --crit-2:#FF7A86; --hold-2:#FFC24D;
         --hold-3:#FFD98A; --flow-2:#93C5FD; --info-2:#6FD6F0; --move:#A78BFA; --land:#2DD4BF;
-        --logo-plate:rgba(255,255,255,.92); --logo-pad:5px 9px; --logo-radius:9px;
+        --logo-plate:rgba(255,255,255,.94); --logo-pad:6px 10px; --logo-radius:10px;
         --veil:rgba(255,255,255,.055); --veil-2:rgba(255,255,255,.10);
         --lift:rgba(0,0,0,.38); --lift-2:rgba(0,0,0,.55);
         --bar:rgba(14,18,23,.78);
@@ -18309,12 +18363,12 @@ const styles = {
   // Big enough to be read, small enough not to be the headline. 74 and 84 was a
   // banner; 26 was a footnote.
   brandLogoWide: {
-    height: 42, width: "auto", display: "block", justifySelf: "start",
+    height: 58, width: "auto", display: "block", justifySelf: "start",
     background: "var(--logo-plate)", padding: "var(--logo-pad)",
     borderRadius: "var(--logo-radius)",
   },
   brandLogoBadge: {
-    height: 46, width: "auto", display: "block", justifySelf: "end",
+    height: 62, width: "auto", display: "block", justifySelf: "end",
     background: "var(--logo-plate)", padding: "var(--logo-pad)",
     borderRadius: "var(--logo-radius)",
   },
@@ -18913,7 +18967,7 @@ const styles = {
   routeFrom: { color: "var(--ink-2)" },
   routeTo: { color: "var(--ink)", fontWeight: 600 },
 
-  historyNote: { fontSize: 13, color: "var(--ink-4)", lineHeight: 1.5 },
+  historyNote: { fontSize: 15, color: "var(--ink-3)", lineHeight: 1.55, fontWeight: 500 },
   historyDuration: { fontSize: 13, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
   historyClosedBy: { fontSize: 12.5, color: "var(--ink-4)", marginTop: 8 },
   scheduledTag: {
@@ -21190,7 +21244,7 @@ const styles = {
   },
   loginHeader: { display: "flex", alignItems: "center", gap: 8 },
   loginHospitalLogo: {
-    height: 58, width: "auto", display: "block",
+    height: 76, width: "auto", display: "block",
     background: "var(--logo-plate)", padding: "var(--logo-pad)",
     borderRadius: "var(--logo-radius)",
   },
