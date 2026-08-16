@@ -4244,7 +4244,7 @@ function shadeNightRows(sheet, aoa, offset) {
   return sheet;
 }
 
-function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage) {
+function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage, dayStart) {
   // Section 1 as the sheet has it, with the two changes asked for: where the
   // patient is coming from leads the sheet rather than trailing it, and the call
   // category sits immediately after the category of call it qualifies.
@@ -4394,7 +4394,8 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
 
   // The date belongs at the top of the page, once, not repeated down a column
   // on every one of forty rows that all happened on the same day.
-  const dayOf = sorted.length ? opDayStart(sorted[0].createdAt) : opDayStart(now);
+  // The window that was asked for, not whatever the data happens to contain.
+  const dayOf = typeof dayStart === "number" ? dayStart : opDayStart(now);
   // The same title block the report carries: what this is, then when and how
   // much of it, then air. Two lines, not a banner spread across four columns.
   const out = [
@@ -4404,8 +4405,9 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
         : "Dispatch log — all stations",
     ],
     [
-      `${opDayLabel(dayOf)} · operational day 07:00 → 07:00 · ` +
-        `${sorted.length} call${sorted.length === 1 ? "" : "s"}`,
+      // Both shifts named, because both are in the file.
+      `${opDayLabel(dayOf)} 07:00 → ${opDayLabel(opDayEnd(dayOf))} 07:00 · ` +
+        `day and night shift · ${sorted.length} call${sorted.length === 1 ? "" : "s"}`,
     ],
     [],
   ];
@@ -4629,7 +4631,7 @@ function autoFitSheet(ws, headerRow) {
 // exporting the department as a whole. When it is set, every sheet below is
 // that station's and nothing else — the two stations keep separate log sheets,
 // so an export that quietly mixed them would be worse than no export at all.
-async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom) {
+async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom, dayStart) {
   if (station) {
     units = atStation(units, station);
     requests = atStation(requests, station);
@@ -4661,7 +4663,9 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
   // layout, with the fields the template has no room for appended after it. Its
   // captions sit on the fifth row, under the title, the export stamp and the
   // line naming the two shift windows.
-  const dispatchAoa = buildDispatchLogAOA(requests, units, crewIndex, scheduled, exportedAt, station, coverage);
+  const dispatchAoa = buildDispatchLogAOA(
+    requests, units, crewIndex, scheduled, exportedAt, station, coverage, dayStart
+  );
   const dispatchLogSheet = dressLogSheet(
     autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), dispatchAoa.headerRowIndex || 4),
     dispatchAoa
@@ -5097,7 +5101,8 @@ async function exportSubmission(sub, liveRequests) {
     sub.coverage || [],
     // The shift this submission covers — without it the UHU sheet is measured
     // against whatever shift is running today and comes out empty.
-    sub.windowStart
+    sub.windowStart,
+    opDayStart(sub.windowStart)
   );
 }
 
@@ -6603,6 +6608,9 @@ function App() {
                   // shift and the night that follows, as they stand, with the
                   // coverage gaps that happened in them.
                   onClick: () => {
+                    // The operational day running now: 07:00 today through
+                    // 07:00 tomorrow, which is the day shift and the night that
+                    // follows it. Before 07:00 that is still yesterday's day.
                     const from = opDayStart(Date.now());
                     const to = opDayEnd(from);
                     exportAndShareLog(
@@ -6613,7 +6621,9 @@ function App() {
                         (x) => x && x.scheduledFor >= from && x.scheduledFor < to
                       ),
                       null,
-                      (coverage || []).filter((c) => c && c.startedAt >= from && c.startedAt < to)
+                      (coverage || []).filter((c) => c && c.startedAt >= from && c.startedAt < to),
+                      from,
+                      from
                     );
                   },
                 }
