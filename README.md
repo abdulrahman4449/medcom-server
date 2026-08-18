@@ -6,6 +6,9 @@ service to set up or pay for separately). No Netlify, no vendor agent,
 nothing tied to any one platform. It runs anywhere Node.js runs.
 
 ## What's in here
+- `CLAUDE.md` — orientation for anyone (or any agent) picking this up cold.
+- `design/` — the approved design direction and its mockups. Read
+  `design/README.md` before redesigning any screen.
 - `server.js` — the whole backend. Serves the app and the `/api/board`
   endpoint the app reads and writes to.
 - `public/index.html` — your actual app (same one from `testapp449`,

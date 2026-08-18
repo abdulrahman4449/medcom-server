@@ -1,0 +1,17 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html",       "x": 0,    "y": 0,    "w": 1440, "h": 960, "title": "Dispatcher board — dark" },
+    { "file": "CallDetail.dc.html", "x": 1520, "y": 0,    "w": 680,  "h": 900, "title": "Call detail — the five stamps" },
+    { "file": "CrewCall.dc.html",   "x": 2280, "y": 0,    "w": 390,  "h": 844, "title": "Crew — My call" },
+    { "file": "Stats.dc.html",      "x": 0,    "y": 1060, "w": 1120, "h": 860, "title": "Admin — statistics" },
+    { "file": "Login.dc.html",      "x": 1200, "y": 1060, "w": 900,  "h": 700, "title": "Sign in" },
+    { "file": "BoardLight.dc.html", "x": 0,    "y": 2020, "w": 1440, "h": 620, "title": "Dispatcher board — light variant" }
+  ],
+  "annotations": [
+    { "id": "read-in-one-second", "x": 0, "y": -150, "w": 620,
+      "text": "The one-second read.\nStatus is carried by colour AND position — the count strip across the top answers \"how is the room?\" before anyone reads a word. NO COVERAGE is the only thing allowed to alarm." },
+    { "id": "per-person-uhu", "x": 0, "y": 1930, "w": 460,
+      "text": "UHU is per person here, not per truck — the bug we fixed. Two crews sharing a medic across a changeover get their own figures." }
+  ],
+  "launch": { "view": "canvas" }
+}

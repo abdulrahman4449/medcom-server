@@ -1,0 +1,193 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #07090C;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    a { color: #0A84FF; } a:hover { color: #93C5FD; }
+    .tnum { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 960px; background: #07090C; color: #F7F9FB; display: flex; flex-direction: column; overflow: hidden;">
+
+  <!-- Masthead -->
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 24px 12px; background: rgba(14,18,23,.78); border-bottom: 1px solid #1C242D;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0A84FF" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v6"/><circle cx="12" cy="12" r="2.2"/><path d="M6.5 6.5a7.8 7.8 0 0 0 0 11M17.5 6.5a7.8 7.8 0 0 1 0 11"/></svg>
+      <span style="font-size: 13px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase; color: #D3DCE5;">MEDCOM Dispatch</span>
+      <div style="width: 1px; height: 18px; background: #28323D;"></div>
+      <div style="display: flex; gap: 6px;">
+        <div style="padding: 4px 11px; border-radius: 999px; background: #16232F; color: #F7F9FB; font-size: 12px; font-weight: 600;">Main Office</div>
+        <div style="padding: 4px 11px; border-radius: 999px; color: #5A6775; font-size: 12px; font-weight: 600;">CCC</div>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 20px;">
+      <div style="display: flex; align-items: baseline; gap: 8px;">
+        <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: #5A6775;">DAY SHIFT</span>
+        <span class="tnum" style="font-size: 12.5px; color: #93A2B1;">ends 19:00 · 4h 12m</span>
+      </div>
+      <span class="tnum" style="font-size: 26px; font-weight: 300; letter-spacing: -0.5px; color: #F7F9FB;">14:48</span>
+      <div style="display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 6px; border-radius: 999px; background: #141A21; border: 1px solid #1C242D;">
+        <div style="width: 24px; height: 24px; border-radius: 999px; background: #16232F; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; color: #93C5FD;">AR</div>
+        <span style="font-size: 12.5px; font-weight: 600;">A. Rahman</span>
+        <span style="font-size: 10.5px; font-weight: 700; letter-spacing: .8px; color: #5A6775;">DISPATCH</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Room state strip: the one-second read -->
+  <div style="display: flex; align-items: stretch; gap: 1px; background: #1C242D; border-bottom: 1px solid #1C242D;">
+    <div style="flex: 1; background: #0E1217; padding: 13px 24px; display: flex; align-items: baseline; gap: 10px;">
+      <span class="tnum" style="font-size: 30px; font-weight: 650; color: #30D158; letter-spacing: -1px;">3</span>
+      <span style="font-size: 12px; font-weight: 650; letter-spacing: 1.1px; color: #93A2B1;">AVAILABLE</span>
+    </div>
+    <div style="flex: 1; background: #0E1217; padding: 13px 24px; display: flex; align-items: baseline; gap: 10px;">
+      <span class="tnum" style="font-size: 30px; font-weight: 650; color: #FF9F0A; letter-spacing: -1px;">4</span>
+      <span style="font-size: 12px; font-weight: 650; letter-spacing: 1.1px; color: #93A2B1;">ON A CALL</span>
+    </div>
+    <div style="flex: 1; background: #0E1217; padding: 13px 24px; display: flex; align-items: baseline; gap: 10px;">
+      <span class="tnum" style="font-size: 30px; font-weight: 650; color: #5A6775; letter-spacing: -1px;">1</span>
+      <span style="font-size: 12px; font-weight: 650; letter-spacing: 1.1px; color: #93A2B1;">OUT OF SERVICE</span>
+    </div>
+    <div style="flex: 1.4; background: #0E1217; padding: 13px 24px; display: flex; align-items: baseline; gap: 10px;">
+      <span class="tnum" style="font-size: 30px; font-weight: 650; color: #F7F9FB; letter-spacing: -1px;">11</span>
+      <span style="font-size: 12px; font-weight: 650; letter-spacing: 1.1px; color: #93A2B1;">CALLS THIS SHIFT</span>
+      <span class="tnum" style="margin-left: auto; font-size: 12px; color: #5A6775;">avg response 7m 20s</span>
+    </div>
+  </div>
+
+  <!-- NO COVERAGE alarm -->
+  <div style="display: flex; align-items: center; gap: 14px; padding: 11px 24px; background: linear-gradient(90deg, rgba(255,69,58,.20), rgba(255,69,58,.06)); border-bottom: 1px solid rgba(255,69,58,.42); border-left: 3px solid #FF453A;">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF7A86" stroke-width="2" stroke-linecap="round"><path d="M12 9v5"/><circle cx="12" cy="17.4" r="1"/><path d="M10.3 3.9 2.5 18a1.9 1.9 0 0 0 1.7 2.9h15.6A1.9 1.9 0 0 0 21.5 18L13.7 3.9a1.9 1.9 0 0 0-3.4 0z"/></svg>
+    <span style="font-size: 13.5px; font-weight: 700; letter-spacing: 1.4px; color: #FF7A86;">NO COVERAGE — CCC</span>
+    <span style="font-size: 13px; color: #D3DCE5;">every team is out with a patient</span>
+    <span class="tnum" style="margin-left: auto; font-size: 17px; font-weight: 650; color: #FF7A86;">18m 04s</span>
+  </div>
+
+  <!-- Body -->
+  <div style="flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; min-height: 0;">
+
+    <!-- Fleet -->
+    <div style="grid-column: span 2; padding: 18px 20px 20px 24px; overflow: hidden; border-right: 1px solid #1C242D;">
+      <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px;">
+        <span style="font-size: 11.5px; font-weight: 700; letter-spacing: 1.5px; color: #5A6775;">FLEET</span>
+        <span style="font-size: 11.5px; color: #5A6775;">8 vehicles · 2 stations</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
+
+        <sc-for list="{{units}}" as="u" hint-placeholder-count="8">
+          <div style="background: #141A21; border: 1px solid #1C242D; border-radius: 16px; box-shadow: 0 6px 18px rgba(0,0,0,.38); overflow: hidden; display: flex; flex-direction: column;">
+            <div style="height: 4px; background: {{u.color}};"></div>
+            <div style="padding: 12px 13px 13px; display: flex; flex-direction: column; gap: 9px;">
+              <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 6px;">
+                <span style="font-size: 16px; font-weight: 650; letter-spacing: -0.2px;">{{u.name}}</span>
+                <span style="font-size: 10px; font-weight: 700; letter-spacing: .7px; color: #5A6775;">{{u.station}}</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 7px;">
+                <div style="width: 7px; height: 7px; border-radius: 999px; background: {{u.color}};"></div>
+                <span style="font-size: 11.5px; font-weight: 700; letter-spacing: 1px; color: {{u.color}};">{{u.status}}</span>
+              </div>
+              <div style="height: 1px; background: #1C242D;"></div>
+              <div style="display: flex; flex-direction: column; gap: 3px;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 9.5px; font-weight: 700; color: #5A6775; width: 34px;">ALPHA</span>
+                  <span style="font-size: 12px; color: #D3DCE5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{u.alpha}}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 9.5px; font-weight: 700; color: #5A6775; width: 34px;">BRAVO</span>
+                  <span style="font-size: 12px; color: #D3DCE5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{u.bravo}}</span>
+                </div>
+              </div>
+              <sc-if value="{{u.onCall}}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 1px; padding: 7px 9px; border-radius: 10px; background: #11161C;">
+                  <span style="font-size: 11.5px; color: #93A2B1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{u.callText}}</span>
+                  <span class="tnum" style="font-size: 12.5px; font-weight: 650; color: {{u.color}};">{{u.elapsed}}</span>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-for>
+
+      </div>
+    </div>
+
+    <!-- Active calls -->
+    <div style="padding: 18px 24px 20px 20px; display: flex; flex-direction: column; min-height: 0;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px;">
+        <span style="font-size: 11.5px; font-weight: 700; letter-spacing: 1.5px; color: #5A6775;">ACTIVE CALLS</span>
+        <span style="font-size: 11.5px; color: #5A6775;">4 running · 1 waiting</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <sc-for list="{{calls}}" as="c" hint-placeholder-count="4">
+          <div style="background: #141A21; border: 1px solid #1C242D; border-left: 3px solid {{c.color}}; border-radius: 14px; padding: 12px 13px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.38);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="padding: 2px 7px; border-radius: 6px; background: {{c.levelBg}}; color: {{c.color}}; font-size: 10px; font-weight: 750; letter-spacing: .8px;">{{c.level}}</span>
+              <span style="font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{c.nature}}</span>
+              <span class="tnum" style="margin-left: auto; font-size: 14px; font-weight: 650; color: {{c.color}};">{{c.elapsed}}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: #93A2B1;">
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{c.from}}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5A6775" stroke-width="2.2" stroke-linecap="round" style="flex: none;"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{c.to}}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 11.5px; font-weight: 650; color: #D3DCE5;">{{c.unit}}</span>
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .9px; color: {{c.color}};">{{c.stage}}</span>
+            </div>
+            <div style="display: flex; gap: 3px;">
+              <sc-for list="{{c.steps}}" as="s" hint-placeholder-count="5">
+                <div style="flex: 1; height: 3px; border-radius: 999px; background: {{s.bg}};"></div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+
+        <div style="border: 1px dashed #33475A; border-radius: 14px; padding: 12px 13px; display: flex; align-items: center; gap: 9px;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FFC24D" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5l3 1.6"/></svg>
+          <span style="font-size: 12.5px; color: #FFC24D; font-weight: 600;">1 waiting for a second team</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const C = { available: '#30D158', dispatched: '#FF9F0A', enroute: '#0A84FF', onscene: '#FF453A', transporting: '#A78BFA', oos: '#5A6775' };
+    const bar = (done, total, color) => Array.from({ length: total }, (_, i) => ({ bg: i < done ? color : '#28323D' }));
+    return {
+      units: [
+        { name: 'MEDIC 1', station: 'MAIN', status: 'ON SCENE', color: C.onscene, alpha: 'S. Al-Harbi', bravo: 'M. Nasser', onCall: true, callText: 'Chest pain · Ward 4B', elapsed: '12m' },
+        { name: 'MEDIC 2', station: 'MAIN', status: 'AVAILABLE', color: C.available, alpha: 'K. Otieno', bravo: 'R. Devi', onCall: false, callText: '', elapsed: '' },
+        { name: 'MEDIC 3', station: 'MAIN', status: 'TRANSPORTING', color: C.transporting, alpha: 'F. Zaman', bravo: 'L. Haddad', onCall: true, callText: 'Transfer · ICU → CT', elapsed: '31m' },
+        { name: 'MEDIC 4', station: 'MAIN', status: 'AVAILABLE', color: C.available, alpha: 'J. Mwangi', bravo: 'A. Costa', onCall: false, callText: '', elapsed: '' },
+        { name: 'MEDIC 5', station: 'CCC', status: 'EN ROUTE', color: C.enroute, alpha: 'T. Ibrahim', bravo: 'N. Farah', onCall: true, callText: 'Fall · Clinic C', elapsed: '4m' },
+        { name: 'MEDIC 6', station: 'CCC', status: 'DISPATCHED', color: C.dispatched, alpha: 'H. Suleiman', bravo: 'P. Ngugi', onCall: true, callText: 'Dialysis return', elapsed: '1m' },
+        { name: 'MEDIC 7', station: 'CCC', status: 'AVAILABLE', color: C.available, alpha: 'B. Karim', bravo: 'D. Okafor', onCall: false, callText: '', elapsed: '' },
+        { name: 'MEDIC 8', station: 'CCC', status: 'OUT OF SERVICE', color: C.oos, alpha: '—', bravo: '—', onCall: false, callText: '', elapsed: '' },
+      ],
+      calls: [
+        { level: 'ALS', color: C.onscene, levelBg: 'rgba(255,69,58,.16)', nature: 'Chest pain', from: 'Ward 4B', to: 'Emergency Dept', unit: 'MEDIC 1', stage: 'ON SCENE', elapsed: '12m 40s', steps: bar(2, 5, C.onscene) },
+        { level: 'CCT', color: C.transporting, levelBg: 'rgba(167,139,250,.16)', nature: 'Ventilated transfer', from: 'ICU bed 7', to: 'CT Imaging', unit: 'MEDIC 3', stage: 'TRANSPORTING', elapsed: '31m 02s', steps: bar(3, 5, C.transporting) },
+        { level: 'BLS', color: C.enroute, levelBg: 'rgba(10,132,255,.16)', nature: 'Fall, no LOC', from: 'Clinic C', to: 'Emergency Dept', unit: 'MEDIC 5', stage: 'EN ROUTE', elapsed: '4m 18s', steps: bar(1, 5, C.enroute) },
+        { level: 'BLS', color: C.dispatched, levelBg: 'rgba(255,159,10,.16)', nature: 'Dialysis return', from: 'Renal Unit', to: 'Ward 2A', unit: 'MEDIC 6', stage: 'DISPATCHED', elapsed: '0m 54s', steps: bar(0, 5, C.dispatched) },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #07090C;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    a { color: #0A84FF; } a:hover { color: #93C5FD; }
+    .tnum { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+
+<div style="width: 390px; height: 844px; background: #07090C; color: #F7F9FB; display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="padding: 52px 20px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #1C242D;">
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <span style="font-size: 17px; font-weight: 650;">MEDIC 1</span>
+      <span style="font-size: 11.5px; color: #5A6775;">Alpha · S. Al-Harbi</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; background: rgba(255,69,58,.14); border: 1px solid rgba(255,69,58,.34);">
+      <div style="width: 7px; height: 7px; border-radius: 999px; background: #FF453A;"></div>
+      <span style="font-size: 11.5px; font-weight: 700; letter-spacing: 1px; color: #FF7A86;">ON SCENE</span>
+    </div>
+  </div>
+
+  <div style="flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 18px; min-height: 0;">
+
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="padding: 3px 9px; border-radius: 6px; background: rgba(255,69,58,.16); color: #FF453A; font-size: 11px; font-weight: 750; letter-spacing: .9px;">ALS</span>
+        <span class="tnum" style="margin-left: auto; font-size: 15px; font-weight: 650; color: #FF453A;">12:40 on call</span>
+      </div>
+      <span style="font-size: 30px; font-weight: 650; letter-spacing: -0.7px; line-height: 1.15;">Chest pain</span>
+    </div>
+
+    <div style="padding: 16px; border-radius: 16px; background: #0E1217; border: 1px solid #1C242D; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <span style="font-size: 10.5px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">PICK UP</span>
+        <span style="font-size: 18px; font-weight: 600;">Ward 4B · bed 12</span>
+      </div>
+      <div style="height: 1px; background: #1C242D;"></div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <span style="font-size: 10.5px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">DESTINATION</span>
+        <span style="font-size: 18px; font-weight: 600;">Emergency Department</span>
+      </div>
+      <div style="height: 1px; background: #1C242D;"></div>
+      <div style="display: flex; align-items: baseline; justify-content: space-between;">
+        <span style="font-size: 10.5px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">MRN</span>
+        <span class="tnum" style="font-size: 17px; font-weight: 650;">4 471 902</span>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 5px;">
+      <sc-for list="{{pips}}" as="p" hint-placeholder-count="5">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+          <div style="height: 4px; border-radius: 999px; background: {{p.bg}};"></div>
+          <span style="font-size: 8.5px; font-weight: 700; letter-spacing: .3px; color: {{p.fg}}; text-align: center;">{{p.label}}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="margin-top: auto; display: flex; flex-direction: column; gap: 11px;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.3px; color: #5A6775; text-align: center;">NEXT STEP</span>
+      <div style="padding: 22px; border-radius: 18px; background: #0A84FF; color: #FFFFFF; text-align: center; box-shadow: 0 8px 24px rgba(10,132,255,.32);">
+        <div style="font-size: 21px; font-weight: 700; letter-spacing: -0.2px;">Departure from Scene</div>
+        <div style="font-size: 13px; opacity: .8; margin-top: 4px;">stamps the time now</div>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <div style="flex: 1; padding: 16px; border-radius: 14px; background: #141A21; border: 1px solid #28323D; text-align: center; font-size: 14.5px; font-weight: 600; color: #D3DCE5;">Ask for help</div>
+        <div style="flex: 1; padding: 16px; border-radius: 14px; background: #141A21; border: 1px solid #28323D; text-align: center; font-size: 14.5px; font-weight: 600; color: #FFC24D;">No transport</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const labels = ['EN ROUTE', 'SCENE', 'DEPART', 'ARRIVED', 'IN SVC'];
+    return {
+      pips: labels.map((label, i) => ({
+        label,
+        bg: i < 2 ? '#30D158' : i === 2 ? '#FF453A' : '#28323D',
+        fg: i < 2 ? '#30D158' : i === 2 ? '#FF7A86' : '#5A6775',
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

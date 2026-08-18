@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #07090C;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    a { color: #0A84FF; } a:hover { color: #93C5FD; }
+    .tnum { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+
+<div style="width: 680px; height: 900px; background: #07090C; color: #F7F9FB; padding: 24px; box-sizing: border-box;">
+  <div style="background: #0E1217; border: 1px solid #1C242D; border-radius: 20px; overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,.55);">
+
+    <div style="height: 4px; background: #FF453A;"></div>
+
+    <div style="padding: 20px 22px 18px; display: flex; flex-direction: column; gap: 16px;">
+
+      <div style="display: flex; align-items: flex-start; gap: 12px;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 7px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="padding: 3px 8px; border-radius: 6px; background: rgba(255,69,58,.16); color: #FF453A; font-size: 10.5px; font-weight: 750; letter-spacing: .9px;">ALS</span>
+            <span style="padding: 3px 8px; border-radius: 6px; background: #16232F; color: #93C5FD; font-size: 10.5px; font-weight: 700; letter-spacing: .9px;">INTERNAL EMERGENCY</span>
+          </div>
+          <span style="font-size: 24px; font-weight: 650; letter-spacing: -0.4px;">Chest pain</span>
+        </div>
+        <div style="text-align: right; display: flex; flex-direction: column; gap: 3px;">
+          <span class="tnum" style="font-size: 30px; font-weight: 650; color: #FF453A; letter-spacing: -1px; line-height: 1;">12:40</span>
+          <span style="font-size: 10.5px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">ON SCENE</span>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 12px; padding: 13px 15px; border-radius: 12px; background: #11161C;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 3px;">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">FROM</span>
+          <span style="font-size: 14.5px; font-weight: 600;">Ward 4B · bed 12</span>
+        </div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#33475A" stroke-width="2.2" stroke-linecap="round" style="flex: none;"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 3px;">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">TO</span>
+          <span style="font-size: 14.5px; font-weight: 600;">Emergency Department</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;">
+        <div style="padding: 11px 13px; border-radius: 12px; background: #11161C; display: flex; flex-direction: column; gap: 3px;">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">MEDIC TEAM</span>
+          <span style="font-size: 14px; font-weight: 650;">MEDIC 1</span>
+        </div>
+        <div style="padding: 11px 13px; border-radius: 12px; background: #11161C; display: flex; flex-direction: column; gap: 3px;">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">MRN</span>
+          <span class="tnum" style="font-size: 14px; font-weight: 650;">4 471 902</span>
+        </div>
+        <div style="padding: 11px 13px; border-radius: 12px; background: #11161C; display: flex; flex-direction: column; gap: 3px;">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">RESPONSE</span>
+          <span class="tnum" style="font-size: 14px; font-weight: 650; color: #30D158;">6m 12s</span>
+        </div>
+      </div>
+
+      <div style="height: 1px; background: #1C242D;"></div>
+
+      <!-- The five stamps -->
+      <div style="display: flex; flex-direction: column; gap: 0;">
+        <span style="font-size: 10.5px; font-weight: 700; letter-spacing: 1.4px; color: #5A6775; margin-bottom: 14px;">TIMELINE</span>
+
+        <sc-for list="{{steps}}" as="s" hint-placeholder-count="5">
+          <div style="display: flex; align-items: flex-start; gap: 14px;">
+            <div style="display: flex; flex-direction: column; align-items: center; width: 26px; flex: none;">
+              <div style="width: 26px; height: 26px; border-radius: 999px; background: {{s.dotBg}}; border: 2px solid {{s.dotBorder}}; display: flex; align-items: center; justify-content: center;">
+                <sc-if value="{{s.done}}" hint-placeholder-val="{{ true }}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#07090C" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5 9.5 17.5 19.5 7"/></svg>
+                </sc-if>
+                <sc-if value="{{s.current}}" hint-placeholder-val="{{ false }}">
+                  <div style="width: 9px; height: 9px; border-radius: 999px; background: #FF453A;"></div>
+                </sc-if>
+              </div>
+              <div style="width: 2px; height: {{s.lineH}}; background: {{s.lineBg}};"></div>
+            </div>
+            <div style="flex: 1; padding-bottom: 16px; display: flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+              <span style="font-size: 14.5px; font-weight: {{s.weight}}; color: {{s.labelColor}};">{{s.label}}</span>
+              <span class="tnum" style="font-size: 14.5px; font-weight: 600; color: {{s.timeColor}};">{{s.time}}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <div style="flex: 1; padding: 15px; border-radius: 13px; background: #0A84FF; color: #FFFFFF; text-align: center; font-size: 15px; font-weight: 650;">Departure from Scene</div>
+        <div style="padding: 15px 18px; border-radius: 13px; background: #141A21; border: 1px solid #28323D; color: #D3DCE5; text-align: center; font-size: 15px; font-weight: 600;">Ask for help</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const rows = [
+      { label: 'Assigned',                time: '14:29', state: 'done' },
+      { label: 'En Route',                 time: '14:31', state: 'done' },
+      { label: 'Arrival at Scene',         time: '14:35', state: 'done' },
+      { label: 'Departure from Scene',     time: '—',     state: 'current' },
+      { label: 'Arrival to Destination',   time: '—',     state: 'todo' },
+      { label: 'Back in Service',          time: '—',     state: 'todo' },
+    ];
+    return {
+      steps: rows.map((r, i) => {
+        const done = r.state === 'done', current = r.state === 'current';
+        return {
+          label: r.label,
+          time: r.time,
+          done, current,
+          dotBg: done ? '#30D158' : current ? '#141A21' : '#11161C',
+          dotBorder: done ? '#30D158' : current ? '#FF453A' : '#28323D',
+          lineBg: done ? '#30D158' : '#28323D',
+          lineH: i === rows.length - 1 ? '0px' : '30px',
+          weight: current ? 650 : 500,
+          labelColor: done ? '#D3DCE5' : current ? '#F7F9FB' : '#5A6775',
+          timeColor: done ? '#F7F9FB' : '#5A6775',
+        };
+      }),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #07090C;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    a { color: #0A84FF; } a:hover { color: #93C5FD; }
+    .tnum { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+
+<div style="width: 1120px; height: 860px; background: #07090C; color: #F7F9FB; padding: 26px 28px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px; overflow: hidden;">
+
+  <div style="display: flex; align-items: flex-end; justify-content: space-between;">
+    <div style="display: flex; flex-direction: column; gap: 5px;">
+      <span style="font-size: 11.5px; font-weight: 700; letter-spacing: 1.5px; color: #5A6775;">STATISTICS</span>
+      <span style="font-size: 25px; font-weight: 650; letter-spacing: -0.5px;">August 2026</span>
+    </div>
+    <div style="display: flex; gap: 5px; padding: 4px; border-radius: 11px; background: #11161C;">
+      <div style="padding: 7px 15px; border-radius: 8px; background: #16232F; font-size: 12.5px; font-weight: 650;">Month</div>
+      <div style="padding: 7px 15px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: #5A6775;">Week</div>
+      <div style="padding: 7px 15px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: #5A6775;">Shift</div>
+    </div>
+  </div>
+
+  <!-- Headline figures -->
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
+    <sc-for list="{{tiles}}" as="t" hint-placeholder-count="4">
+      <div style="background: #0E1217; border: 1px solid #1C242D; border-radius: 16px; padding: 16px 17px; display: flex; flex-direction: column; gap: 7px;">
+        <span style="font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; color: #5A6775;">{{t.label}}</span>
+        <span class="tnum" style="font-size: 33px; font-weight: 650; letter-spacing: -1.2px; color: {{t.color}}; line-height: 1;">{{t.value}}</span>
+        <span style="font-size: 11.5px; color: #93A2B1;">{{t.sub}}</span>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="flex: 1; display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; min-height: 0;">
+
+    <!-- UHU by person -->
+    <div style="background: #0E1217; border: 1px solid #1C242D; border-radius: 18px; padding: 18px 19px; display: flex; flex-direction: column; gap: 14px; min-height: 0;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between;">
+        <span style="font-size: 12.5px; font-weight: 650;">UHU — share of shift on a call</span>
+        <span style="font-size: 11px; color: #5A6775;">per person, not per truck</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <sc-for list="{{people}}" as="p" hint-placeholder-count="7">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="width: 104px; flex: none; font-size: 12.5px; color: #D3DCE5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{p.name}}</span>
+            <div style="flex: 1; height: 10px; border-radius: 999px; background: #11161C; overflow: hidden;">
+              <div style="width: {{p.pct}}; height: 100%; border-radius: 999px; background: {{p.color}};"></div>
+            </div>
+            <span class="tnum" style="width: 46px; flex: none; text-align: right; font-size: 12.5px; font-weight: 650;">{{p.label}}</span>
+            <span class="tnum" style="width: 58px; flex: none; text-align: right; font-size: 11.5px; color: #5A6775;">{{p.calls}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- Coverage -->
+    <div style="display: flex; flex-direction: column; gap: 14px; min-height: 0;">
+
+      <div style="background: #0E1217; border: 1px solid rgba(255,69,58,.30); border-radius: 18px; padding: 18px 19px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF7A86" stroke-width="2" stroke-linecap="round"><path d="M12 9v5"/><circle cx="12" cy="17.4" r="1"/><path d="M10.3 3.9 2.5 18a1.9 1.9 0 0 0 1.7 2.9h15.6A1.9 1.9 0 0 0 21.5 18L13.7 3.9a1.9 1.9 0 0 0-3.4 0z"/></svg>
+          <span style="font-size: 12.5px; font-weight: 650;">Time with no coverage</span>
+        </div>
+        <div style="display: flex; gap: 22px;">
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <span class="tnum" style="font-size: 27px; font-weight: 650; color: #FF7A86; letter-spacing: -0.8px; line-height: 1;">2h 41m</span>
+            <span style="font-size: 11px; color: #5A6775;">Main Office · 6 periods</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <span class="tnum" style="font-size: 27px; font-weight: 650; color: #FFC24D; letter-spacing: -0.8px; line-height: 1;">48m</span>
+            <span style="font-size: 11px; color: #5A6775;">CCC · 2 periods</span>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: 1.1px; color: #5A6775;">WHEN IT HAPPENED</span>
+          <div style="display: flex; gap: 2px; height: 26px; align-items: flex-end;">
+            <sc-for list="{{hours}}" as="h" hint-placeholder-count="24">
+              <div style="flex: 1; height: {{h.h}}; border-radius: 2px; background: {{h.bg}};"></div>
+            </sc-for>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 9.5px; color: #5A6775;">
+            <span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex: 1; background: #0E1217; border: 1px solid #1C242D; border-radius: 18px; padding: 18px 19px; display: flex; flex-direction: column; gap: 13px; min-height: 0;">
+        <span style="font-size: 12.5px; font-weight: 650;">Response within 10 minutes</span>
+        <div style="display: flex; align-items: baseline; gap: 9px;">
+          <span class="tnum" style="font-size: 40px; font-weight: 650; color: #30D158; letter-spacing: -1.6px; line-height: 1;">87%</span>
+          <span style="font-size: 12px; color: #93A2B1;">of 63 internal emergencies</span>
+        </div>
+        <div style="height: 10px; border-radius: 999px; background: #11161C; overflow: hidden; display: flex;">
+          <div style="width: 87%; background: #30D158;"></div>
+          <div style="width: 13%; background: #FF453A;"></div>
+        </div>
+        <div style="height: 1px; background: #1C242D;"></div>
+        <div style="display: flex; flex-direction: column; gap: 9px;">
+          <sc-for list="{{levels}}" as="l" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="width: 34px; flex: none; font-size: 10.5px; font-weight: 750; letter-spacing: .8px; color: {{l.color}};">{{l.name}}</span>
+              <div style="flex: 1; height: 7px; border-radius: 999px; background: #11161C; overflow: hidden;">
+                <div style="width: {{l.pct}}; height: 100%; background: {{l.color}};"></div>
+              </div>
+              <span class="tnum" style="width: 30px; flex: none; text-align: right; font-size: 12px; font-weight: 600; color: #D3DCE5;">{{l.n}}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const gaps = { 3: 1, 4: 1, 11: 1, 12: 1, 13: 1, 19: 1, 20: 1, 21: 1 };
+    return {
+      tiles: [
+        { label: 'CALLS', value: '412', sub: '+38 on July', color: '#F7F9FB' },
+        { label: 'FLEET UHU', value: '31.4%', sub: 'time on call', color: '#0A84FF' },
+        { label: 'NO COVERAGE', value: '3h 29m', sub: 'across 8 periods', color: '#FF7A86' },
+        { label: 'CHECKLISTS', value: '94%', sub: 'filed on shift', color: '#30D158' },
+      ],
+      people: [
+        { name: 'S. Al-Harbi', pct: '46%', label: '46.2%', calls: '38 calls', color: '#0A84FF' },
+        { name: 'F. Zaman',    pct: '41%', label: '41.0%', calls: '31 calls', color: '#0A84FF' },
+        { name: 'T. Ibrahim',  pct: '37%', label: '37.4%', calls: '29 calls', color: '#0A84FF' },
+        { name: 'M. Nasser',   pct: '33%', label: '33.1%', calls: '27 calls', color: '#5AC8FA' },
+        { name: 'L. Haddad',   pct: '29%', label: '28.8%', calls: '24 calls', color: '#5AC8FA' },
+        { name: 'K. Otieno',   pct: '24%', label: '24.3%', calls: '19 calls', color: '#5AC8FA' },
+        { name: 'R. Devi',     pct: '18%', label: '18.0%', calls: '14 calls', color: '#5AC8FA' },
+      ],
+      hours: Array.from({ length: 24 }, (_, i) => ({
+        h: gaps[i] ? '26px' : '7px',
+        bg: gaps[i] ? '#FF453A' : '#1C242D',
+      })),
+      levels: [
+        { name: 'ALS', color: '#FF453A', pct: '54%', n: '221' },
+        { name: 'BLS', color: '#0A84FF', pct: '35%', n: '146' },
+        { name: 'CCT', color: '#FF9F0A', pct: '11%', n: '45' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
