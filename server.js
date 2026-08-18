@@ -141,6 +141,20 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// The two pages Google Play requires a link to, on clean URLs.
+//
+// Both have to be reachable by anyone, without signing in — Play checks them
+// from the outside, and a link that only works for a logged-in member of staff
+// counts as no link at all. The URLs are entered in the Play Console listing
+// (privacy policy) and in the Data safety form (data deletion), so they need to
+// stay put once submitted rather than moving with a file rename.
+app.get("/privacy", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "privacy.html"));
+});
+app.get("/data-deletion", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "data-deletion.html"));
+});
+
 // The app itself (index.html, sw.js) — same static files used for both the
 // website and the payload the native app bundles.
 app.use(express.static(path.join(__dirname, "public")));

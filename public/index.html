@@ -7418,6 +7418,31 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
           with the ID your administrator gave you.
         </InfoNote>
 
+        {/* Required of any app that touches health work and has not been cleared
+            as a medical device, and it happens to be true: this board moves
+            ambulances and records what happened. It does not read a patient or
+            tell anybody what to do about one. It goes on the sign-in screen
+            because that is the one screen everybody sees, and it links the two
+            policy pages Google Play requires to be reachable without an account.
+            Deliberately quiet — it is a statement of fact, not a warning. */}
+        <div style={styles.legalNote}>
+          This app is not a medical device. It does not diagnose, treat, cure or prevent
+          any medical condition, and gives no clinical advice.
+          {/* Addressed through API_BASE, not as bare paths.
+              Inside the native shell the page is served from the app bundle —
+              capacitor://localhost on iOS, http://localhost on Android — so
+              "/privacy" would resolve against the bundle, which contains no such
+              page, and both links would dead-end. That is precisely the check
+              Google runs. API_BASE is empty on the web (the links stay relative
+              and work) and the live server on native (they leave the shell and
+              reach the real pages). */}
+          <div style={styles.legalLinks}>
+            <a href={`${API_BASE}/privacy`} target="_blank" rel="noreferrer" style={styles.legalLink}>Privacy policy</a>
+            <span aria-hidden="true">·</span>
+            <a href={`${API_BASE}/data-deletion`} target="_blank" rel="noreferrer" style={styles.legalLink}>Account &amp; data deletion</a>
+          </div>
+        </div>
+
         {!role && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 18 }}>
             <button style={styles.roleBtn} onClick={() => setRole("dispatcher")}>
@@ -21455,6 +21480,17 @@ const styles = {
     boxShadow: "none",
   },
   loginHeader: { display: "flex", alignItems: "center", gap: 8 },
+  // Small, grey, and out of the way of the sign-in box. It has to be present and
+  // legible, not prominent — a crew signing on at handover should not have to
+  // read past a legal notice to find the ID field.
+  legalNote: {
+    marginTop: 14, fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)", textAlign: "center",
+  },
+  legalLinks: {
+    marginTop: 6, display: "flex", justifyContent: "center", alignItems: "center",
+    gap: 8, flexWrap: "wrap",
+  },
+  legalLink: { color: "var(--ink-3)", textDecoration: "underline" },
   loginHospitalLogo: {
     height: 76, width: "auto", display: "block",
     background: "var(--logo-plate)", padding: "var(--logo-pad)",
