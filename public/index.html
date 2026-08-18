@@ -7428,10 +7428,18 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
         <div style={styles.legalNote}>
           This app is not a medical device. It does not diagnose, treat, cure or prevent
           any medical condition, and gives no clinical advice.
+          {/* Addressed through API_BASE, not as bare paths.
+              Inside the native shell the page is served from the app bundle —
+              capacitor://localhost on iOS, http://localhost on Android — so
+              "/privacy" would resolve against the bundle, which contains no such
+              page, and both links would dead-end. That is precisely the check
+              Google runs. API_BASE is empty on the web (the links stay relative
+              and work) and the live server on native (they leave the shell and
+              reach the real pages). */}
           <div style={styles.legalLinks}>
-            <a href="/privacy" target="_blank" rel="noreferrer" style={styles.legalLink}>Privacy policy</a>
+            <a href={`${API_BASE}/privacy`} target="_blank" rel="noreferrer" style={styles.legalLink}>Privacy policy</a>
             <span aria-hidden="true">·</span>
-            <a href="/data-deletion" target="_blank" rel="noreferrer" style={styles.legalLink}>Account &amp; data deletion</a>
+            <a href={`${API_BASE}/data-deletion`} target="_blank" rel="noreferrer" style={styles.legalLink}>Account &amp; data deletion</a>
           </div>
         </div>
 
