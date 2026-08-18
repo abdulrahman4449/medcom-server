@@ -152,4 +152,5 @@ from Part 2 onward (the Xcode/Capacitor build steps don't change at all).
 Same note as every version before this one: `/api/board` has no
 server-side authentication of its own — the app's login screen is the only
 gate, exactly as it was on Netlify. Before this holds real patient data
-(MRNs, real crew rosters), have KFSH&RC IT/compliance review this setup.
+(MRNs, real crew rosters), have your hospital's IT/compliance team review
+this setup.
