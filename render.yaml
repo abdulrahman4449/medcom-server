@@ -1,0 +1,29 @@
+# Render blueprint for MEDCOM Dispatch.
+#
+# The one thing this file exists to guarantee is the disk. Without it the
+# database is written inside the app folder, and Render rebuilds that folder on
+# every deploy — so the whole board, including every submitted log and all the
+# admin statistics, is erased each time the app is updated.
+#
+# NOTE: Render only reads this file for services created from a blueprint. A
+# service that was set up by hand in the dashboard ignores it, and has to be
+# given the disk and the DB_PATH variable in the dashboard instead. See the
+# README section "Data disappears after every deploy".
+services:
+  - type: web
+    name: medcom-dispatch
+    runtime: node
+    # A persistent disk requires a paid instance type. Free tiers discard the
+    # disk, which is the problem this file is here to solve.
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      # The server also finds a disk mounted at /data on its own, but naming the
+      # file here means the location is written down rather than inferred.
+      - key: DB_PATH
+        value: /data/board.db
