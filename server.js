@@ -12,10 +12,56 @@ const Database = require("better-sqlite3");
 
 const PORT = process.env.PORT || 3000;
 
-// On a host with a persistent disk (recommended — see README), point this at
-// a path inside that disk so the data survives restarts and redeploys. Falls
-// back to a local "data" folder for running this on your own machine.
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, "data", "board.db");
+// Where the board actually lives, which is the single most consequential line
+// in this file.
+//
+// Hosts like Render build a brand new container for every deploy. A database
+// file sitting inside the app folder is part of that container and is thrown
+// away with it, so the board comes back empty and the admin statistics start
+// again from zero — every deploy, silently, with nothing in the logs to say it
+// happened. The file has to be on a disk that outlives the container.
+//
+// Three ways of finding one, in order:
+//
+//   1. DB_PATH, when it is set. An explicit instruction from whoever runs this,
+//      and it wins.
+//   2. A mounted persistent disk, if there is one. A disk that has been mounted
+//      was mounted for this; using the app folder anyway would quietly ignore
+//      it, which is how the setting gets half-done and nobody notices.
+//   3. The app folder. Right for running this on your own machine, wrong for
+//      anything else — so in that case the server says so, loudly, rather than
+//      starting up looking healthy.
+const PERSISTENT_MOUNTS = ["/data", "/var/data"];
+
+function isWritableDir(dir) {
+  try {
+    if (!fs.statSync(dir).isDirectory()) return false;
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function resolveDbPath() {
+  if (process.env.DB_PATH) {
+    return { file: process.env.DB_PATH, source: "the DB_PATH environment variable" };
+  }
+  const mount = PERSISTENT_MOUNTS.find(isWritableDir);
+  if (mount) {
+    return { file: path.join(mount, "board.db"), source: `the persistent disk mounted at ${mount}` };
+  }
+  return { file: path.join(__dirname, "data", "board.db"), source: "the app folder (no persistent disk found)" };
+}
+
+const resolved = resolveDbPath();
+const DB_PATH = resolved.file;
+const DB_SOURCE = resolved.source;
+// A file inside the app folder goes wherever the app folder goes — which on a
+// deploy platform is into the bin. Anywhere else is somewhere the operator
+// pointed us on purpose.
+const DB_IS_PERSISTENT = !path.resolve(DB_PATH).startsWith(path.resolve(__dirname) + path.sep);
+
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
@@ -72,6 +118,29 @@ app.post("/api/board", (req, res) => {
   res.json({ ok: true });
 });
 
+// "Is my data actually being kept?" — answerable in one click instead of by
+// reading deploy logs. Reports where the board is stored, whether that survives
+// a redeploy, and what is currently in it. Key names and sizes only; no values,
+// so this shows nothing /api/board would not already hand over.
+app.get("/api/health", (req, res) => {
+  const keys = db
+    .prepare("SELECT key, length(value) AS bytes, updated_at FROM board ORDER BY key")
+    .all();
+  res.json({
+    ok: true,
+    database: {
+      path: DB_PATH,
+      chosenFrom: DB_SOURCE,
+      survivesRedeploy: DB_IS_PERSISTENT,
+    },
+    board: {
+      keys: keys.length,
+      totalBytes: keys.reduce((n, k) => n + (k.bytes || 0), 0),
+      entries: keys,
+    },
+  });
+});
+
 // The app itself (index.html, sw.js) — same static files used for both the
 // website and the payload the native app bundles.
 app.use(express.static(path.join(__dirname, "public")));
@@ -85,4 +154,32 @@ app.get("/download", (req, res) => {
 app.listen(PORT, () => {
   console.log(`MEDCOM Dispatch server listening on port ${PORT}`);
   console.log(`Database file: ${DB_PATH}`);
+  console.log(`Chosen from: ${DB_SOURCE}`);
+
+  // The failure this guards against is a silent one: the board works perfectly
+  // all day and is empty again after the next deploy. If that is what is set
+  // up, it should be impossible to miss in the logs.
+  if (DB_IS_PERSISTENT) {
+    console.log("Storage: persistent — the board survives restarts and redeploys.");
+    return;
+  }
+  const lines = [
+    "WARNING: this database is NOT persistent.",
+    "",
+    "It lives inside the app folder, which is rebuilt on every deploy.",
+    "EVERY DEPLOY WILL ERASE THE ENTIRE BOARD — calls, crews, submitted",
+    "logs, and all admin statistics.",
+    "",
+    "Fine on your own machine. On a hosted server, attach a persistent",
+    "disk and set DB_PATH to a file on it (see the README). Check",
+    "/api/health to confirm it took.",
+  ];
+  // Padded from the text rather than by hand, so editing a line later cannot
+  // leave the box crooked.
+  const width = Math.max(...lines.map((l) => l.length)) + 6;
+  console.warn("");
+  console.warn("*".repeat(width));
+  lines.forEach((l) => console.warn(`*  ${l.padEnd(width - 6)}  *`));
+  console.warn("*".repeat(width));
+  console.warn("");
 });

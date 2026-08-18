@@ -85,6 +85,59 @@ a server you control.
 
 ---
 
+## Data disappears after every deploy
+
+If the board is empty after an update — no calls, no submitted logs, admin
+statistics back at zero — the database is being stored inside the app folder,
+and the host rebuilds that folder on every deploy. Nothing is wrong with the
+app; the file is simply being thrown away with the old container.
+
+### 1. Confirm it
+
+Open `https://your-server-url/api/health`. The `database` section answers it
+directly:
+
+```json
+"database": {
+  "path": "/data/board.db",
+  "chosenFrom": "the persistent disk mounted at /data",
+  "survivesRedeploy": true
+}
+```
+
+`"survivesRedeploy": false` is the problem. The server also prints a large
+warning block in the deploy logs on every start when it happens, so it is
+visible without going looking for it.
+
+### 2. Fix it (Render, dashboard)
+
+A service created by hand in the dashboard does **not** read `render.yaml`, so
+it has to be told directly:
+
+1. Your service → **Disks** → **Add Disk** → Name `data`, Mount Path `/data`,
+   Size 1 GB.
+2. Your service → **Environment** → **Add Environment Variable** →
+   `DB_PATH` = `/data/board.db`.
+3. **Manual Deploy** → **Deploy latest commit**.
+
+Then reload `/api/health` and check `survivesRedeploy` is now `true`.
+
+A persistent disk requires a paid instance type. Free tiers discard the disk,
+which puts you back where you started.
+
+### 3. Or create the service from the blueprint
+
+`render.yaml` in this repo declares the disk and the variable already. A service
+created via **New + → Blueprint** picks both up with nothing to set by hand.
+This only applies to new services — it will not retrofit an existing one.
+
+### What about the data already lost?
+
+It is gone; there is no copy of it to restore from. The steps above stop it
+happening again from the next deploy onward.
+
+---
+
 ## Using this with the native iOS/Android app
 
 The native app project I gave you earlier (`medcom-native-app.zip`) needs
