@@ -8050,45 +8050,75 @@ function ShiftChip({ user, onChangeShift }) {
 // so that is the number that is large. Everything else is annotation, and the
 // bar underneath carries the same information in a shape you can read without
 // counting.
-function StatusBoard({ units }) {
+// The state of the room, in four numbers.
+//
+// This is the change the whole remodel is built around. The board could already
+// be read — by counting cards. A dispatcher wanting to know whether there was
+// anything left to send had to look at eight tiles and add up the green ones,
+// which is a thing you do slowly, and which you do wrong when the phone is
+// ringing. So the answer is stated instead of implied, in figures sized to be
+// read from across the room rather than from in front of the screen.
+//
+// Four, and no more. Available is what a desk taking a call needs; on a call
+// and out of service are what makes the first number make sense; the shift's
+// call count is the only piece of history that belongs on a live board. Every
+// other figure worth having is on the statistics page, where somebody is
+// reading rather than working.
+function StatusBoard({ units, requests, station }) {
+  const now = Date.now();
   const counts = Object.keys(STATUS).reduce((acc, k) => ({ ...acc, [k]: 0 }), {});
-  units.forEach((u) => {
+  (units || []).forEach((u) => {
     const k = statusKey(u.status);
     counts[k] = (counts[k] || 0) + 1;
   });
+
   const free = counts.available || 0;
-  const total = units.length;
+  const onCall = ON_CALL_STATUSES.reduce((n, k) => n + (counts[k] || 0), 0);
+  const oos = counts.oos || 0;
+
+  // Only this shift's calls. A running total since the board was created tells
+  // a desk nothing about the twelve hours they are actually standing.
+  const shiftFrom = uhuWindowStart(now);
+  const shiftCalls = requests
+    ? (requests || []).filter(
+        (r) =>
+          r &&
+          r.createdAt >= shiftFrom &&
+          (!station || stationOf(r) === station)
+      )
+    : null;
+  const resp = shiftCalls ? responseCompliance(shiftCalls, shiftFrom, now + 1) : null;
+
+  // Nothing free is the one number on this strip that is allowed to shout, and
+  // it does it by turning the colour the rest of the board uses for a call in
+  // progress rather than by growing or flashing.
+  const freeColor = free === 0 ? "var(--crit)" : "var(--ok)";
 
   return (
-    <div style={styles.statusBoard}>
-      <div style={styles.statusHeadline}>
-        <span style={{ ...styles.statusBig, color: free === 0 ? "var(--crit)" : "var(--ink)" }}>{free}</span>
-        <span style={styles.statusOf}>
-          of {total} available
+    <div style={styles.roomState}>
+      <div style={styles.roomCell}>
+        <span style={{ ...styles.roomFigure, color: freeColor }}>{free}</span>
+        <span style={styles.roomLabel}>AVAILABLE</span>
+      </div>
+      <div style={styles.roomCell}>
+        <span style={{ ...styles.roomFigure, color: onCall ? "var(--hold)" : "var(--ink-4)" }}>
+          {onCall}
         </span>
+        <span style={styles.roomLabel}>ON A CALL</span>
       </div>
-
-      {/* One segment per truck, in the order they are named. */}
-      <div style={styles.statusBar}>
-        {units.map((u) => (
-          <span
-            key={u.id}
-            title={`${u.name} — ${statusMeta(u.status).label}`}
-            style={{ ...styles.statusSeg, background: statusMeta(u.status).color }}
-          />
-        ))}
+      <div style={styles.roomCell}>
+        <span style={{ ...styles.roomFigure, color: "var(--ink-4)" }}>{oos}</span>
+        <span style={styles.roomLabel}>OUT OF SERVICE</span>
       </div>
-
-      <div style={styles.statusLegend}>
-        {Object.entries(STATUS)
-          .filter(([key]) => (counts[key] || 0) > 0)
-          .map(([key, meta]) => (
-            <span key={key} style={styles.statusLegendItem}>
-              <span style={{ ...styles.statusLegendDot, background: meta.color }} />
-              {counts[key]} {meta.label.toLowerCase()}
-            </span>
-          ))}
-      </div>
+      {shiftCalls && (
+        <div style={styles.roomCellWide}>
+          <span style={{ ...styles.roomFigure, color: "var(--ink)" }}>{shiftCalls.length}</span>
+          <span style={styles.roomLabel}>THIS SHIFT</span>
+          {resp && resp.avg !== null && (
+            <span style={styles.roomAside}>avg response {msDurationStr(resp.avg)}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -8116,6 +8146,124 @@ function callTimeChips(times) {
   });
   pushRefusal();
   return chips;
+}
+
+// The five stamps as a stepper rather than a row of chips.
+//
+// Chips answer "what times were recorded". They do not answer "where are we",
+// which is the question a crew and a desk both actually have — and answering it
+// from a row of chips means reading every label and working out which one is
+// missing. A stepper answers it without reading: ticks behind, a ring on the
+// step being worked, nothing ahead.
+//
+// A refusal sits in the line where it happened rather than at the end, because
+// it is a thing that occurred between two stamps and reading it out of order
+// misrepresents the call.
+function CallStepper({ req, compact }) {
+  const t = (req && req.times) || {};
+  const rows = [];
+  if (t.assigned) {
+    rows.push({ key: "assigned", label: "Assigned", ts: t.assigned, done: true });
+  }
+  TIME_STEPS.forEach((step) => {
+    rows.push({
+      key: step.timeKey,
+      label: step.timeLabel,
+      ts: t[step.timeKey] || null,
+      done: !!t[step.timeKey],
+    });
+    if (step.timeKey === "arrival" && t[REFUSAL_TIME_KEY]) {
+      rows.push({
+        key: REFUSAL_TIME_KEY,
+        label: REFUSAL_TIME_LABEL,
+        ts: t[REFUSAL_TIME_KEY],
+        done: true,
+        color: NO_TRANSPORT.color,
+      });
+    }
+  });
+
+  const currentIdx = rows.findIndex((r) => !r.done);
+
+  return (
+    <div style={compact ? styles.stepperCompact : styles.stepper}>
+      {rows.map((row, i) => {
+        const current = i === currentIdx;
+        const tint = row.color || (row.done ? "var(--ok)" : current ? "var(--flow)" : "var(--hair-2)");
+        const last = i === rows.length - 1;
+        return (
+          <div key={row.key} style={styles.stepperRow}>
+            <div style={styles.stepperRail}>
+              <div
+                style={{
+                  ...styles.stepperDot,
+                  background: row.done ? tint : "var(--inset)",
+                  borderColor: tint,
+                }}
+              >
+                {row.done && <span style={styles.stepperTick}>✓</span>}
+                {current && <span style={styles.stepperPip} />}
+              </div>
+              {!last && (
+                <div
+                  style={{
+                    ...styles.stepperLine,
+                    background: row.done ? tint : "var(--hair-2)",
+                  }}
+                />
+              )}
+            </div>
+            <div style={last ? styles.stepperTextLast : styles.stepperText}>
+              <span
+                style={{
+                  ...styles.stepperLabel,
+                  color: row.done
+                    ? "var(--ink-2)"
+                    : current
+                    ? "var(--ink)"
+                    : "var(--ink-4)",
+                  fontWeight: current ? 700 : 500,
+                }}
+              >
+                {row.label}
+              </span>
+              <span
+                style={{
+                  ...styles.stepperTime,
+                  color: row.done ? "var(--ink)" : "var(--ink-4)",
+                }}
+              >
+                {row.ts ? clockStr(row.ts) : "—"}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// The same five stamps, reduced to a bar. On the desk's board there are eight
+// of these on screen at once and there is no room for a stepper — but "how far
+// through is it" is still the question, so it is answered in segments: filled
+// behind, hollow ahead, in the colour the call's current stage already uses.
+function CallProgress({ req }) {
+  const t = (req && req.times) || {};
+  const tint = (REQ_STATUS[req && req.status] || {}).color || "var(--flow)";
+  return (
+    <div style={styles.callProgress}>
+      {TIME_STEPS.map((step) => (
+        <div
+          key={step.timeKey}
+          title={step.timeLabel + (t[step.timeKey] ? ` — ${clockStr(t[step.timeKey])}` : "")}
+          style={{
+            ...styles.callProgressSeg,
+            background: t[step.timeKey] ? tint : "var(--hair-2)",
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function CallTimes({ times }) {
@@ -13124,7 +13272,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         {stationLabel(myStation)} — dispatch desk
       </div>
 
-      <StatusBoard units={stationUnits} />
+      <StatusBoard units={stationUnits} requests={stationRequests} station={myStation} />
 
       {/* At the top, with the status board. Whether there is anything left to
           send is the first thing the desk needs to know when it looks at this
@@ -13654,6 +13802,13 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   </span>
                 )}
               </div>
+              {/* Where this call has got to, as five segments. The status pill
+                  above already names the stage; this says how far through the
+                  call that is, which is the thing a desk deciding whether to
+                  wait for this truck or start looking for another one actually
+                  wants. Reading it takes no words. */}
+              <CallProgress req={req} />
+
               {/* Came in from the shift before. The next desk needs to know at a
                   glance that this one is not theirs to file — it stays on the
                   log of the shift that took it. */}
@@ -13930,13 +14085,27 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
   const now = Date.now();
   return (
     <div style={styles.unitCard}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <Circle size={8} fill={statusMeta(unit.status).color} color={statusMeta(unit.status).color} />
-        <span style={styles.unitCardName}>{unit.name}</span>
-      </div>
-      <span style={{ color: statusMeta(unit.status).color, fontSize: 13, fontWeight: 600 }}>{statusMeta(unit.status).label}</span>
-      {!isStaffed(unit) && <span style={styles.unitCardNoCrew}>NO CREW SIGNED ON</span>}
-      {unit.ambulanceNumber && <span style={styles.unitCardAmbulance}>Amb #{unit.ambulanceNumber}</span>}
+      {/* Status twice over: a bar the full width of the card, and the word
+          beneath it. The bar is what carries across a room and what still works
+          for somebody who cannot separate the greens from the reds; the word is
+          what makes it unambiguous close up. Neither alone was enough. */}
+      <div style={{ ...styles.unitCardBar, background: statusMeta(unit.status).color }} />
+      <div style={styles.unitCardBody}>
+        <div style={styles.unitCardTop}>
+          <span style={styles.unitCardName}>{unit.name}</span>
+          {unit.ambulanceNumber && (
+            <span style={styles.unitCardAmbulance}>#{unit.ambulanceNumber}</span>
+          )}
+        </div>
+        <div style={styles.unitCardStatusRow}>
+          <span
+            style={{ ...styles.unitCardDot, background: statusMeta(unit.status).color }}
+          />
+          <span style={{ ...styles.unitCardStatusText, color: statusMeta(unit.status).color }}>
+            {statusMeta(unit.status).label}
+          </span>
+        </div>
+        {!isStaffed(unit) && <span style={styles.unitCardNoCrew}>NO CREW SIGNED ON</span>}
       <SeatLine
         label="Alpha"
         member={unit.alpha}
@@ -13972,6 +14141,7 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -15340,7 +15510,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             </div>
           )}
 
-          <CallTimes times={myRequest.times} />
+          <CallStepper req={myRequest} />
 
           {/* Where the ask for a second ambulance has got to, on the card of the
               team who asked for it — a crew waiting for help should not have to
@@ -18185,7 +18355,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         return (
           <div key={st.key} style={{ marginBottom: 10 }}>
             <div style={styles.stationBoardLabel}>{st.label}</div>
-            <StatusBoard units={atStation(units, st.key)} />
+            <StatusBoard units={atStation(units, st.key)} requests={atStation(requests, st.key)} station={st.key} />
             {/* Directly under this station's own board. An administrator opening
                 the app must see that a station cannot answer a call in the same
                 glance that tells them who is free — not after scrolling. */}
@@ -20877,6 +21047,84 @@ const styles = {
   },
   oosAskHead: { fontSize: 15, fontWeight: 800, color: "var(--hold-3)" },
   oosAskWhy: { fontSize: 13.5, color: "var(--ink-2)", marginTop: 6, lineHeight: 1.5 },
+  // The room-state strip. Cells divided by a hairline rather than spaced apart,
+  // so it reads as one instrument across the top of the board instead of four
+  // separate cards — the figures belong to each other.
+  callProgress: { display: "flex", gap: 3, marginTop: 10, marginBottom: 2 },
+  callProgressSeg: { flex: 1, height: 3, borderRadius: 999 },
+
+  stepper: { display: "flex", flexDirection: "column", marginTop: 12 },
+  stepperCompact: { display: "flex", flexDirection: "column", marginTop: 8 },
+  stepperRow: { display: "flex", alignItems: "stretch", gap: 13 },
+  stepperRail: { display: "flex", flexDirection: "column", alignItems: "center", width: 24, flex: "none" },
+  stepperDot: {
+    width: 24, height: 24, borderRadius: 999, flex: "none",
+    border: "2px solid", display: "flex", alignItems: "center",
+    justifyContent: "center", boxSizing: "border-box",
+  },
+  stepperTick: { color: "var(--ground)", fontSize: 12, fontWeight: 900, lineHeight: 1 },
+  stepperPip: { width: 8, height: 8, borderRadius: 999, background: "var(--flow)" },
+  stepperLine: { width: 2, flex: 1, minHeight: 16 },
+  stepperText: {
+    flex: 1, display: "flex", alignItems: "baseline",
+    justifyContent: "space-between", gap: 10, paddingBottom: 14,
+  },
+  stepperTextLast: {
+    flex: 1, display: "flex", alignItems: "baseline",
+    justifyContent: "space-between", gap: 10,
+  },
+  stepperLabel: { fontSize: 14 },
+  stepperTime: { fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums" },
+
+  roomState: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(132px, 1fr))",
+    gap: 1,
+    background: "var(--hair)",
+    border: "1px solid var(--hair)",
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 12,
+  },
+  roomCell: {
+    background: "var(--panel)",
+    padding: "13px 16px",
+    display: "flex",
+    alignItems: "baseline",
+    gap: 9,
+    flexWrap: "wrap",
+  },
+  roomCellWide: {
+    background: "var(--panel)",
+    padding: "13px 16px",
+    display: "flex",
+    alignItems: "baseline",
+    gap: 9,
+    flexWrap: "wrap",
+    gridColumn: "span 1",
+  },
+  // Read from across a control room. Tabular figures so the numbers do not
+  // shuffle sideways every time one of them ticks over.
+  roomFigure: {
+    fontSize: 30,
+    fontWeight: 650,
+    letterSpacing: -1,
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+  },
+  roomLabel: {
+    fontSize: 11.5,
+    fontWeight: 650,
+    letterSpacing: 1.1,
+    color: "var(--ink-3)",
+  },
+  roomAside: {
+    fontSize: 11.5,
+    color: "var(--ink-4)",
+    marginLeft: "auto",
+    fontVariantNumeric: "tabular-nums",
+  },
+
   policyBtn: {
     background: "var(--raised)", border: "1px solid var(--hair-2)",
     color: "var(--ink-3)", borderRadius: 999, padding: "8px 15px",
@@ -21875,12 +22123,30 @@ const styles = {
     border: "1px solid var(--hair)",
     boxShadow: "0 6px 18px var(--lift)",
     borderRadius: 16,
-    padding: "10px 12px",
+    // The padding moved onto the body so the status bar can run edge to edge.
+    // A bar with a margin round it reads as decoration; one that touches both
+    // sides reads as the card's state.
+    overflow: "hidden",
     display: "flex",
     flexDirection: "column",
-    gap: 6,
   },
-  unitCardName: { fontSize: 14.5, fontWeight: 600 },
+  unitCardBar: { height: 4, width: "100%", flex: "none" },
+  unitCardBody: {
+    padding: "11px 13px 13px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 7,
+  },
+  unitCardTop: {
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  unitCardStatusRow: { display: "flex", alignItems: "center", gap: 7 },
+  unitCardDot: { width: 7, height: 7, borderRadius: 999, flex: "none" },
+  unitCardStatusText: { fontSize: 11.5, fontWeight: 700, letterSpacing: 1 },
+  unitCardName: { fontSize: 16, fontWeight: 650, letterSpacing: -0.2 },
 
   myUnitCard: {
     background: "var(--raised)",
