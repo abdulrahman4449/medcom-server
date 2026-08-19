@@ -2994,11 +2994,10 @@ function scheduleNote(ctx, t0, note, type, peak) {
   osc.stop(end + 0.02);
 }
 
-function scheduleTone(ctx, notes, type, gainPeak) {
-  // Scaled by this device's chosen loudness. A silenced device never reaches
-  // here — the entry points below turn back first — so the peak is always a
-  // real, positive number and the exponential ramps stay valid.
-  const peak = (gainPeak || 0.16) * soundGain();
+function scheduleTone(ctx, notes, type, gainPeak, force) {
+  // Scaled by this device's chosen loudness — unless this is a call being
+  // assigned to this crew, which is not a preference. See UNMISSABLE below.
+  const peak = (gainPeak || 0.16) * (force ? 1 : soundGain());
   if (peak <= 0.0002) return;
   // A context that was suspended a moment ago can report a currentTime the
   // scheduler has already passed, and anything scheduled in the past is simply
@@ -3021,7 +3020,7 @@ function toneKeyFor(priority) {
   return "routine";
 }
 
-function playAlertTone(ctx, priorityIn) {
+function playAlertTone(ctx, priorityIn, force) {
   try {
     if (!ctx) return;
     const priority = toneKeyFor(priorityIn);
@@ -3034,20 +3033,20 @@ function playAlertTone(ctx, priorityIn) {
         { freq: 650, start: 0.45, dur: 0.15 },
         { freq: 950, start: 0.6, dur: 0.15 },
         { freq: 650, start: 0.75, dur: 0.15 },
-      ], "square", 0.22);
+      ], "square", 0.22, force);
     } else if (priority === "urgent") {
       // two rising beeps, with a gap so they read as two
       scheduleTone(ctx, [
         { freq: 700, start: 0, dur: 0.34 },
         { freq: 1000, start: 0.42, dur: 0.34 },
-      ], "square", 0.18);
+      ], "square", 0.18, force);
     } else {
       // gentle two-note chime — anything that isn't critical or urgent lands
       // here, so an unrecognised priority still makes a noise
       scheduleTone(ctx, [
         { freq: 784, start: 0, dur: 0.3 },
         { freq: 1046, start: 0.32, dur: 0.35 },
-      ], "sine", 0.14);
+      ], "sine", 0.14, force);
     }
   } catch (e) {
     // audio not available; ignore
@@ -3147,9 +3146,21 @@ function playWhenAwake(ctx, play) {
 // through here, so all three get the same guarantees about being heard — and
 // the one place a silenced device turns back, so all three are silenced
 // together and nothing has to remember to check twice.
-function soundCallAlert(audioCtxRef, priority) {
-  if (soundSilenced()) return;
-  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority));
+//
+// UNMISSABLE. A call landing on this crew's own truck is the exception to
+// every volume setting on this screen. The loudness control exists so a tablet
+// in a quiet ward does not chirp through every booking reminder and button
+// press — it was never meant to be able to silence a dispatch. A crew who
+// turned the board down at two in the morning and then missed the call they
+// were sent on is the failure this whole alarm exists to prevent, so an
+// assignment plays at full gain whatever the chip says, and it plays even when
+// the chip says SILENT.
+//
+// Everything else on the board still respects the setting. Reminders, replies
+// and confirmation sounds are things you may legitimately not want to hear.
+function soundCallAlert(audioCtxRef, priority, unmissable) {
+  if (!unmissable && soundSilenced()) return;
+  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
 }
 
 function soundReminderTone(audioCtxRef) {
@@ -3323,6 +3334,209 @@ function notifyAssistRequest(request, unitName) {
 // must not sit on the screen the way an unanswered assistance request does.
 // The body carries the medic and the call, never the text of the issue —
 // notifications are read off a lock screen in a corridor.
+// ---------- what is on the truck ----------
+//
+// Two facts, kept apart on purpose.
+//
+// The PAR LEVEL is what a truck is supposed to carry — set once by
+// administration, changed rarely, the same for every vehicle. The MOVEMENTS are
+// what actually happened to that stock: what a crew used on a call, and what
+// they put back when they restocked.
+//
+// Current stock is not stored. It is par plus the movements since the last
+// restock, worked out when somebody looks. Storing a count instead would mean
+// two tablets both writing "7 left" over each other and neither of them being
+// able to say where the eighth went; a movement log cannot lose an item without
+// somebody having written down that it went.
+//
+// It also means the question an administrator actually has — "who used all the
+// adrenaline and on what" — is answerable, because every line carries the crew
+// and, where there was one, the call.
+const INVENTORY_KEY = "ems:inventory";
+const INVENTORY_MOVES_KEY = "ems:inventoryMoves";
+const INVENTORY_MOVES_CAP = 4000;
+
+// A starting shelf, so the page is not an empty box on the first open. These
+// are consumables every ambulance carries; administration edits the list and
+// the numbers to match what this department actually stocks.
+const DEFAULT_INVENTORY = [
+  { id: "inv-o2", name: "Oxygen cylinder (D)", par: 2 },
+  { id: "inv-mask", name: "Non-rebreather mask", par: 6 },
+  { id: "inv-cannula", name: "IV cannula (18G)", par: 10 },
+  { id: "inv-fluid", name: "Sodium chloride 0.9% 500ml", par: 6 },
+  { id: "inv-gloves", name: "Gloves (box)", par: 4 },
+  { id: "inv-dressing", name: "Trauma dressing", par: 8 },
+  { id: "inv-ecg", name: "ECG electrodes (pack)", par: 4 },
+  { id: "inv-sharps", name: "Sharps bin", par: 1 },
+];
+
+function inventoryItems(inv) {
+  const list = inv && Array.isArray(inv.items) ? inv.items : null;
+  return list && list.length ? list : DEFAULT_INVENTORY;
+}
+
+// Par, plus everything that has happened to it since. Restocks add, use takes
+// away, and a count is never allowed to read below nothing — a truck cannot
+// hold minus two cannulas, and showing that would only ever mean somebody
+// mis-tapped.
+function stockFor(items, moves, unitId) {
+  const byItem = new Map(items.map((it) => [it.id, it.par || 0]));
+  (moves || []).forEach((m) => {
+    if (!m || m.unitId !== unitId) return;
+    if (!byItem.has(m.itemId)) return;
+    byItem.set(m.itemId, byItem.get(m.itemId) + (m.delta || 0));
+  });
+  return items.map((it) => {
+    const have = Math.max(0, byItem.get(it.id));
+    return {
+      ...it,
+      have,
+      short: Math.max(0, (it.par || 0) - have),
+      // Anything at or below a quarter of its par is worth flagging before it
+      // runs out on a call rather than after.
+      low: (it.par || 0) > 0 && have <= Math.max(1, Math.floor((it.par || 0) * 0.25)),
+      out: have === 0 && (it.par || 0) > 0,
+    };
+  });
+}
+
+async function recordStockMove({ unit, item, delta, kind, byName, requestId, requestNature }) {
+  if (!unit || !item || !delta) return null;
+  const entry = {
+    id: uid("mov"),
+    ts: Date.now(),
+    station: stationOf(unit),
+    unitId: unit.id,
+    unitName: unit.name || "",
+    itemId: item.id,
+    itemName: item.name || "",
+    delta,
+    kind,
+    byName: byName || "",
+    requestId: requestId || null,
+    requestNature: requestNature || "",
+  };
+  const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
+  const next = [...existing, entry].slice(-INVENTORY_MOVES_CAP);
+  await writeKey(INVENTORY_MOVES_KEY, next);
+  return next;
+}
+
+// ---------- messages between a truck and the desk ----------
+//
+// Everything a crew and the desk needed to say to each other went over the
+// radio or not at all. The radio is the right tool for "we are on scene" and
+// the wrong one for "which entrance", "the lift is out", "the ward says the
+// patient is not ready" — questions that are not urgent, that nobody wants to
+// broadcast to every truck in the department, and that are worth having written
+// down afterwards.
+//
+// One thread per truck. Not per person: the crew changes over mid-shift and
+// the conversation is about the vehicle and its calls, so a question asked by
+// the crew who went off at seven is still there for the crew who came on, and
+// the desk does not have to work out who they are talking to.
+const MESSAGES_KEY = "ems:messages";
+// A shift's traffic is tens of lines, not thousands. This is generous, and it
+// stops a year of chat from being sent up and down with every write.
+const MESSAGES_CAP = 800;
+const MESSAGE_MAX = 600;
+const CHAT_ALERT_TAG_PREFIX = "ems-chat-";
+
+function threadFor(messages, unitId) {
+  return (messages || [])
+    .filter((m) => m && m.unitId === unitId)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+// What this device has already seen, held locally rather than on the board.
+//
+// Read receipts written into the shared store would mean every tablet writing
+// the whole message list back on every glance — a lot of traffic, and a lot of
+// chances for two devices to overwrite each other — to answer a question that
+// is only ever about this screen. So each device remembers for itself.
+const CHAT_SEEN_KEY = "ems:chatSeen";
+
+function readChatSeen() {
+  try {
+    return JSON.parse(window.localStorage.getItem(CHAT_SEEN_KEY) || "{}") || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function markThreadSeen(unitId, ts) {
+  if (!unitId) return;
+  try {
+    const seen = readChatSeen();
+    if ((seen[unitId] || 0) >= ts) return;
+    seen[unitId] = ts;
+    window.localStorage.setItem(CHAT_SEEN_KEY, JSON.stringify(seen));
+  } catch (e) {
+    // a device that cannot remember simply shows everything as unread
+  }
+}
+
+function unreadIn(messages, unitId, mine) {
+  const seen = readChatSeen()[unitId] || 0;
+  return (messages || []).filter(
+    (m) => m && m.unitId === unitId && (m.ts || 0) > seen && m.from !== mine
+  ).length;
+}
+
+async function postMessage({ unit, from, byName, byAccountId, text, station }) {
+  const body = String(text || "").trim().slice(0, MESSAGE_MAX);
+  if (!body || !unit) return false;
+  const entry = {
+    id: uid("msg"),
+    ts: Date.now(),
+    station: station || stationOf(unit),
+    unitId: unit.id,
+    unitName: unit.name || "",
+    from,
+    byName: byName || "",
+    byAccountId: byAccountId || null,
+    text: body,
+  };
+  const existing = (await readKey(MESSAGES_KEY, [])) || [];
+  // Newest last in the thread, but the cap trims the oldest.
+  const next = [...existing, entry].slice(-MESSAGES_CAP);
+  await writeKey(MESSAGES_KEY, next);
+  // Handed back whether or not the write reached the server. Offline, the store
+  // holds it and sends it up later; what must not happen is the sender's own
+  // line vanishing from their screen while that is arranged.
+  return next;
+}
+
+function notifyMessage(msg) {
+  try {
+    if (!alertsSupported() || Notification.permission !== "granted") return;
+    const who = msg.from === "crew" ? msg.unitName || "A team" : msg.byName || "Dispatch";
+    const title = `${who} — message`;
+    const options = {
+      body: msg.text,
+      // Tagged per thread, so a run of messages from one truck replaces itself
+      // rather than burying the screen. The count is in the app.
+      tag: `${CHAT_ALERT_TAG_PREFIX}${msg.unitId}`,
+      renotify: true,
+      requireInteraction: false,
+    };
+    if (alertWorker && alertWorker.showNotification) {
+      const shown = alertWorker.showNotification(title, options);
+      if (shown && typeof shown.catch === "function") shown.catch(() => {});
+      return;
+    }
+    const n = new Notification(title, options);
+    n.onclick = () => {
+      try {
+        window.focus();
+        n.close();
+      } catch (e) {}
+    };
+  } catch (e) {
+    // ignore
+  }
+}
+
 function notifyEscalation(request, esc) {
   try {
     if (!alertsSupported() || Notification.permission !== "granted") return;
@@ -5348,6 +5562,9 @@ function App() {
   // The checklist items administration has set, and every list filed.
   const [checklists, setChecklists] = useState(emptyChecklists());
   const [checklistRuns, setChecklistRuns] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [inventory, setInventory] = useState(null);
+  const [inventoryMoves, setInventoryMoves] = useState([]);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -5655,6 +5872,14 @@ function App() {
     setChecklists(cl && (cl.medic || cl.emt) ? cl : emptyChecklists());
     const runs = await readKey(CHECKLIST_RUNS_KEY, []);
     setChecklistRuns(runs || []);
+    // Messages ride the same poll as the rest of the board, so a line typed at
+    // the desk reaches the truck on the next tick without a channel of its own.
+    const msgs = await readKey(MESSAGES_KEY, []);
+    if (msgs !== READ_FAILED) setMessages(msgs || []);
+    const inv = await readKey(INVENTORY_KEY, null);
+    if (inv !== READ_FAILED) setInventory(inv || null);
+    const invMoves = await readKey(INVENTORY_MOVES_KEY, []);
+    if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -6602,6 +6827,10 @@ function App() {
             { key: "board", glyph: "🚑", label: "Board" },
             { key: "stats", glyph: "📊", label: "Statistics" },
             { key: "teams", glyph: "👥", label: "Teams" },
+            // What is on the trucks. Its own page rather than a panel inside
+            // Teams: a supervisor chasing a missing cylinder is doing a
+            // different job from one looking at a roster.
+            { key: "stock", glyph: "📦", label: "Inventory" },
             // Kept, not sent — a different action from the desk's Submit, so a
             // different picture.
             { key: "log", glyph: "🗄", label: "Archive" },
@@ -6647,10 +6876,17 @@ function App() {
               saveScheduled={saveScheduled}
               addLog={addLog}
               audioCtxRef={audioCtxRef}
+              messages={messages}
+              setMessages={setMessages}
             />
           )}
           {user.role === "team" && (
             <TeamView
+              messages={messages}
+              setMessages={setMessages}
+              inventory={inventory}
+              inventoryMoves={inventoryMoves}
+              setInventoryMoves={setInventoryMoves}
               page={navTab}
               checklists={checklists}
               checklistRuns={checklistRuns}
@@ -6684,6 +6920,10 @@ function App() {
               setChecklists={setChecklists}
               checklistRuns={checklistRuns}
               log={log}
+              inventory={inventory}
+              setInventory={setInventory}
+              inventoryMoves={inventoryMoves}
+              setInventoryMoves={setInventoryMoves}
             />
           )}
         </div>
@@ -8599,7 +8839,7 @@ function useAssistAlerts(user, requests, audioCtxRef) {
     });
     // Several asks landing together get one noise between them.
     if (chime) {
-      soundCallAlert(audioCtxRef, "critical");
+      soundCallAlert(audioCtxRef, "critical", true);
       buzz([300, 150, 300, 150, 300]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -12547,7 +12787,517 @@ function PolicyModal({ open, onClose, policies }) {
   );
 }
 
-function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page }) {
+// ---------- inventory, as administration sees it ----------
+//
+// Three questions, in the order somebody actually asks them: what is short
+// right now, what is each truck carrying, and where did it go.
+function InventoryAdmin({ units, inventory, moves, setInventory, setMoves, user, addLog }) {
+  const [open, setOpen] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPar, setNewPar] = useState("");
+  const [station, setStation] = useState(STATIONS[0].key);
+
+  const items = inventoryItems(inventory);
+  const fleet = (units || []).filter((u) => stationOf(u) === station);
+
+  // Everything short, across the station, worst first. This is the whole point
+  // of the page: a supervisor should not have to open eight trucks to find the
+  // one with no oxygen.
+  const shortages = [];
+  fleet.forEach((u) => {
+    stockFor(items, moves, u.id).forEach((row) => {
+      if (row.out || row.low) shortages.push({ unit: u, row });
+    });
+  });
+  shortages.sort((a, b) => (b.row.short || 0) - (a.row.short || 0));
+
+  async function saveItems(next) {
+    const payload = { items: next };
+    await writeKey(INVENTORY_KEY, payload);
+    setInventory(payload);
+  }
+
+  async function addItem() {
+    const name = newName.trim();
+    const par = Math.max(0, parseInt(newPar, 10) || 0);
+    if (!name) return;
+    await saveItems([...items, { id: uid("inv"), name, par }]);
+    setNewName("");
+    setNewPar("");
+    await addLog(`Inventory — added "${name}", par ${par}`, "status");
+  }
+
+  async function setPar(itemId, par) {
+    await saveItems(items.map((it) => (it.id === itemId ? { ...it, par: Math.max(0, par) } : it)));
+  }
+
+  async function removeItem(item) {
+    if (!window.confirm(`Remove "${item.name}" from the stock list?\n\nMovements already recorded against it are kept.`)) return;
+    await saveItems(items.filter((it) => it.id !== item.id));
+    await addLog(`Inventory — removed "${item.name}"`, "status");
+  }
+
+  // Putting a truck back to par in one action, which is what a restock
+  // actually is: the shelf is filled, and the log says by whom.
+  async function restockToPar(unit) {
+    const rows = stockFor(items, moves, unit.id).filter((r) => r.short > 0);
+    if (!rows.length) {
+      window.alert(`${unit.name} is already at par.`);
+      return;
+    }
+    const lines = rows.map((r) => `  ${r.name} — add ${r.short}`).join("\n");
+    if (!window.confirm(`Restock ${unit.name} to par?\n\n${lines}`)) return;
+    let next = moves;
+    for (const r of rows) {
+      next = await recordStockMove({
+        unit,
+        item: r,
+        delta: r.short,
+        kind: "restock",
+        byName: (user && user.name) || "Administration",
+      });
+    }
+    if (next) setMoves(next);
+    await addLog(`${unit.name} restocked to par by ${(user && user.name) || "Administration"}`, "status");
+  }
+
+  const recent = (moves || [])
+    .slice()
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 40);
+
+  return (
+    <FoldingSection
+      title="INVENTORY"
+      count={shortages.length}
+      countLabel={shortages.length ? "short" : "at par"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div style={styles.archTabs}>
+        {STATIONS.map((st) => (
+          <button
+            key={st.key}
+            style={st.key === station ? styles.archTabOn : styles.archTab}
+            onClick={() => setStation(st.key)}
+          >
+            {st.label}
+          </button>
+        ))}
+      </div>
+
+      {shortages.length > 0 && (
+        <div style={styles.invShortWrap}>
+          <div style={styles.invShortHead}>SHORT NOW</div>
+          {shortages.slice(0, 12).map(({ unit, row }) => (
+            <div key={`${unit.id}-${row.id}`} style={styles.invShortRow}>
+              <span style={styles.invShortUnit}>{unit.name}</span>
+              <span style={styles.invShortItem}>{row.name}</span>
+              <span style={row.out ? styles.invShortOut : styles.invShortLow}>
+                {row.out ? "NONE LEFT" : `${row.have} of ${row.par}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Each truck against the standard load. */}
+      <div style={styles.invFleet}>
+        {fleet.map((u) => {
+          const rows = stockFor(items, moves, u.id);
+          const shortRows = rows.filter((r) => r.short > 0);
+          return (
+            <div key={u.id} style={styles.invTruck}>
+              <div style={styles.invTruckHead}>
+                <span style={styles.invTruckName}>{u.name}</span>
+                <span style={shortRows.length ? styles.invTruckShort : styles.invTruckOk}>
+                  {shortRows.length ? `${shortRows.length} short` : "at par"}
+                </span>
+                {shortRows.length > 0 && (
+                  <button style={styles.invRestockBtn} onClick={() => restockToPar(u)}>
+                    Restock to par
+                  </button>
+                )}
+              </div>
+              <div style={styles.invGrid}>
+                {rows.map((r) => (
+                  <div key={r.id} style={styles.invCell}>
+                    <span style={styles.invCellName}>{r.name}</span>
+                    <span
+                      style={{
+                        ...styles.invCellCount,
+                        color: r.out ? "var(--crit)" : r.low ? "var(--hold)" : "var(--ink)",
+                      }}
+                    >
+                      {r.have}
+                      <span style={styles.invCellPar}> / {r.par}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* The standard load itself. Folded away because it is set once and then
+          left alone; a page that opens on a form invites fiddling. */}
+      <div style={styles.invEditWrap}>
+        <button style={styles.ghostBtnSm} onClick={() => setEditing((v) => !v)}>
+          {editing ? "Done editing the list" : "Edit the standard load"}
+        </button>
+
+        {editing && (
+          <>
+            <div style={styles.invEditNote}>
+              Par is what every truck should carry. Changing it changes what counts as short
+              on every vehicle at once; it does not move any stock.
+            </div>
+            {items.map((it) => (
+              <div key={it.id} style={styles.invEditRow}>
+                <span style={styles.invEditName}>{it.name}</span>
+                <input
+                  style={styles.invParInput}
+                  type="number"
+                  min="0"
+                  value={it.par}
+                  onChange={(e) => setPar(it.id, parseInt(e.target.value, 10) || 0)}
+                />
+                <button style={styles.invRemoveBtn} onClick={() => removeItem(it)}>
+                  Remove
+                </button>
+              </div>
+            ))}
+            <div style={styles.invEditRow}>
+              <input
+                style={styles.invNameInput}
+                placeholder="Item name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <input
+                style={styles.invParInput}
+                type="number"
+                min="0"
+                placeholder="Par"
+                value={newPar}
+                onChange={(e) => setNewPar(e.target.value)}
+              />
+              <button style={styles.primaryBtnSm} onClick={addItem} disabled={!newName.trim()}>
+                Add
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Where it went. */}
+      <div style={styles.invMovesWrap}>
+        <div style={styles.invShortHead}>RECENT MOVEMENTS</div>
+        {recent.length === 0 ? (
+          <div style={styles.formHint}>Nothing recorded yet.</div>
+        ) : (
+          recent.map((m) => (
+            <div key={m.id} style={styles.invMoveRow}>
+              <span
+                style={{
+                  ...styles.invMoveDelta,
+                  color: m.delta < 0 ? "var(--crit)" : "var(--ok)",
+                }}
+              >
+                {m.delta > 0 ? `+${m.delta}` : m.delta}
+              </span>
+              <span style={styles.invMoveItem}>{m.itemName}</span>
+              <span style={styles.invMoveWho}>
+                {m.unitName}
+                {m.byName ? ` · ${m.byName}` : ""}
+                {m.requestNature ? ` · on ${m.requestNature}` : ""}
+              </span>
+              <span style={styles.invMoveWhen}>{gregDateTimeStr(m.ts)}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </FoldingSection>
+  );
+}
+
+// ---------- inventory, as the crew sees it ----------
+//
+// One job: say what you used. It sits on the crew's own truck page and, while
+// a call is running, carries that call's name so the movement is attributed to
+// it without anybody having to choose anything.
+function InventoryCrew({ unit, inventory, moves, setMoves, user, request, addLog }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(null);
+  if (!unit) return null;
+
+  const items = inventoryItems(inventory);
+  const rows = stockFor(items, moves, unit.id);
+  const shortCount = rows.filter((r) => r.short > 0).length;
+
+  async function move(row, delta, kind) {
+    if (busy) return;
+    setBusy(row.id);
+    try {
+      const next = await recordStockMove({
+        unit,
+        item: row,
+        delta,
+        kind,
+        byName: (user && user.name) || "",
+        requestId: request ? request.id : null,
+        requestNature: request ? request.nature : "",
+      });
+      if (next) setMoves(next);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <FoldingSection
+      title="STOCK ON THIS TRUCK"
+      count={shortCount}
+      countLabel={shortCount ? "short" : "at par"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <InfoNote label="How this works">
+        Tap <strong>−</strong> for something you have used and <strong>+</strong> for something you
+        have put back. {request ? `Anything recorded now is attributed to ${request.nature}.` : "Recorded against this truck."}
+      </InfoNote>
+
+      <div style={styles.invCrewList}>
+        {rows.map((r) => (
+          <div key={r.id} style={styles.invCrewRow}>
+            <div style={styles.invCrewName}>
+              {r.name}
+              <span
+                style={{
+                  ...styles.invCrewCount,
+                  color: r.out ? "var(--crit)" : r.low ? "var(--hold)" : "var(--ink-3)",
+                }}
+              >
+                {r.have} of {r.par}
+              </span>
+            </div>
+            <div style={styles.invCrewBtns}>
+              <button
+                style={styles.invMinus}
+                disabled={busy === r.id || r.have === 0}
+                onClick={() => move(r, -1, "used")}
+              >
+                −
+              </button>
+              <button
+                style={styles.invPlus}
+                disabled={busy === r.id}
+                onClick={() => move(r, 1, "restock")}
+              >
+                +
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </FoldingSection>
+  );
+}
+
+// ---------- the chat dock ----------
+//
+// Retractable, and closed by default. A dispatch board is not a messaging app:
+// this has to be reachable from every screen and invisible until it is wanted,
+// so it lives as a pill in the corner that carries its own unread count and
+// opens into a panel over the board rather than pushing it around.
+//
+// One component for both sides. The desk sees a list of trucks and picks one;
+// a crew has exactly one thread and lands straight in it. The difference is two
+// props, not two components — which is what keeps the two halves of a
+// conversation looking like one conversation.
+function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSent }) {
+  const [open, setOpen] = useState(false);
+  const [activeId, setActiveId] = useState(myUnitId || null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  // Re-read on every message so a badge clears the moment a thread is opened.
+  const [seenTick, setSeenTick] = useState(0);
+  const endRef = useRef(null);
+
+  const isCrew = !!myUnitId;
+  const mine = isCrew ? "crew" : "dispatch";
+  const threads = isCrew
+    ? (units || []).filter((u) => u.id === myUnitId)
+    : (units || []).filter((u) => stationOf(u) === station);
+
+  const active = threads.find((u) => u.id === activeId) || (isCrew ? threads[0] : null);
+  const thread = active ? threadFor(messages, active.id) : [];
+
+  const totalUnread = threads.reduce((n, u) => n + unreadIn(messages, u.id, mine), 0);
+
+  // Opening a thread marks it read on this device, and so does a new message
+  // arriving while it is already open — otherwise the badge counts lines the
+  // reader is looking at.
+  useEffect(() => {
+    if (!open || !active) return;
+    const last = thread.length ? thread[thread.length - 1].ts : 0;
+    if (last) {
+      markThreadSeen(active.id, last);
+      setSeenTick((n) => n + 1);
+    }
+  }, [open, active && active.id, thread.length]);
+
+  // Stick to the newest line.
+  useEffect(() => {
+    if (!open || !endRef.current) return;
+    try {
+      endRef.current.scrollIntoView({ block: "end" });
+    } catch (e) {}
+  }, [open, thread.length, active && active.id]);
+
+  async function send() {
+    const text = draft.trim();
+    if (!text || !active || sending) return;
+    setSending(true);
+    try {
+      const next = await postMessage({
+        unit: active,
+        from: mine,
+        byName: (user && user.name) || (mine === "dispatch" ? "Dispatch" : ""),
+        byAccountId: (user && user.accountId) || null,
+        text,
+        station: stationOf(active),
+      });
+      if (next) {
+        setDraft("");
+        if (onSent) onSent(next);
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (!threads.length) return null;
+
+  if (!open) {
+    return (
+      <button style={styles.chatPill} onClick={() => setOpen(true)}>
+        <MessageSquare size={15} />
+        <span>Messages</span>
+        {totalUnread > 0 && <span style={styles.chatPillBadge}>{totalUnread}</span>}
+      </button>
+    );
+  }
+
+  return (
+    <div style={styles.chatPanel}>
+      <div style={styles.chatHead}>
+        <div style={styles.chatHeadTitle}>
+          <MessageSquare size={14} />
+          {isCrew ? "Dispatch" : active ? active.name : "Messages"}
+        </div>
+        <button style={styles.chatClose} onClick={() => setOpen(false)} title="Hide">
+          ✕
+        </button>
+      </div>
+
+      {/* The desk picks a truck; a crew never sees this row. */}
+      {!isCrew && (
+        <div style={styles.chatThreads}>
+          {threads.map((u) => {
+            const n = unreadIn(messages, u.id, mine);
+            const on = active && active.id === u.id;
+            return (
+              <button
+                key={u.id}
+                style={on ? styles.chatThreadOn : styles.chatThread}
+                onClick={() => setActiveId(u.id)}
+              >
+                {u.name}
+                {n > 0 && <span style={styles.chatThreadBadge}>{n}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={styles.chatLog}>
+        {thread.length === 0 ? (
+          <div style={styles.chatEmpty}>
+            Nothing yet. This is for the things the radio is the wrong tool for —
+            which entrance, whether the lift is working, what the ward actually said.
+          </div>
+        ) : (
+          thread.map((m) => {
+            const isMine = m.from === mine;
+            return (
+              <div key={m.id} style={isMine ? styles.chatRowMine : styles.chatRowTheirs}>
+                <div style={isMine ? styles.chatBubbleMine : styles.chatBubbleTheirs}>
+                  {m.text}
+                </div>
+                <div style={styles.chatMeta}>
+                  {m.byName || (m.from === "crew" ? m.unitName : "Dispatch")} · {clockStr(m.ts)}
+                </div>
+              </div>
+            );
+          })
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <div style={styles.chatCompose}>
+        <textarea
+          style={styles.chatInput}
+          value={draft}
+          maxLength={MESSAGE_MAX}
+          rows={2}
+          placeholder={isCrew ? "Message the desk…" : `Message ${active ? active.name : "the team"}…`}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter sends; shift-enter is a new line. A thumb on a tablet wants
+            // one key, and the message that needs two paragraphs is rare.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+        />
+        <button
+          style={draft.trim() ? styles.chatSend : styles.chatSendOff}
+          onClick={send}
+          disabled={!draft.trim() || sending}
+        >
+          {sending ? "…" : "Send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// A message that arrives silently is a message nobody reads. Same reasoning as
+// the reply tone on the crew screen — this is worth knowing, not worth
+// interrupting a patient for, so it is the soft tone rather than the alarm.
+function useMessageAlerts(messages, mine, unitIds, audioCtxRef) {
+  const lastSeen = useRef(null);
+  useEffect(() => {
+    const ids = new Set(unitIds || []);
+    const relevant = (messages || []).filter(
+      (m) => m && ids.has(m.unitId) && m.from !== mine
+    );
+    const newest = relevant.reduce((n, m) => Math.max(n, m.ts || 0), 0);
+    if (lastSeen.current !== null && newest > lastSeen.current) {
+      const fresh = relevant.filter((m) => (m.ts || 0) > lastSeen.current);
+      soundReminderTone(audioCtxRef);
+      buzz([180, 90, 180]);
+      fresh.slice(-1).forEach(notifyMessage);
+    }
+    lastSeen.current = newest;
+  }, [messages, mine]);
+}
+
+function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
   const [openCallId, setOpenCallId] = useState(null);
@@ -12662,6 +13412,14 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
       alive = false;
     };
   }, [policyOpen, policies]);
+
+  // Every truck at this station, so a message from any of them reaches the desk.
+  useMessageAlerts(
+    messages,
+    "dispatch",
+    (units || []).filter((u) => stationOf(u) === myStation).map((u) => u.id),
+    audioCtxRef
+  );
 
   const coverageAvailable = stationHasCoverage(units, requests, myStation);
   const myGap = openCoverageGap(coverage, myStation);
@@ -13308,6 +14066,16 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         open={policyOpen}
         onClose={() => setPolicyOpen(false)}
         policies={policies}
+      />
+
+      {/* Reachable from every dispatcher page, closed until it is wanted. */}
+      <ChatDock
+        user={user}
+        units={units}
+        messages={messages}
+        station={myStation}
+        audioCtxRef={audioCtxRef}
+        onSent={setMessages}
       />
 
 
@@ -14188,7 +14956,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, messages, setMessages, inventory, inventoryMoves, setInventoryMoves }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -14257,6 +15025,9 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // The full alert tone rather than the soft reminder: turning a truck around
   // is urgent, and it is the same sound they already associate with "look at
   // the screen now".
+  // A message from the desk on this crew's own thread.
+  useMessageAlerts(messages, "crew", myUnit ? [myUnit.id] : [], audioCtxRef);
+
   const wasOnCall = useRef(null);
   const [calledOff, setCalledOff] = useState(null);
   useEffect(() => {
@@ -14277,7 +15048,8 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     // do not need to be told about it. This is only for a call ended out from
     // under them.
     if (gone.times && gone.times.backInService) return;
-    soundCallAlert(audioCtxRef, "critical");
+    soundCallAlert(audioCtxRef, "critical", true);
+    buzz([400, 150, 400]);
     setCalledOff({
       nature: gone.nature || "the call",
       reason: callCloseReason(gone),
@@ -14478,8 +15250,25 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         // Creating and waking the context is part of playing, not something
         // done once at sign-in — so a crew who left this tab in the background
         // still hear the repeat that lands after they come back to it.
-        soundCallAlert(audioCtxRef, myRequest.priority);
-        buzz([500, 250, 500]);
+        // Through priorityKeyOf, not off the raw field.
+        //
+        // A call's level of care is decided by its category first — the desk
+        // coding a patient as C (CCT) is what makes it a critical care
+        // transfer — and `priority` is only the fallback for a call with no
+        // category on it yet. Reading the raw field skipped that entirely, so a
+        // CCT patient coded at the desk arrived on the crew's tablet with the
+        // routine BLS chime: the one tone that tells a crew this is not urgent.
+        //
+        // It also mixed up the old vocabulary. priorityKeyOf maps legacy
+        // "urgent" to cct and "critical" to als; toneKeyFor maps those two
+        // words the other way round. Anything going straight from the stored
+        // field to the tone therefore had them crossed. One route in, and both
+        // agree.
+        soundCallAlert(audioCtxRef, priorityKeyOf(myRequest), true);
+        // Vibration alongside the tone, not instead of it: on a phone face-down
+        // in a cradle the buzz is what gets noticed first, and it is the one
+        // channel a hardware silent switch does not touch.
+        buzz([600, 200, 600, 200, 900]);
       };
       sound();
       alarmIntervalRef.current = setInterval(sound, 1700);
@@ -15154,6 +15943,19 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       <div style={styles.sectionHeader}>YOUR SHIFT</div>
       <CrewShiftCard user={user} unit={myUnit} onCall={!!myRequest} />
 
+      {/* On the truck page rather than on the call, because stock is a fact
+          about the vehicle. It knows about the live call anyway, so anything
+          recorded during one is attributed to it without the crew choosing. */}
+      <InventoryCrew
+        unit={myUnit}
+        inventory={inventory}
+        moves={inventoryMoves}
+        setMoves={setInventoryMoves}
+        user={user}
+        request={myRequest}
+        addLog={addLog}
+      />
+
       <div style={styles.sectionHeader}>YOUR UNIT — {myUnit.name}</div>
       <div style={styles.myUnitCard}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -15174,6 +15976,18 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             A refusal in particular must reach them — they asked for a reason,
             and being told no without one teaches only not to ask. It stays until
             they acknowledge it. */}
+        {/* One thread, straight into it — a crew has only ever one desk to
+            talk to, so there is nothing to pick from. */}
+        <ChatDock
+          user={user}
+          units={units}
+          messages={messages}
+          station={myUnit ? stationOf(myUnit) : null}
+          myUnitId={myUnit ? myUnit.id : null}
+          audioCtxRef={audioCtxRef}
+          onSent={setMessages}
+        />
+
         {/* The call was called off while they were on their way. Loud, red, and
             it does not clear itself: a crew still driving to a stood-down call
             is the thing this whole banner exists to stop. */}
@@ -17986,7 +18800,7 @@ function SavedLogs({ submissions, requests, coverage }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -18387,6 +19201,18 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           per-person figures, and the standing record of issues. All on one
           page, because they are read together when somebody asks how the month
           went. */}
+      {onPage("stock") && (
+        <InventoryAdmin
+          units={units}
+          inventory={inventory}
+          moves={inventoryMoves}
+          setInventory={setInventory}
+          setMoves={setInventoryMoves}
+          user={user}
+          addLog={addLog}
+        />
+      )}
+
       {onPage("stats") && (
         <>
       {/* Always open, at the head of the page. */}
@@ -21050,6 +21876,231 @@ const styles = {
   // The room-state strip. Cells divided by a hairline rather than spaced apart,
   // so it reads as one instrument across the top of the board instead of four
   // separate cards — the figures belong to each other.
+  // The dock, closed. Sits clear of the footer bar so the two never overlap on
+  // a phone, and carries its own count so the badge is readable without opening
+  // anything.
+  invShortWrap: {
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--crit)", borderRadius: 14,
+    padding: "12px 13px", marginBottom: 12,
+  },
+  invShortHead: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1.3,
+    color: "var(--ink-4)", marginBottom: 9,
+  },
+  invShortRow: {
+    display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0",
+    fontSize: 12.5, flexWrap: "wrap",
+  },
+  invShortUnit: { fontWeight: 700, color: "var(--ink-2)", minWidth: 78 },
+  invShortItem: { color: "var(--ink-3)", flex: 1, minWidth: 120 },
+  invShortOut: { fontWeight: 800, color: "var(--crit)", letterSpacing: 0.5 },
+  invShortLow: { fontWeight: 700, color: "var(--hold)", fontVariantNumeric: "tabular-nums" },
+
+  invFleet: { display: "flex", flexDirection: "column", gap: 12 },
+  invTruck: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 16, padding: "13px 14px",
+  },
+  invTruckHead: {
+    display: "flex", alignItems: "center", gap: 10,
+    marginBottom: 11, flexWrap: "wrap",
+  },
+  invTruckName: { fontSize: 15, fontWeight: 650 },
+  invTruckOk: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.8, color: "var(--ok)" },
+  invTruckShort: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.8, color: "var(--hold)" },
+  invRestockBtn: {
+    marginLeft: "auto", background: "var(--inset-2)", border: "1px solid var(--hair-2)",
+    color: "var(--ink-2)", borderRadius: 999, padding: "6px 13px",
+    fontSize: 12, fontWeight: 650, cursor: "pointer",
+  },
+  invGrid: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8,
+  },
+  invCell: {
+    background: "var(--inset)", borderRadius: 10, padding: "8px 10px",
+    display: "flex", flexDirection: "column", gap: 3,
+  },
+  invCellName: { fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.35 },
+  invCellCount: { fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
+  invCellPar: { fontSize: 12, fontWeight: 500, color: "var(--ink-4)" },
+
+  invEditWrap: { marginTop: 14 },
+  invEditNote: {
+    fontSize: 12, lineHeight: 1.5, color: "var(--ink-4)", margin: "10px 0",
+  },
+  invEditRow: {
+    display: "flex", alignItems: "center", gap: 8, padding: "5px 0", flexWrap: "wrap",
+  },
+  invEditName: { flex: 1, minWidth: 150, fontSize: 13, color: "var(--ink-2)" },
+  invParInput: {
+    width: 74, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 9, color: "var(--ink)", padding: "7px 9px", fontSize: 13,
+    fontFamily: "inherit",
+  },
+  invNameInput: {
+    flex: 1, minWidth: 150, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 9, color: "var(--ink)", padding: "7px 9px", fontSize: 13,
+    fontFamily: "inherit",
+  },
+  invRemoveBtn: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
+    borderRadius: 999, padding: "5px 11px", fontSize: 11.5, cursor: "pointer",
+  },
+
+  invMovesWrap: { marginTop: 18 },
+  invMoveRow: {
+    display: "flex", alignItems: "baseline", gap: 10, padding: "6px 0",
+    borderBottom: "1px solid var(--hair)", fontSize: 12.5, flexWrap: "wrap",
+  },
+  invMoveDelta: {
+    fontWeight: 800, minWidth: 34, fontVariantNumeric: "tabular-nums",
+  },
+  invMoveItem: { color: "var(--ink-2)", minWidth: 130 },
+  invMoveWho: { color: "var(--ink-4)", flex: 1, minWidth: 140 },
+  invMoveWhen: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+
+  invCrewList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
+  invCrewRow: {
+    display: "flex", alignItems: "center", gap: 12,
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 12, padding: "10px 12px",
+  },
+  invCrewName: { flex: 1, fontSize: 13.5, color: "var(--ink)", lineHeight: 1.4 },
+  invCrewCount: {
+    display: "block", fontSize: 11.5, fontWeight: 650, marginTop: 2,
+    fontVariantNumeric: "tabular-nums",
+  },
+  invCrewBtns: { display: "flex", gap: 8, flex: "none" },
+  // Sized for a gloved thumb in a moving vehicle, not for a mouse.
+  invMinus: {
+    width: 48, height: 48, borderRadius: 12, cursor: "pointer",
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)",
+    color: "var(--crit-2)", fontSize: 22, fontWeight: 700, lineHeight: 1,
+  },
+  invPlus: {
+    width: 48, height: 48, borderRadius: 12, cursor: "pointer",
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)",
+    color: "var(--ok)", fontSize: 22, fontWeight: 700, lineHeight: 1,
+  },
+
+  chatPill: {
+    position: "fixed",
+    right: 14,
+    bottom: "calc(78px + env(safe-area-inset-bottom))",
+    zIndex: 45,
+    background: "var(--raised)",
+    border: "1px solid var(--hair-2)",
+    color: "var(--ink-2)",
+    borderRadius: 999,
+    padding: "11px 17px",
+    fontSize: 13.5,
+    fontWeight: 650,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    boxShadow: "0 12px 34px var(--lift-2)",
+  },
+  chatPillBadge: {
+    background: "var(--crit)",
+    color: "#FFFFFF",
+    borderRadius: 999,
+    minWidth: 20,
+    padding: "1px 6px",
+    fontSize: 11.5,
+    fontWeight: 800,
+    textAlign: "center",
+  },
+  chatPanel: {
+    position: "fixed",
+    right: 14,
+    bottom: "calc(78px + env(safe-area-inset-bottom))",
+    zIndex: 45,
+    width: "min(380px, calc(100vw - 28px))",
+    height: "min(520px, calc(100vh - 190px))",
+    background: "var(--panel)",
+    border: "1px solid var(--hair-2)",
+    borderRadius: 20,
+    boxShadow: "0 24px 64px var(--lift-2)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  chatHead: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: "12px 14px",
+    borderBottom: "1px solid var(--hair)",
+  },
+  chatHeadTitle: {
+    display: "flex", alignItems: "center", gap: 8,
+    fontSize: 14.5, fontWeight: 650, color: "var(--ink)",
+  },
+  chatClose: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
+    borderRadius: 999, width: 26, height: 26, cursor: "pointer", fontSize: 12, lineHeight: 1,
+  },
+  chatThreads: {
+    display: "flex", gap: 6, padding: "9px 12px", overflowX: "auto",
+    borderBottom: "1px solid var(--hair)",
+  },
+  chatThread: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-3)",
+    borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 600,
+    cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6,
+  },
+  chatThreadOn: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
+    borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700,
+    cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6,
+  },
+  chatThreadBadge: {
+    background: "var(--crit)", color: "#FFFFFF", borderRadius: 999,
+    padding: "0 5px", fontSize: 10.5, fontWeight: 800,
+  },
+  chatLog: {
+    flex: 1, overflowY: "auto", padding: "12px 13px",
+    display: "flex", flexDirection: "column", gap: 11,
+  },
+  chatEmpty: {
+    fontSize: 12.5, lineHeight: 1.6, color: "var(--ink-4)",
+    margin: "auto 0", textAlign: "center", padding: "0 8px",
+  },
+  chatRowMine: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 },
+  chatRowTheirs: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 },
+  chatBubbleMine: {
+    background: "var(--flow)", color: "#FFFFFF", borderRadius: "14px 14px 4px 14px",
+    padding: "9px 12px", fontSize: 13.5, lineHeight: 1.45, maxWidth: "88%",
+    whiteSpace: "pre-wrap", wordBreak: "break-word",
+  },
+  chatBubbleTheirs: {
+    background: "var(--raised)", border: "1px solid var(--hair)", color: "var(--ink)",
+    borderRadius: "14px 14px 14px 4px", padding: "9px 12px", fontSize: 13.5,
+    lineHeight: 1.45, maxWidth: "88%", whiteSpace: "pre-wrap", wordBreak: "break-word",
+  },
+  chatMeta: { fontSize: 10.5, color: "var(--ink-4)", padding: "0 3px" },
+  chatCompose: {
+    display: "flex", gap: 8, padding: "10px 12px 12px",
+    borderTop: "1px solid var(--hair)", alignItems: "flex-end",
+  },
+  chatInput: {
+    flex: 1, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 13.5,
+    fontFamily: "inherit", resize: "none", lineHeight: 1.4,
+  },
+  chatSend: {
+    background: "var(--flow)", border: "none", color: "#FFFFFF", borderRadius: 12,
+    padding: "11px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", flex: "none",
+  },
+  chatSendOff: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    borderRadius: 12, padding: "11px 15px", fontSize: 13.5, fontWeight: 700,
+    cursor: "default", flex: "none",
+  },
+
   callProgress: { display: "flex", gap: 3, marginTop: 10, marginBottom: 2 },
   callProgressSeg: { flex: 1, height: 3, borderRadius: 999 },
 

@@ -34,6 +34,17 @@ patch", that document is the target — do not start a fresh exploration.
 - **This is a health app under Google Play policy.** It stores patient MRNs,
   so it needs a verified Organization developer account, a reachable privacy
   policy and deletion page, and the not-a-medical-device disclaimer.
+- **A dispatch alert must be unmissable, and the web layer can only get part
+  of the way there.** In the app: call alerts ignore the in-app loudness
+  setting entirely — including SILENT — and vibrate alongside the tone; the
+  audio context declares itself as `playback` so iOS treats it as media
+  rather than as ambient sound. What the web layer **cannot** do is override
+  the hardware silent switch, the OS volume slider, or Do Not Disturb. That
+  needs the native shell: an `AVAudioSession` set to `.playback` with
+  `.duckOthers` on iOS, and on Android a notification channel created with
+  `USAGE_ALARM` so the alert plays on the alarm stream. Until the Capacitor
+  project does both, a muted phone is a phone that can miss a call — say so
+  rather than implying the app has it covered.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.
