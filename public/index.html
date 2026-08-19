@@ -82,6 +82,7 @@ const Plus = makeIcon("+");
 const ChevronRight = makeIcon("›");
 const Bell = makeIcon("🔔");
 const ClipboardList = makeIcon("📋");
+const BookOpen = makeIcon("📖");
 const Share2 = makeIcon("⤴");
 const Trash = makeIcon("🗑");
 const CalendarClock = makeIcon("🗓");
@@ -832,6 +833,14 @@ function topPerformers({ staff, requests, units, log, win, now }) {
 // mixing the two produced an average that described neither.
 const RESPONSE_TARGET_MS = 10 * 60 * 1000;
 const RESPONSE_GOOD = 90; // per cent, at which the gauge reads green
+
+// The other three department measures, and where each one stops being
+// comfortable. Two of them are compliance figures and want to be high; UHU is
+// not — it is how much of the fleet's time is already spoken for, and a service
+// running above this has no capacity left for the call it has not had yet.
+const PCR_GOOD = 95;
+const CHECKLIST_GOOD = 90;
+const UHU_HEADROOM = 50;
 
 function isInternalEmergency(req) {
   return (req && req.callCategory) === "EMERGENCY (INTERNAL)";
@@ -2309,17 +2318,21 @@ const HANDOVER_GRACE_MS = 6 * 60 * 60 * 1000;
 //
 // Everything the app does is still logged, and the whole feed still goes out on
 // the Event Log sheet of the export. But a desk watching a live board does not
-// need to read every coding, booking, status flip and closure scroll past: the
-// two things dispatch would otherwise have to ask for over the radio are
-// whether the team heard the call and whether they are moving. Those are the
-// only two lines the log sheet shows; the rest are written and kept, not
-// displayed.
-const BOARD_LOG_EVENTS = ["ack", "enroute"];
+// need to read every coding, booking and status flip scroll past: what dispatch
+// would otherwise have to ask for over the radio is whether the team heard the
+// call, whether they are moving, and whether they are free again. Those are the
+// lines the log sheet shows; the rest are written and kept, not displayed.
+//
+// Back in service earns its place for the same reason the other two did. It is
+// the moment a truck rejoins the pool, and a desk holding a call waiting for
+// one was reading it off a status pill changing colour somewhere else on the
+// board, or asking. Now it says so, in the feed, with the time on it.
+const BOARD_LOG_EVENTS = ["ack", "enroute", "backInService"];
 
 // Lines written before entries carried an event key are matched on the sentence
 // instead, so a board that is mid-shift when this build lands doesn't empty
 // out. New entries never take this path.
-const LEGACY_BOARD_LOG_RE = /acknowledged call|acknowledged assist request|— En Route at|marked EN ROUTE/i;
+const LEGACY_BOARD_LOG_RE = /acknowledged call|acknowledged assist request|— En Route at|marked EN ROUTE|— Back in Service at/i;
 
 function isBoardLogEntry(entry) {
   if (!entry) return false;
@@ -4745,7 +4758,7 @@ function autoFitSheet(ws, headerRow) {
 // exporting the department as a whole. When it is set, every sheet below is
 // that station's and nothing else — the two stations keep separate log sheets,
 // so an export that quietly mixed them would be worse than no export at all.
-async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom, dayStart) {
+async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom, dayStart, periodLabel) {
   if (station) {
     units = atStation(units, station);
     requests = atStation(requests, station);
@@ -4931,18 +4944,21 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
     });
 
     // The date and shift, once, at the top — not repeated on every row.
-    const anyStamp = stationUnitsForUhu
-      .flatMap((u) => crewIndex.get(u.id) || [])
-      .find((p) => p.shiftStart);
-    // Two lines, as the report has: what this is, then when.
+    //
+    // This line used to be worked out by scanning the station's crew stamps and
+    // taking the shift off whichever one happened to come back first. Crew
+    // stamps include the seat's previous occupants, so the first one found was
+    // routinely a stay from days earlier — and since each station's units are
+    // scanned separately, the two stations picked different stale stays and
+    // dated their sheets differently. One export came out with the dispatch log
+    // on the right day, Main Office's UHU on the 15th and CCC's on the 12th.
+    //
+    // The sheet does not have to work out what it covers. The caller knows,
+    // because the caller chose the window, so the caller says.
     const headers = ["Medic", "Seat", "Name", "Employee ID", "Signed On", "Signed Off", "Overtime", "Calls", "UHU %"];
     const aoa = [
       [`UHU — ${g.label}`],
-      [
-        anyStamp
-          ? `${shiftDateOf(anyStamp.shiftStart)} · ${shiftLabelWithWindow(anyStamp.shift)} · time on call by seat`
-          : "Time on call by seat",
-      ],
+      [periodLabel ? `${periodLabel} · time on call by seat` : "Time on call by seat"],
       [],
       headers,
       ...rows.map((r) => headers.map((h) => r[h])),
@@ -5216,7 +5232,8 @@ async function exportSubmission(sub, liveRequests, liveCoverage) {
     // The shift this submission covers — without it the UHU sheet is measured
     // against whatever shift is running today and comes out empty.
     sub.windowStart,
-    opDayStart(sub.windowStart)
+    opDayStart(sub.windowStart),
+    `${gregDateStr(sub.windowStart)} · ${shiftLabelWithWindow(sub.shiftKey)}`
   );
 }
 
@@ -6739,7 +6756,11 @@ function App() {
                       null,
                       (coverage || []).filter((c) => c && c.startedAt >= from && c.startedAt < to),
                       from,
-                      from
+                      from,
+                      // Both shifts, not one: this button exports the whole
+                      // operational day, and labelling it DAY or NIGHT would be
+                      // a plain untruth on half the rows.
+                      `${opDayLabel(from)} · 07:00 → 07:00 · day and night`
                     );
                   },
                 }
@@ -10750,6 +10771,47 @@ const RELATIVE_PICKS = [
 // something booked — and it could never give the desk its quarter-hour warning.
 const MIN_LEAD_MS = 60 * 1000;
 
+// ---------- what is already booked ----------
+//
+// The desk was booking blind. The form asked for a date and a time and said
+// nothing about the four transfers already sitting at that time, so two
+// bookings for one slot were only discovered on the day, by the crew.
+//
+// Bookings do not clash the way appointments do — a station with five trucks
+// can legitimately send three at two o'clock — so nothing here blocks a
+// booking. What it does is put the answer in front of whoever is typing: the
+// times already taken on that day, and a plain warning when the time being
+// picked already has company. The desk can still go ahead; what it cannot do
+// any more is go ahead without knowing.
+const BOOKING_CLASH_MS = 30 * 60 * 1000;
+
+// A booking that still expects an ambulance. One already sent out, or called
+// off, is not competing for anything.
+function bookingIsLive(s) {
+  return !!(s && s.scheduledFor && !s.cancelledAt && !s.releasedAt);
+}
+
+function bookingsOnDay(list, station, ts) {
+  if (!ts) return [];
+  const day = opDayStart(ts);
+  return (list || [])
+    .filter((s) => bookingIsLive(s) && stationOf(s) === station && opDayStart(s.scheduledFor) === day)
+    .sort((a, b) => a.scheduledFor - b.scheduledFor);
+}
+
+function bookingsNear(list, station, ts, ignoreId) {
+  if (!ts) return [];
+  return (list || [])
+    .filter(
+      (s) =>
+        bookingIsLive(s) &&
+        stationOf(s) === station &&
+        s.id !== ignoreId &&
+        Math.abs(s.scheduledFor - ts) <= BOOKING_CLASH_MS
+    )
+    .sort((a, b) => a.scheduledFor - b.scheduledFor);
+}
+
 function startOfMonth(ts) {
   const d = new Date(ts);
   d.setDate(1);
@@ -11214,6 +11276,62 @@ function SchedulePreAlert({ entries, units, now, onDismiss, audioCtxRef }) {
 // two views and nowhere else, and refuses to draw anything for any other role.
 // Crews never see a booking: the first they know of one is the call arriving on
 // their screen at its dispatch time, exactly like any other call.
+// The day the desk is booking into, as a list of times already taken.
+//
+// Deliberately plain: times, what each one is, and a mark against anything
+// inside half an hour of the time being picked. No calendar grid — a booking
+// desk wants to read a column of times, and a grid of empty hours would take
+// three times the room to say less.
+function DayBookings({ list, station, when }) {
+  const day = bookingsOnDay(list, station, when);
+  const near = new Set(bookingsNear(list, station, when).map((b) => b.id));
+
+  if (day.length === 0) {
+    return (
+      <div style={styles.dayBookEmpty}>
+        Nothing else booked at {stationLabel(station)} on {gregLongDateStr(when)}.
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.dayBookWrap}>
+      <div style={styles.dayBookHead}>
+        Already booked · {stationLabel(station)} · {gregLongDateStr(when)}
+        <span style={styles.dayBookCount}>
+          {day.length} booking{day.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div style={styles.dayBookList}>
+        {day.map((b) => {
+          const clash = near.has(b.id);
+          return (
+            <div key={b.id} style={clash ? styles.dayBookRowNear : styles.dayBookRow}>
+              <span style={clash ? styles.dayBookTimeNear : styles.dayBookTime}>
+                {hhmm(b.scheduledFor)}
+              </span>
+              <span style={styles.dayBookWhat}>
+                {b.nature || "Booking"}
+                <span style={styles.dayBookRoute}>
+                  {" "}
+                  {b.locationFrom || "?"} → {b.locationTo || "?"}
+                </span>
+              </span>
+              {clash && <span style={styles.dayBookFlag}>within 30 min</span>}
+            </div>
+          );
+        })}
+      </div>
+      {near.size > 0 && (
+        <div style={styles.dayBookWarn}>
+          {near.size} of these {near.size === 1 ? "is" : "are"} within half an hour of {hhmm(when)}.
+          Check a truck is free before you add another.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScheduledRequests({ user, units, requests, scheduled, allScheduled, saveScheduled, addLog, audioCtxRef }) {
   const [open, setOpen] = useState(false);
   // This form's own missing-field marks. It had been calling the dispatch
@@ -11377,12 +11495,37 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
         return;
       }
     }
+    // Already something at that time? Say so, name them, and let the desk
+    // decide. Not a block: more than one ambulance can leave at two o'clock,
+    // and a form that refuses would just be worked around.
+    const myStation = user && user.station ? user.station : DEFAULT_STATION;
+    if (ts) {
+      const near = bookingsNear(allScheduled || scheduled, myStation, ts);
+      if (near.length > 0) {
+        const lines = near
+          .slice(0, 6)
+          .map((b) => `  ${hhmm(b.scheduledFor)} — ${b.nature || "booking"} (${b.locationFrom || "?"} → ${b.locationTo || "?"})`)
+          .join("\n");
+        const more = near.length > 6 ? `\n  …and ${near.length - 6} more` : "";
+        if (
+          !window.confirm(
+            `${near.length} booking${near.length === 1 ? " is" : "s are"} already within half an hour of ${hhmm(ts)}:\n\n` +
+              lines +
+              more +
+              `\n\nBook this one as well?`
+          )
+        ) {
+          return;
+        }
+      }
+    }
+
     setBusy(true);
     setError("");
     const createdAt = Date.now();
     const entry = {
       id: uid("sch"),
-      station: user && user.station ? user.station : DEFAULT_STATION,
+      station: myStation,
       locationFrom: locationFrom.trim(),
       locationTo: locationTo.trim(),
       nature: nature.trim(),
@@ -11648,8 +11791,19 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                           : "Pick the day on the calendar, then set the hour and minute."
                       }
                     />
+                  )}
 
-                      
+                  {/* What is already on that day, in time order, with anything
+                      inside half an hour of the time being picked marked. This
+                      is the whole answer to "are we double-booking?" and it has
+                      to be visible while the time is being chosen, not after
+                      the booking is saved. */}
+                  {!awaitCall && when && (
+                    <DayBookings
+                      list={allScheduled || scheduled}
+                      station={user && user.station ? user.station : DEFAULT_STATION}
+                      when={when}
+                    />
                   )}
 
                   {/* Optional second time. Most transfers need only one —
@@ -12152,6 +12306,99 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
   );
 }
 
+// ---------- department policies ----------
+//
+// The desk is where the policy questions land — can this patient travel with a
+// relative, who authorises an out-of-area transfer, what happens when a ward
+// disputes a category — and the answers currently live in a folder somebody has
+// to get up and find, or in the memory of whoever has been there longest.
+//
+// So they belong on the board, one tap from the screen the question arrives at.
+// The content is the department's to write; the shelf it sits on is this. Each
+// policy is a heading and a body, held in the same key/value store as
+// everything else, so the department edits them in one place and every desk has
+// them immediately.
+const POLICY_KEY = "ems:policies";
+
+// Deliberately empty of content. Writing plausible-sounding clinical policy and
+// putting it in front of a dispatcher would be worse than an empty shelf: a
+// made-up rule that reads like a real one is the kind of thing somebody acts
+// on. The department fills these in.
+const POLICY_PLACEHOLDER = [
+  { id: "pol-transfer", title: "Inter-facility transfers", body: "" },
+  { id: "pol-escort", title: "Relatives and escorts", body: "" },
+  { id: "pol-refusal", title: "Patient refusal", body: "" },
+  { id: "pol-outofarea", title: "Out-of-area journeys", body: "" },
+  { id: "pol-escalation", title: "Escalation and who to call", body: "" },
+];
+
+function PolicyModal({ open, onClose, policies }) {
+  const list = policies && policies.length ? policies : POLICY_PLACEHOLDER;
+  const [openId, setOpenId] = useState(null);
+
+  // Escape closes it. A dispatcher who opened this while a call was coming in
+  // needs it gone in one keystroke, not a hunt for the X.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div style={styles.policyScrim} onClick={onClose}>
+      <div style={styles.policySheet} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.policyHead}>
+          <div>
+            <div style={styles.policyEyebrow}>DEPARTMENT POLICIES</div>
+            <div style={styles.policyTitle}>What the desk is expected to do</div>
+          </div>
+          <button style={styles.policyClose} onClick={onClose} title="Close (Esc)">
+            ✕
+          </button>
+        </div>
+
+        <div style={styles.policyBody}>
+          {list.map((pol) => {
+            const isOpen = openId === pol.id;
+            return (
+              <div key={pol.id} style={styles.policyItem}>
+                <button
+                  style={styles.policyItemHead}
+                  onClick={() => setOpenId(isOpen ? null : pol.id)}
+                >
+                  <span>{pol.title}</span>
+                  <span style={styles.policyChevron}>{isOpen ? "−" : "+"}</span>
+                </button>
+                {isOpen && (
+                  <div style={styles.policyText}>
+                    {pol.body ? (
+                      pol.body
+                    ) : (
+                      <span style={styles.policyEmpty}>
+                        Not written yet. Administration adds the wording for this one.
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={styles.policyFoot}>
+          Policies are held centrally — whatever administration writes here is what every
+          desk sees, immediately.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
@@ -12252,6 +12499,22 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // identically whether it is made on a live call here or on a closed one
   // from the history list.
   // Is anything free right now, and is a gap already running?
+  // The policy shelf, read once when the desk opens it rather than polled: this
+  // is reference material, not live board state.
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [policies, setPolicies] = useState(null);
+  useEffect(() => {
+    if (!policyOpen || policies !== null) return;
+    let alive = true;
+    (async () => {
+      const stored = await readKey(POLICY_KEY, null);
+      if (alive) setPolicies(stored || POLICY_PLACEHOLDER);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [policyOpen, policies]);
+
   const coverageAvailable = stationHasCoverage(units, requests, myStation);
   const myGap = openCoverageGap(coverage, myStation);
   async function declareNoCoverage() {
@@ -12446,6 +12709,49 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         : `${unit.name} refused out of service by ${user.name || "Dispatch"} — ${note.trim()}` +
           ` (asked: ${rq.reason})`,
       "status"
+    );
+  }
+
+  // Putting a truck back on the run.
+  //
+  // The desk could take an ambulance off and then not put it back. Only the
+  // crew's own screen carried "Back in service", so a truck stood down for a
+  // restock stayed off the board until somebody on it picked up a tablet —
+  // and when the desk needs that ambulance NOW, at the moment a call lands and
+  // nothing else is free, waiting for the crew to notice is the wrong way
+  // round. The decision to take it off was the desk's; so is the decision to
+  // end that.
+  //
+  // Only offered for a truck that has a crew on it. Returning an empty one to
+  // service would put a unit dispatch can send on the board with nobody in it.
+  async function returnToService(unit) {
+    if (!unit) return;
+    if (!isStaffed(unit)) {
+      window.alert(`${unit.name} has nobody signed on. It comes back on the run when a crew signs on.`);
+      return;
+    }
+    const rq = unit.oosRequest;
+    const why = rq && rq.reason ? ` (was off for: ${rq.reason})` : "";
+    if (!window.confirm(`Put ${unit.name} back in service?${why}\n\nIt becomes available for dispatch immediately.`)) return;
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(
+      fresh.map((u) =>
+        u.id === unit.id
+          ? {
+              ...u,
+              status: idleStatusFor(u),
+              // The answered request is cleared with it. Leaving it behind
+              // would have the crew's screen still showing an approval for a
+              // stand-down that is over.
+              oosRequest: null,
+            }
+          : u
+      )
+    );
+    await addLog(
+      `${unit.name} put back in service by ${user.name || "Dispatch"}${why}`,
+      "status",
+      { event: "backInService", unitName: unit.name }
     );
   }
 
@@ -12841,7 +13147,20 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             </span>
           </button>
         )}
+
+        {/* Beside the coverage control because that is the other thing on this
+            row that is about how the department runs rather than about one
+            call. Quiet by default — it is reference, not an alert. */}
+        <button style={styles.policyBtn} onClick={() => setPolicyOpen(true)}>
+          <BookOpen size={13} /> Policies
+        </button>
       </div>
+
+      <PolicyModal
+        open={policyOpen}
+        onClose={() => setPolicyOpen(false)}
+        policies={policies}
+      />
 
 
       {onPage("board") && (
@@ -12935,6 +13254,29 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           </div>
         );
       })}
+
+      {/* Trucks the desk has already taken off the run, so putting one back is
+          on the same screen as taking it off rather than only on the crew's
+          tablet. Empty trucks are not listed: they are off because nobody is
+          signed on, and that is not something the desk can undo. */}
+      {stationUnits
+        .filter((u) => u.status === "oos" && isStaffed(u) && !oosRequestOf(u))
+        .map((u) => (
+          <div key={u.id} style={styles.oosOffRun}>
+            <div style={styles.oosOffRunHead}>
+              <span>{u.name} is off the run</span>
+              {u.oosRequest && u.oosRequest.reason && (
+                <span style={styles.oosAskWho}>
+                  {" "}· {u.oosRequest.reason}
+                  {u.oosRequest.answeredAt ? ` since ${clockStr(u.oosRequest.answeredAt)}` : ""}
+                </span>
+              )}
+            </div>
+            <button style={styles.primaryBtnSm} onClick={() => returnToService(u)}>
+              Put back in service
+            </button>
+          </div>
+        ))}
 
       {/* Anything a crew has reported wrong that is still waiting on the desk —
           including on calls that have already closed. Scoped to this station:
@@ -13733,6 +14075,47 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [assistWhat, setAssistWhat] = useState("");
   const [checklistOpen, setChecklistOpen] = useState(false);
   // Asking to come off the run.
+  // A call called off while the crew are on the way.
+  //
+  // The desk standing a call down is the one change to this screen that must
+  // reach the crew without them looking at it. They are moving — possibly on
+  // lights — towards somewhere they no longer need to go, and the call card
+  // quietly disappearing is not a message. It is also the change most likely to
+  // happen while the tablet is face-down on the dash.
+  //
+  // So it sounds, and it keeps saying so on screen until somebody clears it.
+  // The full alert tone rather than the soft reminder: turning a truck around
+  // is urgent, and it is the same sound they already associate with "look at
+  // the screen now".
+  const wasOnCall = useRef(null);
+  const [calledOff, setCalledOff] = useState(null);
+  useEffect(() => {
+    if (!myUnit) {
+      wasOnCall.current = null;
+      return;
+    }
+    const prev = wasOnCall.current;
+    if (myRequest) {
+      wasOnCall.current = { id: myRequest.id };
+      return;
+    }
+    wasOnCall.current = null;
+    if (!prev) return;
+    const gone = (requests || []).find((r) => r && r.id === prev.id);
+    if (!gone || gone.status !== "completed") return;
+    // A crew who stamped Back in Service themselves closed their own call and
+    // do not need to be told about it. This is only for a call ended out from
+    // under them.
+    if (gone.times && gone.times.backInService) return;
+    soundCallAlert(audioCtxRef, "critical");
+    setCalledOff({
+      nature: gone.nature || "the call",
+      reason: callCloseReason(gone),
+      by: gone.closedBy || "the desk",
+      at: gone.closedAt || Date.now(),
+    });
+  }, [myRequest && myRequest.id, requests, myUnit && myUnit.id]);
+
   // A reply that arrives silently is a reply nobody reads.
   //
   // The crew asked a question and then went back to work; a chip changing
@@ -14135,14 +14518,15 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     });
     await saveRequests(nextRequests);
     await saveUnits(nextUnits);
-    // Every step is logged and exported; only the en-route stamp is tagged for
-    // the live log sheet.
+    // Every step is logged and exported; the two the desk watches live are
+    // tagged so the board's feed can pick them out — moving, and free again.
+    const feedEvent = step.timeKey === "enroute" || step.timeKey === "backInService"
+      ? { event: step.timeKey, unitName: myUnit.name, requestId: myRequest.id }
+      : undefined;
     await addLog(
       `${myUnit.name} — ${step.timeLabel} at ${clockStr(now)} (${myRequest.nature})`,
       "status",
-      step.timeKey === "enroute"
-        ? { event: "enroute", unitName: myUnit.name, requestId: myRequest.id }
-        : undefined
+      feedEvent
     );
   }
 
@@ -14620,6 +15004,26 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             A refusal in particular must reach them — they asked for a reason,
             and being told no without one teaches only not to ask. It stays until
             they acknowledge it. */}
+        {/* The call was called off while they were on their way. Loud, red, and
+            it does not clear itself: a crew still driving to a stood-down call
+            is the thing this whole banner exists to stop. */}
+        {calledOff && (
+          <div style={styles.calledOff} className="breathing">
+            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+            <strong>Call cancelled — stand down</strong>
+            <div style={styles.calledOffWhat}>{calledOff.nature}</div>
+            {calledOff.reason && (
+              <div style={styles.calledOffWhy}>“{calledOff.reason}”</div>
+            )}
+            <div style={styles.calledOffWho}>
+              Closed by {calledOff.by} at {clockStr(calledOff.at)}
+            </div>
+            <button style={styles.primaryBtnSm} onClick={() => setCalledOff(null)}>
+              Understood — standing down
+            </button>
+          </div>
+        )}
+
         {myUnit.oosRequest &&
           myUnit.oosRequest.status === "refused" &&
           !dismissedOos && (
@@ -16361,10 +16765,59 @@ function CategoryMix({ requests, from, to }) {
   );
 }
 
-function IndicatorBand({ requests, range, setRange }) {
+// The department's utilisation, as opposed to one person's.
+//
+// Total time trucks were tied up on calls, against the time those trucks were
+// there to be tied up. A unit assisting on somebody else's call counts for the
+// stretch it was out, exactly as it does on the per-person sheet, because the
+// truck was working either way.
+function fleetUhu(requests, units, from, to) {
+  const list = units || [];
+  if (!list.length) return null;
+  const end = Math.min(to, Date.now());
+  if (end <= from) return null;
+  let busy = 0;
+  (requests || []).forEach((r) => {
+    if (!r || !r.createdAt || r.createdAt < from || r.createdAt >= to) return;
+    list.forEach((u) => {
+      const iv = unitCallInterval(r, u.id, end);
+      if (!iv) return;
+      busy += Math.max(0, Math.min(iv.end, end) - Math.max(iv.start, from));
+    });
+  });
+  const capacity = list.length * (end - from);
+  return capacity > 0 ? Math.min(100, (busy / capacity) * 100) : null;
+}
+
+// Every closed call should carry the name of whoever wrote its patient care
+// report. Recent calls cannot close without one; older ones could, which is
+// exactly what this figure is for — it says how much of the record is
+// attributable, and it should climb towards 100 and stay there.
+function pcrCompliance(requests, from, to) {
+  const closed = (requests || []).filter(
+    (r) => r && r.status === "completed" && r.createdAt >= from && r.createdAt < to
+  );
+  const named = closed.filter((r) => pcrAuthorOf(r));
+  return {
+    pct: closed.length ? (named.length / closed.length) * 100 : null,
+    named: named.length,
+    total: closed.length,
+  };
+}
+
+function IndicatorBand({ requests, units, log, checklistRuns, range, setRange }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
   const resp = responseCompliance(requests, win.start, win.end);
+  const uhu = fleetUhu(requests, units, win.start, win.end);
+  const pcr = pcrCompliance(requests, win.start, win.end);
+  // Checklist compliance department-wide is the same sum the per-person figures
+  // are built from — lists filed against shifts actually worked — so the band
+  // and the per-person table can never disagree.
+  const people = staffStatsFor(log, requests, units, win, now, checklistRuns);
+  const shiftsWorked = people.reduce((n, p) => n + (p.shiftsWorked || 0), 0);
+  const listsFiled = people.reduce((n, p) => n + (p.checklistsFiled || 0), 0);
+  const checklistPct = shiftsWorked > 0 ? Math.min(100, (listsFiled / shiftsWorked) * 100) : null;
 
   return (
     <div style={styles.bandWrap}>
@@ -16383,6 +16836,10 @@ function IndicatorBand({ requests, range, setRange }) {
         </div>
       </div>
 
+      {/* The four the department is actually judged on, side by side. They are
+          read together — a response figure that looks good while utilisation is
+          at 60% means the trucks are flat out, and that is the sentence the row
+          is here to let somebody read in one look. */}
       <div style={styles.gaugeRow}>
         <Gauge
           label="Emergency response"
@@ -16392,6 +16849,27 @@ function IndicatorBand({ requests, range, setRange }) {
             resp.total ? `${resp.within} of ${resp.total} within 10 min` : "none yet this period"
           }
           unmeasured={resp.unmeasured}
+        />
+        <Gauge
+          label="Fleet UHU"
+          pct={uhu}
+          // Not a pass mark. Utilisation is a workload reading, and high is not
+          // good — a fleet above about half its hours on calls is a fleet with
+          // no slack left, so the dial is set where "comfortable" ends.
+          good={UHU_HEADROOM}
+          caption={units && units.length ? `${units.length} vehicles, time on call` : "no vehicles"}
+        />
+        <Gauge
+          label="PCR compliance"
+          pct={pcr.pct}
+          good={PCR_GOOD}
+          caption={pcr.total ? `${pcr.named} of ${pcr.total} closed calls named` : "no closed calls"}
+        />
+        <Gauge
+          label="Checklist compliance"
+          pct={checklistPct}
+          good={CHECKLIST_GOOD}
+          caption={shiftsWorked ? `${listsFiled} filed over ${shiftsWorked} shifts` : "no shifts worked"}
         />
       </div>
 
@@ -17742,7 +18220,14 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
       {onPage("stats") && (
         <>
       {/* Always open, at the head of the page. */}
-      <IndicatorBand requests={requests} range={statRange} setRange={setStatRange} />
+      <IndicatorBand
+        requests={requests}
+        units={units}
+        log={log}
+        checklistRuns={checklistRuns}
+        range={statRange}
+        setRange={setStatRange}
+      />
 
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
@@ -20366,6 +20851,15 @@ const styles = {
     fontSize: 13.5, color: "var(--crit-2)", lineHeight: 1.5,
   },
   oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
+  calledOff: {
+    background: "var(--crit)", color: "#FFFFFF",
+    borderRadius: 16, padding: "16px 18px", marginBottom: 12,
+    boxShadow: "0 8px 24px rgba(255,69,58,.32)",
+    fontSize: 15, fontWeight: 700,
+  },
+  calledOffWhat: { fontSize: 19, fontWeight: 700, marginTop: 8 },
+  calledOffWhy: { fontSize: 14, marginTop: 6, fontStyle: "italic", color: "rgba(255,255,255,.92)" },
+  calledOffWho: { fontSize: 12.5, marginTop: 6, marginBottom: 12, color: "rgba(255,255,255,.78)", fontWeight: 600 },
   oosRefusedAsked: { fontSize: 12.5, color: "var(--ink-3)", marginTop: 6, marginBottom: 10 },
 
   crewRaiseAsk: {
@@ -20383,6 +20877,106 @@ const styles = {
   },
   oosAskHead: { fontSize: 15, fontWeight: 800, color: "var(--hold-3)" },
   oosAskWhy: { fontSize: 13.5, color: "var(--ink-2)", marginTop: 6, lineHeight: 1.5 },
+  policyBtn: {
+    background: "var(--raised)", border: "1px solid var(--hair-2)",
+    color: "var(--ink-3)", borderRadius: 999, padding: "8px 15px",
+    fontSize: 12.5, fontWeight: 650, cursor: "pointer",
+    display: "inline-flex", alignItems: "center", gap: 7, marginLeft: 8,
+  },
+  policyScrim: {
+    position: "fixed", inset: 0, zIndex: 60,
+    background: "rgba(4,7,10,.62)", backdropFilter: "blur(6px)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    padding: 18,
+  },
+  policySheet: {
+    background: "var(--panel)", border: "1px solid var(--hair-2)",
+    borderRadius: 22, width: "min(620px, 100%)", maxHeight: "min(78vh, 760px)",
+    display: "flex", flexDirection: "column",
+    boxShadow: "0 24px 64px var(--lift-2)", overflow: "hidden",
+  },
+  policyHead: {
+    display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+    gap: 12, padding: "18px 20px 14px", borderBottom: "1px solid var(--hair)",
+  },
+  policyEyebrow: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1.5,
+    color: "var(--ink-4)", marginBottom: 4,
+  },
+  policyTitle: { fontSize: 17, fontWeight: 650, color: "var(--ink)" },
+  policyClose: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
+    borderRadius: 999, width: 30, height: 30, cursor: "pointer",
+    fontSize: 13, lineHeight: 1, flex: "none",
+  },
+  policyBody: { overflowY: "auto", padding: "8px 12px 12px" },
+  policyItem: { borderBottom: "1px solid var(--hair)" },
+  policyItemHead: {
+    width: "100%", background: "none", border: "none", cursor: "pointer",
+    color: "var(--ink)", fontSize: 14.5, fontWeight: 600, textAlign: "left",
+    padding: "14px 8px", display: "flex", alignItems: "center",
+    justifyContent: "space-between", gap: 10,
+  },
+  policyChevron: { color: "var(--ink-4)", fontSize: 17, fontWeight: 400 },
+  policyText: {
+    padding: "0 8px 15px", fontSize: 13.5, lineHeight: 1.6,
+    color: "var(--ink-2)", whiteSpace: "pre-wrap",
+  },
+  policyEmpty: { color: "var(--ink-4)", fontStyle: "italic" },
+  policyFoot: {
+    padding: "12px 20px 15px", borderTop: "1px solid var(--hair)",
+    fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.5,
+  },
+  dayBookWrap: {
+    marginTop: 14, background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "12px 13px",
+  },
+  dayBookEmpty: {
+    marginTop: 14, fontSize: 12.5, color: "var(--ink-4)",
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "12px 13px",
+  },
+  dayBookHead: {
+    fontSize: 11, fontWeight: 700, letterSpacing: 1.1, textTransform: "uppercase",
+    color: "var(--ink-4)", display: "flex", justifyContent: "space-between",
+    alignItems: "baseline", gap: 8, marginBottom: 9, flexWrap: "wrap",
+  },
+  dayBookCount: { letterSpacing: 0, textTransform: "none", fontWeight: 600 },
+  dayBookList: { display: "flex", flexDirection: "column", gap: 5 },
+  dayBookRow: {
+    display: "flex", alignItems: "baseline", gap: 9, padding: "5px 7px",
+    borderRadius: 8, fontSize: 12.5,
+  },
+  dayBookRowNear: {
+    display: "flex", alignItems: "baseline", gap: 9, padding: "5px 7px",
+    borderRadius: 8, fontSize: 12.5, background: "var(--inset-2)",
+  },
+  dayBookTime: {
+    fontWeight: 700, color: "var(--ink-2)", minWidth: 44,
+    fontVariantNumeric: "tabular-nums",
+  },
+  dayBookTimeNear: {
+    fontWeight: 700, color: "var(--hold)", minWidth: 44,
+    fontVariantNumeric: "tabular-nums",
+  },
+  dayBookWhat: { color: "var(--ink-2)", flex: 1, minWidth: 0 },
+  dayBookRoute: { color: "var(--ink-4)" },
+  dayBookFlag: {
+    fontSize: 10, fontWeight: 700, letterSpacing: 0.6, color: "var(--hold)",
+    whiteSpace: "nowrap",
+  },
+  dayBookWarn: {
+    marginTop: 10, fontSize: 12, lineHeight: 1.5, color: "var(--hold-2)",
+    borderTop: "1px solid var(--hair)", paddingTop: 9,
+  },
+  oosOffRun: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--ink-4)", borderRadius: 14,
+    padding: "11px 13px", marginBottom: 10,
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 12, flexWrap: "wrap",
+  },
+  oosOffRunHead: { fontSize: 13.5, fontWeight: 600, color: "var(--ink-2)" },
   oosAskWho: { fontSize: 12, color: "var(--ink-3)" },
 
   foundEmergencyBtn: {
