@@ -26,7 +26,7 @@
 <body>
 
 <h1>Privacy Policy — MEDCOM Dispatch</h1>
-<p class="sub">Last updated: 18 August 2026</p>
+<p class="sub">Last updated: 19 August 2026</p>
 
 <div class="notice">
   <strong>This app is not a medical device.</strong> It does not diagnose, treat, cure or
@@ -69,6 +69,23 @@
         service records it — a patient medical record number (MRN).</td>
   </tr>
   <tr>
+    <td>Vehicle location<br/>(only while on a call)</td>
+    <td>
+      When a crew is dispatched to a call, the position of the ambulance is shared with the
+      dispatch desk so it can see where its vehicles are. It is asked for first: a crew member
+      is shown what is collected and why, and may decline — everything else in the app works
+      the same either way.
+      <br/><br/>
+      <strong>It runs only during a call</strong> — it starts on dispatch and stops the moment
+      the crew go back in service — and <strong>only while the app is open on screen</strong>.
+      There is no background location tracking. A position is taken about once a minute.
+      <br/><br/>
+      <strong>Only the latest position is kept.</strong> Each one replaces the one before it,
+      and the record is deleted when the call ends. No route, journey history or record of
+      where a member of staff has been is stored.
+    </td>
+  </tr>
+  <tr>
     <td>On your device</td>
     <td>Your sign-in session, sound and theme preferences, and any records waiting to be
         sent while the device is offline. These stay in the browser's local storage on
@@ -88,15 +105,22 @@
   <li>No advertising, and no advertising identifiers.</li>
   <li>No analytics or tracking software, and no third-party trackers of any kind.</li>
   <li>No sale or sharing of any data with third parties.</li>
-  <li>No location tracking of staff devices.</li>
+  <li>No location tracking outside a live call, and none at all in the background.</li>
+  <li>No journey history — positions are overwritten and then deleted, never accumulated.</li>
   <li>No access to contacts, photos, microphone or camera.</li>
 </ul>
 
 <h2>Where it is stored</h2>
 <p>
   All records are held on the server operated by the ambulance service itself, in a single
-  database file. Nothing is sent to any other company's service. Traffic between the app
-  and that server travels over HTTPS.
+  database file. Traffic between the app and that server travels over HTTPS.
+</p>
+<p>
+  <strong>One exception, and it carries no personal data.</strong> The map the dispatch desk
+  uses draws its background from OpenStreetMap. Loading those map tiles tells OpenStreetMap's
+  servers the IP address of the device viewing the map, as visiting any website would. No
+  position, patient information or staff detail is sent to them — the ambulance markers are
+  drawn by this app, on top of the map, and never leave the service's own server.
 </p>
 
 <h2>Notifications</h2>

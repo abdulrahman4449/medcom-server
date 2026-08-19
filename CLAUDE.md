@@ -45,6 +45,15 @@ patch", that document is the target — do not start a fresh exploration.
   `USAGE_ALARM` so the alert plays on the alarm stream. Until the Capacitor
   project does both, a muted phone is a phone that can miss a call — say so
   rather than implying the app has it covered.
+- **Location is foreground-only, and must stay that way.** Tracking runs only
+  while a crew is on a call, only from the Alpha seat's device, only with that
+  person's consent, and only while the app is on screen. Only the latest fix
+  per truck is stored and it is deleted at back-in-service — there is no route
+  history by design. Do not add `ACCESS_BACKGROUND_LOCATION`, a wake lock, or
+  a service worker that keeps polling: background location triggers Google's
+  Location Permissions declaration form, which is the thing this design exists
+  to avoid. A refusal takes effect immediately; the admin acknowledgement is a
+  record, never a gate.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.

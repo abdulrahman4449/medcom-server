@@ -44,6 +44,22 @@
   server rather than a public CDN, like everything else the app loads.
 -->
 <script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<!--
+  Map, for the live position of a truck that is out on a call.
+
+  Leaflet with OpenStreetMap tiles: no API key, no billing account, and no
+  third party named as a data recipient beyond the tile host itself. The
+  tiles are the ONLY thing here that reaches a server outside the hospital
+  besides the three scripts above.
+
+  If the hospital network blocks the tile host, the map still works — the
+  ambulances sit in the right places on a blank ground, and the panel says
+  the background could not be loaded rather than pretending the trucks are
+  missing. Same note as the others: for the internal deployment these should
+  be served from the hospital's own server.
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -3334,6 +3350,127 @@ function notifyAssistRequest(request, unitName) {
 // must not sit on the screen the way an unanswered assistance request does.
 // The body carries the medic and the call, never the text of the issue —
 // notifications are read off a lock screen in a corridor.
+// ---------- where the trucks are ----------
+//
+// Deliberately small in scope, because scope is what turns a dispatch tool into
+// surveillance.
+//
+// WHEN. Only while a truck is out on a call. Tracking starts when the crew are
+// dispatched and stops the moment they go back in service — the same two events
+// the whole board already turns on. Off a call, nobody is located.
+//
+// WHAT IS KEPT. The latest position per truck, and nothing else. Each update
+// overwrites the one before it and the whole entry is deleted at back in
+// service, so there is no route, no history, and nothing to leak: a trail of
+// where named staff were at 03:40 last Tuesday is a different product from a
+// board showing where the trucks are now, and no screen in this app wants it.
+// It is also the difference between a few hundred bytes on every board write
+// and a few hundred thousand records.
+//
+// FOREGROUND ONLY. The browser stops giving positions when the app is not on
+// screen, and that is left exactly as it is — no background location, no
+// wake locks, nothing that would need Google's Location Permissions
+// declaration. A tablet that has been locked simply stops updating, and the
+// desk is told how long ago the last fix was rather than shown a stale dot
+// pretending to be live.
+//
+// WHOSE. The Alpha seat's device. One truck, one position; two phones in one
+// vehicle reporting slightly different corners of a car park is noise.
+const LOCATION_KEY = "ems:locations";
+const TRACKING_CONSENT_KEY = "ems:trackingConsent";
+// One fix a minute. An ambulance at speed covers about a kilometre in that
+// time, which is the right grain for "where is my truck" and a fraction of the
+// battery of a continuous watch.
+const LOCATION_INTERVAL_MS = 60 * 1000;
+// Past this, the dot is a guess. The desk is told rather than left to assume.
+const LOCATION_STALE_MS = 3 * 60 * 1000;
+
+function consentFor(consents, accountId) {
+  if (!accountId) return null;
+  return (consents || {})[String(accountId).toUpperCase()] || null;
+}
+
+// Granted once and never asked again; refused and asked again on the next call,
+// which is what the department chose. A refusal takes effect the moment it is
+// made — the administrator's acknowledgement is a record, not a gate. Consent
+// that can be overruled by a supervisor is not consent, and an app that keeps
+// locating somebody who said no is the thing this feature must never become.
+function mayTrack(consents, accountId) {
+  const c = consentFor(consents, accountId);
+  return !!(c && c.status === "granted");
+}
+
+function needsConsentPrompt(consents, accountId) {
+  if (!accountId) return false;
+  const c = consentFor(consents, accountId);
+  if (!c) return true;
+  return c.status === "refused";
+}
+
+async function recordConsent({ accountId, name, status, reason }) {
+  if (!accountId) return null;
+  const key = String(accountId).toUpperCase();
+  const existing = (await readKey(TRACKING_CONSENT_KEY, {})) || {};
+  const next = {
+    ...existing,
+    [key]: {
+      accountId,
+      name: name || "",
+      status,
+      reason: reason || "",
+      ts: Date.now(),
+      // Cleared on every fresh answer: an acknowledgement belongs to the
+      // refusal it was given for, not to the person.
+      ackedBy: null,
+      ackedAt: null,
+    },
+  };
+  await writeKey(TRACKING_CONSENT_KEY, next);
+  return next;
+}
+
+async function writePosition({ unit, coords, byName, accountId, requestId }) {
+  if (!unit || !coords) return null;
+  const existing = (await readKey(LOCATION_KEY, {})) || {};
+  const next = {
+    ...existing,
+    [unit.id]: {
+      unitId: unit.id,
+      unitName: unit.name || "",
+      station: stationOf(unit),
+      lat: coords.latitude,
+      lng: coords.longitude,
+      // Metres. Shown to the desk, because a fix good to half a kilometre
+      // should not be read as a street address.
+      accuracy: typeof coords.accuracy === "number" ? Math.round(coords.accuracy) : null,
+      heading: typeof coords.heading === "number" && !Number.isNaN(coords.heading) ? coords.heading : null,
+      speed: typeof coords.speed === "number" && !Number.isNaN(coords.speed) ? coords.speed : null,
+      ts: Date.now(),
+      byName: byName || "",
+      accountId: accountId || null,
+      requestId: requestId || null,
+    },
+  };
+  await writeKey(LOCATION_KEY, next);
+  return next;
+}
+
+// Back in service. The entry is removed rather than marked finished — there is
+// nothing to keep.
+async function clearPosition(unitId) {
+  if (!unitId) return null;
+  const existing = (await readKey(LOCATION_KEY, {})) || {};
+  if (!existing[unitId]) return existing;
+  const next = { ...existing };
+  delete next[unitId];
+  await writeKey(LOCATION_KEY, next);
+  return next;
+}
+
+function positionAgeMs(fix, now) {
+  return fix && fix.ts ? Math.max(0, (now || Date.now()) - fix.ts) : null;
+}
+
 // ---------- overtime ----------
 //
 // Overtime here is not claimed, it is observed. The board already knows when
@@ -5691,6 +5828,8 @@ function App() {
   const [inventory, setInventory] = useState(null);
   const [inventoryMoves, setInventoryMoves] = useState([]);
   const [overtimeDecisions, setOvertimeDecisions] = useState({});
+  const [locations, setLocations] = useState({});
+  const [trackingConsents, setTrackingConsents] = useState({});
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -6008,6 +6147,10 @@ function App() {
     if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
     const ot = await readKey(OVERTIME_KEY, {});
     if (ot !== READ_FAILED) setOvertimeDecisions(ot || {});
+    const locs = await readKey(LOCATION_KEY, {});
+    if (locs !== READ_FAILED) setLocations(locs || {});
+    const cons = await readKey(TRACKING_CONSENT_KEY, {});
+    if (cons !== READ_FAILED) setTrackingConsents(cons || {});
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -6943,6 +7086,8 @@ function App() {
       ? [
           // The board is the ambulances.
           { key: "board", glyph: "🚑", label: "Board" },
+          // Where the trucks that are out actually are.
+          { key: "map", glyph: "🗺", label: "Map" },
           // What is coming and what has been — a booking that has just gone
           // out, and the call it became.
           { key: "history", glyph: "🗓", label: "Schedule" },
@@ -7006,6 +7151,7 @@ function App() {
               audioCtxRef={audioCtxRef}
               messages={messages}
               setMessages={setMessages}
+              locations={locations}
             />
           )}
           {user.role === "team" && (
@@ -7015,6 +7161,10 @@ function App() {
               inventory={inventory}
               inventoryMoves={inventoryMoves}
               setInventoryMoves={setInventoryMoves}
+              locations={locations}
+              setLocations={setLocations}
+              trackingConsents={trackingConsents}
+              setTrackingConsents={setTrackingConsents}
               page={navTab}
               checklists={checklists}
               checklistRuns={checklistRuns}
@@ -7054,6 +7204,9 @@ function App() {
               setInventoryMoves={setInventoryMoves}
               overtimeDecisions={overtimeDecisions}
               setOvertimeDecisions={setOvertimeDecisions}
+              locations={locations}
+              trackingConsents={trackingConsents}
+              setTrackingConsents={setTrackingConsents}
             />
           )}
         </div>
@@ -7154,6 +7307,32 @@ function GlobalFont() {
         outline: 2px solid #0A84FF;
         outline-offset: 2px;
       }
+      /* The ambulance on the map. Built by Leaflet from an HTML string, so it
+         cannot use the styles object and lives here instead. */
+      .amb-icon { background: none; border: none; }
+      .amb-marker {
+        display: flex; flex-direction: column; align-items: center;
+        line-height: 1; pointer-events: auto;
+      }
+      .amb-glyph {
+        font-size: 26px; filter: drop-shadow(0 2px 4px rgba(0,0,0,.5));
+        transform-origin: center;
+      }
+      .amb-label {
+        margin-top: 2px; font-size: 10px; font-weight: 800; letter-spacing: .4px;
+        color: #FFFFFF; background: rgba(10,14,20,.82); border-radius: 999px;
+        padding: 2px 7px; white-space: nowrap;
+      }
+      /* A fix nobody has refreshed for three minutes stops looking certain. */
+      .amb-stale { opacity: .45; }
+      .amb-stale .amb-label { background: rgba(90,103,117,.9); }
+      /* Leaflet paints its own controls light; the popup is made to match the
+         board rather than the library. */
+      .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+        background: #141A21; color: #F7F9FB;
+      }
+      .leaflet-popup-content { font-size: 12.5px; line-height: 1.5; }
+
       /* The two themes, as one set of tokens with two sets of values.
          Nothing in a component knows which is running: the attribute on the
          root element changes all of it at once. */
@@ -13677,6 +13856,521 @@ function InventoryCrew({ unit, inventory, moves, setMoves, user, request, addLog
   );
 }
 
+// ---------- who has said what about being located ----------
+//
+// The department asked that a refusal carry a reason and that an administrator
+// see it. This is where they see it. Acknowledging is a record that somebody
+// read it — it does not switch tracking on, and there is deliberately no
+// control here that would: a refusal that a supervisor can overrule is not a
+// refusal, and an app that keeps locating somebody who said no is the thing
+// this whole feature must never turn into.
+function TrackingConsentAdmin({ consents, user, setConsents, addLog }) {
+  const [open, setOpen] = useState(false);
+  const rows = Object.values(consents || {}).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const refused = rows.filter((r) => r.status === "refused");
+  const unread = refused.filter((r) => !r.ackedAt);
+
+  async function acknowledge(row) {
+    const key = String(row.accountId || "").toUpperCase();
+    if (!key) return;
+    const next = {
+      ...(consents || {}),
+      [key]: {
+        ...row,
+        ackedBy: (user && user.name) || "Administration",
+        ackedAt: Date.now(),
+      },
+    };
+    await writeKey(TRACKING_CONSENT_KEY, next);
+    setConsents(next);
+    await addLog(
+      `Location refusal from ${row.name || row.accountId} acknowledged by ${(user && user.name) || "Administration"}`,
+      "status"
+    );
+  }
+
+  return (
+    <FoldingSection
+      title="LOCATION CONSENT"
+      count={unread.length}
+      countLabel={unread.length ? "refusals to read" : "nothing waiting"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <InfoNote label="What this is">
+        Everyone who has been asked to share their truck's position while on a call, and what they
+        answered. A refusal takes effect immediately — acknowledging it records that it was read,
+        and nothing here turns tracking back on. Anyone who declined is asked again on their next
+        call.
+      </InfoNote>
+
+      {rows.length === 0 ? (
+        <div style={styles.formHint}>Nobody has been asked yet.</div>
+      ) : (
+        <div style={styles.consentList}>
+          {rows.map((r) => (
+            <div key={r.accountId} style={styles.consentRow}>
+              <div style={styles.consentRowHead}>
+                <span style={styles.consentRowName}>{r.name || "Unnamed"}</span>
+                <span style={styles.consentRowId}>{r.accountId}</span>
+                <span
+                  style={{
+                    ...styles.consentRowStatus,
+                    color: r.status === "granted" ? "var(--ok)" : "var(--hold)",
+                  }}
+                >
+                  {r.status === "granted" ? "SHARING" : "DECLINED"}
+                </span>
+              </div>
+              <div style={styles.consentRowWhen}>{gregDateTimeStr(r.ts)}</div>
+              {r.status === "refused" && r.reason && (
+                <div style={styles.consentRowReason}>“{r.reason}”</div>
+              )}
+              {r.status === "refused" &&
+                (r.ackedAt ? (
+                  <div style={styles.consentRowAcked}>
+                    Read by {r.ackedBy} · {gregDateTimeStr(r.ackedAt)}
+                  </div>
+                ) : (
+                  <button style={styles.ghostBtnSm} onClick={() => acknowledge(r)}>
+                    Acknowledge
+                  </button>
+                ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </FoldingSection>
+  );
+}
+
+// ---------- the map ----------
+//
+// Leaflet, driven by hand rather than through a React wrapper: the whole
+// surface is one div the library owns, and markers are created once and then
+// moved. Re-rendering a map on every poll would make the trucks jump and would
+// throw away whatever the dispatcher had panned to.
+//
+// A truck is an ambulance emoji rather than a pin, because the desk is reading
+// this at a glance from across a room and a pin says "a place" while the emoji
+// says "the vehicle". It rotates to its heading where the device reports one,
+// and it fades as the fix ages — a dot that looks equally confident three
+// minutes after its last update is a dot that lies.
+function FleetMap({ units, locations, requests, station }) {
+  const holderRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const [tilesFailed, setTilesFailed] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Build the map once.
+  useEffect(() => {
+    if (mapRef.current || !holderRef.current) return;
+    if (typeof L === "undefined") return;
+    const map = L.map(holderRef.current, {
+      zoomControl: true,
+      attributionControl: true,
+    // Somewhere sane until the first truck reports. Zoomed out enough that a
+    // desk seeing this before anybody is out does not think it is broken.
+    }).setView([24.7136, 46.6753], 11);
+    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "© OpenStreetMap contributors",
+    });
+    tiles.on("tileerror", () => setTilesFailed(true));
+    tiles.addTo(map);
+    mapRef.current = map;
+    setReady(true);
+    return () => {
+      try {
+        map.remove();
+      } catch (e) {}
+      mapRef.current = null;
+      markersRef.current = new Map();
+    };
+  }, []);
+
+  // Move the trucks.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || typeof L === "undefined") return;
+
+    const mine = (units || []).filter((u) => !station || stationOf(u) === station);
+    const live = [];
+
+    mine.forEach((u) => {
+      const fix = (locations || {})[u.id];
+      const marker = markersRef.current.get(u.id);
+      if (!fix || typeof fix.lat !== "number" || typeof fix.lng !== "number") {
+        if (marker) {
+          map.removeLayer(marker);
+          markersRef.current.delete(u.id);
+        }
+        return;
+      }
+      live.push([fix.lat, fix.lng]);
+      const age = positionAgeMs(fix, now) || 0;
+      const stale = age > LOCATION_STALE_MS;
+      const req = (requests || []).find((r) => r && r.id === fix.requestId);
+      const html =
+        `<div class="amb-marker${stale ? " amb-stale" : ""}">` +
+        `<div class="amb-glyph"${fix.heading !== null && fix.heading !== undefined ? ` style="transform:rotate(${Math.round(fix.heading)}deg)"` : ""}>🚑</div>` +
+        `<div class="amb-label">${u.name}</div>` +
+        `</div>`;
+      const icon = L.divIcon({
+        html,
+        className: "amb-icon",
+        iconSize: [64, 46],
+        iconAnchor: [32, 23],
+      });
+      const popup =
+        `<strong>${u.name}</strong><br/>` +
+        `${statusMeta(u.status).label}<br/>` +
+        (req ? `${req.nature}<br/>` : "") +
+        `Updated ${age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}` +
+        (fix.accuracy ? `<br/>Accurate to about ${fix.accuracy} m` : "") +
+        (fix.byName ? `<br/>From ${fix.byName}` : "");
+
+      if (marker) {
+        marker.setLatLng([fix.lat, fix.lng]);
+        marker.setIcon(icon);
+        marker.setPopupContent(popup);
+      } else {
+        const m = L.marker([fix.lat, fix.lng], { icon }).addTo(map).bindPopup(popup);
+        markersRef.current.set(u.id, m);
+      }
+    });
+
+    // Frame whatever is out, once there is something to frame. Only when the
+    // set of trucks changes, so a dispatcher who has panned somewhere is not
+    // yanked back every minute.
+    if (live.length > 0 && markersRef.current.size !== live.length) {
+      try {
+        map.fitBounds(L.latLngBounds(live), { padding: [50, 50], maxZoom: 15 });
+      } catch (e) {}
+    }
+  }, [units, locations, requests, station, now, ready]);
+
+  const tracked = (units || []).filter(
+    (u) => (!station || stationOf(u) === station) && (locations || {})[u.id]
+  );
+
+  return (
+    <div style={styles.mapWrap}>
+      <div style={styles.mapHead}>
+        <span style={styles.mapTitle}>LIVE POSITIONS</span>
+        <span style={styles.mapCount}>
+          {tracked.length
+            ? `${tracked.length} truck${tracked.length === 1 ? "" : "s"} sharing`
+            : "nobody out"}
+        </span>
+      </div>
+
+      <div ref={holderRef} style={styles.mapCanvas} />
+
+      {tilesFailed && (
+        <div style={styles.mapWarn}>
+          The map background could not be loaded — the network may be blocking it. The ambulances
+          below are still in the right places.
+        </div>
+      )}
+
+      {/* The same trucks as a list, because the map answers "where" and this
+          answers "how long ago", which is the question that decides whether to
+          trust the dot. */}
+      <div style={styles.mapList}>
+        {tracked.length === 0 ? (
+          <div style={styles.formHint}>
+            Positions appear here while a truck is out on a call. Tracking starts when a crew is
+            dispatched and stops when they go back in service.
+          </div>
+        ) : (
+          tracked.map((u) => {
+            const fix = locations[u.id];
+            const age = positionAgeMs(fix, now) || 0;
+            const stale = age > LOCATION_STALE_MS;
+            return (
+              <div key={u.id} style={styles.mapRow}>
+                <span style={styles.mapRowName}>{u.name}</span>
+                <span style={{ ...styles.mapRowStatus, color: statusMeta(u.status).color }}>
+                  {statusMeta(u.status).label}
+                </span>
+                <span style={stale ? styles.mapRowAgeStale : styles.mapRowAge}>
+                  {age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}
+                </span>
+                {fix.accuracy ? <span style={styles.mapRowAcc}>±{fix.accuracy} m</span> : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The tracker itself.
+//
+// It runs only when all four of these are true: the crew are on a call, this
+// device holds the Alpha seat, this person has said yes, and the browser will
+// give a position. Any one of them going false stops it — and going back in
+// service also deletes the stored fix, so the truck leaves the map rather than
+// sitting on it at the last place it was seen.
+//
+// watchPosition rather than a timer around getCurrentPosition: the browser
+// keeps one fix warm and hands it over, instead of waking the GPS cold every
+// minute. What is throttled is the WRITING — one save a minute — because the
+// board is sent whole on every write and a position every second would be a
+// board sent every second.
+function useTracking({ unit, request, user, consents, setLocations, active }) {
+  const [state, setState] = useState("off"); // off | on | refused
+  const [lastTs, setLastTs] = useState(null);
+  const [error, setError] = useState("");
+  const watchRef = useRef(null);
+  const lastWriteRef = useRef(0);
+  const clearedForRef = useRef(null);
+
+  const accountId = user && user.accountId;
+  const allowed = mayTrack(consents, accountId);
+
+  useEffect(() => {
+    const stop = () => {
+      if (watchRef.current !== null && navigator.geolocation) {
+        try {
+          navigator.geolocation.clearWatch(watchRef.current);
+        } catch (e) {}
+      }
+      watchRef.current = null;
+    };
+
+    if (!active) {
+      stop();
+      setState(allowed ? "off" : accountId ? "off" : "off");
+      // Back in service: take the truck off the map. Guarded so it happens once
+      // per call rather than on every render of an idle screen.
+      if (unit && clearedForRef.current !== unit.id) {
+        clearedForRef.current = unit.id;
+        clearPosition(unit.id).then((next) => {
+          if (next) setLocations(next);
+        });
+      }
+      setLastTs(null);
+      return;
+    }
+
+    clearedForRef.current = null;
+
+    if (!allowed) {
+      stop();
+      setState("refused");
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      stop();
+      setState("on");
+      setError("this device has no location service");
+      return;
+    }
+
+    setState("on");
+    setError("");
+    watchRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setError("");
+        const now = Date.now();
+        if (now - lastWriteRef.current < LOCATION_INTERVAL_MS) return;
+        lastWriteRef.current = now;
+        writePosition({
+          unit,
+          coords: pos.coords,
+          byName: (user && user.name) || "",
+          accountId,
+          requestId: request ? request.id : null,
+        }).then((next) => {
+          if (next) {
+            setLocations(next);
+            setLastTs(now);
+          }
+        });
+      },
+      (err) => {
+        // Denied at the OS level is a different thing from consent given in the
+        // app, and the crew should be told which one stopped it.
+        setError(
+          err && err.code === 1
+            ? "the device refused permission — check location is on for this app"
+            : err && err.code === 3
+            ? "no fix yet"
+            : "the device could not get a position"
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 30000, timeout: 25000 }
+    );
+
+    return stop;
+  }, [active, allowed, unit && unit.id, request && request.id, accountId]);
+
+  return { state, lastTs, error };
+}
+
+// ---------- asking before locating ----------
+//
+// Google requires a prominent disclosure of its own before location is
+// collected — the operating system's permission dialog does not count, because
+// it says what is being asked for and not why. This is that disclosure, and it
+// is written to be read by somebody who is about to drive somewhere rather than
+// by a lawyer: what is collected, when, for how long, who sees it, and what
+// happens if they say no.
+function TrackingConsentModal({ open, user, onDecide }) {
+  const [refusing, setRefusing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!open) return null;
+
+  async function decide(status) {
+    if (busy) return;
+    if (status === "refused" && !reason.trim()) return;
+    setBusy(true);
+    try {
+      await onDecide(status, reason.trim());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={styles.consentScrim}>
+      <div style={styles.consentSheet}>
+        <div style={styles.consentEyebrow}>LOCATION — {user && user.accountId ? user.accountId : "YOUR ID"}</div>
+        <div style={styles.consentTitle}>Share this truck's position while you are on a call?</div>
+
+        <div style={styles.consentBody}>
+          <div style={styles.consentPoint}>
+            <strong>Only during a call.</strong> It starts when you are dispatched and stops the
+            moment you go back in service. Between calls nothing is sent.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>Only while this app is open.</strong> Lock the tablet or switch away and it
+            stops on its own. There is no background tracking.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>Once a minute, and only the latest one is kept.</strong> Each position replaces
+            the one before it, and the whole thing is deleted when the call ends. No route or
+            history of where you have been is stored.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>Who sees it.</strong> The dispatch desk and administration, on the department's
+            own server. It is not sent to anyone else and it is not used for anything but finding
+            the nearest truck.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>If you say no.</strong> Everything else works exactly as it does now — you take
+            calls, stamp times, all of it. The desk simply sees no position for this truck. You will
+            be asked again on your next call.
+          </div>
+        </div>
+
+        {!refusing ? (
+          <div style={styles.consentBtns}>
+            <button style={styles.consentYes} onClick={() => decide("granted")} disabled={busy}>
+              Allow while on a call
+            </button>
+            <button style={styles.consentNo} onClick={() => setRefusing(true)} disabled={busy}>
+              Not now
+            </button>
+          </div>
+        ) : (
+          <div style={styles.consentRefuse}>
+            <label style={styles.label}>Why? The department asks for a reason.</label>
+            <textarea
+              style={styles.consentReason}
+              rows={3}
+              value={reason}
+              maxLength={300}
+              placeholder="e.g. personal phone, not a work device"
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <div style={styles.consentNote}>
+              This is recorded for administration. It does not change the answer — saying no takes
+              effect straight away, and nobody has to approve it.
+            </div>
+            <div style={styles.consentBtns}>
+              <button
+                style={reason.trim() ? styles.consentNo : styles.consentNoOff}
+                onClick={() => decide("refused")}
+                disabled={busy || !reason.trim()}
+              >
+                Send and continue
+              </button>
+              <button style={styles.ghostBtnSm} onClick={() => setRefusing(false)} disabled={busy}>
+                Back
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The crew's own bar: on, off, and how long ago the last fix was. A crew whose
+// position stopped updating twenty minutes ago should be able to see that on
+// their own screen, not only on the desk's.
+function TrackingBar({ state, lastTs, error }) {
+  // Its own second hand. The crew screen has no shared ticker, and the whole
+  // point of this bar is that the number moves — a bar reading "2 min ago"
+  // forever is worse than no bar, because it looks like it is working.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (state === "off") return null;
+  const age = lastTs ? Math.max(0, now - lastTs) : null;
+  const stale = age !== null && age > LOCATION_STALE_MS;
+
+  if (state === "refused") {
+    return (
+      <div style={styles.trackBarOff}>
+        <span style={styles.trackDotOff} />
+        Location off — the desk cannot see this truck's position
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={styles.trackBarWarn}>
+        <span style={styles.trackDotWarn} />
+        Location unavailable — {error}
+      </div>
+    );
+  }
+
+  return (
+    <div style={stale ? styles.trackBarWarn : styles.trackBarOn}>
+      <span style={stale ? styles.trackDotWarn : styles.trackDotOn} className={stale ? "" : "breathing"} />
+      {lastTs ? (
+        <>
+          Sharing position · last update{" "}
+          <strong>{age < 60000 ? "just now" : `${msDurationStr(age)} ago`}</strong>
+          {stale && " — the desk is seeing an old position"}
+        </>
+      ) : (
+        "Sharing position · waiting for the first fix"
+      )}
+    </div>
+  );
+}
+
 // ---------- the chat dock ----------
 //
 // Retractable, and closed by default. A dispatch board is not a messaging app:
@@ -13868,7 +14562,7 @@ function useMessageAlerts(messages, mine, unitIds, audioCtxRef) {
   }, [messages, mine]);
 }
 
-function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages }) {
+function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages, locations }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
   const [openCallId, setOpenCallId] = useState(null);
@@ -14649,6 +15343,15 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         onSent={setMessages}
       />
 
+
+      {onPage("map") && (
+        <FleetMap
+          units={units}
+          locations={locations}
+          requests={requests}
+          station={myStation}
+        />
+      )}
 
       {onPage("board") && (
         <>
@@ -15527,7 +16230,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, messages, setMessages, inventory, inventoryMoves, setInventoryMoves }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, locations, setLocations, trackingConsents, setTrackingConsents }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -15598,6 +16301,53 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // the screen now".
   // A message from the desk on this crew's own thread.
   useMessageAlerts(messages, "crew", myUnit ? [myUnit.id] : [], audioCtxRef);
+
+  // ---------- location ----------
+  //
+  // Four conditions, all of which have to hold: this crew are on a call, this
+  // device is the Alpha seat, this person has agreed, and the browser will give
+  // a position. The seat check is what makes one truck one dot — two phones in
+  // one vehicle reporting opposite corners of a car park is noise, and Alpha is
+  // the seat the department named.
+  const isAlpha = !!(myUnit && myUnit.alpha && user && myUnit.alpha.accountId === user.accountId);
+  const shouldTrack = !!(myRequest && myUnit && isAlpha && !assisting);
+  const tracking = useTracking({
+    unit: myUnit,
+    request: myRequest,
+    user,
+    consents: trackingConsents,
+    setLocations,
+    active: shouldTrack,
+  });
+
+  // Asked when a call arrives, not at sign-on: consent for something is asked
+  // for at the moment the something is about to happen, which is also the only
+  // moment the answer is meaningful.
+  const [consentOpen, setConsentOpen] = useState(false);
+  useEffect(() => {
+    if (!shouldTrack) {
+      setConsentOpen(false);
+      return;
+    }
+    setConsentOpen(needsConsentPrompt(trackingConsents, user && user.accountId));
+  }, [shouldTrack, trackingConsents, user && user.accountId]);
+
+  async function decideTracking(status, reason) {
+    const next = await recordConsent({
+      accountId: user && user.accountId,
+      name: (user && user.name) || "",
+      status,
+      reason,
+    });
+    if (next) setTrackingConsents(next);
+    setConsentOpen(false);
+    await addLog(
+      status === "granted"
+        ? `${(user && user.name) || "A crew member"} allowed location while on a call`
+        : `${(user && user.name) || "A crew member"} declined location — ${reason}`,
+      "status"
+    );
+  }
 
   const wasOnCall = useRef(null);
   const [calledOff, setCalledOff] = useState(null);
@@ -16547,6 +17297,23 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             A refusal in particular must reach them — they asked for a reason,
             and being told no without one teaches only not to ask. It stays until
             they acknowledge it. */}
+        {/* On, off, and how long ago — on the crew's own screen, so somebody
+            whose position stopped updating twenty minutes ago can see that
+            without asking the desk. */}
+        {shouldTrack && (
+          <TrackingBar
+            state={tracking.state}
+            lastTs={tracking.lastTs}
+            error={tracking.error}
+          />
+        )}
+
+        <TrackingConsentModal
+          open={consentOpen}
+          user={user}
+          onDecide={decideTracking}
+        />
+
         {/* One thread, straight into it — a crew has only ever one desk to
             talk to, so there is nothing to pick from. */}
         <ChatDock
@@ -19371,7 +20138,7 @@ function SavedLogs({ submissions, requests, coverage }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -19807,6 +20574,13 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         addLog={addLog}
         decisions={overtimeDecisions}
         setDecisions={setOvertimeDecisions}
+      />
+
+      <TrackingConsentAdmin
+        consents={trackingConsents}
+        user={user}
+        setConsents={setTrackingConsents}
+        addLog={addLog}
       />
 
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
@@ -22463,6 +23237,109 @@ const styles = {
   // The dock, closed. Sits clear of the footer bar so the two never overlap on
   // a phone, and carries its own count so the badge is readable without opening
   // anything.
+  mapWrap: {
+    background: "var(--panel)", border: "1px solid var(--hair)",
+    borderRadius: 18, overflow: "hidden", marginBottom: 14,
+  },
+  mapHead: {
+    display: "flex", alignItems: "baseline", justifyContent: "space-between",
+    gap: 10, padding: "13px 15px 11px", borderBottom: "1px solid var(--hair)",
+  },
+  mapTitle: {
+    fontSize: 11.5, fontWeight: 700, letterSpacing: 1.4, color: "var(--ink-4)",
+  },
+  mapCount: { fontSize: 12, color: "var(--ink-3)" },
+  // Tall enough to be worth looking at on a desk, capped so it never eats a
+  // phone screen whole.
+  mapCanvas: { width: "100%", height: "min(58vh, 520px)", background: "var(--inset)" },
+  mapWarn: {
+    padding: "10px 15px", fontSize: 12, lineHeight: 1.5, color: "var(--hold-2)",
+    borderTop: "1px solid var(--hair)",
+  },
+  mapList: { padding: "10px 15px 14px", display: "flex", flexDirection: "column", gap: 6 },
+  mapRow: {
+    display: "flex", alignItems: "baseline", gap: 10, fontSize: 12.5, flexWrap: "wrap",
+  },
+  mapRowName: { fontWeight: 650, color: "var(--ink)", minWidth: 82 },
+  mapRowStatus: { fontSize: 11, fontWeight: 700, letterSpacing: 0.8, minWidth: 96 },
+  mapRowAge: { color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
+  mapRowAgeStale: { color: "var(--hold)", fontWeight: 650, fontVariantNumeric: "tabular-nums" },
+  mapRowAcc: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+
+  consentList: { display: "flex", flexDirection: "column", gap: 10, marginTop: 12 },
+  consentRow: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "11px 13px",
+  },
+  consentRowHead: { display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" },
+  consentRowName: { fontSize: 14, fontWeight: 650, color: "var(--ink)" },
+  consentRowId: { fontSize: 11.5, color: "var(--ink-4)", flex: 1, minWidth: 70 },
+  consentRowStatus: { fontSize: 10.5, fontWeight: 750, letterSpacing: 0.9 },
+  consentRowWhen: { fontSize: 11.5, color: "var(--ink-4)", marginTop: 3 },
+  consentRowReason: {
+    fontSize: 12.5, fontStyle: "italic", color: "var(--ink-2)", marginTop: 7,
+  },
+  consentRowAcked: { fontSize: 11, color: "var(--ink-4)", marginTop: 7 },
+
+  consentScrim: {
+    position: "fixed", inset: 0, zIndex: 70,
+    background: "rgba(4,7,10,.72)", backdropFilter: "blur(6px)",
+    display: "flex", alignItems: "center", justifyContent: "center", padding: 18,
+  },
+  consentSheet: {
+    background: "var(--panel)", border: "1px solid var(--hair-2)", borderRadius: 22,
+    width: "min(480px, 100%)", maxHeight: "min(86vh, 760px)", overflowY: "auto",
+    padding: "20px 22px 22px", boxShadow: "0 24px 64px var(--lift-2)",
+  },
+  consentEyebrow: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1.4, color: "var(--ink-4)", marginBottom: 6,
+  },
+  consentTitle: {
+    fontSize: 19, fontWeight: 650, color: "var(--ink)", lineHeight: 1.3, marginBottom: 15,
+  },
+  consentBody: { display: "flex", flexDirection: "column", gap: 11, marginBottom: 18 },
+  consentPoint: { fontSize: 13, lineHeight: 1.55, color: "var(--ink-2)" },
+  consentBtns: { display: "flex", gap: 10, flexWrap: "wrap" },
+  consentYes: {
+    flex: 1, minWidth: 170, background: "var(--flow)", border: "none", color: "#FFFFFF",
+    borderRadius: 13, padding: "15px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer",
+  },
+  consentNo: {
+    background: "var(--raised)", border: "1px solid var(--hair-2)", color: "var(--ink-2)",
+    borderRadius: 13, padding: "15px 16px", fontSize: 15, fontWeight: 650, cursor: "pointer",
+  },
+  consentNoOff: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    borderRadius: 13, padding: "15px 16px", fontSize: 15, fontWeight: 650, cursor: "default",
+  },
+  consentRefuse: { display: "flex", flexDirection: "column", gap: 9 },
+  consentReason: {
+    background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 11,
+    color: "var(--ink)", padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit",
+    resize: "vertical", lineHeight: 1.45,
+  },
+  consentNote: { fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)" },
+
+  trackBarOn: {
+    display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+    padding: "9px 13px", borderRadius: 12, fontSize: 12.5,
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-3)",
+  },
+  trackBarWarn: {
+    display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+    padding: "9px 13px", borderRadius: 12, fontSize: 12.5,
+    background: "rgba(255,159,10,.12)", border: "1px solid rgba(255,159,10,.34)",
+    color: "var(--hold-2)",
+  },
+  trackBarOff: {
+    display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+    padding: "9px 13px", borderRadius: 12, fontSize: 12.5,
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+  },
+  trackDotOn: { width: 8, height: 8, borderRadius: 999, background: "var(--ok)", flex: "none" },
+  trackDotWarn: { width: 8, height: 8, borderRadius: 999, background: "var(--hold)", flex: "none" },
+  trackDotOff: { width: 8, height: 8, borderRadius: 999, background: "var(--ink-4)", flex: "none" },
+
   otRange: {
     display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
     marginBottom: 14,
