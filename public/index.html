@@ -3334,6 +3334,131 @@ function notifyAssistRequest(request, unitName) {
 // must not sit on the screen the way an unanswered assistance request does.
 // The body carries the medic and the call, never the text of the issue —
 // notifications are read off a lock screen in a corridor.
+// ---------- overtime ----------
+//
+// Overtime here is not claimed, it is observed. The board already knows when
+// somebody signed on, which shift they signed on for, and when they signed off,
+// so a stay that ran past its shift end is a fact the log already holds — and
+// asking a crew to fill in a form about something the app watched happen is
+// how overtime goes unrecorded.
+//
+// So the claims are DERIVED from the log and never stored. What is stored is
+// the decision: approved, approved in part, or declined, keyed to the stay it
+// answers. That keeps one source of truth for what happened and a separate one
+// for what was agreed about it, and it means correcting a sign-off time
+// corrects the claim rather than leaving an orphan.
+const OVERTIME_KEY = "ems:overtime";
+
+// One stay, one claim. The seat is in the key because a person who worked two
+// trucks in one shift did two stays and each is answerable separately.
+function overtimeClaimId(d) {
+  const who = (d.accountId || d.name || "?").toUpperCase();
+  return `${who}::${d.shiftStart || 0}::${d.unitId || "?"}::${d.seat || "?"}`;
+}
+
+// Was this person on a call when their shift ended? Both cases count as
+// overtime — the department pays for the hour either way — but they are
+// different conversations, and an administrator deciding should be able to see
+// which one this is without opening the call list.
+function heldByCallAt(requests, unitId, at) {
+  if (!unitId || !at) return null;
+  return (
+    (requests || []).find((r) => {
+      if (!r || r.assignedUnitId !== unitId) return false;
+      const start = callStartTs(r);
+      if (!start || start > at) return false;
+      const end = callEndTs(r, at + 1);
+      return end >= at;
+    }) || null
+  );
+}
+
+// Every stay in the window that ran past its shift end, with whatever has been
+// decided about it attached.
+function overtimeClaims(log, requests, from, to, decisions) {
+  const decided = decisions || {};
+  const out = [];
+  (log || []).forEach((e) => {
+    if (!e || e.type !== "shift") return;
+    const d = e.detail || {};
+    if (d.kind !== "off" || d.role !== "team") return;
+    if (!d.overtimeMs || d.overtimeMs <= 0) return;
+    if (!e.ts || e.ts < from || e.ts >= to) return;
+    const id = overtimeClaimId(d);
+    const held = heldByCallAt(requests, d.unitId, d.shiftEnd);
+    out.push({
+      id,
+      ts: e.ts,
+      station: d.station || DEFAULT_STATION,
+      name: d.name || "",
+      accountId: d.accountId || "",
+      unitId: d.unitId || null,
+      unitName: d.unitName || "",
+      seat: d.seat || null,
+      shift: d.shift || null,
+      shiftStart: d.shiftStart || null,
+      shiftEnd: d.shiftEnd || null,
+      signedOffAt: e.ts,
+      claimedMs: d.overtimeMs,
+      onCall: !!held,
+      onCallNature: held ? held.nature : "",
+      decision: decided[id] || null,
+      granted: false,
+    });
+  });
+
+  // Whole shifts an administrator granted outright. These are not derived from
+  // anything — they are a decision on their own — so they are read straight out
+  // of the store and shown beside the observed ones.
+  Object.keys(decided).forEach((id) => {
+    const dec = decided[id];
+    if (!dec || !dec.granted) return;
+    if (!dec.shiftStart || dec.shiftStart < from || dec.shiftStart >= to) return;
+    out.push({
+      id,
+      ts: dec.decidedAt || dec.shiftStart,
+      station: dec.station || DEFAULT_STATION,
+      name: dec.name || "",
+      accountId: dec.accountId || "",
+      unitId: dec.unitId || null,
+      unitName: dec.unitName || "",
+      seat: dec.seat || null,
+      shift: dec.shift || null,
+      shiftStart: dec.shiftStart || null,
+      shiftEnd: dec.shiftEnd || null,
+      signedOffAt: null,
+      claimedMs: dec.claimedMs || 0,
+      onCall: false,
+      onCallNature: "",
+      decision: dec,
+      granted: true,
+    });
+  });
+
+  return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+// What was actually agreed, in milliseconds. Undecided is not zero — it is
+// undecided, and a total that quietly counts pending claims as nought is a
+// total somebody will budget against.
+function overtimeApprovedMs(claim) {
+  const d = claim && claim.decision;
+  if (!d) return null;
+  if (d.status === "declined") return 0;
+  if (d.status === "partial") return Math.max(0, d.approvedMs || 0);
+  if (d.status === "approved") return Math.max(0, d.approvedMs || claim.claimedMs || 0);
+  return null;
+}
+
+function overtimeStatusLabel(claim) {
+  const d = claim && claim.decision;
+  if (!d) return "AWAITING APPROVAL";
+  if (d.status === "declined") return "DECLINED";
+  if (d.status === "partial") return "APPROVED IN PART";
+  if (d.status === "approved") return claim.granted ? "WHOLE SHIFT GRANTED" : "APPROVED";
+  return "AWAITING APPROVAL";
+}
+
 // ---------- what is on the truck ----------
 //
 // Two facts, kept apart on purpose.
@@ -5565,6 +5690,7 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [inventory, setInventory] = useState(null);
   const [inventoryMoves, setInventoryMoves] = useState([]);
+  const [overtimeDecisions, setOvertimeDecisions] = useState({});
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -5880,6 +6006,8 @@ function App() {
     if (inv !== READ_FAILED) setInventory(inv || null);
     const invMoves = await readKey(INVENTORY_MOVES_KEY, []);
     if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
+    const ot = await readKey(OVERTIME_KEY, {});
+    if (ot !== READ_FAILED) setOvertimeDecisions(ot || {});
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -6924,6 +7052,8 @@ function App() {
               setInventory={setInventory}
               inventoryMoves={inventoryMoves}
               setInventoryMoves={setInventoryMoves}
+              overtimeDecisions={overtimeDecisions}
+              setOvertimeDecisions={setOvertimeDecisions}
             />
           )}
         </div>
@@ -12785,6 +12915,447 @@ function PolicyModal({ open, onClose, policies }) {
       </div>
     </div>
   );
+}
+
+// ---------- overtime, as administration answers it ----------
+//
+// Retractable, and folded by default: this is a weekly job, not something the
+// board is watched for. Open, it answers three things in order — what is
+// waiting on a decision, who is standing past their shift right now, and what
+// the period comes to.
+function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecisions }) {
+  const [open, setOpen] = useState(false);
+  const now = Date.now();
+  // A pay period, not a calendar month. Defaults to the last 30 days and is
+  // then whatever the administrator types.
+  const [fromStr, setFromStr] = useState(() => new Date(now - 29 * 86400000).toISOString().slice(0, 10));
+  const [toStr, setToStr] = useState(() => new Date(now).toISOString().slice(0, 10));
+  const [busy, setBusy] = useState(false);
+
+  const from = new Date(`${fromStr}T00:00:00`).getTime();
+  // Inclusive of the last day: a period "to 18 September" includes the 18th.
+  const to = new Date(`${toStr}T00:00:00`).getTime() + 86400000;
+  const validRange = Number.isFinite(from) && Number.isFinite(to) && to > from;
+
+  const claims = validRange ? overtimeClaims(log, requests, from, to, decisions) : [];
+  const pending = claims.filter((c) => !c.decision);
+  const label = validRange
+    ? `${gregDateStr(from)} → ${gregDateStr(to - 1)}`
+    : "Pick a period";
+
+  const totals = claims.reduce(
+    (acc, c) => {
+      const ms = overtimeApprovedMs(c);
+      acc.claimed += c.claimedMs || 0;
+      if (ms === null) acc.undecided += c.claimedMs || 0;
+      else acc.approved += ms;
+      return acc;
+    },
+    { claimed: 0, approved: 0, undecided: 0 }
+  );
+
+  // Everybody signed on right now who is already past their shift end. This is
+  // the live half — the claim does not exist until they sign off, but the
+  // administrator should be able to see it building.
+  const standing = [];
+  (units || []).forEach((u) => {
+    ["alpha", "bravo"].forEach((slot) => {
+      const seated = u[slot];
+      if (!seated) return;
+      const over = overtimeMs(seated, now);
+      standing.push({ unit: u, slot, member: seated, over });
+    });
+  });
+  standing.sort((a, b) => b.over - a.over);
+
+  async function decide(claim, status, approvedMs, note) {
+    const next = {
+      ...(decisions || {}),
+      [claim.id]: {
+        ...(decisions || {})[claim.id],
+        status,
+        approvedMs: approvedMs === null || approvedMs === undefined ? null : approvedMs,
+        decidedBy: (user && user.name) || "Administration",
+        decidedAt: Date.now(),
+        note: note || "",
+        // Carried so a granted whole shift can be rebuilt without the log.
+        name: claim.name,
+        accountId: claim.accountId,
+        unitId: claim.unitId,
+        unitName: claim.unitName,
+        seat: claim.seat,
+        station: claim.station,
+        shift: claim.shift,
+        shiftStart: claim.shiftStart,
+        shiftEnd: claim.shiftEnd,
+        claimedMs: claim.claimedMs,
+        granted: !!claim.granted,
+      },
+    };
+    await writeKey(OVERTIME_KEY, next);
+    setDecisions(next);
+    await addLog(
+      `Overtime ${status} for ${claim.name} (${claim.unitName}) — ` +
+        `${msDurationStr(claim.claimedMs)} claimed, ` +
+        `${status === "declined" ? "none" : msDurationStr(approvedMs || claim.claimedMs)} approved` +
+        (note ? ` · ${note}` : ""),
+      "status"
+    );
+  }
+
+  async function approvePartial(claim) {
+    const asked = window.prompt(
+      `Approve part of ${claim.name}'s overtime.\n\n` +
+        `Claimed: ${msDurationStr(claim.claimedMs)}\n\n` +
+        `How many minutes are approved?`,
+      String(Math.round((claim.claimedMs || 0) / 60000))
+    );
+    if (asked === null) return;
+    const mins = Math.max(0, Math.min(Math.round((claim.claimedMs || 0) / 60000), parseInt(asked, 10) || 0));
+    const note = window.prompt("A note, if this needs explaining. Leave blank for none.", "") || "";
+    await decide(claim, mins === 0 ? "declined" : "partial", mins * 60000, note.trim());
+  }
+
+  async function decline(claim) {
+    const note = window.prompt(
+      `Decline ${claim.name}'s overtime?\n\nSay why — it goes on the record and into the sheet.`
+    );
+    if (note === null) return;
+    if (!note.trim()) {
+      window.alert("A declined claim needs a reason.");
+      return;
+    }
+    await decide(claim, "declined", 0, note.trim());
+  }
+
+  // A whole shift counted as overtime, for somebody called in on a rest day or
+  // held over for a whole tour. Not derived from anything, so it is a decision
+  // recorded on its own.
+  async function grantWholeShift(entry) {
+    const { unit, slot, member } = entry;
+    const start = member.shiftStart;
+    const end = member.shiftEnd;
+    if (!start || !end) {
+      window.alert(`${member.name} has no shift window recorded, so a whole shift cannot be worked out.`);
+      return;
+    }
+    const whole = Math.max(0, end - start);
+    if (
+      !window.confirm(
+        `Count ${member.name}'s whole shift as overtime?\n\n` +
+          `${shiftLabelWithWindow(member.shift)} — ${msDurationStr(whole)}\n\n` +
+          `This is recorded as a grant, separately from any overtime they run past the end of it.`
+      )
+    )
+      return;
+    const claim = {
+      id: `GRANT::${overtimeClaimId({
+        accountId: member.accountId,
+        name: member.name,
+        shiftStart: start,
+        unitId: unit.id,
+        seat: slot,
+      })}`,
+      name: member.name,
+      accountId: member.accountId || "",
+      unitId: unit.id,
+      unitName: unit.name,
+      seat: slot,
+      station: stationOf(unit),
+      shift: member.shift,
+      shiftStart: start,
+      shiftEnd: end,
+      claimedMs: whole,
+      granted: true,
+    };
+    await decide(claim, "approved", whole, "Whole shift granted as overtime");
+  }
+
+  async function download() {
+    if (!validRange || busy) return;
+    setBusy(true);
+    try {
+      await exportOvertime(claims, from, to, label);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <FoldingSection
+      title="OVERTIME"
+      count={pending.length}
+      countLabel={pending.length ? "awaiting approval" : "all decided"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      {/* The period. */}
+      <div style={styles.otRange}>
+        <label style={styles.otRangeField}>
+          <span style={styles.otRangeLabel}>FROM</span>
+          <input style={styles.otDate} type="date" value={fromStr} onChange={(e) => setFromStr(e.target.value)} />
+        </label>
+        <label style={styles.otRangeField}>
+          <span style={styles.otRangeLabel}>TO</span>
+          <input style={styles.otDate} type="date" value={toStr} onChange={(e) => setToStr(e.target.value)} />
+        </label>
+        <button style={styles.primaryBtnSm} onClick={download} disabled={!validRange || busy}>
+          {busy ? "Building…" : "Excel sheet"}
+        </button>
+      </div>
+      {!validRange && (
+        <div style={styles.formHint}>The end of the period has to come after the start.</div>
+      )}
+
+      <div style={styles.otTotals}>
+        <div style={styles.otTotal}>
+          <span style={styles.otTotalFig}>{msDurationStr(totals.approved)}</span>
+          <span style={styles.otTotalLabel}>APPROVED</span>
+        </div>
+        <div style={styles.otTotal}>
+          <span style={{ ...styles.otTotalFig, color: totals.undecided ? "var(--hold)" : "var(--ink-4)" }}>
+            {msDurationStr(totals.undecided)}
+          </span>
+          <span style={styles.otTotalLabel}>AWAITING A DECISION</span>
+        </div>
+        <div style={styles.otTotal}>
+          <span style={{ ...styles.otTotalFig, color: "var(--ink-3)" }}>{msDurationStr(totals.claimed)}</span>
+          <span style={styles.otTotalLabel}>CLAIMED IN TOTAL</span>
+        </div>
+      </div>
+
+      {/* Standing past their shift right now. */}
+      {standing.filter((x) => x.over > 0).length > 0 && (
+        <div style={styles.otLiveWrap}>
+          <div style={styles.invShortHead}>PAST THEIR SHIFT RIGHT NOW</div>
+          {standing
+            .filter((x) => x.over > 0)
+            .map((x) => (
+              <div key={`${x.unit.id}-${x.slot}`} style={styles.otLiveRow}>
+                <span style={styles.otLiveName}>{x.member.name}</span>
+                <span style={styles.otLiveUnit}>
+                  {x.unit.name} · {seatLabel(x.slot)}
+                </span>
+                <span style={styles.otLiveMs}>{msDurationStr(x.over)}</span>
+                <button style={styles.otGrantBtn} onClick={() => grantWholeShift(x)}>
+                  Count whole shift
+                </button>
+              </div>
+            ))}
+          <div style={styles.otLiveNote}>
+            These become claims when they sign off. The button counts the whole tour as overtime —
+            for somebody called in on a rest day — and is recorded separately from anything they run
+            past the end of it.
+          </div>
+        </div>
+      )}
+
+      {/* The claims themselves, undecided first. */}
+      <div style={styles.otList}>
+        {claims.length === 0 ? (
+          <div style={styles.formHint}>
+            No overtime in this period. A stay that ran past its shift end appears here on sign-off.
+          </div>
+        ) : (
+          [...pending, ...claims.filter((c) => c.decision)].map((c) => {
+            const approved = overtimeApprovedMs(c);
+            return (
+              <div key={c.id} style={c.decision ? styles.otCard : styles.otCardPending}>
+                <div style={styles.otCardHead}>
+                  <span style={styles.otCardName}>{c.name || "Unnamed"}</span>
+                  <span style={styles.otCardWho}>
+                    {c.unitName}
+                    {c.seat ? ` · ${seatLabel(c.seat)}` : ""} · {stationLabel(c.station)}
+                  </span>
+                  <span
+                    style={{
+                      ...styles.otCardStatus,
+                      color: !c.decision
+                        ? "var(--hold)"
+                        : c.decision.status === "declined"
+                        ? "var(--ink-4)"
+                        : "var(--ok)",
+                    }}
+                  >
+                    {overtimeStatusLabel(c)}
+                  </span>
+                </div>
+                <div style={styles.otCardMeta}>
+                  {c.shiftStart ? gregDateStr(c.shiftStart) : ""} · {shiftLabelWithWindow(c.shift)}
+                  {c.shiftEnd ? ` · ended ${clockStr(c.shiftEnd)}` : ""}
+                  {c.signedOffAt ? ` · signed off ${clockStr(c.signedOffAt)}` : ""}
+                </div>
+                <div style={styles.otCardFigures}>
+                  <span style={styles.otClaimed}>{msDurationStr(c.claimedMs)} claimed</span>
+                  {approved !== null && (
+                    <span style={styles.otApproved}>{msDurationStr(approved)} approved</span>
+                  )}
+                  {!c.granted && (
+                    <span style={c.onCall ? styles.otHeld : styles.otNotHeld}>
+                      {c.onCall ? `held by a call${c.onCallNature ? ` — ${c.onCallNature}` : ""}` : "not on a call"}
+                    </span>
+                  )}
+                </div>
+                {c.decision && c.decision.note && (
+                  <div style={styles.otCardNote}>“{c.decision.note}”</div>
+                )}
+                {c.decision && c.decision.decidedBy && (
+                  <div style={styles.otCardBy}>
+                    {c.decision.decidedBy} · {gregDateTimeStr(c.decision.decidedAt)}
+                  </div>
+                )}
+                {!c.decision && (
+                  <div style={styles.otCardBtns}>
+                    <button
+                      style={styles.primaryBtnSm}
+                      onClick={() => decide(c, "approved", c.claimedMs, "")}
+                    >
+                      Approve {msDurationStr(c.claimedMs)}
+                    </button>
+                    <button style={styles.ghostBtnSm} onClick={() => approvePartial(c)}>
+                      Approve part
+                    </button>
+                    <button style={styles.ghostBtnSm} onClick={() => decline(c)}>
+                      Decline
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </FoldingSection>
+  );
+}
+
+// ---------- the overtime sheet ----------
+//
+// A month of decisions, as a workbook. The period is whatever an administrator
+// asked for — 19 August to 18 September is a pay period, not a calendar month,
+// and a report that can only do calendar months is a report somebody retypes.
+async function exportOvertime(claims, from, to, label) {
+  const wb = XLSX.utils.book_new();
+
+  const rows = claims.map((c) => {
+    const approved = overtimeApprovedMs(c);
+    return {
+      Date: c.shiftStart ? gregDateStr(c.shiftStart) : "",
+      Name: c.name || "",
+      "Employee ID": c.accountId || "",
+      Station: stationLabel(c.station),
+      Medic: c.unitName || "",
+      Seat: c.seat ? seatLabel(c.seat) : "",
+      Shift: shiftLabelWithWindow(c.shift),
+      "Shift End": c.shiftEnd ? gregDateTimeStr(c.shiftEnd) : "",
+      "Signed Off": c.signedOffAt ? gregDateTimeStr(c.signedOffAt) : "",
+      "On a call at shift end": c.granted ? "" : c.onCall ? "Yes" : "No",
+      "Held by": c.onCallNature || "",
+      // Hours as decimals as well as written out: payroll adds the column up,
+      // a supervisor reads the sentence.
+      "Claimed": c.claimedMs ? msDurationStr(c.claimedMs) : "",
+      "Claimed (hrs)": c.claimedMs ? Number((c.claimedMs / 3600000).toFixed(2)) : 0,
+      Status: overtimeStatusLabel(c),
+      "Approved": approved === null ? "" : msDurationStr(approved),
+      "Approved (hrs)": approved === null ? "" : Number((approved / 3600000).toFixed(2)),
+      "Decided By": (c.decision && c.decision.decidedBy) || "",
+      "Decided At": c.decision && c.decision.decidedAt ? gregDateTimeStr(c.decision.decidedAt) : "",
+      Note: (c.decision && c.decision.note) || "",
+    };
+  });
+
+  const headers = rows.length
+    ? Object.keys(rows[0])
+    : ["Date", "Name", "Employee ID", "Station", "Medic", "Seat", "Shift", "Claimed", "Status", "Approved"];
+
+  const aoa = [
+    ["OVERTIME"],
+    [label],
+    [],
+    headers,
+    ...rows.map((r) => headers.map((h) => r[h])),
+  ];
+
+  const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 3);
+  titleSheet(sheet);
+  dressSheet(sheet, 3, 1);
+
+  // Anything still waiting on a decision is marked, because a pay period closed
+  // with undecided hours in it is the thing somebody needs to see first.
+  const pendingRows = [];
+  const declinedRows = [];
+  rows.forEach((r, i) => {
+    if (r.Status === "AWAITING APPROVAL") pendingRows.push(i + 1);
+    if (r.Status === "DECLINED") declinedRows.push(i + 1);
+  });
+  paintRows(sheet, pendingRows, 3, "FFFFE08A", "FF7A4E00");
+  paintRows(sheet, declinedRows, 3, "FFE9E9E9", "FF5A6B7B");
+  XLSX.utils.book_append_sheet(wb, sheet, "Overtime");
+
+  // A second sheet totalling by person, because that is what goes to payroll.
+  const byPerson = new Map();
+  claims.forEach((c) => {
+    const key = (c.accountId || c.name || "?").toUpperCase();
+    if (!byPerson.has(key)) {
+      byPerson.set(key, {
+        Name: c.name || "",
+        "Employee ID": c.accountId || "",
+        Station: stationLabel(c.station),
+        Claims: 0,
+        "Claimed (hrs)": 0,
+        "Approved (hrs)": 0,
+        "Awaiting decision": 0,
+      });
+    }
+    const row = byPerson.get(key);
+    const approved = overtimeApprovedMs(c);
+    row.Claims += 1;
+    row["Claimed (hrs)"] += (c.claimedMs || 0) / 3600000;
+    if (approved === null) row["Awaiting decision"] += 1;
+    else row["Approved (hrs)"] += approved / 3600000;
+  });
+  const sumRows = Array.from(byPerson.values())
+    .map((r) => ({
+      ...r,
+      "Claimed (hrs)": Number(r["Claimed (hrs)"].toFixed(2)),
+      "Approved (hrs)": Number(r["Approved (hrs)"].toFixed(2)),
+    }))
+    .sort((a, b) => b["Approved (hrs)"] - a["Approved (hrs)"]);
+  const sumHeaders = ["Name", "Employee ID", "Station", "Claims", "Claimed (hrs)", "Approved (hrs)", "Awaiting decision"];
+  const sumAoa = [
+    ["OVERTIME BY PERSON"],
+    [label],
+    [],
+    sumHeaders,
+    ...sumRows.map((r) => sumHeaders.map((h) => r[h])),
+  ];
+  const sumSheet = autoFitSheet(XLSX.utils.aoa_to_sheet(sumAoa), 3);
+  titleSheet(sumSheet);
+  dressSheet(sumSheet, 3, 1);
+  XLSX.utils.book_append_sheet(wb, sumSheet, "By Person");
+
+  const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const filename = `medcom-overtime-${new Date(from).toISOString().slice(0, 10)}-to-${new Date(to - 1).toISOString().slice(0, 10)}.xlsx`;
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const file = new File([blob], filename, { type: blob.type });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+      await navigator.share({ files: [file], title: `MEDCOM Overtime — ${label}` });
+      return;
+    }
+  } catch (e) {
+    // fall through to download
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 // ---------- inventory, as administration sees it ----------
@@ -18800,7 +19371,7 @@ function SavedLogs({ submissions, requests, coverage }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -19223,6 +19794,19 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         checklistRuns={checklistRuns}
         range={statRange}
         setRange={setStatRange}
+      />
+
+      {/* Overtime sits above coverage on the statistics page: it is the thing
+          with a deadline on it — a pay period closes — and coverage is a thing
+          you read. */}
+      <OvertimePanel
+        log={log}
+        requests={requests}
+        units={units}
+        user={user}
+        addLog={addLog}
+        decisions={overtimeDecisions}
+        setDecisions={setOvertimeDecisions}
       />
 
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
@@ -21879,6 +22463,83 @@ const styles = {
   // The dock, closed. Sits clear of the footer bar so the two never overlap on
   // a phone, and carries its own count so the badge is readable without opening
   // anything.
+  otRange: {
+    display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+    marginBottom: 14,
+  },
+  otRangeField: { display: "flex", flexDirection: "column", gap: 5 },
+  otRangeLabel: {
+    fontSize: 10, fontWeight: 700, letterSpacing: 1.1, color: "var(--ink-4)",
+  },
+  otDate: {
+    background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 10,
+    color: "var(--ink)", padding: "8px 10px", fontSize: 13, fontFamily: "inherit",
+  },
+  otTotals: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+    gap: 1, background: "var(--hair)", border: "1px solid var(--hair)",
+    borderRadius: 14, overflow: "hidden", marginBottom: 14,
+  },
+  otTotal: {
+    background: "var(--panel)", padding: "12px 14px",
+    display: "flex", flexDirection: "column", gap: 4,
+  },
+  otTotalFig: {
+    fontSize: 21, fontWeight: 700, letterSpacing: -0.5, color: "var(--ok)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  otTotalLabel: { fontSize: 10.5, fontWeight: 700, letterSpacing: 1, color: "var(--ink-4)" },
+
+  otLiveWrap: {
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--hold)", borderRadius: 14,
+    padding: "12px 13px", marginBottom: 14,
+  },
+  otLiveRow: {
+    display: "flex", alignItems: "center", gap: 10, padding: "5px 0",
+    fontSize: 12.5, flexWrap: "wrap",
+  },
+  otLiveName: { fontWeight: 650, color: "var(--ink-2)", minWidth: 110 },
+  otLiveUnit: { color: "var(--ink-4)", flex: 1, minWidth: 110 },
+  otLiveMs: {
+    fontWeight: 700, color: "var(--hold)", fontVariantNumeric: "tabular-nums", minWidth: 62,
+  },
+  otGrantBtn: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)", color: "var(--ink-2)",
+    borderRadius: 999, padding: "5px 12px", fontSize: 11.5, fontWeight: 650, cursor: "pointer",
+  },
+  otLiveNote: {
+    marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--hair)",
+    fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)",
+  },
+
+  otList: { display: "flex", flexDirection: "column", gap: 10 },
+  otCard: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "12px 13px",
+  },
+  otCardPending: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--hold)", borderRadius: 14, padding: "12px 13px",
+  },
+  otCardHead: {
+    display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 5,
+  },
+  otCardName: { fontSize: 14.5, fontWeight: 650, color: "var(--ink)" },
+  otCardWho: { fontSize: 12, color: "var(--ink-4)", flex: 1, minWidth: 130 },
+  otCardStatus: { fontSize: 10.5, fontWeight: 750, letterSpacing: 0.9 },
+  otCardMeta: { fontSize: 11.5, color: "var(--ink-4)", marginBottom: 7 },
+  otCardFigures: {
+    display: "flex", gap: 12, flexWrap: "wrap", alignItems: "baseline", marginBottom: 4,
+  },
+  otClaimed: { fontSize: 15, fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" },
+  otApproved: { fontSize: 13.5, fontWeight: 650, color: "var(--ok)", fontVariantNumeric: "tabular-nums" },
+  otHeld: { fontSize: 11.5, fontWeight: 650, color: "var(--flow-2)" },
+  otNotHeld: { fontSize: 11.5, color: "var(--ink-4)" },
+  otCardNote: { fontSize: 12.5, fontStyle: "italic", color: "var(--ink-3)", marginTop: 6 },
+  otCardBy: { fontSize: 11, color: "var(--ink-4)", marginTop: 5 },
+  otCardBtns: { display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" },
+
   invShortWrap: {
     background: "var(--inset)", border: "1px solid var(--hair)",
     borderLeft: "3px solid var(--crit)", borderRadius: 14,
