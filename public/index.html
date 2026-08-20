@@ -3013,7 +3013,12 @@ function scheduleNote(ctx, t0, note, type, peak) {
 function scheduleTone(ctx, notes, type, gainPeak, force) {
   // Scaled by this device's chosen loudness — unless this is a call being
   // assigned to this crew, which is not a preference. See UNMISSABLE below.
-  const peak = (gainPeak || 0.16) * (force ? 1 : soundGain());
+  //
+  // The peaks were set for a quiet control room and were far too polite for the
+  // cab of a moving ambulance. They are roughly two and a half times what they
+  // were, and capped: past about 0.7 a square wave clips, and a clipped tone is
+  // heard as quieter and nastier rather than louder.
+  const peak = Math.min(0.7, (gainPeak || 0.16) * (force ? 1 : soundGain()));
   if (peak <= 0.0002) return;
   // A context that was suspended a moment ago can report a currentTime the
   // scheduler has already passed, and anything scheduled in the past is simply
@@ -3049,20 +3054,20 @@ function playAlertTone(ctx, priorityIn, force) {
         { freq: 650, start: 0.45, dur: 0.15 },
         { freq: 950, start: 0.6, dur: 0.15 },
         { freq: 650, start: 0.75, dur: 0.15 },
-      ], "square", 0.22, force);
+      ], "square", 0.55, force);
     } else if (priority === "urgent") {
       // two rising beeps, with a gap so they read as two
       scheduleTone(ctx, [
         { freq: 700, start: 0, dur: 0.34 },
         { freq: 1000, start: 0.42, dur: 0.34 },
-      ], "square", 0.18, force);
+      ], "square", 0.48, force);
     } else {
       // gentle two-note chime — anything that isn't critical or urgent lands
       // here, so an unrecognised priority still makes a noise
       scheduleTone(ctx, [
         { freq: 784, start: 0, dur: 0.3 },
         { freq: 1046, start: 0.32, dur: 0.35 },
-      ], "sine", 0.14, force);
+      ], "sine", 0.38, force);
     }
   } catch (e) {
     // audio not available; ignore
@@ -3092,6 +3097,65 @@ function softTone(ctx, freq, startOffset, dur, peak) {
   gain.gain.exponentialRampToValueAtTime(0.0001, end);
   osc.start(t0);
   osc.stop(end + 0.02);
+}
+
+// "The call is cancelled", said out loud, twice.
+//
+// The stand-down used to borrow the critical dispatch tone, which is the worst
+// possible choice: it is the sound that means GO, played at the moment a crew
+// must stop. A crew hearing it through a windscreen with the tablet face-down
+// speeds up.
+//
+// So it speaks. Speech is unambiguous where a pattern of beeps is learned, and
+// it is the one thing that cannot be confused with any other sound this app
+// makes. Twice, because the first one lands while somebody is still reacting
+// to the fact that a noise happened at all.
+//
+// A descending two-note figure goes in front of it — falling where every
+// dispatch tone rises — so the meaning is already on its way before the words
+// arrive, and so there is still something to hear on a device with no voice.
+function speakStandDown() {
+  try {
+    if (typeof window === "undefined" || !window.speechSynthesis) return false;
+    const say = (delay) =>
+      setTimeout(() => {
+        try {
+          const u = new SpeechSynthesisUtterance("The call is cancelled");
+          u.rate = 0.95;
+          u.pitch = 1;
+          u.volume = 1;
+          window.speechSynthesis.speak(u);
+        } catch (e) {}
+      }, delay);
+    window.speechSynthesis.cancel();
+    say(220);
+    say(2000);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Falling, where a dispatch rises. Plays whether or not the voice is available.
+function playStandDownTone(ctx) {
+  try {
+    if (!ctx) return;
+    scheduleTone(
+      ctx,
+      [
+        { freq: 620, start: 0, dur: 0.28 },
+        { freq: 420, start: 0.3, dur: 0.42 },
+      ],
+      "triangle",
+      0.2,
+      true
+    );
+  } catch (e) {}
+}
+
+function soundStandDown(audioCtxRef) {
+  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playStandDownTone(ctx));
+  speakStandDown();
 }
 
 function playSoftReminderTone(ctx) {
@@ -3758,9 +3822,16 @@ const MESSAGES_CAP = 800;
 const MESSAGE_MAX = 600;
 const CHAT_ALERT_TAG_PREFIX = "ems-chat-";
 
-function threadFor(messages, unitId) {
+// One shift's traffic, not the truck's whole history.
+//
+// A thread belongs to the vehicle, so with no window on it a crew coming on at
+// seven opened the box and read yesterday's conversation about a patient they
+// never met. What is useful is what has been said since this shift started;
+// anything older is finished business and lives in the log.
+function threadFor(messages, unitId, from) {
+  const cutoff = typeof from === "number" ? from : uhuWindowStart(Date.now());
   return (messages || [])
-    .filter((m) => m && m.unitId === unitId)
+    .filter((m) => m && m.unitId === unitId && (m.ts || 0) >= cutoff)
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
 
@@ -3792,11 +3863,21 @@ function markThreadSeen(unitId, ts) {
   }
 }
 
-function unreadIn(messages, unitId, mine) {
+function unreadIn(messages, unitId, mine, from) {
   const seen = readChatSeen()[unitId] || 0;
+  const cutoff = typeof from === "number" ? from : uhuWindowStart(Date.now());
   return (messages || []).filter(
-    (m) => m && m.unitId === unitId && (m.ts || 0) > seen && m.from !== mine
+    (m) =>
+      m && m.unitId === unitId && (m.ts || 0) >= cutoff && (m.ts || 0) > seen && m.from !== mine
   ).length;
+}
+
+function unreadForRole(messages, units, station, mine, myUnitId) {
+  const from = uhuWindowStart(Date.now());
+  const list = myUnitId
+    ? (units || []).filter((u) => u.id === myUnitId)
+    : (units || []).filter((u) => !station || stationOf(u) === station);
+  return list.reduce((n, u) => n + unreadIn(messages, u.id, mine, from), 0);
 }
 
 async function postMessage({ unit, from, byName, byAccountId, text, station }) {
@@ -7166,6 +7247,16 @@ function App() {
           // out, and the call it became.
           { key: "history", glyph: "🗓", label: "Schedule" },
           { key: "teams", glyph: "👥", label: "Teams" },
+          // Talking to the trucks, and the shelf the answers live on. Two
+          // utilities rather than two places, but they belong in the bar for
+          // the same reason the board does: they are reached from anywhere.
+          {
+            key: "messages",
+            glyph: "💬",
+            label: "Messages",
+            badge: unreadForRole(messages, units, user.station, "dispatch", null),
+          },
+          { key: "policies", glyph: "📖", label: "Policies" },
           // Filing the shift's log.
           { key: "log", glyph: "📤", label: "Submit" },
         ]
@@ -7178,6 +7269,7 @@ function App() {
             // Teams: a supervisor chasing a missing cylinder is doing a
             // different job from one looking at a roster.
             { key: "stock", glyph: "📦", label: "Inventory" },
+            { key: "policies", glyph: "📖", label: "Policies" },
             // Kept, not sent — a different action from the desk's Submit, so a
             // different picture.
             { key: "log", glyph: "🗄", label: "Archive" },
@@ -7187,7 +7279,19 @@ function App() {
             { key: "board", glyph: "🚨", label: "My call" },
             { key: "history", glyph: "🕘", label: "History" },
             { key: "teams", glyph: "🚑", label: "My truck" },
+            {
+              key: "messages",
+              glyph: "💬",
+              label: "Messages",
+              badge: unreadForRole(messages, units, null, "crew", user.unitId),
+            },
+            { key: "policies", glyph: "📖", label: "Policies" },
           ];
+
+  // The two shared pages replace whatever the role would otherwise show, rather
+  // than appearing above it — a messages page with the whole board underneath
+  // it is not a page.
+  const onSharedPage = navTab === "messages" || navTab === "policies";
 
   return (
     <div style={styles.app}>
@@ -7206,9 +7310,30 @@ function App() {
       <ConnectionBanner />
       {/* The bar floats over the board, so the last section needs room to clear
           it — otherwise the final call on a long day sits underneath it. */}
-      <div style={{ ...styles.body, paddingBottom: 108 }}>
+      <div style={{ ...styles.body, paddingBottom: 128 }}>
+        {navTab === "messages" && (
+          <ChatDock
+            user={user}
+            units={units}
+            messages={messages}
+            station={user.station}
+            myUnitId={user.role === "team" ? user.unitId : null}
+            onSent={setMessages}
+          />
+        )}
+
+        {navTab === "policies" && (
+          <PolicyLibrary
+            policies={policies}
+            canManage={user.role === "admin"}
+            onAdd={addPolicy}
+            onRemove={removePolicy}
+            busy={policyBusy}
+          />
+        )}
+
         <div style={styles.mainCol}>
-          {user.role === "dispatcher" && (
+          {!onSharedPage && user.role === "dispatcher" && (
             <DispatcherView
               page={navTab}
               newCallSignal={newCallSignal}
@@ -7228,7 +7353,7 @@ function App() {
               locations={locations}
             />
           )}
-          {user.role === "team" && (
+          {!onSharedPage && user.role === "team" && (
             <TeamView
               messages={messages}
               setMessages={setMessages}
@@ -7252,7 +7377,7 @@ function App() {
               audioCtxRef={audioCtxRef}
             />
           )}
-          {user.role === "admin" && (
+          {!onSharedPage && user.role === "admin" && (
             <AdminView
               page={navTab}
               user={user}
@@ -8069,36 +8194,6 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
             <span style={styles.loginWordBottom}>DISPATCH</span>
           </div>
         </div>
-        <InfoNote label="What is this?">
-          MEDCOM Dispatch — the ambulance board for Emergency Medical Services. Sign in
-          with the ID your administrator gave you.
-        </InfoNote>
-
-        {/* Required of any app that touches health work and has not been cleared
-            as a medical device, and it happens to be true: this board moves
-            ambulances and records what happened. It does not read a patient or
-            tell anybody what to do about one. It goes on the sign-in screen
-            because that is the one screen everybody sees, and it links the two
-            policy pages Google Play requires to be reachable without an account.
-            Deliberately quiet — it is a statement of fact, not a warning. */}
-        <div style={styles.legalNote}>
-          This app is not a medical device. It does not diagnose, treat, cure or prevent
-          any medical condition, and gives no clinical advice.
-          {/* Addressed through API_BASE, not as bare paths.
-              Inside the native shell the page is served from the app bundle —
-              capacitor://localhost on iOS, http://localhost on Android — so
-              "/privacy" would resolve against the bundle, which contains no such
-              page, and both links would dead-end. That is precisely the check
-              Google runs. API_BASE is empty on the web (the links stay relative
-              and work) and the live server on native (they leave the shell and
-              reach the real pages). */}
-          <div style={styles.legalLinks}>
-            <a href={`${API_BASE}/privacy`} target="_blank" rel="noreferrer" style={styles.legalLink}>Privacy policy</a>
-            <span aria-hidden="true">·</span>
-            <a href={`${API_BASE}/data-deletion`} target="_blank" rel="noreferrer" style={styles.legalLink}>Account &amp; data deletion</a>
-          </div>
-        </div>
-
         {!role && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 18 }}>
             <button style={styles.roleBtn} onClick={() => setRole("dispatcher")}>
@@ -8399,6 +8494,31 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
           </div>
         )}
 
+      </div>
+
+      {/* At the foot of the page, under the card — not inside it.
+          Sitting between the wordmark and the ID field, this was the first
+          thing read on the way in, which is the wrong order: a crew signing on
+          at handover wants the field. It is still on the one screen everybody
+          sees, and it still carries the two links Google Play requires to be
+          reachable without an account. */}
+      <div style={styles.loginFoot}>
+        <div style={styles.loginFootWhat}>
+          MEDCOM Dispatch — the ambulance board for Emergency Medical Services.
+          Sign in with the ID your administrator gave you.
+        </div>
+        <div style={styles.legalNote}>
+          This app is not a medical device. It does not diagnose, treat, cure or prevent
+          any medical condition, and gives no clinical advice.
+          {/* Through API_BASE, not as bare paths: inside the native shell a
+              bare "/privacy" resolves against the app bundle, which has no such
+              page, and both links dead-end — precisely the check Google runs. */}
+          <div style={styles.legalLinks}>
+            <a href={`${API_BASE}/privacy`} target="_blank" rel="noreferrer" style={styles.legalLink}>Privacy policy</a>
+            <span aria-hidden="true">·</span>
+            <a href={`${API_BASE}/data-deletion`} target="_blank" rel="noreferrer" style={styles.legalLink}>Account &amp; data deletion</a>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -9490,30 +9610,39 @@ function ribbonFor(elapsedMs) {
 // over the board rather than as a strip of chrome, and it clears the home
 // indicator on its own.
 function BottomBar({ tabs, active, onSelect, action }) {
+  // The action used to be dealt into the middle of the tab row, which is what
+  // made the bar look thrown together: a filled green pill between two tabs
+  // reads as a third kind of thing wedged in among places, the row stopped
+  // being evenly spaced, and the eye landed on the wrong element first.
+  //
+  // Navigation is now only navigation — one even row of places — and the one
+  // action a role starts things with floats above the bar on the right, where
+  // it is reachable by thumb and cannot disturb the rhythm of the row.
   return (
-    <nav style={styles.bottomBar}>
-      {tabs.map((t, i) => {
-        // The primary action sits in the middle of the row.
-        const mid = action && i === Math.ceil(tabs.length / 2);
-        return (
-          <React.Fragment key={t.key}>
-            {mid && (
-              <button style={styles.bottomCta} onClick={action.onClick}>
-                {action.label}
-              </button>
+    <>
+      {action && (
+        <button style={styles.bottomAction} onClick={action.onClick}>
+          <span style={styles.bottomActionPlus}>+</span>
+          {action.label}
+        </button>
+      )}
+      <nav style={styles.bottomBar}>
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            style={t.key === active ? styles.bottomTabOn : styles.bottomTab}
+            onClick={() => onSelect(t.key)}
+            title={t.label}
+          >
+            <span style={styles.bottomGlyph}>{t.glyph}</span>
+            <span style={styles.bottomTabLabel}>{t.label}</span>
+            {t.badge > 0 && (
+              <span style={styles.bottomBadge}>{t.badge > 99 ? "99+" : t.badge}</span>
             )}
-            <button
-              style={t.key === active ? styles.bottomTabOn : styles.bottomTab}
-              onClick={() => onSelect(t.key)}
-            >
-              <span style={styles.bottomGlyph}>{t.glyph}</span>
-              {t.label}
-              {t.badge > 0 && <span style={styles.bottomBadge}>{t.badge > 99 ? "99+" : t.badge}</span>}
-            </button>
-          </React.Fragment>
-        );
-      })}
-    </nav>
+          </button>
+        ))}
+      </nav>
+    </>
   );
 }
 
@@ -13103,49 +13232,67 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
 // them immediately.
 const POLICY_KEY = "ems:policies";
 
-// Deliberately empty of content. Writing plausible-sounding clinical policy and
-// putting it in front of a dispatcher would be worse than an empty shelf: a
-// made-up rule that reads like a real one is the kind of thing somebody acts
-// on. The department fills these in.
-const POLICY_PLACEHOLDER = [
-  { id: "pol-transfer", title: "Inter-facility transfers", body: "" },
-  { id: "pol-escort", title: "Relatives and escorts", body: "" },
-  { id: "pol-refusal", title: "Patient refusal", body: "" },
-  { id: "pol-outofarea", title: "Out-of-area journeys", body: "" },
-  { id: "pol-escalation", title: "Escalation and who to call", body: "" },
-];
+// A policy is a document the department already has — a PDF signed off by
+// somebody, or a photograph of the laminated sheet on the wall. Retyping it
+// into a text box would create a second version that can drift from the real
+// one, and a dispatcher acting on a stale copy of a policy is worse off than
+// one who went and found the folder.
+//
+// So administration uploads the file and the app shows it. Crews and
+// dispatchers can only read.
+//
+// Held as a data URL in the board store like everything else. That caps what is
+// sensible to upload — a few megabytes, not a scanned book — and the uploader
+// is told so rather than left wondering why a save failed.
+const POLICY_MAX_BYTES = 4 * 1024 * 1024;
 
-function PolicyModal({ open, onClose, policies }) {
-  const list = policies && policies.length ? policies : POLICY_PLACEHOLDER;
+function policyList(policies) {
+  return Array.isArray(policies) ? policies.filter(Boolean) : [];
+}
+
+function policyIsImage(pol) {
+  return !!(pol && pol.mime && pol.mime.startsWith("image/"));
+}
+
+
+// What everybody except administration sees: the shelf, read-only.
+function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
+  const list = policyList(policies);
   const [openId, setOpenId] = useState(null);
 
-  // Escape closes it. A dispatcher who opened this while a call was coming in
-  // needs it gone in one keystroke, not a hunt for the X.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   return (
-    <div style={styles.policyScrim} onClick={onClose}>
-      <div style={styles.policySheet} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.policyHead}>
-          <div>
-            <div style={styles.policyEyebrow}>DEPARTMENT POLICIES</div>
-            <div style={styles.policyTitle}>What the desk is expected to do</div>
-          </div>
-          <button style={styles.policyClose} onClick={onClose} title="Close (Esc)">
-            ✕
-          </button>
+    <div style={styles.policyPage}>
+      <div style={styles.policyPageHead}>
+        <div>
+          <div style={styles.policyEyebrow}>DEPARTMENT POLICIES</div>
+          <div style={styles.policyTitle}>What the desk is expected to do</div>
         </div>
+        {canManage && (
+          <label style={busy ? styles.policyAddOff : styles.policyAdd}>
+            {busy ? "Adding…" : "+ Add a policy"}
+            <input
+              type="file"
+              accept="application/pdf,image/*"
+              style={{ display: "none" }}
+              disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                e.target.value = "";
+                if (f) onAdd(f);
+              }}
+            />
+          </label>
+        )}
+      </div>
 
-        <div style={styles.policyBody}>
+      {list.length === 0 ? (
+        <div style={styles.formHint}>
+          {canManage
+            ? "Nothing here yet. Add the department's policies as PDFs or photographs of the printed sheets — whatever is already the signed-off version."
+            : "No policies have been published yet. Administration adds them."}
+        </div>
+      ) : (
+        <div style={styles.policyGrid}>
           {list.map((pol) => {
             const isOpen = openId === pol.id;
             return (
@@ -13154,33 +13301,82 @@ function PolicyModal({ open, onClose, policies }) {
                   style={styles.policyItemHead}
                   onClick={() => setOpenId(isOpen ? null : pol.id)}
                 >
-                  <span>{pol.title}</span>
+                  <span style={styles.policyItemName}>
+                    <span style={styles.policyKind}>{policyIsImage(pol) ? "IMAGE" : "PDF"}</span>
+                    {pol.title}
+                  </span>
                   <span style={styles.policyChevron}>{isOpen ? "−" : "+"}</span>
                 </button>
+
                 {isOpen && (
-                  <div style={styles.policyText}>
-                    {pol.body ? (
-                      pol.body
+                  <div style={styles.policyViewer}>
+                    {policyIsImage(pol) ? (
+                      <img src={pol.data} alt={pol.title} style={styles.policyImage} />
                     ) : (
-                      <span style={styles.policyEmpty}>
-                        Not written yet. Administration adds the wording for this one.
-                      </span>
+                      // A PDF in an object tag rather than an iframe: the
+                      // fallback inside it is what a webview without a PDF
+                      // renderer shows, instead of a blank rectangle.
+                      <object data={pol.data} type="application/pdf" style={styles.policyPdf}>
+                        <div style={styles.policyNoView}>
+                          This device cannot show a PDF inline.
+                          <a href={pol.data} target="_blank" rel="noreferrer" style={styles.legalLink}>
+                            {" "}Open it in a new tab
+                          </a>
+                          .
+                        </div>
+                      </object>
                     )}
+                    <div style={styles.policyMeta}>
+                      Added {pol.addedAt ? gregDateTimeStr(pol.addedAt) : "—"}
+                      {pol.addedBy ? ` by ${pol.addedBy}` : ""}
+                      {canManage && (
+                        <button style={styles.policyRemove} onClick={() => onRemove(pol)}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
             );
           })}
         </div>
-
-        <div style={styles.policyFoot}>
-          Policies are held centrally — whatever administration writes here is what every
-          desk sees, immediately.
-        </div>
-      </div>
+      )}
     </div>
   );
 }
+
+// Reading the file in, and the two guards that matter: a size the board store
+// can carry, and a type somebody can actually open.
+function readPolicyFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error("no file"));
+    const ok = file.type === "application/pdf" || file.type.startsWith("image/");
+    if (!ok) return reject(new Error("Only a PDF or an image can be added."));
+    if (file.size > POLICY_MAX_BYTES) {
+      return reject(
+        new Error(
+          `That file is ${(file.size / 1048576).toFixed(1)} MB. The limit is ${POLICY_MAX_BYTES / 1048576} MB — ` +
+            `scan it at a lower resolution, or split it.`
+        )
+      );
+    }
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("The file could not be read."));
+    fr.onload = () =>
+      resolve({
+        id: uid("pol"),
+        title: file.name.replace(/\.[^.]+$/, ""),
+        mime: file.type,
+        bytes: file.size,
+        data: String(fr.result || ""),
+        addedAt: Date.now(),
+      });
+    fr.readAsDataURL(file);
+  });
+}
+
+
 
 // ---------- overtime, as administration answers it ----------
 //
@@ -14579,6 +14775,8 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
   const [seenTick, setSeenTick] = useState(0);
   const endRef = useRef(null);
 
+  // Everything on this page is scoped to the shift running now.
+  const shiftFrom = uhuWindowStart(Date.now());
   const isCrew = !!myUnitId;
   const mine = isCrew ? "crew" : "dispatch";
   const threads = isCrew
@@ -14586,9 +14784,9 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
     : (units || []).filter((u) => stationOf(u) === station);
 
   const active = threads.find((u) => u.id === activeId) || (isCrew ? threads[0] : null);
-  const thread = active ? threadFor(messages, active.id) : [];
+  const thread = active ? threadFor(messages, active.id, shiftFrom) : [];
 
-  const totalUnread = threads.reduce((n, u) => n + unreadIn(messages, u.id, mine), 0);
+  const totalUnread = threads.reduce((n, u) => n + unreadIn(messages, u.id, mine, shiftFrom), 0);
 
   // Opening a thread marks it read on this device, and so does a new message
   // arriving while it is already open — otherwise the badge counts lines the
@@ -14636,16 +14834,6 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
 
   if (!threads.length) return null;
 
-  if (!open) {
-    return (
-      <button style={styles.chatPill} onClick={() => setOpen(true)}>
-        <MessageSquare size={15} />
-        <span>Messages</span>
-        {totalUnread > 0 && <span style={styles.chatPillBadge}>{totalUnread}</span>}
-      </button>
-    );
-  }
-
   return (
     <div style={styles.chatPanel}>
       <div style={styles.chatHead}>
@@ -14653,16 +14841,14 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
           <MessageSquare size={14} />
           {isCrew ? "Dispatch" : active ? active.name : "Messages"}
         </div>
-        <button style={styles.chatClose} onClick={() => setOpen(false)} title="Hide">
-          ✕
-        </button>
+        <span style={styles.chatShiftNote}>THIS SHIFT ONLY</span>
       </div>
 
       {/* The desk picks a truck; a crew never sees this row. */}
       {!isCrew && (
         <div style={styles.chatThreads}>
           {threads.map((u) => {
-            const n = unreadIn(messages, u.id, mine);
+            const n = unreadIn(messages, u.id, mine, shiftFrom);
             const on = active && active.id === u.id;
             return (
               <button
@@ -14861,19 +15047,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // Is anything free right now, and is a gap already running?
   // The policy shelf, read once when the desk opens it rather than polled: this
   // is reference material, not live board state.
-  const [policyOpen, setPolicyOpen] = useState(false);
-  const [policies, setPolicies] = useState(null);
-  useEffect(() => {
-    if (!policyOpen || policies !== null) return;
-    let alive = true;
-    (async () => {
-      const stored = await readKey(POLICY_KEY, null);
-      if (alive) setPolicies(stored || POLICY_PLACEHOLDER);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [policyOpen, policies]);
+
 
   // Every truck at this station, so a message from any of them reaches the desk.
   useMessageAlerts(
@@ -15515,20 +15689,8 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             </span>
           </button>
         )}
-
-        {/* Beside the coverage control because that is the other thing on this
-            row that is about how the department runs rather than about one
-            call. Quiet by default — it is reference, not an alert. */}
-        <button style={styles.policyBtn} onClick={() => setPolicyOpen(true)}>
-          <BookOpen size={13} /> Policies
-        </button>
       </div>
 
-      <PolicyModal
-        open={policyOpen}
-        onClose={() => setPolicyOpen(false)}
-        policies={policies}
-      />
 
       {/* Reachable from every dispatcher page, closed until it is wanted. */}
       <ChatDock
@@ -16589,8 +16751,9 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     // do not need to be told about it. This is only for a call ended out from
     // under them.
     if (gone.times && gone.times.backInService) return;
-    soundCallAlert(audioCtxRef, "critical", true);
-    buzz([400, 150, 400]);
+    // Not the dispatch tone. See soundStandDown.
+    soundStandDown(audioCtxRef);
+    buzz([400, 150, 400, 150, 400]);
     setCalledOff({
       nature: gone.nature || "the call",
       reason: callCloseReason(gone),
@@ -19355,6 +19518,10 @@ function fleetUhu(requests, units, from, to) {
 // report. Recent calls cannot close without one; older ones could, which is
 // exactly what this figure is for — it says how much of the record is
 // attributable, and it should climb towards 100 and stay there.
+// NOT report completion. This counts calls carrying the name of whoever said
+// they would write the patient care report. There is no report in this app yet,
+// so nothing here can measure one — and the figure is labelled for what it
+// really is rather than for what it would be nice to have.
 function pcrCompliance(requests, from, to) {
   const closed = (requests || []).filter(
     (r) => r && r.status === "completed" && r.createdAt >= from && r.createdAt < to
@@ -19422,11 +19589,23 @@ function IndicatorBand({ requests, units, log, checklistRuns, range, setRange })
           good={UHU_HEADROOM}
           caption={units && units.length ? `${units.length} vehicles, time on call` : "no vehicles"}
         />
+        {/* Was labelled "PCR compliance", and was not.
+            It counted calls where somebody had tapped a name into the PCR
+            author field — which says who agreed to write the report, not
+            whether a report exists. A figure that looks like a compliance
+            measure and is not one is worse than a blank space, because it gets
+            reported upward. It says what it actually counts until the patient
+            care report itself exists, at which point this becomes a real
+            measure of a real thing. */}
         <Gauge
-          label="PCR compliance"
+          label="PCR author named"
           pct={pcr.pct}
           good={PCR_GOOD}
-          caption={pcr.total ? `${pcr.named} of ${pcr.total} closed calls named` : "no closed calls"}
+          caption={
+            pcr.total
+              ? `${pcr.named} of ${pcr.total} closed calls · not yet report completion`
+              : "no closed calls"
+          }
         />
         <Gauge
           label="Checklist compliance"
@@ -23773,41 +23952,9 @@ const styles = {
     color: "var(--ok)", fontSize: 22, fontWeight: 700, lineHeight: 1,
   },
 
-  chatPill: {
-    position: "fixed",
-    right: 14,
-    bottom: "calc(78px + env(safe-area-inset-bottom))",
-    zIndex: 1210,
-    background: "var(--raised)",
-    border: "1px solid var(--hair-2)",
-    color: "var(--ink-2)",
-    borderRadius: 999,
-    padding: "11px 17px",
-    fontSize: 13.5,
-    fontWeight: 650,
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    boxShadow: "0 12px 34px var(--lift-2)",
-  },
-  chatPillBadge: {
-    background: "var(--crit)",
-    color: "#FFFFFF",
-    borderRadius: 999,
-    minWidth: 20,
-    padding: "1px 6px",
-    fontSize: 11.5,
-    fontWeight: 800,
-    textAlign: "center",
-  },
   chatPanel: {
-    position: "fixed",
-    right: 14,
-    bottom: "calc(78px + env(safe-area-inset-bottom))",
-    zIndex: 1210,
-    width: "min(380px, calc(100vw - 28px))",
-    height: "min(520px, calc(100vh - 190px))",
+    width: "100%",
+    height: "min(620px, calc(100vh - 260px))",
     background: "var(--panel)",
     border: "1px solid var(--hair-2)",
     borderRadius: 20,
@@ -23828,9 +23975,8 @@ const styles = {
     display: "flex", alignItems: "center", gap: 8,
     fontSize: 14.5, fontWeight: 650, color: "var(--ink)",
   },
-  chatClose: {
-    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
-    borderRadius: 999, width: 26, height: 26, cursor: "pointer", fontSize: 12, lineHeight: 1,
+  chatShiftNote: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1, color: "var(--ink-4)",
   },
   chatThreads: {
     display: "flex", gap: 6, padding: "9px 12px", overflowX: "auto",
@@ -24212,46 +24358,68 @@ const styles = {
     backdropFilter: "blur(18px) saturate(140%)",
     WebkitBackdropFilter: "blur(18px) saturate(140%)",
     border: "1px solid var(--veil-2)",
-    borderRadius: 26,
+    borderRadius: 22,
     display: "flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "8px 9px",
+    alignItems: "stretch",
+    gap: 2,
+    padding: 6,
     boxShadow: "0 18px 44px var(--lift-2)",
-    zIndex: 50,
+    // Above anything a page can raise. Leaflet alone goes to 1000.
+    zIndex: 1200,
+    // More tabs than fit on a phone scroll rather than squash: a label crushed
+    // to three letters is not a label. The scrollbar itself is hidden — the
+    // overflow is felt by dragging, not read.
+    overflowX: "auto",
+    scrollbarWidth: "none",
   },
   bottomTab: {
-    flex: 1, minWidth: 0, position: "relative",
-    display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-    background: "none", border: "none", cursor: "pointer",
-    fontSize: 9.5, letterSpacing: 0.4, color: "var(--ink-4)", padding: "6px 0",
+    flex: "1 1 0", minWidth: 62, position: "relative",
+    display: "flex", flexDirection: "column", alignItems: "center",
+    justifyContent: "center", gap: 4,
+    background: "none", border: "1px solid transparent", borderRadius: 16,
+    cursor: "pointer", color: "var(--ink-4)", padding: "8px 4px 7px",
   },
   bottomTabOn: {
-    flex: 1, minWidth: 0, position: "relative",
-    display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-    // The page you are on, said twice: lit, and lifted onto its own panel.
-    // Tint alone is ambiguous in daylight through a windscreen.
-    background: "rgba(61,220,151,.12)",
-    border: "1px solid rgba(61,220,151,.35)",
+    flex: "1 1 0", minWidth: 62, position: "relative",
+    display: "flex", flexDirection: "column", alignItems: "center",
+    justifyContent: "center", gap: 4,
+    // The page you are on, said quietly and said twice — a filled panel and a
+    // lit label. The old bright green outline shouted louder than anything on
+    // the board above it, which is the wrong order of importance for a signpost.
+    background: "var(--veil-2)",
+    border: "1px solid var(--hair-2)",
     borderRadius: 16,
-    cursor: "pointer",
-    fontSize: 9.5, letterSpacing: 0.4, color: "var(--ink)", fontWeight: 800, padding: "6px 0",
+    cursor: "pointer", color: "var(--ink)", padding: "8px 4px 7px",
   },
-  bottomGlyph: { fontSize: 17, lineHeight: 1.1 },
+  // One size for every glyph, so the row sits on one baseline instead of
+  // stepping up and down with whatever each emoji happens to measure.
+  bottomGlyph: {
+    fontSize: 17, lineHeight: 1, height: 19,
+    display: "flex", alignItems: "center", justifyContent: "center",
+  },
+  bottomTabLabel: {
+    fontSize: 9.5, letterSpacing: 0.3, fontWeight: 650,
+    whiteSpace: "nowrap", lineHeight: 1,
+  },
   bottomBadge: {
-    position: "absolute", top: 0, right: "22%",
+    position: "absolute", top: 3, right: 8,
     background: "var(--crit)", color: "#fff", fontSize: 9, fontWeight: 800,
     borderRadius: 999, padding: "1px 5px", minWidth: 15, textAlign: "center",
   },
-  bottomCta: {
-    flex: "none",
+  // Floats clear of the row rather than sitting inside it.
+  bottomAction: {
+    position: "fixed",
+    right: 16,
+    bottom: "calc(86px + env(safe-area-inset-bottom))",
+    zIndex: 1205,
+    display: "inline-flex", alignItems: "center", gap: 7,
     background: "linear-gradient(180deg,#12805E,#0A5540)",
     border: "1px solid rgba(255,255,255,.16)",
-    borderRadius: 999,
-    color: "#fff", fontSize: 13, fontWeight: 800, letterSpacing: -0.1,
-    padding: "13px 18px", cursor: "pointer",
-    boxShadow: "0 6px 18px rgba(14,107,79,.5)",
+    color: "#FFFFFF", borderRadius: 999,
+    padding: "12px 18px", fontSize: 13.5, fontWeight: 700,
+    cursor: "pointer", boxShadow: "0 12px 30px rgba(10,85,64,.45)",
   },
+  bottomActionPlus: { fontSize: 16, fontWeight: 400, lineHeight: 1, marginTop: -1 },
 
   statusHeadline: { display: "flex", alignItems: "baseline", gap: 8 },
   statusBig: {
@@ -25201,8 +25369,15 @@ const styles = {
   // Small, grey, and out of the way of the sign-in box. It has to be present and
   // legible, not prominent — a crew signing on at handover should not have to
   // read past a legal notice to find the ID field.
+  loginFoot: {
+    width: "100%", maxWidth: 440, margin: "24px auto 0",
+    display: "flex", flexDirection: "column", gap: 12,
+  },
+  loginFootWhat: {
+    fontSize: 12, lineHeight: 1.6, color: "var(--ink-4)", textAlign: "center",
+  },
   legalNote: {
-    marginTop: 14, fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)", textAlign: "center",
+    marginTop: 0, fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)", textAlign: "center",
   },
   legalLinks: {
     marginTop: 6, display: "flex", justifyContent: "center", alignItems: "center",
