@@ -8053,9 +8053,21 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
             <img src={DEPT_LOGO} alt={ORG_NAME ? `${ORG_NAME} Ambulance EMS` : "Ambulance EMS crest"} style={styles.loginDeptLogo} />
           </div>
         )}
-        <div style={styles.loginHeader}>
-          <Radio size={22} color="var(--flow)" />
-          <span style={styles.loginHeaderText}>MEDCOM DISPATCH</span>
+        {/* The wordmark from the approved design: the mark above the name,
+            the name stacked and letter-spaced, centred. With no crests to sit
+            beside, a single line of small caps beside an icon read as a label
+            on a form rather than as the front door of the department's board. */}
+        <div style={styles.loginMark}>
+          <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="var(--flow)" strokeWidth="1.5" strokeLinecap="round">
+            <path d="M12 3v6" />
+            <circle cx="12" cy="12" r="2.2" />
+            <path d="M6.5 6.5a7.8 7.8 0 0 0 0 11M17.5 6.5a7.8 7.8 0 0 1 0 11" />
+            <path d="M3.4 3.4a12 12 0 0 0 0 17.2M20.6 3.4a12 12 0 0 1 0 17.2" opacity=".38" />
+          </svg>
+          <div style={styles.loginWordmark}>
+            <span style={styles.loginWordTop}>MEDCOM</span>
+            <span style={styles.loginWordBottom}>DISPATCH</span>
+          </div>
         </div>
         <InfoNote label="What is this?">
           MEDCOM Dispatch — the ambulance board for Emergency Medical Services. Sign in
@@ -14196,8 +14208,13 @@ function FleetMap({ units, locations, requests, station }) {
     if (live.length === 0) framedRef.current = "";
   }, [units, locations, requests, station, now, ready]);
 
-  const tracked = (units || []).filter(
-    (u) => (!station || stationOf(u) === station) && (locations || {})[u.id]
+  const mineHere = (units || []).filter((u) => !station || stationOf(u) === station);
+  const tracked = mineHere.filter((u) => (locations || {})[u.id]);
+  // Out on a call, but nothing is arriving from them. "Nobody out" while a
+  // truck is plainly on a call is the sort of thing that gets read as the map
+  // being broken; naming them says which truck and lets the desk ask.
+  const outWithoutFix = mineHere.filter(
+    (u) => !(locations || {})[u.id] && liveRequestFor(u, requests)
   );
 
   return (
@@ -14207,6 +14224,8 @@ function FleetMap({ units, locations, requests, station }) {
         <span style={styles.mapCount}>
           {tracked.length
             ? `${tracked.length} truck${tracked.length === 1 ? "" : "s"} sharing`
+            : outWithoutFix.length
+            ? `${outWithoutFix.length} out · no position`
             : "nobody out"}
         </span>
       </div>
@@ -14224,7 +14243,7 @@ function FleetMap({ units, locations, requests, station }) {
           answers "how long ago", which is the question that decides whether to
           trust the dot. */}
       <div style={styles.mapList}>
-        {tracked.length === 0 ? (
+        {tracked.length === 0 && outWithoutFix.length === 0 ? (
           <div style={styles.formHint}>
             Positions appear here while a truck is out on a call. Tracking starts when a crew is
             dispatched and stops when they go back in service.
@@ -14248,6 +14267,20 @@ function FleetMap({ units, locations, requests, station }) {
             );
           })
         )}
+
+        {/* Out, but silent. Usually the crew's tablet is locked, or the Alpha
+            seat has not answered the location question. Either way the desk
+            should see the truck listed rather than conclude the map is
+            broken. */}
+        {outWithoutFix.map((u) => (
+          <div key={u.id} style={styles.mapRow}>
+            <span style={styles.mapRowName}>{u.name}</span>
+            <span style={{ ...styles.mapRowStatus, color: statusMeta(u.status).color }}>
+              {statusMeta(u.status).label}
+            </span>
+            <span style={styles.mapRowNoFix}>no position — tablet asleep, or not shared</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -14470,7 +14503,15 @@ function TrackingConsentModal({ open, user, onDecide }) {
 // The crew's own bar: on, off, and how long ago the last fix was. A crew whose
 // position stopped updating twenty minutes ago should be able to see that on
 // their own screen, not only on the desk's.
-function TrackingBar({ state, lastTs, error }) {
+// Why this truck is, or is not, on the map.
+//
+// The first version only rendered while tracking was actually running, which
+// meant every reason it was NOT running was invisible: a crew in the Bravo
+// seat, a crew who had not been asked yet, a device that refused permission —
+// all of them looked identical to a working app, and the desk just saw "nobody
+// out". A gate nobody can see is a gate nobody can fix. So it renders for the
+// whole call and always says which of the reasons applies.
+function TrackingBar({ state, lastTs, error, reason }) {
   // Its own second hand. The crew screen has no shared ticker, and the whole
   // point of this bar is that the number moves — a bar reading "2 min ago"
   // forever is worse than no bar, because it looks like it is working.
@@ -14480,15 +14521,15 @@ function TrackingBar({ state, lastTs, error }) {
     return () => clearInterval(t);
   }, []);
 
-  if (state === "off") return null;
   const age = lastTs ? Math.max(0, now - lastTs) : null;
   const stale = age !== null && age > LOCATION_STALE_MS;
 
-  if (state === "refused") {
+  // Not this device's job, or not agreed to. Either way, say which.
+  if (state !== "on") {
     return (
       <div style={styles.trackBarOff}>
         <span style={styles.trackDotOff} />
-        Location off — the desk cannot see this truck's position
+        {reason || "Location off — the desk cannot see this truck's position"}
       </div>
     );
   }
@@ -16467,6 +16508,19 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   // the seat the department named.
   const isAlpha = !!(myUnit && myUnit.alpha && user && myUnit.alpha.accountId === user.accountId);
   const shouldTrack = !!(myRequest && myUnit && isAlpha && !assisting);
+
+  // Said out loud on the crew's own screen, so "the map is empty" is never a
+  // mystery anybody has to debug from the desk.
+  const trackingReason = (() => {
+    if (!myRequest) return "";
+    if (assisting) return "Location off — the team who own this call share the position";
+    if (!isAlpha) return "Location is shared from the Alpha seat's device, not this one";
+    if (!user || !user.accountId) return "Location off — this session has no employee ID against it";
+    const c = consentFor(trackingConsents, user.accountId);
+    if (!c) return "Waiting for your answer about sharing this truck's position";
+    if (c.status === "refused") return "You declined location — the desk cannot see this truck";
+    return "";
+  })();
   const tracking = useTracking({
     unit: myUnit,
     request: myRequest,
@@ -17466,11 +17520,12 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         {/* On, off, and how long ago — on the crew's own screen, so somebody
             whose position stopped updating twenty minutes ago can see that
             without asking the desk. */}
-        {shouldTrack && (
+        {myRequest && (
           <TrackingBar
             state={tracking.state}
             lastTs={tracking.lastTs}
             error={tracking.error}
+            reason={trackingReason}
           />
         )}
 
@@ -21679,7 +21734,8 @@ const styles = {
     padding: "10px 14px",
     display: "flex",
     justifyContent: "center",
-    zIndex: 40,
+    // Above anything a page can raise. Leaflet alone goes to 1000.
+    zIndex: 1200,
     boxShadow: "0 12px 34px var(--lift-2)",
     backdropFilter: "blur(8px)",
   },
@@ -23426,6 +23482,14 @@ const styles = {
   mapWrap: {
     background: "var(--panel)", border: "1px solid var(--hair)",
     borderRadius: 18, overflow: "hidden", marginBottom: 14,
+    // Leaflet sets its own z-indexes internally — panes at 400, controls at
+    // 800, the corners at 1000 — and those were beating the footer bar at 40,
+    // so the map painted straight over the navigation. `isolation` gives the
+    // wrapper its own stacking context, which contains every one of them: the
+    // map can now only ever stack against itself.
+    position: "relative",
+    zIndex: 0,
+    isolation: "isolate",
   },
   mapHead: {
     display: "flex", alignItems: "baseline", justifyContent: "space-between",
@@ -23451,6 +23515,7 @@ const styles = {
   mapRowAge: { color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
   mapRowAgeStale: { color: "var(--hold)", fontWeight: 650, fontVariantNumeric: "tabular-nums" },
   mapRowAcc: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+  mapRowNoFix: { color: "var(--ink-4)", fontStyle: "italic" },
 
   consentList: { display: "flex", flexDirection: "column", gap: 10, marginTop: 12 },
   consentRow: {
@@ -23712,7 +23777,7 @@ const styles = {
     position: "fixed",
     right: 14,
     bottom: "calc(78px + env(safe-area-inset-bottom))",
-    zIndex: 45,
+    zIndex: 1210,
     background: "var(--raised)",
     border: "1px solid var(--hair-2)",
     color: "var(--ink-2)",
@@ -23740,7 +23805,7 @@ const styles = {
     position: "fixed",
     right: 14,
     bottom: "calc(78px + env(safe-area-inset-bottom))",
-    zIndex: 45,
+    zIndex: 1210,
     width: "min(380px, calc(100vw - 28px))",
     height: "min(520px, calc(100vh - 190px))",
     background: "var(--panel)",
@@ -25088,7 +25153,11 @@ const styles = {
     // No card, no gradient, no plate. The sign-in is a front door: a name, a
     // question, three large targets. A dialogue box floating on a coloured field
     // is what an app looked like when every screen had to be a window.
-    background: "var(--ground)",
+    // A single soft light from the upper left, as the design has it. Flat black
+    // behind a lone form reads as an error page; this reads as a room with a
+    // light on in it, and costs one gradient.
+    background:
+      "radial-gradient(1000px 560px at 22% 14%, color-mix(in srgb, var(--flow) 9%, var(--panel)) 0%, var(--ground) 62%)",
     position: "relative",
     display: "flex",
     flexDirection: "column",
@@ -25104,17 +25173,31 @@ const styles = {
     display: "inline-flex", alignItems: "center", justifyContent: "center",
   },
 
+  loginMark: {
+    display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+    marginBottom: 26,
+  },
+  loginWordmark: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5 },
+  loginWordTop: {
+    fontSize: 20, fontWeight: 600, letterSpacing: 3.6, color: "var(--ink)",
+  },
+  loginWordBottom: {
+    fontSize: 11, fontWeight: 650, letterSpacing: 3.4, color: "var(--ink-4)",
+  },
+
   loginCard: {
     width: "100%",
-    maxWidth: 460,
+    maxWidth: 440,
     margin: "0 auto",
-    background: "none",
-    border: "none",
-    borderRadius: 0,
-    padding: 0,
-    boxShadow: "none",
+    // The form sits on a panel again, as the design draws it. Without one it
+    // floated on the ground with nothing holding it together, and the fields
+    // read as three unrelated things rather than one door.
+    background: "var(--panel)",
+    border: "1px solid var(--hair)",
+    borderRadius: 22,
+    padding: "24px 24px 26px",
+    boxShadow: "0 24px 64px var(--lift-2)",
   },
-  loginHeader: { display: "flex", alignItems: "center", gap: 8 },
   // Small, grey, and out of the way of the sign-in box. It has to be present and
   // legible, not prominent — a crew signing on at handover should not have to
   // read past a legal notice to find the ID field.
