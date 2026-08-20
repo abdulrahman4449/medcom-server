@@ -44,6 +44,22 @@
   server rather than a public CDN, like everything else the app loads.
 -->
 <script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<!--
+  Map, for the live position of a truck that is out on a call.
+
+  Leaflet with OpenStreetMap tiles: no API key, no billing account, and no
+  third party named as a data recipient beyond the tile host itself. The
+  tiles are the ONLY thing here that reaches a server outside the hospital
+  besides the three scripts above.
+
+  If the hospital network blocks the tile host, the map still works — the
+  ambulances sit in the right places on a blank ground, and the panel says
+  the background could not be loaded rather than pretending the trucks are
+  missing. Same note as the others: for the internal deployment these should
+  be served from the hospital's own server.
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -82,6 +98,7 @@ const Plus = makeIcon("+");
 const ChevronRight = makeIcon("›");
 const Bell = makeIcon("🔔");
 const ClipboardList = makeIcon("📋");
+const BookOpen = makeIcon("📖");
 const Share2 = makeIcon("⤴");
 const Trash = makeIcon("🗑");
 const CalendarClock = makeIcon("🗓");
@@ -832,6 +849,14 @@ function topPerformers({ staff, requests, units, log, win, now }) {
 // mixing the two produced an average that described neither.
 const RESPONSE_TARGET_MS = 10 * 60 * 1000;
 const RESPONSE_GOOD = 90; // per cent, at which the gauge reads green
+
+// The other three department measures, and where each one stops being
+// comfortable. Two of them are compliance figures and want to be high; UHU is
+// not — it is how much of the fleet's time is already spoken for, and a service
+// running above this has no capacity left for the call it has not had yet.
+const PCR_GOOD = 95;
+const CHECKLIST_GOOD = 90;
+const UHU_HEADROOM = 50;
 
 function isInternalEmergency(req) {
   return (req && req.callCategory) === "EMERGENCY (INTERNAL)";
@@ -2309,17 +2334,21 @@ const HANDOVER_GRACE_MS = 6 * 60 * 60 * 1000;
 //
 // Everything the app does is still logged, and the whole feed still goes out on
 // the Event Log sheet of the export. But a desk watching a live board does not
-// need to read every coding, booking, status flip and closure scroll past: the
-// two things dispatch would otherwise have to ask for over the radio are
-// whether the team heard the call and whether they are moving. Those are the
-// only two lines the log sheet shows; the rest are written and kept, not
-// displayed.
-const BOARD_LOG_EVENTS = ["ack", "enroute"];
+// need to read every coding, booking and status flip scroll past: what dispatch
+// would otherwise have to ask for over the radio is whether the team heard the
+// call, whether they are moving, and whether they are free again. Those are the
+// lines the log sheet shows; the rest are written and kept, not displayed.
+//
+// Back in service earns its place for the same reason the other two did. It is
+// the moment a truck rejoins the pool, and a desk holding a call waiting for
+// one was reading it off a status pill changing colour somewhere else on the
+// board, or asking. Now it says so, in the feed, with the time on it.
+const BOARD_LOG_EVENTS = ["ack", "enroute", "backInService"];
 
 // Lines written before entries carried an event key are matched on the sentence
 // instead, so a board that is mid-shift when this build lands doesn't empty
 // out. New entries never take this path.
-const LEGACY_BOARD_LOG_RE = /acknowledged call|acknowledged assist request|— En Route at|marked EN ROUTE/i;
+const LEGACY_BOARD_LOG_RE = /acknowledged call|acknowledged assist request|— En Route at|marked EN ROUTE|— Back in Service at/i;
 
 function isBoardLogEntry(entry) {
   if (!entry) return false;
@@ -2981,11 +3010,10 @@ function scheduleNote(ctx, t0, note, type, peak) {
   osc.stop(end + 0.02);
 }
 
-function scheduleTone(ctx, notes, type, gainPeak) {
-  // Scaled by this device's chosen loudness. A silenced device never reaches
-  // here — the entry points below turn back first — so the peak is always a
-  // real, positive number and the exponential ramps stay valid.
-  const peak = (gainPeak || 0.16) * soundGain();
+function scheduleTone(ctx, notes, type, gainPeak, force) {
+  // Scaled by this device's chosen loudness — unless this is a call being
+  // assigned to this crew, which is not a preference. See UNMISSABLE below.
+  const peak = (gainPeak || 0.16) * (force ? 1 : soundGain());
   if (peak <= 0.0002) return;
   // A context that was suspended a moment ago can report a currentTime the
   // scheduler has already passed, and anything scheduled in the past is simply
@@ -3008,7 +3036,7 @@ function toneKeyFor(priority) {
   return "routine";
 }
 
-function playAlertTone(ctx, priorityIn) {
+function playAlertTone(ctx, priorityIn, force) {
   try {
     if (!ctx) return;
     const priority = toneKeyFor(priorityIn);
@@ -3021,20 +3049,20 @@ function playAlertTone(ctx, priorityIn) {
         { freq: 650, start: 0.45, dur: 0.15 },
         { freq: 950, start: 0.6, dur: 0.15 },
         { freq: 650, start: 0.75, dur: 0.15 },
-      ], "square", 0.22);
+      ], "square", 0.22, force);
     } else if (priority === "urgent") {
       // two rising beeps, with a gap so they read as two
       scheduleTone(ctx, [
         { freq: 700, start: 0, dur: 0.34 },
         { freq: 1000, start: 0.42, dur: 0.34 },
-      ], "square", 0.18);
+      ], "square", 0.18, force);
     } else {
       // gentle two-note chime — anything that isn't critical or urgent lands
       // here, so an unrecognised priority still makes a noise
       scheduleTone(ctx, [
         { freq: 784, start: 0, dur: 0.3 },
         { freq: 1046, start: 0.32, dur: 0.35 },
-      ], "sine", 0.14);
+      ], "sine", 0.14, force);
     }
   } catch (e) {
     // audio not available; ignore
@@ -3134,9 +3162,21 @@ function playWhenAwake(ctx, play) {
 // through here, so all three get the same guarantees about being heard — and
 // the one place a silenced device turns back, so all three are silenced
 // together and nothing has to remember to check twice.
-function soundCallAlert(audioCtxRef, priority) {
-  if (soundSilenced()) return;
-  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority));
+//
+// UNMISSABLE. A call landing on this crew's own truck is the exception to
+// every volume setting on this screen. The loudness control exists so a tablet
+// in a quiet ward does not chirp through every booking reminder and button
+// press — it was never meant to be able to silence a dispatch. A crew who
+// turned the board down at two in the morning and then missed the call they
+// were sent on is the failure this whole alarm exists to prevent, so an
+// assignment plays at full gain whatever the chip says, and it plays even when
+// the chip says SILENT.
+//
+// Everything else on the board still respects the setting. Reminders, replies
+// and confirmation sounds are things you may legitimately not want to hear.
+function soundCallAlert(audioCtxRef, priority, unmissable) {
+  if (!unmissable && soundSilenced()) return;
+  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
 }
 
 function soundReminderTone(audioCtxRef) {
@@ -3310,6 +3350,490 @@ function notifyAssistRequest(request, unitName) {
 // must not sit on the screen the way an unanswered assistance request does.
 // The body carries the medic and the call, never the text of the issue —
 // notifications are read off a lock screen in a corridor.
+// ---------- where the trucks are ----------
+//
+// Deliberately small in scope, because scope is what turns a dispatch tool into
+// surveillance.
+//
+// WHEN. Only while a truck is out on a call. Tracking starts when the crew are
+// dispatched and stops the moment they go back in service — the same two events
+// the whole board already turns on. Off a call, nobody is located.
+//
+// WHAT IS KEPT. The latest position per truck, and nothing else. Each update
+// overwrites the one before it and the whole entry is deleted at back in
+// service, so there is no route, no history, and nothing to leak: a trail of
+// where named staff were at 03:40 last Tuesday is a different product from a
+// board showing where the trucks are now, and no screen in this app wants it.
+// It is also the difference between a few hundred bytes on every board write
+// and a few hundred thousand records.
+//
+// FOREGROUND ONLY. The browser stops giving positions when the app is not on
+// screen, and that is left exactly as it is — no background location, no
+// wake locks, nothing that would need Google's Location Permissions
+// declaration. A tablet that has been locked simply stops updating, and the
+// desk is told how long ago the last fix was rather than shown a stale dot
+// pretending to be live.
+//
+// WHOSE. The Alpha seat's device. One truck, one position; two phones in one
+// vehicle reporting slightly different corners of a car park is noise.
+const LOCATION_KEY = "ems:locations";
+const TRACKING_CONSENT_KEY = "ems:trackingConsent";
+// One fix a minute. An ambulance at speed covers about a kilometre in that
+// time, which is the right grain for "where is my truck" and a fraction of the
+// battery of a continuous watch.
+const LOCATION_INTERVAL_MS = 60 * 1000;
+// Past this, the dot is a guess. The desk is told rather than left to assume.
+const LOCATION_STALE_MS = 3 * 60 * 1000;
+
+function consentFor(consents, accountId) {
+  if (!accountId) return null;
+  return (consents || {})[String(accountId).toUpperCase()] || null;
+}
+
+// Granted once and never asked again; refused and asked again on the next call,
+// which is what the department chose. A refusal takes effect the moment it is
+// made — the administrator's acknowledgement is a record, not a gate. Consent
+// that can be overruled by a supervisor is not consent, and an app that keeps
+// locating somebody who said no is the thing this feature must never become.
+function mayTrack(consents, accountId) {
+  const c = consentFor(consents, accountId);
+  return !!(c && c.status === "granted");
+}
+
+function needsConsentPrompt(consents, accountId) {
+  if (!accountId) return false;
+  const c = consentFor(consents, accountId);
+  if (!c) return true;
+  return c.status === "refused";
+}
+
+async function recordConsent({ accountId, name, status, reason }) {
+  if (!accountId) return null;
+  const key = String(accountId).toUpperCase();
+  const existing = (await readKey(TRACKING_CONSENT_KEY, {})) || {};
+  const next = {
+    ...existing,
+    [key]: {
+      accountId,
+      name: name || "",
+      status,
+      reason: reason || "",
+      ts: Date.now(),
+      // Cleared on every fresh answer: an acknowledgement belongs to the
+      // refusal it was given for, not to the person.
+      ackedBy: null,
+      ackedAt: null,
+    },
+  };
+  await writeKey(TRACKING_CONSENT_KEY, next);
+  return next;
+}
+
+async function writePosition({ unit, coords, byName, accountId, requestId }) {
+  if (!unit || !coords) return null;
+  const existing = (await readKey(LOCATION_KEY, {})) || {};
+  const next = {
+    ...existing,
+    [unit.id]: {
+      unitId: unit.id,
+      unitName: unit.name || "",
+      station: stationOf(unit),
+      lat: coords.latitude,
+      lng: coords.longitude,
+      // Metres. Shown to the desk, because a fix good to half a kilometre
+      // should not be read as a street address.
+      accuracy: typeof coords.accuracy === "number" ? Math.round(coords.accuracy) : null,
+      heading: typeof coords.heading === "number" && !Number.isNaN(coords.heading) ? coords.heading : null,
+      speed: typeof coords.speed === "number" && !Number.isNaN(coords.speed) ? coords.speed : null,
+      ts: Date.now(),
+      byName: byName || "",
+      accountId: accountId || null,
+      requestId: requestId || null,
+    },
+  };
+  await writeKey(LOCATION_KEY, next);
+  return next;
+}
+
+// Back in service. The entry is removed rather than marked finished — there is
+// nothing to keep.
+async function clearPosition(unitId) {
+  if (!unitId) return null;
+  const existing = (await readKey(LOCATION_KEY, {})) || {};
+  if (!existing[unitId]) return existing;
+  const next = { ...existing };
+  delete next[unitId];
+  await writeKey(LOCATION_KEY, next);
+  return next;
+}
+
+function positionAgeMs(fix, now) {
+  return fix && fix.ts ? Math.max(0, (now || Date.now()) - fix.ts) : null;
+}
+
+// Nothing outlives the call it belongs to.
+//
+// Deleting the fix at back in service is done by the crew's own device, and a
+// device is exactly the thing that cannot be relied on to do it: a tablet whose
+// battery goes flat mid-call, a browser closed at the destination, a crew who
+// sign off without stamping. Any of those leaves a position sitting in the
+// store — written into the database, surviving deploys, quietly becoming the
+// history this feature was designed not to keep.
+//
+// So the deletion does not depend on the device that made it. Every open board
+// checks on each poll and drops anything that should not be there: a truck that
+// no longer exists, a truck that is not on a call, or a fix old enough that
+// whatever was sending it has plainly stopped. Whoever is looking at the board
+// does the tidying, so it happens whether or not the crew's tablet ever comes
+// back.
+const LOCATION_MAX_AGE_MS = 15 * 60 * 1000;
+
+function pruneLocations(locations, units, requests, now) {
+  const kept = {};
+  let dropped = 0;
+  Object.keys(locations || {}).forEach((unitId) => {
+    const fix = locations[unitId];
+    const unit = (units || []).find((u) => u.id === unitId);
+    const onCall = unit ? !!liveRequestFor(unit, requests) : false;
+    const age = positionAgeMs(fix, now);
+    const stale = age === null || age > LOCATION_MAX_AGE_MS;
+    if (!unit || !onCall || stale) {
+      dropped += 1;
+      return;
+    }
+    kept[unitId] = fix;
+  });
+  return { kept, dropped };
+}
+
+// ---------- overtime ----------
+//
+// Overtime here is not claimed, it is observed. The board already knows when
+// somebody signed on, which shift they signed on for, and when they signed off,
+// so a stay that ran past its shift end is a fact the log already holds — and
+// asking a crew to fill in a form about something the app watched happen is
+// how overtime goes unrecorded.
+//
+// So the claims are DERIVED from the log and never stored. What is stored is
+// the decision: approved, approved in part, or declined, keyed to the stay it
+// answers. That keeps one source of truth for what happened and a separate one
+// for what was agreed about it, and it means correcting a sign-off time
+// corrects the claim rather than leaving an orphan.
+const OVERTIME_KEY = "ems:overtime";
+
+// One stay, one claim. The seat is in the key because a person who worked two
+// trucks in one shift did two stays and each is answerable separately.
+function overtimeClaimId(d) {
+  const who = (d.accountId || d.name || "?").toUpperCase();
+  return `${who}::${d.shiftStart || 0}::${d.unitId || "?"}::${d.seat || "?"}`;
+}
+
+// Was this person on a call when their shift ended? Both cases count as
+// overtime — the department pays for the hour either way — but they are
+// different conversations, and an administrator deciding should be able to see
+// which one this is without opening the call list.
+function heldByCallAt(requests, unitId, at) {
+  if (!unitId || !at) return null;
+  return (
+    (requests || []).find((r) => {
+      if (!r || r.assignedUnitId !== unitId) return false;
+      const start = callStartTs(r);
+      if (!start || start > at) return false;
+      const end = callEndTs(r, at + 1);
+      return end >= at;
+    }) || null
+  );
+}
+
+// Every stay in the window that ran past its shift end, with whatever has been
+// decided about it attached.
+function overtimeClaims(log, requests, from, to, decisions) {
+  const decided = decisions || {};
+  const out = [];
+  (log || []).forEach((e) => {
+    if (!e || e.type !== "shift") return;
+    const d = e.detail || {};
+    if (d.kind !== "off" || d.role !== "team") return;
+    if (!d.overtimeMs || d.overtimeMs <= 0) return;
+    if (!e.ts || e.ts < from || e.ts >= to) return;
+    const id = overtimeClaimId(d);
+    const held = heldByCallAt(requests, d.unitId, d.shiftEnd);
+    out.push({
+      id,
+      ts: e.ts,
+      station: d.station || DEFAULT_STATION,
+      name: d.name || "",
+      accountId: d.accountId || "",
+      unitId: d.unitId || null,
+      unitName: d.unitName || "",
+      seat: d.seat || null,
+      shift: d.shift || null,
+      shiftStart: d.shiftStart || null,
+      shiftEnd: d.shiftEnd || null,
+      signedOffAt: e.ts,
+      claimedMs: d.overtimeMs,
+      onCall: !!held,
+      onCallNature: held ? held.nature : "",
+      decision: decided[id] || null,
+      granted: false,
+    });
+  });
+
+  // Whole shifts an administrator granted outright. These are not derived from
+  // anything — they are a decision on their own — so they are read straight out
+  // of the store and shown beside the observed ones.
+  Object.keys(decided).forEach((id) => {
+    const dec = decided[id];
+    if (!dec || !dec.granted) return;
+    if (!dec.shiftStart || dec.shiftStart < from || dec.shiftStart >= to) return;
+    out.push({
+      id,
+      ts: dec.decidedAt || dec.shiftStart,
+      station: dec.station || DEFAULT_STATION,
+      name: dec.name || "",
+      accountId: dec.accountId || "",
+      unitId: dec.unitId || null,
+      unitName: dec.unitName || "",
+      seat: dec.seat || null,
+      shift: dec.shift || null,
+      shiftStart: dec.shiftStart || null,
+      shiftEnd: dec.shiftEnd || null,
+      signedOffAt: null,
+      claimedMs: dec.claimedMs || 0,
+      onCall: false,
+      onCallNature: "",
+      decision: dec,
+      granted: true,
+    });
+  });
+
+  return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+// What was actually agreed, in milliseconds. Undecided is not zero — it is
+// undecided, and a total that quietly counts pending claims as nought is a
+// total somebody will budget against.
+function overtimeApprovedMs(claim) {
+  const d = claim && claim.decision;
+  if (!d) return null;
+  if (d.status === "declined") return 0;
+  if (d.status === "partial") return Math.max(0, d.approvedMs || 0);
+  if (d.status === "approved") return Math.max(0, d.approvedMs || claim.claimedMs || 0);
+  return null;
+}
+
+function overtimeStatusLabel(claim) {
+  const d = claim && claim.decision;
+  if (!d) return "AWAITING APPROVAL";
+  if (d.status === "declined") return "DECLINED";
+  if (d.status === "partial") return "APPROVED IN PART";
+  if (d.status === "approved") return claim.granted ? "WHOLE SHIFT GRANTED" : "APPROVED";
+  return "AWAITING APPROVAL";
+}
+
+// ---------- what is on the truck ----------
+//
+// Two facts, kept apart on purpose.
+//
+// The PAR LEVEL is what a truck is supposed to carry — set once by
+// administration, changed rarely, the same for every vehicle. The MOVEMENTS are
+// what actually happened to that stock: what a crew used on a call, and what
+// they put back when they restocked.
+//
+// Current stock is not stored. It is par plus the movements since the last
+// restock, worked out when somebody looks. Storing a count instead would mean
+// two tablets both writing "7 left" over each other and neither of them being
+// able to say where the eighth went; a movement log cannot lose an item without
+// somebody having written down that it went.
+//
+// It also means the question an administrator actually has — "who used all the
+// adrenaline and on what" — is answerable, because every line carries the crew
+// and, where there was one, the call.
+const INVENTORY_KEY = "ems:inventory";
+const INVENTORY_MOVES_KEY = "ems:inventoryMoves";
+const INVENTORY_MOVES_CAP = 4000;
+
+// A starting shelf, so the page is not an empty box on the first open. These
+// are consumables every ambulance carries; administration edits the list and
+// the numbers to match what this department actually stocks.
+const DEFAULT_INVENTORY = [
+  { id: "inv-o2", name: "Oxygen cylinder (D)", par: 2 },
+  { id: "inv-mask", name: "Non-rebreather mask", par: 6 },
+  { id: "inv-cannula", name: "IV cannula (18G)", par: 10 },
+  { id: "inv-fluid", name: "Sodium chloride 0.9% 500ml", par: 6 },
+  { id: "inv-gloves", name: "Gloves (box)", par: 4 },
+  { id: "inv-dressing", name: "Trauma dressing", par: 8 },
+  { id: "inv-ecg", name: "ECG electrodes (pack)", par: 4 },
+  { id: "inv-sharps", name: "Sharps bin", par: 1 },
+];
+
+function inventoryItems(inv) {
+  const list = inv && Array.isArray(inv.items) ? inv.items : null;
+  return list && list.length ? list : DEFAULT_INVENTORY;
+}
+
+// Par, plus everything that has happened to it since. Restocks add, use takes
+// away, and a count is never allowed to read below nothing — a truck cannot
+// hold minus two cannulas, and showing that would only ever mean somebody
+// mis-tapped.
+function stockFor(items, moves, unitId) {
+  const byItem = new Map(items.map((it) => [it.id, it.par || 0]));
+  (moves || []).forEach((m) => {
+    if (!m || m.unitId !== unitId) return;
+    if (!byItem.has(m.itemId)) return;
+    byItem.set(m.itemId, byItem.get(m.itemId) + (m.delta || 0));
+  });
+  return items.map((it) => {
+    const have = Math.max(0, byItem.get(it.id));
+    return {
+      ...it,
+      have,
+      short: Math.max(0, (it.par || 0) - have),
+      // Anything at or below a quarter of its par is worth flagging before it
+      // runs out on a call rather than after.
+      low: (it.par || 0) > 0 && have <= Math.max(1, Math.floor((it.par || 0) * 0.25)),
+      out: have === 0 && (it.par || 0) > 0,
+    };
+  });
+}
+
+async function recordStockMove({ unit, item, delta, kind, byName, requestId, requestNature }) {
+  if (!unit || !item || !delta) return null;
+  const entry = {
+    id: uid("mov"),
+    ts: Date.now(),
+    station: stationOf(unit),
+    unitId: unit.id,
+    unitName: unit.name || "",
+    itemId: item.id,
+    itemName: item.name || "",
+    delta,
+    kind,
+    byName: byName || "",
+    requestId: requestId || null,
+    requestNature: requestNature || "",
+  };
+  const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
+  const next = [...existing, entry].slice(-INVENTORY_MOVES_CAP);
+  await writeKey(INVENTORY_MOVES_KEY, next);
+  return next;
+}
+
+// ---------- messages between a truck and the desk ----------
+//
+// Everything a crew and the desk needed to say to each other went over the
+// radio or not at all. The radio is the right tool for "we are on scene" and
+// the wrong one for "which entrance", "the lift is out", "the ward says the
+// patient is not ready" — questions that are not urgent, that nobody wants to
+// broadcast to every truck in the department, and that are worth having written
+// down afterwards.
+//
+// One thread per truck. Not per person: the crew changes over mid-shift and
+// the conversation is about the vehicle and its calls, so a question asked by
+// the crew who went off at seven is still there for the crew who came on, and
+// the desk does not have to work out who they are talking to.
+const MESSAGES_KEY = "ems:messages";
+// A shift's traffic is tens of lines, not thousands. This is generous, and it
+// stops a year of chat from being sent up and down with every write.
+const MESSAGES_CAP = 800;
+const MESSAGE_MAX = 600;
+const CHAT_ALERT_TAG_PREFIX = "ems-chat-";
+
+function threadFor(messages, unitId) {
+  return (messages || [])
+    .filter((m) => m && m.unitId === unitId)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+// What this device has already seen, held locally rather than on the board.
+//
+// Read receipts written into the shared store would mean every tablet writing
+// the whole message list back on every glance — a lot of traffic, and a lot of
+// chances for two devices to overwrite each other — to answer a question that
+// is only ever about this screen. So each device remembers for itself.
+const CHAT_SEEN_KEY = "ems:chatSeen";
+
+function readChatSeen() {
+  try {
+    return JSON.parse(window.localStorage.getItem(CHAT_SEEN_KEY) || "{}") || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function markThreadSeen(unitId, ts) {
+  if (!unitId) return;
+  try {
+    const seen = readChatSeen();
+    if ((seen[unitId] || 0) >= ts) return;
+    seen[unitId] = ts;
+    window.localStorage.setItem(CHAT_SEEN_KEY, JSON.stringify(seen));
+  } catch (e) {
+    // a device that cannot remember simply shows everything as unread
+  }
+}
+
+function unreadIn(messages, unitId, mine) {
+  const seen = readChatSeen()[unitId] || 0;
+  return (messages || []).filter(
+    (m) => m && m.unitId === unitId && (m.ts || 0) > seen && m.from !== mine
+  ).length;
+}
+
+async function postMessage({ unit, from, byName, byAccountId, text, station }) {
+  const body = String(text || "").trim().slice(0, MESSAGE_MAX);
+  if (!body || !unit) return false;
+  const entry = {
+    id: uid("msg"),
+    ts: Date.now(),
+    station: station || stationOf(unit),
+    unitId: unit.id,
+    unitName: unit.name || "",
+    from,
+    byName: byName || "",
+    byAccountId: byAccountId || null,
+    text: body,
+  };
+  const existing = (await readKey(MESSAGES_KEY, [])) || [];
+  // Newest last in the thread, but the cap trims the oldest.
+  const next = [...existing, entry].slice(-MESSAGES_CAP);
+  await writeKey(MESSAGES_KEY, next);
+  // Handed back whether or not the write reached the server. Offline, the store
+  // holds it and sends it up later; what must not happen is the sender's own
+  // line vanishing from their screen while that is arranged.
+  return next;
+}
+
+function notifyMessage(msg) {
+  try {
+    if (!alertsSupported() || Notification.permission !== "granted") return;
+    const who = msg.from === "crew" ? msg.unitName || "A team" : msg.byName || "Dispatch";
+    const title = `${who} — message`;
+    const options = {
+      body: msg.text,
+      // Tagged per thread, so a run of messages from one truck replaces itself
+      // rather than burying the screen. The count is in the app.
+      tag: `${CHAT_ALERT_TAG_PREFIX}${msg.unitId}`,
+      renotify: true,
+      requireInteraction: false,
+    };
+    if (alertWorker && alertWorker.showNotification) {
+      const shown = alertWorker.showNotification(title, options);
+      if (shown && typeof shown.catch === "function") shown.catch(() => {});
+      return;
+    }
+    const n = new Notification(title, options);
+    n.onclick = () => {
+      try {
+        window.focus();
+        n.close();
+      } catch (e) {}
+    };
+  } catch (e) {
+    // ignore
+  }
+}
+
 function notifyEscalation(request, esc) {
   try {
     if (!alertsSupported() || Notification.permission !== "granted") return;
@@ -4745,7 +5269,7 @@ function autoFitSheet(ws, headerRow) {
 // exporting the department as a whole. When it is set, every sheet below is
 // that station's and nothing else — the two stations keep separate log sheets,
 // so an export that quietly mixed them would be worse than no export at all.
-async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom, dayStart) {
+async function exportAndShareLog(log, requests, units, scheduled, station, coverage, uhuFrom, dayStart, periodLabel) {
   if (station) {
     units = atStation(units, station);
     requests = atStation(requests, station);
@@ -4931,18 +5455,21 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
     });
 
     // The date and shift, once, at the top — not repeated on every row.
-    const anyStamp = stationUnitsForUhu
-      .flatMap((u) => crewIndex.get(u.id) || [])
-      .find((p) => p.shiftStart);
-    // Two lines, as the report has: what this is, then when.
+    //
+    // This line used to be worked out by scanning the station's crew stamps and
+    // taking the shift off whichever one happened to come back first. Crew
+    // stamps include the seat's previous occupants, so the first one found was
+    // routinely a stay from days earlier — and since each station's units are
+    // scanned separately, the two stations picked different stale stays and
+    // dated their sheets differently. One export came out with the dispatch log
+    // on the right day, Main Office's UHU on the 15th and CCC's on the 12th.
+    //
+    // The sheet does not have to work out what it covers. The caller knows,
+    // because the caller chose the window, so the caller says.
     const headers = ["Medic", "Seat", "Name", "Employee ID", "Signed On", "Signed Off", "Overtime", "Calls", "UHU %"];
     const aoa = [
       [`UHU — ${g.label}`],
-      [
-        anyStamp
-          ? `${shiftDateOf(anyStamp.shiftStart)} · ${shiftLabelWithWindow(anyStamp.shift)} · time on call by seat`
-          : "Time on call by seat",
-      ],
+      [periodLabel ? `${periodLabel} · time on call by seat` : "Time on call by seat"],
       [],
       headers,
       ...rows.map((r) => headers.map((h) => r[h])),
@@ -5216,7 +5743,8 @@ async function exportSubmission(sub, liveRequests, liveCoverage) {
     // The shift this submission covers — without it the UHU sheet is measured
     // against whatever shift is running today and comes out empty.
     sub.windowStart,
-    opDayStart(sub.windowStart)
+    opDayStart(sub.windowStart),
+    `${gregDateStr(sub.windowStart)} · ${shiftLabelWithWindow(sub.shiftKey)}`
   );
 }
 
@@ -5331,6 +5859,12 @@ function App() {
   // The checklist items administration has set, and every list filed.
   const [checklists, setChecklists] = useState(emptyChecklists());
   const [checklistRuns, setChecklistRuns] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [inventory, setInventory] = useState(null);
+  const [inventoryMoves, setInventoryMoves] = useState([]);
+  const [overtimeDecisions, setOvertimeDecisions] = useState({});
+  const [locations, setLocations] = useState({});
+  const [trackingConsents, setTrackingConsents] = useState({});
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -5638,6 +6172,26 @@ function App() {
     setChecklists(cl && (cl.medic || cl.emt) ? cl : emptyChecklists());
     const runs = await readKey(CHECKLIST_RUNS_KEY, []);
     setChecklistRuns(runs || []);
+    // Messages ride the same poll as the rest of the board, so a line typed at
+    // the desk reaches the truck on the next tick without a channel of its own.
+    const msgs = await readKey(MESSAGES_KEY, []);
+    if (msgs !== READ_FAILED) setMessages(msgs || []);
+    const inv = await readKey(INVENTORY_KEY, null);
+    if (inv !== READ_FAILED) setInventory(inv || null);
+    const invMoves = await readKey(INVENTORY_MOVES_KEY, []);
+    if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
+    const ot = await readKey(OVERTIME_KEY, {});
+    if (ot !== READ_FAILED) setOvertimeDecisions(ot || {});
+    const locs = await readKey(LOCATION_KEY, {});
+    if (locs !== READ_FAILED) {
+      // Swept on the way in. Only written back when something actually needed
+      // removing, so an idle board is not rewriting this key every poll.
+      const { kept, dropped } = pruneLocations(locs || {}, unitsToUse, requestsToUse, Date.now());
+      setLocations(kept);
+      if (dropped > 0) await writeKey(LOCATION_KEY, kept);
+    }
+    const cons = await readKey(TRACKING_CONSENT_KEY, {});
+    if (cons !== READ_FAILED) setTrackingConsents(cons || {});
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -6573,6 +7127,8 @@ function App() {
       ? [
           // The board is the ambulances.
           { key: "board", glyph: "🚑", label: "Board" },
+          // Where the trucks that are out actually are.
+          { key: "map", glyph: "🗺", label: "Map" },
           // What is coming and what has been — a booking that has just gone
           // out, and the call it became.
           { key: "history", glyph: "🗓", label: "Schedule" },
@@ -6585,6 +7141,10 @@ function App() {
             { key: "board", glyph: "🚑", label: "Board" },
             { key: "stats", glyph: "📊", label: "Statistics" },
             { key: "teams", glyph: "👥", label: "Teams" },
+            // What is on the trucks. Its own page rather than a panel inside
+            // Teams: a supervisor chasing a missing cylinder is doing a
+            // different job from one looking at a roster.
+            { key: "stock", glyph: "📦", label: "Inventory" },
             // Kept, not sent — a different action from the desk's Submit, so a
             // different picture.
             { key: "log", glyph: "🗄", label: "Archive" },
@@ -6630,10 +7190,22 @@ function App() {
               saveScheduled={saveScheduled}
               addLog={addLog}
               audioCtxRef={audioCtxRef}
+              messages={messages}
+              setMessages={setMessages}
+              locations={locations}
             />
           )}
           {user.role === "team" && (
             <TeamView
+              messages={messages}
+              setMessages={setMessages}
+              inventory={inventory}
+              inventoryMoves={inventoryMoves}
+              setInventoryMoves={setInventoryMoves}
+              locations={locations}
+              setLocations={setLocations}
+              trackingConsents={trackingConsents}
+              setTrackingConsents={setTrackingConsents}
               page={navTab}
               checklists={checklists}
               checklistRuns={checklistRuns}
@@ -6667,6 +7239,15 @@ function App() {
               setChecklists={setChecklists}
               checklistRuns={checklistRuns}
               log={log}
+              inventory={inventory}
+              setInventory={setInventory}
+              inventoryMoves={inventoryMoves}
+              setInventoryMoves={setInventoryMoves}
+              overtimeDecisions={overtimeDecisions}
+              setOvertimeDecisions={setOvertimeDecisions}
+              locations={locations}
+              trackingConsents={trackingConsents}
+              setTrackingConsents={setTrackingConsents}
             />
           )}
         </div>
@@ -6739,7 +7320,11 @@ function App() {
                       null,
                       (coverage || []).filter((c) => c && c.startedAt >= from && c.startedAt < to),
                       from,
-                      from
+                      from,
+                      // Both shifts, not one: this button exports the whole
+                      // operational day, and labelling it DAY or NIGHT would be
+                      // a plain untruth on half the rows.
+                      `${opDayLabel(from)} · 07:00 → 07:00 · day and night`
                     );
                   },
                 }
@@ -6763,6 +7348,32 @@ function GlobalFont() {
         outline: 2px solid #0A84FF;
         outline-offset: 2px;
       }
+      /* The ambulance on the map. Built by Leaflet from an HTML string, so it
+         cannot use the styles object and lives here instead. */
+      .amb-icon { background: none; border: none; }
+      .amb-marker {
+        display: flex; flex-direction: column; align-items: center;
+        line-height: 1; pointer-events: auto;
+      }
+      .amb-glyph {
+        font-size: 26px; filter: drop-shadow(0 2px 4px rgba(0,0,0,.5));
+        transform-origin: center;
+      }
+      .amb-label {
+        margin-top: 2px; font-size: 10px; font-weight: 800; letter-spacing: .4px;
+        color: #FFFFFF; background: rgba(10,14,20,.82); border-radius: 999px;
+        padding: 2px 7px; white-space: nowrap;
+      }
+      /* A fix nobody has refreshed for three minutes stops looking certain. */
+      .amb-stale { opacity: .45; }
+      .amb-stale .amb-label { background: rgba(90,103,117,.9); }
+      /* Leaflet paints its own controls light; the popup is made to match the
+         board rather than the library. */
+      .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+        background: #141A21; color: #F7F9FB;
+      }
+      .leaflet-popup-content { font-size: 12.5px; line-height: 1.5; }
+
       /* The two themes, as one set of tokens with two sets of values.
          Nothing in a component knows which is running: the attribute on the
          root element changes all of it at once. */
@@ -8029,45 +8640,75 @@ function ShiftChip({ user, onChangeShift }) {
 // so that is the number that is large. Everything else is annotation, and the
 // bar underneath carries the same information in a shape you can read without
 // counting.
-function StatusBoard({ units }) {
+// The state of the room, in four numbers.
+//
+// This is the change the whole remodel is built around. The board could already
+// be read — by counting cards. A dispatcher wanting to know whether there was
+// anything left to send had to look at eight tiles and add up the green ones,
+// which is a thing you do slowly, and which you do wrong when the phone is
+// ringing. So the answer is stated instead of implied, in figures sized to be
+// read from across the room rather than from in front of the screen.
+//
+// Four, and no more. Available is what a desk taking a call needs; on a call
+// and out of service are what makes the first number make sense; the shift's
+// call count is the only piece of history that belongs on a live board. Every
+// other figure worth having is on the statistics page, where somebody is
+// reading rather than working.
+function StatusBoard({ units, requests, station }) {
+  const now = Date.now();
   const counts = Object.keys(STATUS).reduce((acc, k) => ({ ...acc, [k]: 0 }), {});
-  units.forEach((u) => {
+  (units || []).forEach((u) => {
     const k = statusKey(u.status);
     counts[k] = (counts[k] || 0) + 1;
   });
+
   const free = counts.available || 0;
-  const total = units.length;
+  const onCall = ON_CALL_STATUSES.reduce((n, k) => n + (counts[k] || 0), 0);
+  const oos = counts.oos || 0;
+
+  // Only this shift's calls. A running total since the board was created tells
+  // a desk nothing about the twelve hours they are actually standing.
+  const shiftFrom = uhuWindowStart(now);
+  const shiftCalls = requests
+    ? (requests || []).filter(
+        (r) =>
+          r &&
+          r.createdAt >= shiftFrom &&
+          (!station || stationOf(r) === station)
+      )
+    : null;
+  const resp = shiftCalls ? responseCompliance(shiftCalls, shiftFrom, now + 1) : null;
+
+  // Nothing free is the one number on this strip that is allowed to shout, and
+  // it does it by turning the colour the rest of the board uses for a call in
+  // progress rather than by growing or flashing.
+  const freeColor = free === 0 ? "var(--crit)" : "var(--ok)";
 
   return (
-    <div style={styles.statusBoard}>
-      <div style={styles.statusHeadline}>
-        <span style={{ ...styles.statusBig, color: free === 0 ? "var(--crit)" : "var(--ink)" }}>{free}</span>
-        <span style={styles.statusOf}>
-          of {total} available
+    <div style={styles.roomState}>
+      <div style={styles.roomCell}>
+        <span style={{ ...styles.roomFigure, color: freeColor }}>{free}</span>
+        <span style={styles.roomLabel}>AVAILABLE</span>
+      </div>
+      <div style={styles.roomCell}>
+        <span style={{ ...styles.roomFigure, color: onCall ? "var(--hold)" : "var(--ink-4)" }}>
+          {onCall}
         </span>
+        <span style={styles.roomLabel}>ON A CALL</span>
       </div>
-
-      {/* One segment per truck, in the order they are named. */}
-      <div style={styles.statusBar}>
-        {units.map((u) => (
-          <span
-            key={u.id}
-            title={`${u.name} — ${statusMeta(u.status).label}`}
-            style={{ ...styles.statusSeg, background: statusMeta(u.status).color }}
-          />
-        ))}
+      <div style={styles.roomCell}>
+        <span style={{ ...styles.roomFigure, color: "var(--ink-4)" }}>{oos}</span>
+        <span style={styles.roomLabel}>OUT OF SERVICE</span>
       </div>
-
-      <div style={styles.statusLegend}>
-        {Object.entries(STATUS)
-          .filter(([key]) => (counts[key] || 0) > 0)
-          .map(([key, meta]) => (
-            <span key={key} style={styles.statusLegendItem}>
-              <span style={{ ...styles.statusLegendDot, background: meta.color }} />
-              {counts[key]} {meta.label.toLowerCase()}
-            </span>
-          ))}
-      </div>
+      {shiftCalls && (
+        <div style={styles.roomCellWide}>
+          <span style={{ ...styles.roomFigure, color: "var(--ink)" }}>{shiftCalls.length}</span>
+          <span style={styles.roomLabel}>THIS SHIFT</span>
+          {resp && resp.avg !== null && (
+            <span style={styles.roomAside}>avg response {msDurationStr(resp.avg)}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -8095,6 +8736,124 @@ function callTimeChips(times) {
   });
   pushRefusal();
   return chips;
+}
+
+// The five stamps as a stepper rather than a row of chips.
+//
+// Chips answer "what times were recorded". They do not answer "where are we",
+// which is the question a crew and a desk both actually have — and answering it
+// from a row of chips means reading every label and working out which one is
+// missing. A stepper answers it without reading: ticks behind, a ring on the
+// step being worked, nothing ahead.
+//
+// A refusal sits in the line where it happened rather than at the end, because
+// it is a thing that occurred between two stamps and reading it out of order
+// misrepresents the call.
+function CallStepper({ req, compact }) {
+  const t = (req && req.times) || {};
+  const rows = [];
+  if (t.assigned) {
+    rows.push({ key: "assigned", label: "Assigned", ts: t.assigned, done: true });
+  }
+  TIME_STEPS.forEach((step) => {
+    rows.push({
+      key: step.timeKey,
+      label: step.timeLabel,
+      ts: t[step.timeKey] || null,
+      done: !!t[step.timeKey],
+    });
+    if (step.timeKey === "arrival" && t[REFUSAL_TIME_KEY]) {
+      rows.push({
+        key: REFUSAL_TIME_KEY,
+        label: REFUSAL_TIME_LABEL,
+        ts: t[REFUSAL_TIME_KEY],
+        done: true,
+        color: NO_TRANSPORT.color,
+      });
+    }
+  });
+
+  const currentIdx = rows.findIndex((r) => !r.done);
+
+  return (
+    <div style={compact ? styles.stepperCompact : styles.stepper}>
+      {rows.map((row, i) => {
+        const current = i === currentIdx;
+        const tint = row.color || (row.done ? "var(--ok)" : current ? "var(--flow)" : "var(--hair-2)");
+        const last = i === rows.length - 1;
+        return (
+          <div key={row.key} style={styles.stepperRow}>
+            <div style={styles.stepperRail}>
+              <div
+                style={{
+                  ...styles.stepperDot,
+                  background: row.done ? tint : "var(--inset)",
+                  borderColor: tint,
+                }}
+              >
+                {row.done && <span style={styles.stepperTick}>✓</span>}
+                {current && <span style={styles.stepperPip} />}
+              </div>
+              {!last && (
+                <div
+                  style={{
+                    ...styles.stepperLine,
+                    background: row.done ? tint : "var(--hair-2)",
+                  }}
+                />
+              )}
+            </div>
+            <div style={last ? styles.stepperTextLast : styles.stepperText}>
+              <span
+                style={{
+                  ...styles.stepperLabel,
+                  color: row.done
+                    ? "var(--ink-2)"
+                    : current
+                    ? "var(--ink)"
+                    : "var(--ink-4)",
+                  fontWeight: current ? 700 : 500,
+                }}
+              >
+                {row.label}
+              </span>
+              <span
+                style={{
+                  ...styles.stepperTime,
+                  color: row.done ? "var(--ink)" : "var(--ink-4)",
+                }}
+              >
+                {row.ts ? clockStr(row.ts) : "—"}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// The same five stamps, reduced to a bar. On the desk's board there are eight
+// of these on screen at once and there is no room for a stepper — but "how far
+// through is it" is still the question, so it is answered in segments: filled
+// behind, hollow ahead, in the colour the call's current stage already uses.
+function CallProgress({ req }) {
+  const t = (req && req.times) || {};
+  const tint = (REQ_STATUS[req && req.status] || {}).color || "var(--flow)";
+  return (
+    <div style={styles.callProgress}>
+      {TIME_STEPS.map((step) => (
+        <div
+          key={step.timeKey}
+          title={step.timeLabel + (t[step.timeKey] ? ` — ${clockStr(t[step.timeKey])}` : "")}
+          style={{
+            ...styles.callProgressSeg,
+            background: t[step.timeKey] ? tint : "var(--hair-2)",
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function CallTimes({ times }) {
@@ -8430,7 +9189,7 @@ function useAssistAlerts(user, requests, audioCtxRef) {
     });
     // Several asks landing together get one noise between them.
     if (chime) {
-      soundCallAlert(audioCtxRef, "critical");
+      soundCallAlert(audioCtxRef, "critical", true);
       buzz([300, 150, 300, 150, 300]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -10750,6 +11509,47 @@ const RELATIVE_PICKS = [
 // something booked — and it could never give the desk its quarter-hour warning.
 const MIN_LEAD_MS = 60 * 1000;
 
+// ---------- what is already booked ----------
+//
+// The desk was booking blind. The form asked for a date and a time and said
+// nothing about the four transfers already sitting at that time, so two
+// bookings for one slot were only discovered on the day, by the crew.
+//
+// Bookings do not clash the way appointments do — a station with five trucks
+// can legitimately send three at two o'clock — so nothing here blocks a
+// booking. What it does is put the answer in front of whoever is typing: the
+// times already taken on that day, and a plain warning when the time being
+// picked already has company. The desk can still go ahead; what it cannot do
+// any more is go ahead without knowing.
+const BOOKING_CLASH_MS = 30 * 60 * 1000;
+
+// A booking that still expects an ambulance. One already sent out, or called
+// off, is not competing for anything.
+function bookingIsLive(s) {
+  return !!(s && s.scheduledFor && !s.cancelledAt && !s.releasedAt);
+}
+
+function bookingsOnDay(list, station, ts) {
+  if (!ts) return [];
+  const day = opDayStart(ts);
+  return (list || [])
+    .filter((s) => bookingIsLive(s) && stationOf(s) === station && opDayStart(s.scheduledFor) === day)
+    .sort((a, b) => a.scheduledFor - b.scheduledFor);
+}
+
+function bookingsNear(list, station, ts, ignoreId) {
+  if (!ts) return [];
+  return (list || [])
+    .filter(
+      (s) =>
+        bookingIsLive(s) &&
+        stationOf(s) === station &&
+        s.id !== ignoreId &&
+        Math.abs(s.scheduledFor - ts) <= BOOKING_CLASH_MS
+    )
+    .sort((a, b) => a.scheduledFor - b.scheduledFor);
+}
+
 function startOfMonth(ts) {
   const d = new Date(ts);
   d.setDate(1);
@@ -11214,6 +12014,62 @@ function SchedulePreAlert({ entries, units, now, onDismiss, audioCtxRef }) {
 // two views and nowhere else, and refuses to draw anything for any other role.
 // Crews never see a booking: the first they know of one is the call arriving on
 // their screen at its dispatch time, exactly like any other call.
+// The day the desk is booking into, as a list of times already taken.
+//
+// Deliberately plain: times, what each one is, and a mark against anything
+// inside half an hour of the time being picked. No calendar grid — a booking
+// desk wants to read a column of times, and a grid of empty hours would take
+// three times the room to say less.
+function DayBookings({ list, station, when }) {
+  const day = bookingsOnDay(list, station, when);
+  const near = new Set(bookingsNear(list, station, when).map((b) => b.id));
+
+  if (day.length === 0) {
+    return (
+      <div style={styles.dayBookEmpty}>
+        Nothing else booked at {stationLabel(station)} on {gregLongDateStr(when)}.
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.dayBookWrap}>
+      <div style={styles.dayBookHead}>
+        Already booked · {stationLabel(station)} · {gregLongDateStr(when)}
+        <span style={styles.dayBookCount}>
+          {day.length} booking{day.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div style={styles.dayBookList}>
+        {day.map((b) => {
+          const clash = near.has(b.id);
+          return (
+            <div key={b.id} style={clash ? styles.dayBookRowNear : styles.dayBookRow}>
+              <span style={clash ? styles.dayBookTimeNear : styles.dayBookTime}>
+                {hhmm(b.scheduledFor)}
+              </span>
+              <span style={styles.dayBookWhat}>
+                {b.nature || "Booking"}
+                <span style={styles.dayBookRoute}>
+                  {" "}
+                  {b.locationFrom || "?"} → {b.locationTo || "?"}
+                </span>
+              </span>
+              {clash && <span style={styles.dayBookFlag}>within 30 min</span>}
+            </div>
+          );
+        })}
+      </div>
+      {near.size > 0 && (
+        <div style={styles.dayBookWarn}>
+          {near.size} of these {near.size === 1 ? "is" : "are"} within half an hour of {hhmm(when)}.
+          Check a truck is free before you add another.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScheduledRequests({ user, units, requests, scheduled, allScheduled, saveScheduled, addLog, audioCtxRef }) {
   const [open, setOpen] = useState(false);
   // This form's own missing-field marks. It had been calling the dispatch
@@ -11377,12 +12233,37 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
         return;
       }
     }
+    // Already something at that time? Say so, name them, and let the desk
+    // decide. Not a block: more than one ambulance can leave at two o'clock,
+    // and a form that refuses would just be worked around.
+    const myStation = user && user.station ? user.station : DEFAULT_STATION;
+    if (ts) {
+      const near = bookingsNear(allScheduled || scheduled, myStation, ts);
+      if (near.length > 0) {
+        const lines = near
+          .slice(0, 6)
+          .map((b) => `  ${hhmm(b.scheduledFor)} — ${b.nature || "booking"} (${b.locationFrom || "?"} → ${b.locationTo || "?"})`)
+          .join("\n");
+        const more = near.length > 6 ? `\n  …and ${near.length - 6} more` : "";
+        if (
+          !window.confirm(
+            `${near.length} booking${near.length === 1 ? " is" : "s are"} already within half an hour of ${hhmm(ts)}:\n\n` +
+              lines +
+              more +
+              `\n\nBook this one as well?`
+          )
+        ) {
+          return;
+        }
+      }
+    }
+
     setBusy(true);
     setError("");
     const createdAt = Date.now();
     const entry = {
       id: uid("sch"),
-      station: user && user.station ? user.station : DEFAULT_STATION,
+      station: myStation,
       locationFrom: locationFrom.trim(),
       locationTo: locationTo.trim(),
       nature: nature.trim(),
@@ -11648,8 +12529,19 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                           : "Pick the day on the calendar, then set the hour and minute."
                       }
                     />
+                  )}
 
-                      
+                  {/* What is already on that day, in time order, with anything
+                      inside half an hour of the time being picked marked. This
+                      is the whole answer to "are we double-booking?" and it has
+                      to be visible while the time is being chosen, not after
+                      the booking is saved. */}
+                  {!awaitCall && when && (
+                    <DayBookings
+                      list={allScheduled || scheduled}
+                      station={user && user.station ? user.station : DEFAULT_STATION}
+                      when={when}
+                    />
                   )}
 
                   {/* Optional second time. Most transfers need only one —
@@ -12152,7 +13044,1566 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
   );
 }
 
-function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page }) {
+// ---------- department policies ----------
+//
+// The desk is where the policy questions land — can this patient travel with a
+// relative, who authorises an out-of-area transfer, what happens when a ward
+// disputes a category — and the answers currently live in a folder somebody has
+// to get up and find, or in the memory of whoever has been there longest.
+//
+// So they belong on the board, one tap from the screen the question arrives at.
+// The content is the department's to write; the shelf it sits on is this. Each
+// policy is a heading and a body, held in the same key/value store as
+// everything else, so the department edits them in one place and every desk has
+// them immediately.
+const POLICY_KEY = "ems:policies";
+
+// Deliberately empty of content. Writing plausible-sounding clinical policy and
+// putting it in front of a dispatcher would be worse than an empty shelf: a
+// made-up rule that reads like a real one is the kind of thing somebody acts
+// on. The department fills these in.
+const POLICY_PLACEHOLDER = [
+  { id: "pol-transfer", title: "Inter-facility transfers", body: "" },
+  { id: "pol-escort", title: "Relatives and escorts", body: "" },
+  { id: "pol-refusal", title: "Patient refusal", body: "" },
+  { id: "pol-outofarea", title: "Out-of-area journeys", body: "" },
+  { id: "pol-escalation", title: "Escalation and who to call", body: "" },
+];
+
+function PolicyModal({ open, onClose, policies }) {
+  const list = policies && policies.length ? policies : POLICY_PLACEHOLDER;
+  const [openId, setOpenId] = useState(null);
+
+  // Escape closes it. A dispatcher who opened this while a call was coming in
+  // needs it gone in one keystroke, not a hunt for the X.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div style={styles.policyScrim} onClick={onClose}>
+      <div style={styles.policySheet} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.policyHead}>
+          <div>
+            <div style={styles.policyEyebrow}>DEPARTMENT POLICIES</div>
+            <div style={styles.policyTitle}>What the desk is expected to do</div>
+          </div>
+          <button style={styles.policyClose} onClick={onClose} title="Close (Esc)">
+            ✕
+          </button>
+        </div>
+
+        <div style={styles.policyBody}>
+          {list.map((pol) => {
+            const isOpen = openId === pol.id;
+            return (
+              <div key={pol.id} style={styles.policyItem}>
+                <button
+                  style={styles.policyItemHead}
+                  onClick={() => setOpenId(isOpen ? null : pol.id)}
+                >
+                  <span>{pol.title}</span>
+                  <span style={styles.policyChevron}>{isOpen ? "−" : "+"}</span>
+                </button>
+                {isOpen && (
+                  <div style={styles.policyText}>
+                    {pol.body ? (
+                      pol.body
+                    ) : (
+                      <span style={styles.policyEmpty}>
+                        Not written yet. Administration adds the wording for this one.
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={styles.policyFoot}>
+          Policies are held centrally — whatever administration writes here is what every
+          desk sees, immediately.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- overtime, as administration answers it ----------
+//
+// Retractable, and folded by default: this is a weekly job, not something the
+// board is watched for. Open, it answers three things in order — what is
+// waiting on a decision, who is standing past their shift right now, and what
+// the period comes to.
+function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecisions }) {
+  const [open, setOpen] = useState(false);
+  const now = Date.now();
+  // A pay period, not a calendar month. Defaults to the last 30 days and is
+  // then whatever the administrator types.
+  const [fromStr, setFromStr] = useState(() => new Date(now - 29 * 86400000).toISOString().slice(0, 10));
+  const [toStr, setToStr] = useState(() => new Date(now).toISOString().slice(0, 10));
+  const [busy, setBusy] = useState(false);
+
+  const from = new Date(`${fromStr}T00:00:00`).getTime();
+  // Inclusive of the last day: a period "to 18 September" includes the 18th.
+  const to = new Date(`${toStr}T00:00:00`).getTime() + 86400000;
+  const validRange = Number.isFinite(from) && Number.isFinite(to) && to > from;
+
+  const claims = validRange ? overtimeClaims(log, requests, from, to, decisions) : [];
+  const pending = claims.filter((c) => !c.decision);
+  const label = validRange
+    ? `${gregDateStr(from)} → ${gregDateStr(to - 1)}`
+    : "Pick a period";
+
+  const totals = claims.reduce(
+    (acc, c) => {
+      const ms = overtimeApprovedMs(c);
+      acc.claimed += c.claimedMs || 0;
+      if (ms === null) acc.undecided += c.claimedMs || 0;
+      else acc.approved += ms;
+      return acc;
+    },
+    { claimed: 0, approved: 0, undecided: 0 }
+  );
+
+  // Everybody signed on right now who is already past their shift end. This is
+  // the live half — the claim does not exist until they sign off, but the
+  // administrator should be able to see it building.
+  const standing = [];
+  (units || []).forEach((u) => {
+    ["alpha", "bravo"].forEach((slot) => {
+      const seated = u[slot];
+      if (!seated) return;
+      const over = overtimeMs(seated, now);
+      standing.push({ unit: u, slot, member: seated, over });
+    });
+  });
+  standing.sort((a, b) => b.over - a.over);
+
+  async function decide(claim, status, approvedMs, note) {
+    const next = {
+      ...(decisions || {}),
+      [claim.id]: {
+        ...(decisions || {})[claim.id],
+        status,
+        approvedMs: approvedMs === null || approvedMs === undefined ? null : approvedMs,
+        decidedBy: (user && user.name) || "Administration",
+        decidedAt: Date.now(),
+        note: note || "",
+        // Carried so a granted whole shift can be rebuilt without the log.
+        name: claim.name,
+        accountId: claim.accountId,
+        unitId: claim.unitId,
+        unitName: claim.unitName,
+        seat: claim.seat,
+        station: claim.station,
+        shift: claim.shift,
+        shiftStart: claim.shiftStart,
+        shiftEnd: claim.shiftEnd,
+        claimedMs: claim.claimedMs,
+        granted: !!claim.granted,
+      },
+    };
+    await writeKey(OVERTIME_KEY, next);
+    setDecisions(next);
+    await addLog(
+      `Overtime ${status} for ${claim.name} (${claim.unitName}) — ` +
+        `${msDurationStr(claim.claimedMs)} claimed, ` +
+        `${status === "declined" ? "none" : msDurationStr(approvedMs || claim.claimedMs)} approved` +
+        (note ? ` · ${note}` : ""),
+      "status"
+    );
+  }
+
+  async function approvePartial(claim) {
+    const asked = window.prompt(
+      `Approve part of ${claim.name}'s overtime.\n\n` +
+        `Claimed: ${msDurationStr(claim.claimedMs)}\n\n` +
+        `How many minutes are approved?`,
+      String(Math.round((claim.claimedMs || 0) / 60000))
+    );
+    if (asked === null) return;
+    const mins = Math.max(0, Math.min(Math.round((claim.claimedMs || 0) / 60000), parseInt(asked, 10) || 0));
+    const note = window.prompt("A note, if this needs explaining. Leave blank for none.", "") || "";
+    await decide(claim, mins === 0 ? "declined" : "partial", mins * 60000, note.trim());
+  }
+
+  async function decline(claim) {
+    const note = window.prompt(
+      `Decline ${claim.name}'s overtime?\n\nSay why — it goes on the record and into the sheet.`
+    );
+    if (note === null) return;
+    if (!note.trim()) {
+      window.alert("A declined claim needs a reason.");
+      return;
+    }
+    await decide(claim, "declined", 0, note.trim());
+  }
+
+  // A whole shift counted as overtime, for somebody called in on a rest day or
+  // held over for a whole tour. Not derived from anything, so it is a decision
+  // recorded on its own.
+  async function grantWholeShift(entry) {
+    const { unit, slot, member } = entry;
+    const start = member.shiftStart;
+    const end = member.shiftEnd;
+    if (!start || !end) {
+      window.alert(`${member.name} has no shift window recorded, so a whole shift cannot be worked out.`);
+      return;
+    }
+    const whole = Math.max(0, end - start);
+    if (
+      !window.confirm(
+        `Count ${member.name}'s whole shift as overtime?\n\n` +
+          `${shiftLabelWithWindow(member.shift)} — ${msDurationStr(whole)}\n\n` +
+          `This is recorded as a grant, separately from any overtime they run past the end of it.`
+      )
+    )
+      return;
+    const claim = {
+      id: `GRANT::${overtimeClaimId({
+        accountId: member.accountId,
+        name: member.name,
+        shiftStart: start,
+        unitId: unit.id,
+        seat: slot,
+      })}`,
+      name: member.name,
+      accountId: member.accountId || "",
+      unitId: unit.id,
+      unitName: unit.name,
+      seat: slot,
+      station: stationOf(unit),
+      shift: member.shift,
+      shiftStart: start,
+      shiftEnd: end,
+      claimedMs: whole,
+      granted: true,
+    };
+    await decide(claim, "approved", whole, "Whole shift granted as overtime");
+  }
+
+  async function download() {
+    if (!validRange || busy) return;
+    setBusy(true);
+    try {
+      await exportOvertime(claims, from, to, label);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <FoldingSection
+      title="OVERTIME"
+      count={pending.length}
+      countLabel={pending.length ? "awaiting approval" : "all decided"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      {/* The period. */}
+      <div style={styles.otRange}>
+        <label style={styles.otRangeField}>
+          <span style={styles.otRangeLabel}>FROM</span>
+          <input style={styles.otDate} type="date" value={fromStr} onChange={(e) => setFromStr(e.target.value)} />
+        </label>
+        <label style={styles.otRangeField}>
+          <span style={styles.otRangeLabel}>TO</span>
+          <input style={styles.otDate} type="date" value={toStr} onChange={(e) => setToStr(e.target.value)} />
+        </label>
+        <button style={styles.primaryBtnSm} onClick={download} disabled={!validRange || busy}>
+          {busy ? "Building…" : "Excel sheet"}
+        </button>
+      </div>
+      {!validRange && (
+        <div style={styles.formHint}>The end of the period has to come after the start.</div>
+      )}
+
+      <div style={styles.otTotals}>
+        <div style={styles.otTotal}>
+          <span style={styles.otTotalFig}>{msDurationStr(totals.approved)}</span>
+          <span style={styles.otTotalLabel}>APPROVED</span>
+        </div>
+        <div style={styles.otTotal}>
+          <span style={{ ...styles.otTotalFig, color: totals.undecided ? "var(--hold)" : "var(--ink-4)" }}>
+            {msDurationStr(totals.undecided)}
+          </span>
+          <span style={styles.otTotalLabel}>AWAITING A DECISION</span>
+        </div>
+        <div style={styles.otTotal}>
+          <span style={{ ...styles.otTotalFig, color: "var(--ink-3)" }}>{msDurationStr(totals.claimed)}</span>
+          <span style={styles.otTotalLabel}>CLAIMED IN TOTAL</span>
+        </div>
+      </div>
+
+      {/* Standing past their shift right now. */}
+      {standing.filter((x) => x.over > 0).length > 0 && (
+        <div style={styles.otLiveWrap}>
+          <div style={styles.invShortHead}>PAST THEIR SHIFT RIGHT NOW</div>
+          {standing
+            .filter((x) => x.over > 0)
+            .map((x) => (
+              <div key={`${x.unit.id}-${x.slot}`} style={styles.otLiveRow}>
+                <span style={styles.otLiveName}>{x.member.name}</span>
+                <span style={styles.otLiveUnit}>
+                  {x.unit.name} · {seatLabel(x.slot)}
+                </span>
+                <span style={styles.otLiveMs}>{msDurationStr(x.over)}</span>
+                <button style={styles.otGrantBtn} onClick={() => grantWholeShift(x)}>
+                  Count whole shift
+                </button>
+              </div>
+            ))}
+          <div style={styles.otLiveNote}>
+            These become claims when they sign off. The button counts the whole tour as overtime —
+            for somebody called in on a rest day — and is recorded separately from anything they run
+            past the end of it.
+          </div>
+        </div>
+      )}
+
+      {/* The claims themselves, undecided first. */}
+      <div style={styles.otList}>
+        {claims.length === 0 ? (
+          <div style={styles.formHint}>
+            No overtime in this period. A stay that ran past its shift end appears here on sign-off.
+          </div>
+        ) : (
+          [...pending, ...claims.filter((c) => c.decision)].map((c) => {
+            const approved = overtimeApprovedMs(c);
+            return (
+              <div key={c.id} style={c.decision ? styles.otCard : styles.otCardPending}>
+                <div style={styles.otCardHead}>
+                  <span style={styles.otCardName}>{c.name || "Unnamed"}</span>
+                  <span style={styles.otCardWho}>
+                    {c.unitName}
+                    {c.seat ? ` · ${seatLabel(c.seat)}` : ""} · {stationLabel(c.station)}
+                  </span>
+                  <span
+                    style={{
+                      ...styles.otCardStatus,
+                      color: !c.decision
+                        ? "var(--hold)"
+                        : c.decision.status === "declined"
+                        ? "var(--ink-4)"
+                        : "var(--ok)",
+                    }}
+                  >
+                    {overtimeStatusLabel(c)}
+                  </span>
+                </div>
+                <div style={styles.otCardMeta}>
+                  {c.shiftStart ? gregDateStr(c.shiftStart) : ""} · {shiftLabelWithWindow(c.shift)}
+                  {c.shiftEnd ? ` · ended ${clockStr(c.shiftEnd)}` : ""}
+                  {c.signedOffAt ? ` · signed off ${clockStr(c.signedOffAt)}` : ""}
+                </div>
+                <div style={styles.otCardFigures}>
+                  <span style={styles.otClaimed}>{msDurationStr(c.claimedMs)} claimed</span>
+                  {approved !== null && (
+                    <span style={styles.otApproved}>{msDurationStr(approved)} approved</span>
+                  )}
+                  {!c.granted && (
+                    <span style={c.onCall ? styles.otHeld : styles.otNotHeld}>
+                      {c.onCall ? `held by a call${c.onCallNature ? ` — ${c.onCallNature}` : ""}` : "not on a call"}
+                    </span>
+                  )}
+                </div>
+                {c.decision && c.decision.note && (
+                  <div style={styles.otCardNote}>“{c.decision.note}”</div>
+                )}
+                {c.decision && c.decision.decidedBy && (
+                  <div style={styles.otCardBy}>
+                    {c.decision.decidedBy} · {gregDateTimeStr(c.decision.decidedAt)}
+                  </div>
+                )}
+                {!c.decision && (
+                  <div style={styles.otCardBtns}>
+                    <button
+                      style={styles.primaryBtnSm}
+                      onClick={() => decide(c, "approved", c.claimedMs, "")}
+                    >
+                      Approve {msDurationStr(c.claimedMs)}
+                    </button>
+                    <button style={styles.ghostBtnSm} onClick={() => approvePartial(c)}>
+                      Approve part
+                    </button>
+                    <button style={styles.ghostBtnSm} onClick={() => decline(c)}>
+                      Decline
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </FoldingSection>
+  );
+}
+
+// ---------- the overtime sheet ----------
+//
+// A month of decisions, as a workbook. The period is whatever an administrator
+// asked for — 19 August to 18 September is a pay period, not a calendar month,
+// and a report that can only do calendar months is a report somebody retypes.
+async function exportOvertime(claims, from, to, label) {
+  const wb = XLSX.utils.book_new();
+
+  const rows = claims.map((c) => {
+    const approved = overtimeApprovedMs(c);
+    return {
+      Date: c.shiftStart ? gregDateStr(c.shiftStart) : "",
+      Name: c.name || "",
+      "Employee ID": c.accountId || "",
+      Station: stationLabel(c.station),
+      Medic: c.unitName || "",
+      Seat: c.seat ? seatLabel(c.seat) : "",
+      Shift: shiftLabelWithWindow(c.shift),
+      "Shift End": c.shiftEnd ? gregDateTimeStr(c.shiftEnd) : "",
+      "Signed Off": c.signedOffAt ? gregDateTimeStr(c.signedOffAt) : "",
+      "On a call at shift end": c.granted ? "" : c.onCall ? "Yes" : "No",
+      "Held by": c.onCallNature || "",
+      // Hours as decimals as well as written out: payroll adds the column up,
+      // a supervisor reads the sentence.
+      "Claimed": c.claimedMs ? msDurationStr(c.claimedMs) : "",
+      "Claimed (hrs)": c.claimedMs ? Number((c.claimedMs / 3600000).toFixed(2)) : 0,
+      Status: overtimeStatusLabel(c),
+      "Approved": approved === null ? "" : msDurationStr(approved),
+      "Approved (hrs)": approved === null ? "" : Number((approved / 3600000).toFixed(2)),
+      "Decided By": (c.decision && c.decision.decidedBy) || "",
+      "Decided At": c.decision && c.decision.decidedAt ? gregDateTimeStr(c.decision.decidedAt) : "",
+      Note: (c.decision && c.decision.note) || "",
+    };
+  });
+
+  const headers = rows.length
+    ? Object.keys(rows[0])
+    : ["Date", "Name", "Employee ID", "Station", "Medic", "Seat", "Shift", "Claimed", "Status", "Approved"];
+
+  const aoa = [
+    ["OVERTIME"],
+    [label],
+    [],
+    headers,
+    ...rows.map((r) => headers.map((h) => r[h])),
+  ];
+
+  const sheet = autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), 3);
+  titleSheet(sheet);
+  dressSheet(sheet, 3, 1);
+
+  // Anything still waiting on a decision is marked, because a pay period closed
+  // with undecided hours in it is the thing somebody needs to see first.
+  const pendingRows = [];
+  const declinedRows = [];
+  rows.forEach((r, i) => {
+    if (r.Status === "AWAITING APPROVAL") pendingRows.push(i + 1);
+    if (r.Status === "DECLINED") declinedRows.push(i + 1);
+  });
+  paintRows(sheet, pendingRows, 3, "FFFFE08A", "FF7A4E00");
+  paintRows(sheet, declinedRows, 3, "FFE9E9E9", "FF5A6B7B");
+  XLSX.utils.book_append_sheet(wb, sheet, "Overtime");
+
+  // A second sheet totalling by person, because that is what goes to payroll.
+  const byPerson = new Map();
+  claims.forEach((c) => {
+    const key = (c.accountId || c.name || "?").toUpperCase();
+    if (!byPerson.has(key)) {
+      byPerson.set(key, {
+        Name: c.name || "",
+        "Employee ID": c.accountId || "",
+        Station: stationLabel(c.station),
+        Claims: 0,
+        "Claimed (hrs)": 0,
+        "Approved (hrs)": 0,
+        "Awaiting decision": 0,
+      });
+    }
+    const row = byPerson.get(key);
+    const approved = overtimeApprovedMs(c);
+    row.Claims += 1;
+    row["Claimed (hrs)"] += (c.claimedMs || 0) / 3600000;
+    if (approved === null) row["Awaiting decision"] += 1;
+    else row["Approved (hrs)"] += approved / 3600000;
+  });
+  const sumRows = Array.from(byPerson.values())
+    .map((r) => ({
+      ...r,
+      "Claimed (hrs)": Number(r["Claimed (hrs)"].toFixed(2)),
+      "Approved (hrs)": Number(r["Approved (hrs)"].toFixed(2)),
+    }))
+    .sort((a, b) => b["Approved (hrs)"] - a["Approved (hrs)"]);
+  const sumHeaders = ["Name", "Employee ID", "Station", "Claims", "Claimed (hrs)", "Approved (hrs)", "Awaiting decision"];
+  const sumAoa = [
+    ["OVERTIME BY PERSON"],
+    [label],
+    [],
+    sumHeaders,
+    ...sumRows.map((r) => sumHeaders.map((h) => r[h])),
+  ];
+  const sumSheet = autoFitSheet(XLSX.utils.aoa_to_sheet(sumAoa), 3);
+  titleSheet(sumSheet);
+  dressSheet(sumSheet, 3, 1);
+  XLSX.utils.book_append_sheet(wb, sumSheet, "By Person");
+
+  const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const filename = `medcom-overtime-${new Date(from).toISOString().slice(0, 10)}-to-${new Date(to - 1).toISOString().slice(0, 10)}.xlsx`;
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const file = new File([blob], filename, { type: blob.type });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+      await navigator.share({ files: [file], title: `MEDCOM Overtime — ${label}` });
+      return;
+    }
+  } catch (e) {
+    // fall through to download
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ---------- inventory, as administration sees it ----------
+//
+// Three questions, in the order somebody actually asks them: what is short
+// right now, what is each truck carrying, and where did it go.
+function InventoryAdmin({ units, inventory, moves, setInventory, setMoves, user, addLog }) {
+  const [open, setOpen] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPar, setNewPar] = useState("");
+  const [station, setStation] = useState(STATIONS[0].key);
+
+  const items = inventoryItems(inventory);
+  const fleet = (units || []).filter((u) => stationOf(u) === station);
+
+  // Everything short, across the station, worst first. This is the whole point
+  // of the page: a supervisor should not have to open eight trucks to find the
+  // one with no oxygen.
+  const shortages = [];
+  fleet.forEach((u) => {
+    stockFor(items, moves, u.id).forEach((row) => {
+      if (row.out || row.low) shortages.push({ unit: u, row });
+    });
+  });
+  shortages.sort((a, b) => (b.row.short || 0) - (a.row.short || 0));
+
+  async function saveItems(next) {
+    const payload = { items: next };
+    await writeKey(INVENTORY_KEY, payload);
+    setInventory(payload);
+  }
+
+  async function addItem() {
+    const name = newName.trim();
+    const par = Math.max(0, parseInt(newPar, 10) || 0);
+    if (!name) return;
+    await saveItems([...items, { id: uid("inv"), name, par }]);
+    setNewName("");
+    setNewPar("");
+    await addLog(`Inventory — added "${name}", par ${par}`, "status");
+  }
+
+  async function setPar(itemId, par) {
+    await saveItems(items.map((it) => (it.id === itemId ? { ...it, par: Math.max(0, par) } : it)));
+  }
+
+  async function removeItem(item) {
+    if (!window.confirm(`Remove "${item.name}" from the stock list?\n\nMovements already recorded against it are kept.`)) return;
+    await saveItems(items.filter((it) => it.id !== item.id));
+    await addLog(`Inventory — removed "${item.name}"`, "status");
+  }
+
+  // Putting a truck back to par in one action, which is what a restock
+  // actually is: the shelf is filled, and the log says by whom.
+  async function restockToPar(unit) {
+    const rows = stockFor(items, moves, unit.id).filter((r) => r.short > 0);
+    if (!rows.length) {
+      window.alert(`${unit.name} is already at par.`);
+      return;
+    }
+    const lines = rows.map((r) => `  ${r.name} — add ${r.short}`).join("\n");
+    if (!window.confirm(`Restock ${unit.name} to par?\n\n${lines}`)) return;
+    let next = moves;
+    for (const r of rows) {
+      next = await recordStockMove({
+        unit,
+        item: r,
+        delta: r.short,
+        kind: "restock",
+        byName: (user && user.name) || "Administration",
+      });
+    }
+    if (next) setMoves(next);
+    await addLog(`${unit.name} restocked to par by ${(user && user.name) || "Administration"}`, "status");
+  }
+
+  const recent = (moves || [])
+    .slice()
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 40);
+
+  return (
+    <FoldingSection
+      title="INVENTORY"
+      count={shortages.length}
+      countLabel={shortages.length ? "short" : "at par"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div style={styles.archTabs}>
+        {STATIONS.map((st) => (
+          <button
+            key={st.key}
+            style={st.key === station ? styles.archTabOn : styles.archTab}
+            onClick={() => setStation(st.key)}
+          >
+            {st.label}
+          </button>
+        ))}
+      </div>
+
+      {shortages.length > 0 && (
+        <div style={styles.invShortWrap}>
+          <div style={styles.invShortHead}>SHORT NOW</div>
+          {shortages.slice(0, 12).map(({ unit, row }) => (
+            <div key={`${unit.id}-${row.id}`} style={styles.invShortRow}>
+              <span style={styles.invShortUnit}>{unit.name}</span>
+              <span style={styles.invShortItem}>{row.name}</span>
+              <span style={row.out ? styles.invShortOut : styles.invShortLow}>
+                {row.out ? "NONE LEFT" : `${row.have} of ${row.par}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Each truck against the standard load. */}
+      <div style={styles.invFleet}>
+        {fleet.map((u) => {
+          const rows = stockFor(items, moves, u.id);
+          const shortRows = rows.filter((r) => r.short > 0);
+          return (
+            <div key={u.id} style={styles.invTruck}>
+              <div style={styles.invTruckHead}>
+                <span style={styles.invTruckName}>{u.name}</span>
+                <span style={shortRows.length ? styles.invTruckShort : styles.invTruckOk}>
+                  {shortRows.length ? `${shortRows.length} short` : "at par"}
+                </span>
+                {shortRows.length > 0 && (
+                  <button style={styles.invRestockBtn} onClick={() => restockToPar(u)}>
+                    Restock to par
+                  </button>
+                )}
+              </div>
+              <div style={styles.invGrid}>
+                {rows.map((r) => (
+                  <div key={r.id} style={styles.invCell}>
+                    <span style={styles.invCellName}>{r.name}</span>
+                    <span
+                      style={{
+                        ...styles.invCellCount,
+                        color: r.out ? "var(--crit)" : r.low ? "var(--hold)" : "var(--ink)",
+                      }}
+                    >
+                      {r.have}
+                      <span style={styles.invCellPar}> / {r.par}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* The standard load itself. Folded away because it is set once and then
+          left alone; a page that opens on a form invites fiddling. */}
+      <div style={styles.invEditWrap}>
+        <button style={styles.ghostBtnSm} onClick={() => setEditing((v) => !v)}>
+          {editing ? "Done editing the list" : "Edit the standard load"}
+        </button>
+
+        {editing && (
+          <>
+            <div style={styles.invEditNote}>
+              Par is what every truck should carry. Changing it changes what counts as short
+              on every vehicle at once; it does not move any stock.
+            </div>
+            {items.map((it) => (
+              <div key={it.id} style={styles.invEditRow}>
+                <span style={styles.invEditName}>{it.name}</span>
+                <input
+                  style={styles.invParInput}
+                  type="number"
+                  min="0"
+                  value={it.par}
+                  onChange={(e) => setPar(it.id, parseInt(e.target.value, 10) || 0)}
+                />
+                <button style={styles.invRemoveBtn} onClick={() => removeItem(it)}>
+                  Remove
+                </button>
+              </div>
+            ))}
+            <div style={styles.invEditRow}>
+              <input
+                style={styles.invNameInput}
+                placeholder="Item name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <input
+                style={styles.invParInput}
+                type="number"
+                min="0"
+                placeholder="Par"
+                value={newPar}
+                onChange={(e) => setNewPar(e.target.value)}
+              />
+              <button style={styles.primaryBtnSm} onClick={addItem} disabled={!newName.trim()}>
+                Add
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Where it went. */}
+      <div style={styles.invMovesWrap}>
+        <div style={styles.invShortHead}>RECENT MOVEMENTS</div>
+        {recent.length === 0 ? (
+          <div style={styles.formHint}>Nothing recorded yet.</div>
+        ) : (
+          recent.map((m) => (
+            <div key={m.id} style={styles.invMoveRow}>
+              <span
+                style={{
+                  ...styles.invMoveDelta,
+                  color: m.delta < 0 ? "var(--crit)" : "var(--ok)",
+                }}
+              >
+                {m.delta > 0 ? `+${m.delta}` : m.delta}
+              </span>
+              <span style={styles.invMoveItem}>{m.itemName}</span>
+              <span style={styles.invMoveWho}>
+                {m.unitName}
+                {m.byName ? ` · ${m.byName}` : ""}
+                {m.requestNature ? ` · on ${m.requestNature}` : ""}
+              </span>
+              <span style={styles.invMoveWhen}>{gregDateTimeStr(m.ts)}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </FoldingSection>
+  );
+}
+
+// ---------- inventory, as the crew sees it ----------
+//
+// One job: say what you used. It sits on the crew's own truck page and, while
+// a call is running, carries that call's name so the movement is attributed to
+// it without anybody having to choose anything.
+function InventoryCrew({ unit, inventory, moves, setMoves, user, request, addLog }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(null);
+  if (!unit) return null;
+
+  const items = inventoryItems(inventory);
+  const rows = stockFor(items, moves, unit.id);
+  const shortCount = rows.filter((r) => r.short > 0).length;
+
+  async function move(row, delta, kind) {
+    if (busy) return;
+    setBusy(row.id);
+    try {
+      const next = await recordStockMove({
+        unit,
+        item: row,
+        delta,
+        kind,
+        byName: (user && user.name) || "",
+        requestId: request ? request.id : null,
+        requestNature: request ? request.nature : "",
+      });
+      if (next) setMoves(next);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <FoldingSection
+      title="STOCK ON THIS TRUCK"
+      count={shortCount}
+      countLabel={shortCount ? "short" : "at par"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <InfoNote label="How this works">
+        Tap <strong>−</strong> for something you have used and <strong>+</strong> for something you
+        have put back. {request ? `Anything recorded now is attributed to ${request.nature}.` : "Recorded against this truck."}
+      </InfoNote>
+
+      <div style={styles.invCrewList}>
+        {rows.map((r) => (
+          <div key={r.id} style={styles.invCrewRow}>
+            <div style={styles.invCrewName}>
+              {r.name}
+              <span
+                style={{
+                  ...styles.invCrewCount,
+                  color: r.out ? "var(--crit)" : r.low ? "var(--hold)" : "var(--ink-3)",
+                }}
+              >
+                {r.have} of {r.par}
+              </span>
+            </div>
+            <div style={styles.invCrewBtns}>
+              <button
+                style={styles.invMinus}
+                disabled={busy === r.id || r.have === 0}
+                onClick={() => move(r, -1, "used")}
+              >
+                −
+              </button>
+              <button
+                style={styles.invPlus}
+                disabled={busy === r.id}
+                onClick={() => move(r, 1, "restock")}
+              >
+                +
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </FoldingSection>
+  );
+}
+
+// ---------- who has said what about being located ----------
+//
+// The department asked that a refusal carry a reason and that an administrator
+// see it. This is where they see it. Acknowledging is a record that somebody
+// read it — it does not switch tracking on, and there is deliberately no
+// control here that would: a refusal that a supervisor can overrule is not a
+// refusal, and an app that keeps locating somebody who said no is the thing
+// this whole feature must never turn into.
+function TrackingConsentAdmin({ consents, user, setConsents, addLog }) {
+  const [open, setOpen] = useState(false);
+  const rows = Object.values(consents || {}).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const refused = rows.filter((r) => r.status === "refused");
+  const unread = refused.filter((r) => !r.ackedAt);
+
+  async function acknowledge(row) {
+    const key = String(row.accountId || "").toUpperCase();
+    if (!key) return;
+    const next = {
+      ...(consents || {}),
+      [key]: {
+        ...row,
+        ackedBy: (user && user.name) || "Administration",
+        ackedAt: Date.now(),
+      },
+    };
+    await writeKey(TRACKING_CONSENT_KEY, next);
+    setConsents(next);
+    await addLog(
+      `Location refusal from ${row.name || row.accountId} acknowledged by ${(user && user.name) || "Administration"}`,
+      "status"
+    );
+  }
+
+  return (
+    <FoldingSection
+      title="LOCATION CONSENT"
+      count={unread.length}
+      countLabel={unread.length ? "refusals to read" : "nothing waiting"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <InfoNote label="What this is">
+        Everyone who has been asked to share their truck's position while on a call, and what they
+        answered. A refusal takes effect immediately — acknowledging it records that it was read,
+        and nothing here turns tracking back on. Anyone who declined is asked again on their next
+        call.
+      </InfoNote>
+
+      {rows.length === 0 ? (
+        <div style={styles.formHint}>Nobody has been asked yet.</div>
+      ) : (
+        <div style={styles.consentList}>
+          {rows.map((r) => (
+            <div key={r.accountId} style={styles.consentRow}>
+              <div style={styles.consentRowHead}>
+                <span style={styles.consentRowName}>{r.name || "Unnamed"}</span>
+                <span style={styles.consentRowId}>{r.accountId}</span>
+                <span
+                  style={{
+                    ...styles.consentRowStatus,
+                    color: r.status === "granted" ? "var(--ok)" : "var(--hold)",
+                  }}
+                >
+                  {r.status === "granted" ? "SHARING" : "DECLINED"}
+                </span>
+              </div>
+              <div style={styles.consentRowWhen}>{gregDateTimeStr(r.ts)}</div>
+              {r.status === "refused" && r.reason && (
+                <div style={styles.consentRowReason}>“{r.reason}”</div>
+              )}
+              {r.status === "refused" &&
+                (r.ackedAt ? (
+                  <div style={styles.consentRowAcked}>
+                    Read by {r.ackedBy} · {gregDateTimeStr(r.ackedAt)}
+                  </div>
+                ) : (
+                  <button style={styles.ghostBtnSm} onClick={() => acknowledge(r)}>
+                    Acknowledge
+                  </button>
+                ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </FoldingSection>
+  );
+}
+
+// ---------- the map ----------
+//
+// Leaflet, driven by hand rather than through a React wrapper: the whole
+// surface is one div the library owns, and markers are created once and then
+// moved. Re-rendering a map on every poll would make the trucks jump and would
+// throw away whatever the dispatcher had panned to.
+//
+// A truck is an ambulance emoji rather than a pin, because the desk is reading
+// this at a glance from across a room and a pin says "a place" while the emoji
+// says "the vehicle". It rotates to its heading where the device reports one,
+// and it fades as the fix ages — a dot that looks equally confident three
+// minutes after its last update is a dot that lies.
+function FleetMap({ units, locations, requests, station }) {
+  const holderRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const [tilesFailed, setTilesFailed] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Build the map once.
+  useEffect(() => {
+    if (mapRef.current || !holderRef.current) return;
+    if (typeof L === "undefined") return;
+    const map = L.map(holderRef.current, {
+      zoomControl: true,
+      attributionControl: true,
+    // Somewhere sane until the first truck reports. Zoomed out enough that a
+    // desk seeing this before anybody is out does not think it is broken.
+    }).setView([24.7136, 46.6753], 11);
+    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "© OpenStreetMap contributors",
+    });
+    tiles.on("tileerror", () => setTilesFailed(true));
+    tiles.addTo(map);
+    mapRef.current = map;
+    setReady(true);
+    return () => {
+      try {
+        map.remove();
+      } catch (e) {}
+      mapRef.current = null;
+      markersRef.current = new Map();
+    };
+  }, []);
+
+  // Move the trucks.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || typeof L === "undefined") return;
+
+    const mine = (units || []).filter((u) => !station || stationOf(u) === station);
+    const live = [];
+
+    mine.forEach((u) => {
+      const fix = (locations || {})[u.id];
+      const marker = markersRef.current.get(u.id);
+      if (!fix || typeof fix.lat !== "number" || typeof fix.lng !== "number") {
+        if (marker) {
+          map.removeLayer(marker);
+          markersRef.current.delete(u.id);
+        }
+        return;
+      }
+      live.push([fix.lat, fix.lng]);
+      const age = positionAgeMs(fix, now) || 0;
+      const stale = age > LOCATION_STALE_MS;
+      const req = (requests || []).find((r) => r && r.id === fix.requestId);
+      const html =
+        `<div class="amb-marker${stale ? " amb-stale" : ""}">` +
+        `<div class="amb-glyph"${fix.heading !== null && fix.heading !== undefined ? ` style="transform:rotate(${Math.round(fix.heading)}deg)"` : ""}>🚑</div>` +
+        `<div class="amb-label">${u.name}</div>` +
+        `</div>`;
+      const icon = L.divIcon({
+        html,
+        className: "amb-icon",
+        iconSize: [64, 46],
+        iconAnchor: [32, 23],
+      });
+      const popup =
+        `<strong>${u.name}</strong><br/>` +
+        `${statusMeta(u.status).label}<br/>` +
+        (req ? `${req.nature}<br/>` : "") +
+        `Updated ${age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}` +
+        (fix.accuracy ? `<br/>Accurate to about ${fix.accuracy} m` : "") +
+        (fix.byName ? `<br/>From ${fix.byName}` : "");
+
+      if (marker) {
+        marker.setLatLng([fix.lat, fix.lng]);
+        marker.setIcon(icon);
+        marker.setPopupContent(popup);
+      } else {
+        const m = L.marker([fix.lat, fix.lng], { icon }).addTo(map).bindPopup(popup);
+        markersRef.current.set(u.id, m);
+      }
+    });
+
+    // Frame whatever is out, once there is something to frame. Only when the
+    // set of trucks changes, so a dispatcher who has panned somewhere is not
+    // yanked back every minute.
+    if (live.length > 0 && markersRef.current.size !== live.length) {
+      try {
+        map.fitBounds(L.latLngBounds(live), { padding: [50, 50], maxZoom: 15 });
+      } catch (e) {}
+    }
+  }, [units, locations, requests, station, now, ready]);
+
+  const tracked = (units || []).filter(
+    (u) => (!station || stationOf(u) === station) && (locations || {})[u.id]
+  );
+
+  return (
+    <div style={styles.mapWrap}>
+      <div style={styles.mapHead}>
+        <span style={styles.mapTitle}>LIVE POSITIONS</span>
+        <span style={styles.mapCount}>
+          {tracked.length
+            ? `${tracked.length} truck${tracked.length === 1 ? "" : "s"} sharing`
+            : "nobody out"}
+        </span>
+      </div>
+
+      <div ref={holderRef} style={styles.mapCanvas} />
+
+      {tilesFailed && (
+        <div style={styles.mapWarn}>
+          The map background could not be loaded — the network may be blocking it. The ambulances
+          below are still in the right places.
+        </div>
+      )}
+
+      {/* The same trucks as a list, because the map answers "where" and this
+          answers "how long ago", which is the question that decides whether to
+          trust the dot. */}
+      <div style={styles.mapList}>
+        {tracked.length === 0 ? (
+          <div style={styles.formHint}>
+            Positions appear here while a truck is out on a call. Tracking starts when a crew is
+            dispatched and stops when they go back in service.
+          </div>
+        ) : (
+          tracked.map((u) => {
+            const fix = locations[u.id];
+            const age = positionAgeMs(fix, now) || 0;
+            const stale = age > LOCATION_STALE_MS;
+            return (
+              <div key={u.id} style={styles.mapRow}>
+                <span style={styles.mapRowName}>{u.name}</span>
+                <span style={{ ...styles.mapRowStatus, color: statusMeta(u.status).color }}>
+                  {statusMeta(u.status).label}
+                </span>
+                <span style={stale ? styles.mapRowAgeStale : styles.mapRowAge}>
+                  {age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}
+                </span>
+                {fix.accuracy ? <span style={styles.mapRowAcc}>±{fix.accuracy} m</span> : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The tracker itself.
+//
+// It runs only when all four of these are true: the crew are on a call, this
+// device holds the Alpha seat, this person has said yes, and the browser will
+// give a position. Any one of them going false stops it — and going back in
+// service also deletes the stored fix, so the truck leaves the map rather than
+// sitting on it at the last place it was seen.
+//
+// watchPosition rather than a timer around getCurrentPosition: the browser
+// keeps one fix warm and hands it over, instead of waking the GPS cold every
+// minute. What is throttled is the WRITING — one save a minute — because the
+// board is sent whole on every write and a position every second would be a
+// board sent every second.
+function useTracking({ unit, request, user, consents, setLocations, active }) {
+  const [state, setState] = useState("off"); // off | on | refused
+  const [lastTs, setLastTs] = useState(null);
+  const [error, setError] = useState("");
+  const watchRef = useRef(null);
+  const lastWriteRef = useRef(0);
+  const clearedForRef = useRef(null);
+
+  const accountId = user && user.accountId;
+  const allowed = mayTrack(consents, accountId);
+
+  useEffect(() => {
+    const stop = () => {
+      if (watchRef.current !== null && navigator.geolocation) {
+        try {
+          navigator.geolocation.clearWatch(watchRef.current);
+        } catch (e) {}
+      }
+      watchRef.current = null;
+    };
+
+    if (!active) {
+      stop();
+      setState(allowed ? "off" : accountId ? "off" : "off");
+      // Back in service: take the truck off the map. Guarded so it happens once
+      // per call rather than on every render of an idle screen.
+      if (unit && clearedForRef.current !== unit.id) {
+        clearedForRef.current = unit.id;
+        clearPosition(unit.id).then((next) => {
+          if (next) setLocations(next);
+        });
+      }
+      setLastTs(null);
+      return;
+    }
+
+    clearedForRef.current = null;
+
+    if (!allowed) {
+      stop();
+      setState("refused");
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      stop();
+      setState("on");
+      setError("this device has no location service");
+      return;
+    }
+
+    setState("on");
+    setError("");
+    watchRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setError("");
+        const now = Date.now();
+        if (now - lastWriteRef.current < LOCATION_INTERVAL_MS) return;
+        lastWriteRef.current = now;
+        writePosition({
+          unit,
+          coords: pos.coords,
+          byName: (user && user.name) || "",
+          accountId,
+          requestId: request ? request.id : null,
+        }).then((next) => {
+          if (next) {
+            setLocations(next);
+            setLastTs(now);
+          }
+        });
+      },
+      (err) => {
+        // Denied at the OS level is a different thing from consent given in the
+        // app, and the crew should be told which one stopped it.
+        setError(
+          err && err.code === 1
+            ? "the device refused permission — check location is on for this app"
+            : err && err.code === 3
+            ? "no fix yet"
+            : "the device could not get a position"
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 30000, timeout: 25000 }
+    );
+
+    return stop;
+  }, [active, allowed, unit && unit.id, request && request.id, accountId]);
+
+  return { state, lastTs, error };
+}
+
+// ---------- asking before locating ----------
+//
+// Google requires a prominent disclosure of its own before location is
+// collected — the operating system's permission dialog does not count, because
+// it says what is being asked for and not why. This is that disclosure, and it
+// is written to be read by somebody who is about to drive somewhere rather than
+// by a lawyer: what is collected, when, for how long, who sees it, and what
+// happens if they say no.
+function TrackingConsentModal({ open, user, onDecide }) {
+  const [refusing, setRefusing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!open) return null;
+
+  async function decide(status) {
+    if (busy) return;
+    if (status === "refused" && !reason.trim()) return;
+    setBusy(true);
+    try {
+      await onDecide(status, reason.trim());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={styles.consentScrim}>
+      <div style={styles.consentSheet}>
+        <div style={styles.consentEyebrow}>LOCATION — {user && user.accountId ? user.accountId : "YOUR ID"}</div>
+        <div style={styles.consentTitle}>Share this truck's position while you are on a call?</div>
+
+        <div style={styles.consentBody}>
+          <div style={styles.consentPoint}>
+            <strong>Only during a call.</strong> It starts when you are dispatched and stops the
+            moment you go back in service. Between calls nothing is sent.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>Only while this app is open.</strong> Lock the tablet or switch away and it
+            stops on its own. There is no background tracking.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>Once a minute, and only the latest one is kept.</strong> Each position replaces
+            the one before it, and the whole thing is deleted when the call ends. No route or
+            history of where you have been is stored.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>Who sees it.</strong> The dispatch desk and administration, on the department's
+            own server. It is not sent to anyone else and it is not used for anything but finding
+            the nearest truck.
+          </div>
+          <div style={styles.consentPoint}>
+            <strong>If you say no.</strong> Everything else works exactly as it does now — you take
+            calls, stamp times, all of it. The desk simply sees no position for this truck. You will
+            be asked again on your next call.
+          </div>
+        </div>
+
+        {!refusing ? (
+          <div style={styles.consentBtns}>
+            <button style={styles.consentYes} onClick={() => decide("granted")} disabled={busy}>
+              Allow while on a call
+            </button>
+            <button style={styles.consentNo} onClick={() => setRefusing(true)} disabled={busy}>
+              Not now
+            </button>
+          </div>
+        ) : (
+          <div style={styles.consentRefuse}>
+            <label style={styles.label}>Why? The department asks for a reason.</label>
+            <textarea
+              style={styles.consentReason}
+              rows={3}
+              value={reason}
+              maxLength={300}
+              placeholder="e.g. personal phone, not a work device"
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <div style={styles.consentNote}>
+              This is recorded for administration. It does not change the answer — saying no takes
+              effect straight away, and nobody has to approve it.
+            </div>
+            <div style={styles.consentBtns}>
+              <button
+                style={reason.trim() ? styles.consentNo : styles.consentNoOff}
+                onClick={() => decide("refused")}
+                disabled={busy || !reason.trim()}
+              >
+                Send and continue
+              </button>
+              <button style={styles.ghostBtnSm} onClick={() => setRefusing(false)} disabled={busy}>
+                Back
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The crew's own bar: on, off, and how long ago the last fix was. A crew whose
+// position stopped updating twenty minutes ago should be able to see that on
+// their own screen, not only on the desk's.
+function TrackingBar({ state, lastTs, error }) {
+  // Its own second hand. The crew screen has no shared ticker, and the whole
+  // point of this bar is that the number moves — a bar reading "2 min ago"
+  // forever is worse than no bar, because it looks like it is working.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (state === "off") return null;
+  const age = lastTs ? Math.max(0, now - lastTs) : null;
+  const stale = age !== null && age > LOCATION_STALE_MS;
+
+  if (state === "refused") {
+    return (
+      <div style={styles.trackBarOff}>
+        <span style={styles.trackDotOff} />
+        Location off — the desk cannot see this truck's position
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={styles.trackBarWarn}>
+        <span style={styles.trackDotWarn} />
+        Location unavailable — {error}
+      </div>
+    );
+  }
+
+  return (
+    <div style={stale ? styles.trackBarWarn : styles.trackBarOn}>
+      <span style={stale ? styles.trackDotWarn : styles.trackDotOn} className={stale ? "" : "breathing"} />
+      {lastTs ? (
+        <>
+          Sharing position · last update{" "}
+          <strong>{age < 60000 ? "just now" : `${msDurationStr(age)} ago`}</strong>
+          {stale && " — the desk is seeing an old position"}
+        </>
+      ) : (
+        "Sharing position · waiting for the first fix"
+      )}
+    </div>
+  );
+}
+
+// ---------- the chat dock ----------
+//
+// Retractable, and closed by default. A dispatch board is not a messaging app:
+// this has to be reachable from every screen and invisible until it is wanted,
+// so it lives as a pill in the corner that carries its own unread count and
+// opens into a panel over the board rather than pushing it around.
+//
+// One component for both sides. The desk sees a list of trucks and picks one;
+// a crew has exactly one thread and lands straight in it. The difference is two
+// props, not two components — which is what keeps the two halves of a
+// conversation looking like one conversation.
+function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSent }) {
+  const [open, setOpen] = useState(false);
+  const [activeId, setActiveId] = useState(myUnitId || null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  // Re-read on every message so a badge clears the moment a thread is opened.
+  const [seenTick, setSeenTick] = useState(0);
+  const endRef = useRef(null);
+
+  const isCrew = !!myUnitId;
+  const mine = isCrew ? "crew" : "dispatch";
+  const threads = isCrew
+    ? (units || []).filter((u) => u.id === myUnitId)
+    : (units || []).filter((u) => stationOf(u) === station);
+
+  const active = threads.find((u) => u.id === activeId) || (isCrew ? threads[0] : null);
+  const thread = active ? threadFor(messages, active.id) : [];
+
+  const totalUnread = threads.reduce((n, u) => n + unreadIn(messages, u.id, mine), 0);
+
+  // Opening a thread marks it read on this device, and so does a new message
+  // arriving while it is already open — otherwise the badge counts lines the
+  // reader is looking at.
+  useEffect(() => {
+    if (!open || !active) return;
+    const last = thread.length ? thread[thread.length - 1].ts : 0;
+    if (last) {
+      markThreadSeen(active.id, last);
+      setSeenTick((n) => n + 1);
+    }
+  }, [open, active && active.id, thread.length]);
+
+  // Stick to the newest line.
+  useEffect(() => {
+    if (!open || !endRef.current) return;
+    try {
+      endRef.current.scrollIntoView({ block: "end" });
+    } catch (e) {}
+  }, [open, thread.length, active && active.id]);
+
+  async function send() {
+    const text = draft.trim();
+    if (!text || !active || sending) return;
+    setSending(true);
+    try {
+      const next = await postMessage({
+        unit: active,
+        from: mine,
+        byName: (user && user.name) || (mine === "dispatch" ? "Dispatch" : ""),
+        byAccountId: (user && user.accountId) || null,
+        text,
+        station: stationOf(active),
+      });
+      if (next) {
+        setDraft("");
+        if (onSent) onSent(next);
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (!threads.length) return null;
+
+  if (!open) {
+    return (
+      <button style={styles.chatPill} onClick={() => setOpen(true)}>
+        <MessageSquare size={15} />
+        <span>Messages</span>
+        {totalUnread > 0 && <span style={styles.chatPillBadge}>{totalUnread}</span>}
+      </button>
+    );
+  }
+
+  return (
+    <div style={styles.chatPanel}>
+      <div style={styles.chatHead}>
+        <div style={styles.chatHeadTitle}>
+          <MessageSquare size={14} />
+          {isCrew ? "Dispatch" : active ? active.name : "Messages"}
+        </div>
+        <button style={styles.chatClose} onClick={() => setOpen(false)} title="Hide">
+          ✕
+        </button>
+      </div>
+
+      {/* The desk picks a truck; a crew never sees this row. */}
+      {!isCrew && (
+        <div style={styles.chatThreads}>
+          {threads.map((u) => {
+            const n = unreadIn(messages, u.id, mine);
+            const on = active && active.id === u.id;
+            return (
+              <button
+                key={u.id}
+                style={on ? styles.chatThreadOn : styles.chatThread}
+                onClick={() => setActiveId(u.id)}
+              >
+                {u.name}
+                {n > 0 && <span style={styles.chatThreadBadge}>{n}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={styles.chatLog}>
+        {thread.length === 0 ? (
+          <div style={styles.chatEmpty}>
+            Nothing yet. This is for the things the radio is the wrong tool for —
+            which entrance, whether the lift is working, what the ward actually said.
+          </div>
+        ) : (
+          thread.map((m) => {
+            const isMine = m.from === mine;
+            return (
+              <div key={m.id} style={isMine ? styles.chatRowMine : styles.chatRowTheirs}>
+                <div style={isMine ? styles.chatBubbleMine : styles.chatBubbleTheirs}>
+                  {m.text}
+                </div>
+                <div style={styles.chatMeta}>
+                  {m.byName || (m.from === "crew" ? m.unitName : "Dispatch")} · {clockStr(m.ts)}
+                </div>
+              </div>
+            );
+          })
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <div style={styles.chatCompose}>
+        <textarea
+          style={styles.chatInput}
+          value={draft}
+          maxLength={MESSAGE_MAX}
+          rows={2}
+          placeholder={isCrew ? "Message the desk…" : `Message ${active ? active.name : "the team"}…`}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter sends; shift-enter is a new line. A thumb on a tablet wants
+            // one key, and the message that needs two paragraphs is rare.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+        />
+        <button
+          style={draft.trim() ? styles.chatSend : styles.chatSendOff}
+          onClick={send}
+          disabled={!draft.trim() || sending}
+        >
+          {sending ? "…" : "Send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// A message that arrives silently is a message nobody reads. Same reasoning as
+// the reply tone on the crew screen — this is worth knowing, not worth
+// interrupting a patient for, so it is the soft tone rather than the alarm.
+function useMessageAlerts(messages, mine, unitIds, audioCtxRef) {
+  const lastSeen = useRef(null);
+  useEffect(() => {
+    const ids = new Set(unitIds || []);
+    const relevant = (messages || []).filter(
+      (m) => m && ids.has(m.unitId) && m.from !== mine
+    );
+    const newest = relevant.reduce((n, m) => Math.max(n, m.ts || 0), 0);
+    if (lastSeen.current !== null && newest > lastSeen.current) {
+      const fresh = relevant.filter((m) => (m.ts || 0) > lastSeen.current);
+      soundReminderTone(audioCtxRef);
+      buzz([180, 90, 180]);
+      fresh.slice(-1).forEach(notifyMessage);
+    }
+    lastSeen.current = newest;
+  }, [messages, mine]);
+}
+
+function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages, locations }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
   const [openCallId, setOpenCallId] = useState(null);
@@ -12252,6 +14703,30 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   // identically whether it is made on a live call here or on a closed one
   // from the history list.
   // Is anything free right now, and is a gap already running?
+  // The policy shelf, read once when the desk opens it rather than polled: this
+  // is reference material, not live board state.
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [policies, setPolicies] = useState(null);
+  useEffect(() => {
+    if (!policyOpen || policies !== null) return;
+    let alive = true;
+    (async () => {
+      const stored = await readKey(POLICY_KEY, null);
+      if (alive) setPolicies(stored || POLICY_PLACEHOLDER);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [policyOpen, policies]);
+
+  // Every truck at this station, so a message from any of them reaches the desk.
+  useMessageAlerts(
+    messages,
+    "dispatch",
+    (units || []).filter((u) => stationOf(u) === myStation).map((u) => u.id),
+    audioCtxRef
+  );
+
   const coverageAvailable = stationHasCoverage(units, requests, myStation);
   const myGap = openCoverageGap(coverage, myStation);
   async function declareNoCoverage() {
@@ -12446,6 +14921,49 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         : `${unit.name} refused out of service by ${user.name || "Dispatch"} — ${note.trim()}` +
           ` (asked: ${rq.reason})`,
       "status"
+    );
+  }
+
+  // Putting a truck back on the run.
+  //
+  // The desk could take an ambulance off and then not put it back. Only the
+  // crew's own screen carried "Back in service", so a truck stood down for a
+  // restock stayed off the board until somebody on it picked up a tablet —
+  // and when the desk needs that ambulance NOW, at the moment a call lands and
+  // nothing else is free, waiting for the crew to notice is the wrong way
+  // round. The decision to take it off was the desk's; so is the decision to
+  // end that.
+  //
+  // Only offered for a truck that has a crew on it. Returning an empty one to
+  // service would put a unit dispatch can send on the board with nobody in it.
+  async function returnToService(unit) {
+    if (!unit) return;
+    if (!isStaffed(unit)) {
+      window.alert(`${unit.name} has nobody signed on. It comes back on the run when a crew signs on.`);
+      return;
+    }
+    const rq = unit.oosRequest;
+    const why = rq && rq.reason ? ` (was off for: ${rq.reason})` : "";
+    if (!window.confirm(`Put ${unit.name} back in service?${why}\n\nIt becomes available for dispatch immediately.`)) return;
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(
+      fresh.map((u) =>
+        u.id === unit.id
+          ? {
+              ...u,
+              status: idleStatusFor(u),
+              // The answered request is cleared with it. Leaving it behind
+              // would have the crew's screen still showing an approval for a
+              // stand-down that is over.
+              oosRequest: null,
+            }
+          : u
+      )
+    );
+    await addLog(
+      `${unit.name} put back in service by ${user.name || "Dispatch"}${why}`,
+      "status",
+      { event: "backInService", unitName: unit.name }
     );
   }
 
@@ -12818,7 +15336,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
         {stationLabel(myStation)} — dispatch desk
       </div>
 
-      <StatusBoard units={stationUnits} />
+      <StatusBoard units={stationUnits} requests={stationRequests} station={myStation} />
 
       {/* At the top, with the status board. Whether there is anything left to
           send is the first thing the desk needs to know when it looks at this
@@ -12841,8 +15359,40 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             </span>
           </button>
         )}
+
+        {/* Beside the coverage control because that is the other thing on this
+            row that is about how the department runs rather than about one
+            call. Quiet by default — it is reference, not an alert. */}
+        <button style={styles.policyBtn} onClick={() => setPolicyOpen(true)}>
+          <BookOpen size={13} /> Policies
+        </button>
       </div>
 
+      <PolicyModal
+        open={policyOpen}
+        onClose={() => setPolicyOpen(false)}
+        policies={policies}
+      />
+
+      {/* Reachable from every dispatcher page, closed until it is wanted. */}
+      <ChatDock
+        user={user}
+        units={units}
+        messages={messages}
+        station={myStation}
+        audioCtxRef={audioCtxRef}
+        onSent={setMessages}
+      />
+
+
+      {onPage("map") && (
+        <FleetMap
+          units={units}
+          locations={locations}
+          requests={requests}
+          station={myStation}
+        />
+      )}
 
       {onPage("board") && (
         <>
@@ -12935,6 +15485,29 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           </div>
         );
       })}
+
+      {/* Trucks the desk has already taken off the run, so putting one back is
+          on the same screen as taking it off rather than only on the crew's
+          tablet. Empty trucks are not listed: they are off because nobody is
+          signed on, and that is not something the desk can undo. */}
+      {stationUnits
+        .filter((u) => u.status === "oos" && isStaffed(u) && !oosRequestOf(u))
+        .map((u) => (
+          <div key={u.id} style={styles.oosOffRun}>
+            <div style={styles.oosOffRunHead}>
+              <span>{u.name} is off the run</span>
+              {u.oosRequest && u.oosRequest.reason && (
+                <span style={styles.oosAskWho}>
+                  {" "}· {u.oosRequest.reason}
+                  {u.oosRequest.answeredAt ? ` since ${clockStr(u.oosRequest.answeredAt)}` : ""}
+                </span>
+              )}
+            </div>
+            <button style={styles.primaryBtnSm} onClick={() => returnToService(u)}>
+              Put back in service
+            </button>
+          </div>
+        ))}
 
       {/* Anything a crew has reported wrong that is still waiting on the desk —
           including on calls that have already closed. Scoped to this station:
@@ -13312,6 +15885,13 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
                   </span>
                 )}
               </div>
+              {/* Where this call has got to, as five segments. The status pill
+                  above already names the stage; this says how far through the
+                  call that is, which is the thing a desk deciding whether to
+                  wait for this truck or start looking for another one actually
+                  wants. Reading it takes no words. */}
+              <CallProgress req={req} />
+
               {/* Came in from the shift before. The next desk needs to know at a
                   glance that this one is not theirs to file — it stays on the
                   log of the shift that took it. */}
@@ -13588,13 +16168,27 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
   const now = Date.now();
   return (
     <div style={styles.unitCard}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <Circle size={8} fill={statusMeta(unit.status).color} color={statusMeta(unit.status).color} />
-        <span style={styles.unitCardName}>{unit.name}</span>
-      </div>
-      <span style={{ color: statusMeta(unit.status).color, fontSize: 13, fontWeight: 600 }}>{statusMeta(unit.status).label}</span>
-      {!isStaffed(unit) && <span style={styles.unitCardNoCrew}>NO CREW SIGNED ON</span>}
-      {unit.ambulanceNumber && <span style={styles.unitCardAmbulance}>Amb #{unit.ambulanceNumber}</span>}
+      {/* Status twice over: a bar the full width of the card, and the word
+          beneath it. The bar is what carries across a room and what still works
+          for somebody who cannot separate the greens from the reds; the word is
+          what makes it unambiguous close up. Neither alone was enough. */}
+      <div style={{ ...styles.unitCardBar, background: statusMeta(unit.status).color }} />
+      <div style={styles.unitCardBody}>
+        <div style={styles.unitCardTop}>
+          <span style={styles.unitCardName}>{unit.name}</span>
+          {unit.ambulanceNumber && (
+            <span style={styles.unitCardAmbulance}>#{unit.ambulanceNumber}</span>
+          )}
+        </div>
+        <div style={styles.unitCardStatusRow}>
+          <span
+            style={{ ...styles.unitCardDot, background: statusMeta(unit.status).color }}
+          />
+          <span style={{ ...styles.unitCardStatusText, color: statusMeta(unit.status).color }}>
+            {statusMeta(unit.status).label}
+          </span>
+        </div>
+        {!isStaffed(unit) && <span style={styles.unitCardNoCrew}>NO CREW SIGNED ON</span>}
       <SeatLine
         label="Alpha"
         member={unit.alpha}
@@ -13630,6 +16224,7 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -13676,7 +16271,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, locations, setLocations, trackingConsents, setTrackingConsents }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -13733,6 +16328,98 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const [assistWhat, setAssistWhat] = useState("");
   const [checklistOpen, setChecklistOpen] = useState(false);
   // Asking to come off the run.
+  // A call called off while the crew are on the way.
+  //
+  // The desk standing a call down is the one change to this screen that must
+  // reach the crew without them looking at it. They are moving — possibly on
+  // lights — towards somewhere they no longer need to go, and the call card
+  // quietly disappearing is not a message. It is also the change most likely to
+  // happen while the tablet is face-down on the dash.
+  //
+  // So it sounds, and it keeps saying so on screen until somebody clears it.
+  // The full alert tone rather than the soft reminder: turning a truck around
+  // is urgent, and it is the same sound they already associate with "look at
+  // the screen now".
+  // A message from the desk on this crew's own thread.
+  useMessageAlerts(messages, "crew", myUnit ? [myUnit.id] : [], audioCtxRef);
+
+  // ---------- location ----------
+  //
+  // Four conditions, all of which have to hold: this crew are on a call, this
+  // device is the Alpha seat, this person has agreed, and the browser will give
+  // a position. The seat check is what makes one truck one dot — two phones in
+  // one vehicle reporting opposite corners of a car park is noise, and Alpha is
+  // the seat the department named.
+  const isAlpha = !!(myUnit && myUnit.alpha && user && myUnit.alpha.accountId === user.accountId);
+  const shouldTrack = !!(myRequest && myUnit && isAlpha && !assisting);
+  const tracking = useTracking({
+    unit: myUnit,
+    request: myRequest,
+    user,
+    consents: trackingConsents,
+    setLocations,
+    active: shouldTrack,
+  });
+
+  // Asked when a call arrives, not at sign-on: consent for something is asked
+  // for at the moment the something is about to happen, which is also the only
+  // moment the answer is meaningful.
+  const [consentOpen, setConsentOpen] = useState(false);
+  useEffect(() => {
+    if (!shouldTrack) {
+      setConsentOpen(false);
+      return;
+    }
+    setConsentOpen(needsConsentPrompt(trackingConsents, user && user.accountId));
+  }, [shouldTrack, trackingConsents, user && user.accountId]);
+
+  async function decideTracking(status, reason) {
+    const next = await recordConsent({
+      accountId: user && user.accountId,
+      name: (user && user.name) || "",
+      status,
+      reason,
+    });
+    if (next) setTrackingConsents(next);
+    setConsentOpen(false);
+    await addLog(
+      status === "granted"
+        ? `${(user && user.name) || "A crew member"} allowed location while on a call`
+        : `${(user && user.name) || "A crew member"} declined location — ${reason}`,
+      "status"
+    );
+  }
+
+  const wasOnCall = useRef(null);
+  const [calledOff, setCalledOff] = useState(null);
+  useEffect(() => {
+    if (!myUnit) {
+      wasOnCall.current = null;
+      return;
+    }
+    const prev = wasOnCall.current;
+    if (myRequest) {
+      wasOnCall.current = { id: myRequest.id };
+      return;
+    }
+    wasOnCall.current = null;
+    if (!prev) return;
+    const gone = (requests || []).find((r) => r && r.id === prev.id);
+    if (!gone || gone.status !== "completed") return;
+    // A crew who stamped Back in Service themselves closed their own call and
+    // do not need to be told about it. This is only for a call ended out from
+    // under them.
+    if (gone.times && gone.times.backInService) return;
+    soundCallAlert(audioCtxRef, "critical", true);
+    buzz([400, 150, 400]);
+    setCalledOff({
+      nature: gone.nature || "the call",
+      reason: callCloseReason(gone),
+      by: gone.closedBy || "the desk",
+      at: gone.closedAt || Date.now(),
+    });
+  }, [myRequest && myRequest.id, requests, myUnit && myUnit.id]);
+
   // A reply that arrives silently is a reply nobody reads.
   //
   // The crew asked a question and then went back to work; a chip changing
@@ -13925,8 +16612,25 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         // Creating and waking the context is part of playing, not something
         // done once at sign-in — so a crew who left this tab in the background
         // still hear the repeat that lands after they come back to it.
-        soundCallAlert(audioCtxRef, myRequest.priority);
-        buzz([500, 250, 500]);
+        // Through priorityKeyOf, not off the raw field.
+        //
+        // A call's level of care is decided by its category first — the desk
+        // coding a patient as C (CCT) is what makes it a critical care
+        // transfer — and `priority` is only the fallback for a call with no
+        // category on it yet. Reading the raw field skipped that entirely, so a
+        // CCT patient coded at the desk arrived on the crew's tablet with the
+        // routine BLS chime: the one tone that tells a crew this is not urgent.
+        //
+        // It also mixed up the old vocabulary. priorityKeyOf maps legacy
+        // "urgent" to cct and "critical" to als; toneKeyFor maps those two
+        // words the other way round. Anything going straight from the stored
+        // field to the tone therefore had them crossed. One route in, and both
+        // agree.
+        soundCallAlert(audioCtxRef, priorityKeyOf(myRequest), true);
+        // Vibration alongside the tone, not instead of it: on a phone face-down
+        // in a cradle the buzz is what gets noticed first, and it is the one
+        // channel a hardware silent switch does not touch.
+        buzz([600, 200, 600, 200, 900]);
       };
       sound();
       alarmIntervalRef.current = setInterval(sound, 1700);
@@ -14135,14 +16839,15 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     });
     await saveRequests(nextRequests);
     await saveUnits(nextUnits);
-    // Every step is logged and exported; only the en-route stamp is tagged for
-    // the live log sheet.
+    // Every step is logged and exported; the two the desk watches live are
+    // tagged so the board's feed can pick them out — moving, and free again.
+    const feedEvent = step.timeKey === "enroute" || step.timeKey === "backInService"
+      ? { event: step.timeKey, unitName: myUnit.name, requestId: myRequest.id }
+      : undefined;
     await addLog(
       `${myUnit.name} — ${step.timeLabel} at ${clockStr(now)} (${myRequest.nature})`,
       "status",
-      step.timeKey === "enroute"
-        ? { event: "enroute", unitName: myUnit.name, requestId: myRequest.id }
-        : undefined
+      feedEvent
     );
   }
 
@@ -14600,6 +17305,19 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       <div style={styles.sectionHeader}>YOUR SHIFT</div>
       <CrewShiftCard user={user} unit={myUnit} onCall={!!myRequest} />
 
+      {/* On the truck page rather than on the call, because stock is a fact
+          about the vehicle. It knows about the live call anyway, so anything
+          recorded during one is attributed to it without the crew choosing. */}
+      <InventoryCrew
+        unit={myUnit}
+        inventory={inventory}
+        moves={inventoryMoves}
+        setMoves={setInventoryMoves}
+        user={user}
+        request={myRequest}
+        addLog={addLog}
+      />
+
       <div style={styles.sectionHeader}>YOUR UNIT — {myUnit.name}</div>
       <div style={styles.myUnitCard}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -14620,6 +17338,55 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             A refusal in particular must reach them — they asked for a reason,
             and being told no without one teaches only not to ask. It stays until
             they acknowledge it. */}
+        {/* On, off, and how long ago — on the crew's own screen, so somebody
+            whose position stopped updating twenty minutes ago can see that
+            without asking the desk. */}
+        {shouldTrack && (
+          <TrackingBar
+            state={tracking.state}
+            lastTs={tracking.lastTs}
+            error={tracking.error}
+          />
+        )}
+
+        <TrackingConsentModal
+          open={consentOpen}
+          user={user}
+          onDecide={decideTracking}
+        />
+
+        {/* One thread, straight into it — a crew has only ever one desk to
+            talk to, so there is nothing to pick from. */}
+        <ChatDock
+          user={user}
+          units={units}
+          messages={messages}
+          station={myUnit ? stationOf(myUnit) : null}
+          myUnitId={myUnit ? myUnit.id : null}
+          audioCtxRef={audioCtxRef}
+          onSent={setMessages}
+        />
+
+        {/* The call was called off while they were on their way. Loud, red, and
+            it does not clear itself: a crew still driving to a stood-down call
+            is the thing this whole banner exists to stop. */}
+        {calledOff && (
+          <div style={styles.calledOff} className="breathing">
+            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+            <strong>Call cancelled — stand down</strong>
+            <div style={styles.calledOffWhat}>{calledOff.nature}</div>
+            {calledOff.reason && (
+              <div style={styles.calledOffWhy}>“{calledOff.reason}”</div>
+            )}
+            <div style={styles.calledOffWho}>
+              Closed by {calledOff.by} at {clockStr(calledOff.at)}
+            </div>
+            <button style={styles.primaryBtnSm} onClick={() => setCalledOff(null)}>
+              Understood — standing down
+            </button>
+          </div>
+        )}
+
         {myUnit.oosRequest &&
           myUnit.oosRequest.status === "refused" &&
           !dismissedOos && (
@@ -14936,7 +17703,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
             </div>
           )}
 
-          <CallTimes times={myRequest.times} />
+          <CallStepper req={myRequest} />
 
           {/* Where the ask for a second ambulance has got to, on the card of the
               team who asked for it — a crew waiting for help should not have to
@@ -16361,10 +19128,59 @@ function CategoryMix({ requests, from, to }) {
   );
 }
 
-function IndicatorBand({ requests, range, setRange }) {
+// The department's utilisation, as opposed to one person's.
+//
+// Total time trucks were tied up on calls, against the time those trucks were
+// there to be tied up. A unit assisting on somebody else's call counts for the
+// stretch it was out, exactly as it does on the per-person sheet, because the
+// truck was working either way.
+function fleetUhu(requests, units, from, to) {
+  const list = units || [];
+  if (!list.length) return null;
+  const end = Math.min(to, Date.now());
+  if (end <= from) return null;
+  let busy = 0;
+  (requests || []).forEach((r) => {
+    if (!r || !r.createdAt || r.createdAt < from || r.createdAt >= to) return;
+    list.forEach((u) => {
+      const iv = unitCallInterval(r, u.id, end);
+      if (!iv) return;
+      busy += Math.max(0, Math.min(iv.end, end) - Math.max(iv.start, from));
+    });
+  });
+  const capacity = list.length * (end - from);
+  return capacity > 0 ? Math.min(100, (busy / capacity) * 100) : null;
+}
+
+// Every closed call should carry the name of whoever wrote its patient care
+// report. Recent calls cannot close without one; older ones could, which is
+// exactly what this figure is for — it says how much of the record is
+// attributable, and it should climb towards 100 and stay there.
+function pcrCompliance(requests, from, to) {
+  const closed = (requests || []).filter(
+    (r) => r && r.status === "completed" && r.createdAt >= from && r.createdAt < to
+  );
+  const named = closed.filter((r) => pcrAuthorOf(r));
+  return {
+    pct: closed.length ? (named.length / closed.length) * 100 : null,
+    named: named.length,
+    total: closed.length,
+  };
+}
+
+function IndicatorBand({ requests, units, log, checklistRuns, range, setRange }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
   const resp = responseCompliance(requests, win.start, win.end);
+  const uhu = fleetUhu(requests, units, win.start, win.end);
+  const pcr = pcrCompliance(requests, win.start, win.end);
+  // Checklist compliance department-wide is the same sum the per-person figures
+  // are built from — lists filed against shifts actually worked — so the band
+  // and the per-person table can never disagree.
+  const people = staffStatsFor(log, requests, units, win, now, checklistRuns);
+  const shiftsWorked = people.reduce((n, p) => n + (p.shiftsWorked || 0), 0);
+  const listsFiled = people.reduce((n, p) => n + (p.checklistsFiled || 0), 0);
+  const checklistPct = shiftsWorked > 0 ? Math.min(100, (listsFiled / shiftsWorked) * 100) : null;
 
   return (
     <div style={styles.bandWrap}>
@@ -16383,6 +19199,10 @@ function IndicatorBand({ requests, range, setRange }) {
         </div>
       </div>
 
+      {/* The four the department is actually judged on, side by side. They are
+          read together — a response figure that looks good while utilisation is
+          at 60% means the trucks are flat out, and that is the sentence the row
+          is here to let somebody read in one look. */}
       <div style={styles.gaugeRow}>
         <Gauge
           label="Emergency response"
@@ -16392,6 +19212,27 @@ function IndicatorBand({ requests, range, setRange }) {
             resp.total ? `${resp.within} of ${resp.total} within 10 min` : "none yet this period"
           }
           unmeasured={resp.unmeasured}
+        />
+        <Gauge
+          label="Fleet UHU"
+          pct={uhu}
+          // Not a pass mark. Utilisation is a workload reading, and high is not
+          // good — a fleet above about half its hours on calls is a fleet with
+          // no slack left, so the dial is set where "comfortable" ends.
+          good={UHU_HEADROOM}
+          caption={units && units.length ? `${units.length} vehicles, time on call` : "no vehicles"}
+        />
+        <Gauge
+          label="PCR compliance"
+          pct={pcr.pct}
+          good={PCR_GOOD}
+          caption={pcr.total ? `${pcr.named} of ${pcr.total} closed calls named` : "no closed calls"}
+        />
+        <Gauge
+          label="Checklist compliance"
+          pct={checklistPct}
+          good={CHECKLIST_GOOD}
+          caption={shiftsWorked ? `${listsFiled} filed over ${shiftsWorked} shifts` : "no shifts worked"}
         />
       </div>
 
@@ -17338,7 +20179,7 @@ function SavedLogs({ submissions, requests, coverage }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page }) {
+function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -17707,7 +20548,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
         return (
           <div key={st.key} style={{ marginBottom: 10 }}>
             <div style={styles.stationBoardLabel}>{st.label}</div>
-            <StatusBoard units={atStation(units, st.key)} />
+            <StatusBoard units={atStation(units, st.key)} requests={atStation(requests, st.key)} station={st.key} />
             {/* Directly under this station's own board. An administrator opening
                 the app must see that a station cannot answer a call in the same
                 glance that tells them who is free — not after scrolling. */}
@@ -17739,10 +20580,49 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           per-person figures, and the standing record of issues. All on one
           page, because they are read together when somebody asks how the month
           went. */}
+      {onPage("stock") && (
+        <InventoryAdmin
+          units={units}
+          inventory={inventory}
+          moves={inventoryMoves}
+          setInventory={setInventory}
+          setMoves={setInventoryMoves}
+          user={user}
+          addLog={addLog}
+        />
+      )}
+
       {onPage("stats") && (
         <>
       {/* Always open, at the head of the page. */}
-      <IndicatorBand requests={requests} range={statRange} setRange={setStatRange} />
+      <IndicatorBand
+        requests={requests}
+        units={units}
+        log={log}
+        checklistRuns={checklistRuns}
+        range={statRange}
+        setRange={setStatRange}
+      />
+
+      {/* Overtime sits above coverage on the statistics page: it is the thing
+          with a deadline on it — a pay period closes — and coverage is a thing
+          you read. */}
+      <OvertimePanel
+        log={log}
+        requests={requests}
+        units={units}
+        user={user}
+        addLog={addLog}
+        decisions={overtimeDecisions}
+        setDecisions={setOvertimeDecisions}
+      />
+
+      <TrackingConsentAdmin
+        consents={trackingConsents}
+        user={user}
+        setConsents={setTrackingConsents}
+        addLog={addLog}
+      />
 
       <CoveragePanel coverage={coverage} units={units} requests={requests} />
 
@@ -20366,6 +23246,15 @@ const styles = {
     fontSize: 13.5, color: "var(--crit-2)", lineHeight: 1.5,
   },
   oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
+  calledOff: {
+    background: "var(--crit)", color: "#FFFFFF",
+    borderRadius: 16, padding: "16px 18px", marginBottom: 12,
+    boxShadow: "0 8px 24px rgba(255,69,58,.32)",
+    fontSize: 15, fontWeight: 700,
+  },
+  calledOffWhat: { fontSize: 19, fontWeight: 700, marginTop: 8 },
+  calledOffWhy: { fontSize: 14, marginTop: 6, fontStyle: "italic", color: "rgba(255,255,255,.92)" },
+  calledOffWho: { fontSize: 12.5, marginTop: 6, marginBottom: 12, color: "rgba(255,255,255,.78)", fontWeight: 600 },
   oosRefusedAsked: { fontSize: 12.5, color: "var(--ink-3)", marginTop: 6, marginBottom: 10 },
 
   crewRaiseAsk: {
@@ -20383,6 +23272,589 @@ const styles = {
   },
   oosAskHead: { fontSize: 15, fontWeight: 800, color: "var(--hold-3)" },
   oosAskWhy: { fontSize: 13.5, color: "var(--ink-2)", marginTop: 6, lineHeight: 1.5 },
+  // The room-state strip. Cells divided by a hairline rather than spaced apart,
+  // so it reads as one instrument across the top of the board instead of four
+  // separate cards — the figures belong to each other.
+  // The dock, closed. Sits clear of the footer bar so the two never overlap on
+  // a phone, and carries its own count so the badge is readable without opening
+  // anything.
+  mapWrap: {
+    background: "var(--panel)", border: "1px solid var(--hair)",
+    borderRadius: 18, overflow: "hidden", marginBottom: 14,
+  },
+  mapHead: {
+    display: "flex", alignItems: "baseline", justifyContent: "space-between",
+    gap: 10, padding: "13px 15px 11px", borderBottom: "1px solid var(--hair)",
+  },
+  mapTitle: {
+    fontSize: 11.5, fontWeight: 700, letterSpacing: 1.4, color: "var(--ink-4)",
+  },
+  mapCount: { fontSize: 12, color: "var(--ink-3)" },
+  // Tall enough to be worth looking at on a desk, capped so it never eats a
+  // phone screen whole.
+  mapCanvas: { width: "100%", height: "min(58vh, 520px)", background: "var(--inset)" },
+  mapWarn: {
+    padding: "10px 15px", fontSize: 12, lineHeight: 1.5, color: "var(--hold-2)",
+    borderTop: "1px solid var(--hair)",
+  },
+  mapList: { padding: "10px 15px 14px", display: "flex", flexDirection: "column", gap: 6 },
+  mapRow: {
+    display: "flex", alignItems: "baseline", gap: 10, fontSize: 12.5, flexWrap: "wrap",
+  },
+  mapRowName: { fontWeight: 650, color: "var(--ink)", minWidth: 82 },
+  mapRowStatus: { fontSize: 11, fontWeight: 700, letterSpacing: 0.8, minWidth: 96 },
+  mapRowAge: { color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
+  mapRowAgeStale: { color: "var(--hold)", fontWeight: 650, fontVariantNumeric: "tabular-nums" },
+  mapRowAcc: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+
+  consentList: { display: "flex", flexDirection: "column", gap: 10, marginTop: 12 },
+  consentRow: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "11px 13px",
+  },
+  consentRowHead: { display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" },
+  consentRowName: { fontSize: 14, fontWeight: 650, color: "var(--ink)" },
+  consentRowId: { fontSize: 11.5, color: "var(--ink-4)", flex: 1, minWidth: 70 },
+  consentRowStatus: { fontSize: 10.5, fontWeight: 750, letterSpacing: 0.9 },
+  consentRowWhen: { fontSize: 11.5, color: "var(--ink-4)", marginTop: 3 },
+  consentRowReason: {
+    fontSize: 12.5, fontStyle: "italic", color: "var(--ink-2)", marginTop: 7,
+  },
+  consentRowAcked: { fontSize: 11, color: "var(--ink-4)", marginTop: 7 },
+
+  consentScrim: {
+    position: "fixed", inset: 0, zIndex: 70,
+    background: "rgba(4,7,10,.72)", backdropFilter: "blur(6px)",
+    display: "flex", alignItems: "center", justifyContent: "center", padding: 18,
+  },
+  consentSheet: {
+    background: "var(--panel)", border: "1px solid var(--hair-2)", borderRadius: 22,
+    width: "min(480px, 100%)", maxHeight: "min(86vh, 760px)", overflowY: "auto",
+    padding: "20px 22px 22px", boxShadow: "0 24px 64px var(--lift-2)",
+  },
+  consentEyebrow: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1.4, color: "var(--ink-4)", marginBottom: 6,
+  },
+  consentTitle: {
+    fontSize: 19, fontWeight: 650, color: "var(--ink)", lineHeight: 1.3, marginBottom: 15,
+  },
+  consentBody: { display: "flex", flexDirection: "column", gap: 11, marginBottom: 18 },
+  consentPoint: { fontSize: 13, lineHeight: 1.55, color: "var(--ink-2)" },
+  consentBtns: { display: "flex", gap: 10, flexWrap: "wrap" },
+  consentYes: {
+    flex: 1, minWidth: 170, background: "var(--flow)", border: "none", color: "#FFFFFF",
+    borderRadius: 13, padding: "15px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer",
+  },
+  consentNo: {
+    background: "var(--raised)", border: "1px solid var(--hair-2)", color: "var(--ink-2)",
+    borderRadius: 13, padding: "15px 16px", fontSize: 15, fontWeight: 650, cursor: "pointer",
+  },
+  consentNoOff: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    borderRadius: 13, padding: "15px 16px", fontSize: 15, fontWeight: 650, cursor: "default",
+  },
+  consentRefuse: { display: "flex", flexDirection: "column", gap: 9 },
+  consentReason: {
+    background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 11,
+    color: "var(--ink)", padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit",
+    resize: "vertical", lineHeight: 1.45,
+  },
+  consentNote: { fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)" },
+
+  trackBarOn: {
+    display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+    padding: "9px 13px", borderRadius: 12, fontSize: 12.5,
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-3)",
+  },
+  trackBarWarn: {
+    display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+    padding: "9px 13px", borderRadius: 12, fontSize: 12.5,
+    background: "rgba(255,159,10,.12)", border: "1px solid rgba(255,159,10,.34)",
+    color: "var(--hold-2)",
+  },
+  trackBarOff: {
+    display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+    padding: "9px 13px", borderRadius: 12, fontSize: 12.5,
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+  },
+  trackDotOn: { width: 8, height: 8, borderRadius: 999, background: "var(--ok)", flex: "none" },
+  trackDotWarn: { width: 8, height: 8, borderRadius: 999, background: "var(--hold)", flex: "none" },
+  trackDotOff: { width: 8, height: 8, borderRadius: 999, background: "var(--ink-4)", flex: "none" },
+
+  otRange: {
+    display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+    marginBottom: 14,
+  },
+  otRangeField: { display: "flex", flexDirection: "column", gap: 5 },
+  otRangeLabel: {
+    fontSize: 10, fontWeight: 700, letterSpacing: 1.1, color: "var(--ink-4)",
+  },
+  otDate: {
+    background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 10,
+    color: "var(--ink)", padding: "8px 10px", fontSize: 13, fontFamily: "inherit",
+  },
+  otTotals: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+    gap: 1, background: "var(--hair)", border: "1px solid var(--hair)",
+    borderRadius: 14, overflow: "hidden", marginBottom: 14,
+  },
+  otTotal: {
+    background: "var(--panel)", padding: "12px 14px",
+    display: "flex", flexDirection: "column", gap: 4,
+  },
+  otTotalFig: {
+    fontSize: 21, fontWeight: 700, letterSpacing: -0.5, color: "var(--ok)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  otTotalLabel: { fontSize: 10.5, fontWeight: 700, letterSpacing: 1, color: "var(--ink-4)" },
+
+  otLiveWrap: {
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--hold)", borderRadius: 14,
+    padding: "12px 13px", marginBottom: 14,
+  },
+  otLiveRow: {
+    display: "flex", alignItems: "center", gap: 10, padding: "5px 0",
+    fontSize: 12.5, flexWrap: "wrap",
+  },
+  otLiveName: { fontWeight: 650, color: "var(--ink-2)", minWidth: 110 },
+  otLiveUnit: { color: "var(--ink-4)", flex: 1, minWidth: 110 },
+  otLiveMs: {
+    fontWeight: 700, color: "var(--hold)", fontVariantNumeric: "tabular-nums", minWidth: 62,
+  },
+  otGrantBtn: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)", color: "var(--ink-2)",
+    borderRadius: 999, padding: "5px 12px", fontSize: 11.5, fontWeight: 650, cursor: "pointer",
+  },
+  otLiveNote: {
+    marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--hair)",
+    fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)",
+  },
+
+  otList: { display: "flex", flexDirection: "column", gap: 10 },
+  otCard: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "12px 13px",
+  },
+  otCardPending: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--hold)", borderRadius: 14, padding: "12px 13px",
+  },
+  otCardHead: {
+    display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 5,
+  },
+  otCardName: { fontSize: 14.5, fontWeight: 650, color: "var(--ink)" },
+  otCardWho: { fontSize: 12, color: "var(--ink-4)", flex: 1, minWidth: 130 },
+  otCardStatus: { fontSize: 10.5, fontWeight: 750, letterSpacing: 0.9 },
+  otCardMeta: { fontSize: 11.5, color: "var(--ink-4)", marginBottom: 7 },
+  otCardFigures: {
+    display: "flex", gap: 12, flexWrap: "wrap", alignItems: "baseline", marginBottom: 4,
+  },
+  otClaimed: { fontSize: 15, fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" },
+  otApproved: { fontSize: 13.5, fontWeight: 650, color: "var(--ok)", fontVariantNumeric: "tabular-nums" },
+  otHeld: { fontSize: 11.5, fontWeight: 650, color: "var(--flow-2)" },
+  otNotHeld: { fontSize: 11.5, color: "var(--ink-4)" },
+  otCardNote: { fontSize: 12.5, fontStyle: "italic", color: "var(--ink-3)", marginTop: 6 },
+  otCardBy: { fontSize: 11, color: "var(--ink-4)", marginTop: 5 },
+  otCardBtns: { display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" },
+
+  invShortWrap: {
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--crit)", borderRadius: 14,
+    padding: "12px 13px", marginBottom: 12,
+  },
+  invShortHead: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1.3,
+    color: "var(--ink-4)", marginBottom: 9,
+  },
+  invShortRow: {
+    display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0",
+    fontSize: 12.5, flexWrap: "wrap",
+  },
+  invShortUnit: { fontWeight: 700, color: "var(--ink-2)", minWidth: 78 },
+  invShortItem: { color: "var(--ink-3)", flex: 1, minWidth: 120 },
+  invShortOut: { fontWeight: 800, color: "var(--crit)", letterSpacing: 0.5 },
+  invShortLow: { fontWeight: 700, color: "var(--hold)", fontVariantNumeric: "tabular-nums" },
+
+  invFleet: { display: "flex", flexDirection: "column", gap: 12 },
+  invTruck: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 16, padding: "13px 14px",
+  },
+  invTruckHead: {
+    display: "flex", alignItems: "center", gap: 10,
+    marginBottom: 11, flexWrap: "wrap",
+  },
+  invTruckName: { fontSize: 15, fontWeight: 650 },
+  invTruckOk: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.8, color: "var(--ok)" },
+  invTruckShort: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.8, color: "var(--hold)" },
+  invRestockBtn: {
+    marginLeft: "auto", background: "var(--inset-2)", border: "1px solid var(--hair-2)",
+    color: "var(--ink-2)", borderRadius: 999, padding: "6px 13px",
+    fontSize: 12, fontWeight: 650, cursor: "pointer",
+  },
+  invGrid: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8,
+  },
+  invCell: {
+    background: "var(--inset)", borderRadius: 10, padding: "8px 10px",
+    display: "flex", flexDirection: "column", gap: 3,
+  },
+  invCellName: { fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.35 },
+  invCellCount: { fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
+  invCellPar: { fontSize: 12, fontWeight: 500, color: "var(--ink-4)" },
+
+  invEditWrap: { marginTop: 14 },
+  invEditNote: {
+    fontSize: 12, lineHeight: 1.5, color: "var(--ink-4)", margin: "10px 0",
+  },
+  invEditRow: {
+    display: "flex", alignItems: "center", gap: 8, padding: "5px 0", flexWrap: "wrap",
+  },
+  invEditName: { flex: 1, minWidth: 150, fontSize: 13, color: "var(--ink-2)" },
+  invParInput: {
+    width: 74, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 9, color: "var(--ink)", padding: "7px 9px", fontSize: 13,
+    fontFamily: "inherit",
+  },
+  invNameInput: {
+    flex: 1, minWidth: 150, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 9, color: "var(--ink)", padding: "7px 9px", fontSize: 13,
+    fontFamily: "inherit",
+  },
+  invRemoveBtn: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
+    borderRadius: 999, padding: "5px 11px", fontSize: 11.5, cursor: "pointer",
+  },
+
+  invMovesWrap: { marginTop: 18 },
+  invMoveRow: {
+    display: "flex", alignItems: "baseline", gap: 10, padding: "6px 0",
+    borderBottom: "1px solid var(--hair)", fontSize: 12.5, flexWrap: "wrap",
+  },
+  invMoveDelta: {
+    fontWeight: 800, minWidth: 34, fontVariantNumeric: "tabular-nums",
+  },
+  invMoveItem: { color: "var(--ink-2)", minWidth: 130 },
+  invMoveWho: { color: "var(--ink-4)", flex: 1, minWidth: 140 },
+  invMoveWhen: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+
+  invCrewList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
+  invCrewRow: {
+    display: "flex", alignItems: "center", gap: 12,
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderRadius: 12, padding: "10px 12px",
+  },
+  invCrewName: { flex: 1, fontSize: 13.5, color: "var(--ink)", lineHeight: 1.4 },
+  invCrewCount: {
+    display: "block", fontSize: 11.5, fontWeight: 650, marginTop: 2,
+    fontVariantNumeric: "tabular-nums",
+  },
+  invCrewBtns: { display: "flex", gap: 8, flex: "none" },
+  // Sized for a gloved thumb in a moving vehicle, not for a mouse.
+  invMinus: {
+    width: 48, height: 48, borderRadius: 12, cursor: "pointer",
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)",
+    color: "var(--crit-2)", fontSize: 22, fontWeight: 700, lineHeight: 1,
+  },
+  invPlus: {
+    width: 48, height: 48, borderRadius: 12, cursor: "pointer",
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)",
+    color: "var(--ok)", fontSize: 22, fontWeight: 700, lineHeight: 1,
+  },
+
+  chatPill: {
+    position: "fixed",
+    right: 14,
+    bottom: "calc(78px + env(safe-area-inset-bottom))",
+    zIndex: 45,
+    background: "var(--raised)",
+    border: "1px solid var(--hair-2)",
+    color: "var(--ink-2)",
+    borderRadius: 999,
+    padding: "11px 17px",
+    fontSize: 13.5,
+    fontWeight: 650,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    boxShadow: "0 12px 34px var(--lift-2)",
+  },
+  chatPillBadge: {
+    background: "var(--crit)",
+    color: "#FFFFFF",
+    borderRadius: 999,
+    minWidth: 20,
+    padding: "1px 6px",
+    fontSize: 11.5,
+    fontWeight: 800,
+    textAlign: "center",
+  },
+  chatPanel: {
+    position: "fixed",
+    right: 14,
+    bottom: "calc(78px + env(safe-area-inset-bottom))",
+    zIndex: 45,
+    width: "min(380px, calc(100vw - 28px))",
+    height: "min(520px, calc(100vh - 190px))",
+    background: "var(--panel)",
+    border: "1px solid var(--hair-2)",
+    borderRadius: 20,
+    boxShadow: "0 24px 64px var(--lift-2)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  chatHead: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: "12px 14px",
+    borderBottom: "1px solid var(--hair)",
+  },
+  chatHeadTitle: {
+    display: "flex", alignItems: "center", gap: 8,
+    fontSize: 14.5, fontWeight: 650, color: "var(--ink)",
+  },
+  chatClose: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
+    borderRadius: 999, width: 26, height: 26, cursor: "pointer", fontSize: 12, lineHeight: 1,
+  },
+  chatThreads: {
+    display: "flex", gap: 6, padding: "9px 12px", overflowX: "auto",
+    borderBottom: "1px solid var(--hair)",
+  },
+  chatThread: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-3)",
+    borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 600,
+    cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6,
+  },
+  chatThreadOn: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
+    borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700,
+    cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6,
+  },
+  chatThreadBadge: {
+    background: "var(--crit)", color: "#FFFFFF", borderRadius: 999,
+    padding: "0 5px", fontSize: 10.5, fontWeight: 800,
+  },
+  chatLog: {
+    flex: 1, overflowY: "auto", padding: "12px 13px",
+    display: "flex", flexDirection: "column", gap: 11,
+  },
+  chatEmpty: {
+    fontSize: 12.5, lineHeight: 1.6, color: "var(--ink-4)",
+    margin: "auto 0", textAlign: "center", padding: "0 8px",
+  },
+  chatRowMine: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 },
+  chatRowTheirs: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 },
+  chatBubbleMine: {
+    background: "var(--flow)", color: "#FFFFFF", borderRadius: "14px 14px 4px 14px",
+    padding: "9px 12px", fontSize: 13.5, lineHeight: 1.45, maxWidth: "88%",
+    whiteSpace: "pre-wrap", wordBreak: "break-word",
+  },
+  chatBubbleTheirs: {
+    background: "var(--raised)", border: "1px solid var(--hair)", color: "var(--ink)",
+    borderRadius: "14px 14px 14px 4px", padding: "9px 12px", fontSize: 13.5,
+    lineHeight: 1.45, maxWidth: "88%", whiteSpace: "pre-wrap", wordBreak: "break-word",
+  },
+  chatMeta: { fontSize: 10.5, color: "var(--ink-4)", padding: "0 3px" },
+  chatCompose: {
+    display: "flex", gap: 8, padding: "10px 12px 12px",
+    borderTop: "1px solid var(--hair)", alignItems: "flex-end",
+  },
+  chatInput: {
+    flex: 1, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 13.5,
+    fontFamily: "inherit", resize: "none", lineHeight: 1.4,
+  },
+  chatSend: {
+    background: "var(--flow)", border: "none", color: "#FFFFFF", borderRadius: 12,
+    padding: "11px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", flex: "none",
+  },
+  chatSendOff: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    borderRadius: 12, padding: "11px 15px", fontSize: 13.5, fontWeight: 700,
+    cursor: "default", flex: "none",
+  },
+
+  callProgress: { display: "flex", gap: 3, marginTop: 10, marginBottom: 2 },
+  callProgressSeg: { flex: 1, height: 3, borderRadius: 999 },
+
+  stepper: { display: "flex", flexDirection: "column", marginTop: 12 },
+  stepperCompact: { display: "flex", flexDirection: "column", marginTop: 8 },
+  stepperRow: { display: "flex", alignItems: "stretch", gap: 13 },
+  stepperRail: { display: "flex", flexDirection: "column", alignItems: "center", width: 24, flex: "none" },
+  stepperDot: {
+    width: 24, height: 24, borderRadius: 999, flex: "none",
+    border: "2px solid", display: "flex", alignItems: "center",
+    justifyContent: "center", boxSizing: "border-box",
+  },
+  stepperTick: { color: "var(--ground)", fontSize: 12, fontWeight: 900, lineHeight: 1 },
+  stepperPip: { width: 8, height: 8, borderRadius: 999, background: "var(--flow)" },
+  stepperLine: { width: 2, flex: 1, minHeight: 16 },
+  stepperText: {
+    flex: 1, display: "flex", alignItems: "baseline",
+    justifyContent: "space-between", gap: 10, paddingBottom: 14,
+  },
+  stepperTextLast: {
+    flex: 1, display: "flex", alignItems: "baseline",
+    justifyContent: "space-between", gap: 10,
+  },
+  stepperLabel: { fontSize: 14 },
+  stepperTime: { fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums" },
+
+  roomState: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(132px, 1fr))",
+    gap: 1,
+    background: "var(--hair)",
+    border: "1px solid var(--hair)",
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 12,
+  },
+  roomCell: {
+    background: "var(--panel)",
+    padding: "13px 16px",
+    display: "flex",
+    alignItems: "baseline",
+    gap: 9,
+    flexWrap: "wrap",
+  },
+  roomCellWide: {
+    background: "var(--panel)",
+    padding: "13px 16px",
+    display: "flex",
+    alignItems: "baseline",
+    gap: 9,
+    flexWrap: "wrap",
+    gridColumn: "span 1",
+  },
+  // Read from across a control room. Tabular figures so the numbers do not
+  // shuffle sideways every time one of them ticks over.
+  roomFigure: {
+    fontSize: 30,
+    fontWeight: 650,
+    letterSpacing: -1,
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+  },
+  roomLabel: {
+    fontSize: 11.5,
+    fontWeight: 650,
+    letterSpacing: 1.1,
+    color: "var(--ink-3)",
+  },
+  roomAside: {
+    fontSize: 11.5,
+    color: "var(--ink-4)",
+    marginLeft: "auto",
+    fontVariantNumeric: "tabular-nums",
+  },
+
+  policyBtn: {
+    background: "var(--raised)", border: "1px solid var(--hair-2)",
+    color: "var(--ink-3)", borderRadius: 999, padding: "8px 15px",
+    fontSize: 12.5, fontWeight: 650, cursor: "pointer",
+    display: "inline-flex", alignItems: "center", gap: 7, marginLeft: 8,
+  },
+  policyScrim: {
+    position: "fixed", inset: 0, zIndex: 60,
+    background: "rgba(4,7,10,.62)", backdropFilter: "blur(6px)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    padding: 18,
+  },
+  policySheet: {
+    background: "var(--panel)", border: "1px solid var(--hair-2)",
+    borderRadius: 22, width: "min(620px, 100%)", maxHeight: "min(78vh, 760px)",
+    display: "flex", flexDirection: "column",
+    boxShadow: "0 24px 64px var(--lift-2)", overflow: "hidden",
+  },
+  policyHead: {
+    display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+    gap: 12, padding: "18px 20px 14px", borderBottom: "1px solid var(--hair)",
+  },
+  policyEyebrow: {
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 1.5,
+    color: "var(--ink-4)", marginBottom: 4,
+  },
+  policyTitle: { fontSize: 17, fontWeight: 650, color: "var(--ink)" },
+  policyClose: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
+    borderRadius: 999, width: 30, height: 30, cursor: "pointer",
+    fontSize: 13, lineHeight: 1, flex: "none",
+  },
+  policyBody: { overflowY: "auto", padding: "8px 12px 12px" },
+  policyItem: { borderBottom: "1px solid var(--hair)" },
+  policyItemHead: {
+    width: "100%", background: "none", border: "none", cursor: "pointer",
+    color: "var(--ink)", fontSize: 14.5, fontWeight: 600, textAlign: "left",
+    padding: "14px 8px", display: "flex", alignItems: "center",
+    justifyContent: "space-between", gap: 10,
+  },
+  policyChevron: { color: "var(--ink-4)", fontSize: 17, fontWeight: 400 },
+  policyText: {
+    padding: "0 8px 15px", fontSize: 13.5, lineHeight: 1.6,
+    color: "var(--ink-2)", whiteSpace: "pre-wrap",
+  },
+  policyEmpty: { color: "var(--ink-4)", fontStyle: "italic" },
+  policyFoot: {
+    padding: "12px 20px 15px", borderTop: "1px solid var(--hair)",
+    fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.5,
+  },
+  dayBookWrap: {
+    marginTop: 14, background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "12px 13px",
+  },
+  dayBookEmpty: {
+    marginTop: 14, fontSize: 12.5, color: "var(--ink-4)",
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: "12px 13px",
+  },
+  dayBookHead: {
+    fontSize: 11, fontWeight: 700, letterSpacing: 1.1, textTransform: "uppercase",
+    color: "var(--ink-4)", display: "flex", justifyContent: "space-between",
+    alignItems: "baseline", gap: 8, marginBottom: 9, flexWrap: "wrap",
+  },
+  dayBookCount: { letterSpacing: 0, textTransform: "none", fontWeight: 600 },
+  dayBookList: { display: "flex", flexDirection: "column", gap: 5 },
+  dayBookRow: {
+    display: "flex", alignItems: "baseline", gap: 9, padding: "5px 7px",
+    borderRadius: 8, fontSize: 12.5,
+  },
+  dayBookRowNear: {
+    display: "flex", alignItems: "baseline", gap: 9, padding: "5px 7px",
+    borderRadius: 8, fontSize: 12.5, background: "var(--inset-2)",
+  },
+  dayBookTime: {
+    fontWeight: 700, color: "var(--ink-2)", minWidth: 44,
+    fontVariantNumeric: "tabular-nums",
+  },
+  dayBookTimeNear: {
+    fontWeight: 700, color: "var(--hold)", minWidth: 44,
+    fontVariantNumeric: "tabular-nums",
+  },
+  dayBookWhat: { color: "var(--ink-2)", flex: 1, minWidth: 0 },
+  dayBookRoute: { color: "var(--ink-4)" },
+  dayBookFlag: {
+    fontSize: 10, fontWeight: 700, letterSpacing: 0.6, color: "var(--hold)",
+    whiteSpace: "nowrap",
+  },
+  dayBookWarn: {
+    marginTop: 10, fontSize: 12, lineHeight: 1.5, color: "var(--hold-2)",
+    borderTop: "1px solid var(--hair)", paddingTop: 9,
+  },
+  oosOffRun: {
+    background: "var(--raised)", border: "1px solid var(--hair)",
+    borderLeft: "3px solid var(--ink-4)", borderRadius: 14,
+    padding: "11px 13px", marginBottom: 10,
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 12, flexWrap: "wrap",
+  },
+  oosOffRunHead: { fontSize: 13.5, fontWeight: 600, color: "var(--ink-2)" },
   oosAskWho: { fontSize: 12, color: "var(--ink-3)" },
 
   foundEmergencyBtn: {
@@ -21281,12 +24753,30 @@ const styles = {
     border: "1px solid var(--hair)",
     boxShadow: "0 6px 18px var(--lift)",
     borderRadius: 16,
-    padding: "10px 12px",
+    // The padding moved onto the body so the status bar can run edge to edge.
+    // A bar with a margin round it reads as decoration; one that touches both
+    // sides reads as the card's state.
+    overflow: "hidden",
     display: "flex",
     flexDirection: "column",
-    gap: 6,
   },
-  unitCardName: { fontSize: 14.5, fontWeight: 600 },
+  unitCardBar: { height: 4, width: "100%", flex: "none" },
+  unitCardBody: {
+    padding: "11px 13px 13px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 7,
+  },
+  unitCardTop: {
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  unitCardStatusRow: { display: "flex", alignItems: "center", gap: 7 },
+  unitCardDot: { width: 7, height: 7, borderRadius: 999, flex: "none" },
+  unitCardStatusText: { fontSize: 11.5, fontWeight: 700, letterSpacing: 1 },
+  unitCardName: { fontSize: 16, fontWeight: 650, letterSpacing: -0.2 },
 
   myUnitCard: {
     background: "var(--raised)",
