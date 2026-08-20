@@ -67,6 +67,14 @@ patch", that document is the target — do not start a fresh exploration.
   24 hours, so one person's Tuesday and Thursday merge into a single stay
   that appears to run for two days and overlaps every call between them.
   Key by the shift window. See `medicCrewStamps`.
+- **The board is polled at two speeds, and adding a key to the wrong one is
+  expensive.** `loadAll` runs every 3 seconds and must only carry what
+  changes while somebody is watching. `loadCold` runs every 30 seconds and
+  carries the filed logs, the kept days, the event log and the checklists —
+  together nine tenths of the bytes. Policies are on neither: a shelf of
+  scanned PDFs is megabytes, so it is read only when that tab is opened.
+  `GET /api/health` lists every key with its size; check there before
+  putting anything new on the fast path.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.
