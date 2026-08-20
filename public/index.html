@@ -3698,108 +3698,117 @@ function overtimeStatusLabel(claim) {
   return "AWAITING APPROVAL";
 }
 
-// ---------- what is on the truck ----------
+// ---------- what the department holds ----------
 //
-// Two facts, kept apart on purpose.
+// Stock belongs to the department, not to a truck. The store room has forty
+// cannulas; which ambulance is carrying six of them at any moment is not a
+// number anybody counts, and asking crews to keep eight parallel per-vehicle
+// ledgers accurate was never going to work.
 //
-// The PAR LEVEL is what a truck is supposed to carry — set once by
-// administration, changed rarely, the same for every vehicle. The MOVEMENTS are
-// what actually happened to that stock: what a crew used on a call, and what
-// they put back when they restocked.
+// So: one number per item, and one question — how much of it is left.
 //
-// Current stock is not stored. It is par plus the movements since the last
-// restock, worked out when somebody looks. Storing a count instead would mean
-// two tablets both writing "7 left" over each other and neither of them being
-// able to say where the eighth went; a movement log cannot lose an item without
-// somebody having written down that it went.
+// A FULL COUNT is what administration counted when they last did a count. That
+// number is 100 per cent by definition; there is nothing else to compare
+// against, and inventing a target the department has not set would be a figure
+// somebody reports upward.
 //
-// It also means the question an administrator actually has — "who used all the
-// adrenaline and on what" — is answerable, because every line carries the crew
-// and, where there was one, the call.
+// MOVEMENTS are what has happened since that count — what crews used, recorded
+// against the call they used it on. Availability is the count minus what has
+// gone, expressed against the count.
+//
+// The current level is deliberately not stored. Two tablets both writing
+// "7 left" over each other lose the eighth with nobody able to say where it
+// went; a movement log cannot lose one without somebody having written that it
+// went, and it answers the question administration actually has, which is who
+// used the last of something and on what call.
 const INVENTORY_KEY = "ems:inventory";
 const INVENTORY_MOVES_KEY = "ems:inventoryMoves";
-
-// A starting shelf, so the page is not an empty box on the first open. These
-// are consumables every ambulance carries; administration edits the list and
-// the numbers to match what this department actually stocks.
-const DEFAULT_INVENTORY = [
-  { id: "inv-o2", name: "Oxygen cylinder (D)", par: 2 },
-  { id: "inv-mask", name: "Non-rebreather mask", par: 6 },
-  { id: "inv-cannula", name: "IV cannula (18G)", par: 10 },
-  { id: "inv-fluid", name: "Sodium chloride 0.9% 500ml", par: 6 },
-  { id: "inv-gloves", name: "Gloves (box)", par: 4 },
-  { id: "inv-dressing", name: "Trauma dressing", par: 8 },
-  { id: "inv-ecg", name: "ECG electrodes (pack)", par: 4 },
-  { id: "inv-sharps", name: "Sharps bin", par: 1 },
-];
+const INVENTORY_MOVES_CAP = 4000;
 
 function inventoryItems(inv) {
-  const list = inv && Array.isArray(inv.items) ? inv.items : null;
-  return list && list.length ? list : DEFAULT_INVENTORY;
+  const list = inv && Array.isArray(inv.items) ? inv.items : [];
+  return list.filter((it) => it && it.id && it.name);
 }
 
-// Par, plus everything that has happened to it since. Restocks add, use takes
-// away, and a count is never allowed to read below nothing — a truck cannot
-// hold minus two cannulas, and showing that would only ever mean somebody
-// mis-tapped.
-//
-// Nothing trims this list, and that is deliberate. The movement log was capped
-// at four thousand entries, oldest dropped — which quietly changed the answer,
-// because the count IS the sum of the movements. Dropping a year-old "used 3"
-// silently gave that truck three cannulas back. A running total cannot have its
-// history truncated without becoming wrong, so either the whole log is kept or
-// the trimmed part has to be folded into a stored baseline. The log is small —
-// a shift is tens of lines — so it is kept, and the day it is not, the fold is
-// the fix, never the trim.
-function stockFor(items, moves, unitId) {
-  const byItem = new Map(items.map((it) => [it.id, it.par || 0]));
-  (moves || []).forEach((m) => {
-    if (!m || m.unitId !== unitId) return;
-    if (!byItem.has(m.itemId)) return;
-    byItem.set(m.itemId, byItem.get(m.itemId) + (m.delta || 0));
-  });
+// Everything that has happened to this item since the count it is measured
+// against. A movement made before the last count has already been counted —
+// it is in the number administration wrote down — so counting it again would
+// deduct it twice.
+function movesSinceCount(moves, item) {
+  const from = item.countedAt || 0;
+  return (moves || []).filter((m) => m && m.itemId === item.id && (m.ts || 0) >= from);
+}
+
+function stockLevels(items, moves) {
   return items.map((it) => {
-    const have = Math.max(0, byItem.get(it.id));
+    const full = Math.max(0, it.full || 0);
+    const used = movesSinceCount(moves, it).reduce((n, m) => n - (m.delta || 0), 0);
+    const have = Math.max(0, full - Math.max(0, used));
+    const pct = full > 0 ? Math.round((have / full) * 100) : null;
     return {
       ...it,
+      full,
+      used: Math.max(0, used),
       have,
-      short: Math.max(0, (it.par || 0) - have),
-      // Anything down to a quarter of its par is worth flagging before it runs
-      // out on a call rather than after — but only once it is actually BELOW
-      // par. Without that, every par-1 item (the sharps bin) read as low while
-      // sitting at full stock, and the SHORT NOW panel filled with trucks that
-      // had nothing wrong with them.
-      low:
-        (it.par || 0) > 0 &&
-        have < (it.par || 0) &&
-        have <= Math.max(1, Math.floor((it.par || 0) * 0.25)),
-      out: have === 0 && (it.par || 0) > 0,
+      pct,
+      // Bands rather than a single threshold: a store room at a fifth is a
+      // different conversation from one at half, and one word each is quicker
+      // to read across a list than eight percentages.
+      band: pct === null ? "unset" : pct <= 10 ? "out" : pct <= 25 ? "low" : pct <= 50 ? "half" : "ok",
     };
   });
 }
 
-async function recordStockMove({ unit, item, delta, kind, byName, requestId, requestNature }) {
-  if (!unit || !item || !delta) return null;
+const STOCK_BANDS = {
+  ok: { label: "", color: "var(--ok)" },
+  half: { label: "HALF GONE", color: "var(--hold)" },
+  low: { label: "RUNNING OUT", color: "var(--hold)" },
+  out: { label: "ALMOST NONE", color: "var(--crit)" },
+  unset: { label: "NOT COUNTED", color: "var(--ink-4)" },
+};
+
+// What a crew took off the shelf on one call. Negative deltas only — this half
+// of the system records consumption; putting stock back is a count, which is
+// administration's job and is recorded as one.
+async function recordStockUse({ item, qty, unit, user, request }) {
+  const n = Math.max(1, Math.round(qty || 0));
+  if (!item || !n) return null;
   const entry = {
     id: uid("mov"),
     ts: Date.now(),
-    station: stationOf(unit),
-    unitId: unit.id,
-    unitName: unit.name || "",
     itemId: item.id,
     itemName: item.name || "",
-    delta,
-    kind,
-    byName: byName || "",
-    requestId: requestId || null,
-    requestNature: requestNature || "",
+    delta: -n,
+    unitId: unit ? unit.id : null,
+    unitName: unit ? unit.name || "" : "",
+    station: unit ? stationOf(unit) : null,
+    byName: (user && user.name) || "",
+    accountId: (user && user.accountId) || null,
+    requestId: request ? request.id : null,
+    requestNature: request ? request.nature : "",
   };
   const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
-  const next = [...existing, entry];
-  // Queued if it cannot be sent, like the messages: a crew restocking in a bay
-  // with no signal must not have the count silently not happen.
+  const next = [...existing, entry].slice(-INVENTORY_MOVES_CAP);
   await writeList(INVENTORY_MOVES_KEY, next, existing);
   return next;
+}
+
+// Taking a line back off. A crew who tapped the wrong item, or the wrong
+// number, corrects it here rather than through the desk — and the correction
+// removes the line rather than adding an opposite one, because a restock and a
+// mistake are different things and the log should not blur them.
+async function undoStockUse({ moveId }) {
+  if (!moveId) return null;
+  const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
+  const next = existing.filter((m) => m && m.id !== moveId);
+  await writeList(INVENTORY_MOVES_KEY, next, existing);
+  return next;
+}
+
+// What this call has already had recorded against it.
+function usedOnCall(moves, requestId) {
+  if (!requestId) return [];
+  return (moves || []).filter((m) => m && m.requestId === requestId);
 }
 
 // ---------- messages between a truck and the desk ----------
@@ -13852,234 +13861,173 @@ async function exportOvertime(claims, from, to, label) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-// ---------- inventory, as administration sees it ----------
+// ---------- inventory, as administration keeps it ----------
 //
-// Three questions, in the order somebody actually asks them: what is short
-// right now, what is each truck carrying, and where did it go.
-function InventoryAdmin({ units, inventory, moves, setInventory, setMoves, user, addLog }) {
+// Two jobs, and the page runs in the order they happen: read how much is left,
+// and write down what a count found. Adding an item is the rare one, so it sits
+// at the bottom out of the way.
+function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
   const [open, setOpen] = useState(true);
-  const [editing, setEditing] = useState(false);
   const [newName, setNewName] = useState("");
-  const [newPar, setNewPar] = useState("");
-  const [station, setStation] = useState(STATIONS[0].key);
+  const [busy, setBusy] = useState(false);
 
   const items = inventoryItems(inventory);
-  const fleet = (units || []).filter((u) => stationOf(u) === station);
+  const rows = stockLevels(items, moves);
+  const short = rows.filter((r) => r.band === "low" || r.band === "out");
 
-  // Everything short, across the station, worst first. This is the whole point
-  // of the page: a supervisor should not have to open eight trucks to find the
-  // one with no oxygen.
-  const shortages = [];
-  fleet.forEach((u) => {
-    stockFor(items, moves, u.id).forEach((row) => {
-      if (row.out || row.low) shortages.push({ unit: u, row });
-    });
-  });
-  shortages.sort((a, b) => (b.row.short || 0) - (a.row.short || 0));
-
-  async function saveItems(next) {
-    const payload = { items: next };
-    const ok = await writeKey(INVENTORY_KEY, payload);
-    if (!ok) {
-      window.alert("The stock list could not be saved — no signal to the server. Nothing has changed.");
-      return;
+  async function saveItems(next, note) {
+    setBusy(true);
+    try {
+      const payload = { items: next };
+      await writeKey(INVENTORY_KEY, payload);
+      setInventory(payload);
+      if (note) await addLog(note, "status");
+    } finally {
+      setBusy(false);
     }
-    setInventory(payload);
   }
 
   async function addItem() {
     const name = newName.trim();
-    const par = Math.max(0, parseInt(newPar, 10) || 0);
     if (!name) return;
-    await saveItems([...items, { id: uid("inv"), name, par }]);
+    // A name only. Inventing a number at the moment an item is named is how a
+    // shelf ends up carrying a figure nobody ever counted.
+    await saveItems(
+      [...items, { id: uid("inv"), name, full: 0, countedAt: null }],
+      `Inventory — added "${name}"`
+    );
     setNewName("");
-    setNewPar("");
-    await addLog(`Inventory — added "${name}", par ${par}`, "status");
   }
 
-  async function setPar(itemId, par) {
-    await saveItems(items.map((it) => (it.id === itemId ? { ...it, par: Math.max(0, par) } : it)));
-  }
-
-  async function removeItem(item) {
-    if (!window.confirm(`Remove "${item.name}" from the stock list?\n\nMovements already recorded against it are kept.`)) return;
-    await saveItems(items.filter((it) => it.id !== item.id));
-    await addLog(`Inventory — removed "${item.name}"`, "status");
-  }
-
-  // Putting a truck back to par in one action, which is what a restock
-  // actually is: the shelf is filled, and the log says by whom.
-  async function restockToPar(unit) {
-    const rows = stockFor(items, moves, unit.id).filter((r) => r.short > 0);
-    if (!rows.length) {
-      window.alert(`${unit.name} is already at par.`);
+  // The count. Whatever number administration enters is the full shelf: it is
+  // what they have just counted, so it is 100 per cent by definition, and
+  // everything used before this moment is already inside it.
+  async function recount(row) {
+    const asked = window.prompt(
+      `${row.name}\n\nHow many are there? Count what is actually on the shelf.\n\n` +
+        `That number becomes 100% — anything used up to now is already inside it.`,
+      row.full ? String(row.full) : ""
+    );
+    if (asked === null) return;
+    const parsed = parseInt(String(asked).trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      window.alert("Enter a whole number — how many are on the shelf.");
       return;
     }
-    const lines = rows.map((r) => `  ${r.name} — add ${r.short}`).join("\n");
-    if (!window.confirm(`Restock ${unit.name} to par?\n\n${lines}`)) return;
-    let next = moves;
-    for (const r of rows) {
-      next = await recordStockMove({
-        unit,
-        item: r,
-        delta: r.short,
-        kind: "restock",
-        byName: (user && user.name) || "Administration",
-      });
-    }
-    if (next) setMoves(next);
-    await addLog(`${unit.name} restocked to par by ${(user && user.name) || "Administration"}`, "status");
+    await saveItems(
+      items.map((it) => (it.id === row.id ? { ...it, full: parsed, countedAt: Date.now() } : it)),
+      `Inventory — ${row.name} counted at ${parsed}`
+    );
+  }
+
+  async function rename(row) {
+    const asked = window.prompt("Rename this item", row.name);
+    if (asked === null) return;
+    const name = asked.trim();
+    if (!name) return;
+    await saveItems(
+      items.map((it) => (it.id === row.id ? { ...it, name } : it)),
+      `Inventory — "${row.name}" renamed to "${name}"`
+    );
+  }
+
+  async function removeItem(row) {
+    if (
+      !window.confirm(
+        `Remove "${row.name}" from the department's stock list?\n\nUse already recorded against it is kept.`
+      )
+    )
+      return;
+    await saveItems(items.filter((it) => it.id !== row.id), `Inventory — removed "${row.name}"`);
   }
 
   const recent = (moves || [])
     .slice()
-    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .sort((x, y) => (y.ts || 0) - (x.ts || 0))
     .slice(0, 40);
 
   return (
     <FoldingSection
       title="INVENTORY"
-      count={shortages.length}
-      countLabel={shortages.length ? "short" : "at par"}
+      count={short.length}
+      countLabel={short.length ? "running low" : "stocked"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      <div style={styles.archTabs}>
-        {STATIONS.map((st) => (
-          <button
-            key={st.key}
-            style={st.key === station ? styles.archTabOn : styles.archTab}
-            onClick={() => setStation(st.key)}
-          >
-            {st.label}
-          </button>
-        ))}
-      </div>
+      <InfoNote label="How this works">
+        One shelf for the department, not one per truck. Enter what a count found and that number
+        becomes 100%. Crews record what they use against the call they used it on, and it comes off
+        here.
+      </InfoNote>
 
-      {shortages.length > 0 && (
-        <div style={styles.invShortWrap}>
-          <div style={styles.invShortHead}>SHORT NOW</div>
-          {shortages.slice(0, 12).map(({ unit, row }) => (
-            <div key={`${unit.id}-${row.id}`} style={styles.invShortRow}>
-              <span style={styles.invShortUnit}>{unit.name}</span>
-              <span style={styles.invShortItem}>{row.name}</span>
-              <span style={row.out ? styles.invShortOut : styles.invShortLow}>
-                {row.out ? "NONE LEFT" : `${row.have} of ${row.par}`}
-              </span>
-            </div>
-          ))}
+      {rows.length === 0 ? (
+        <div style={styles.formHint}>No items yet. Add them at the bottom of this page.</div>
+      ) : (
+        <div style={styles.stockList}>
+          {rows.map((r) => {
+            const band = STOCK_BANDS[r.band];
+            return (
+              <div key={r.id} style={styles.stockRow}>
+                <div style={styles.stockMain}>
+                  <div style={styles.stockNameRow}>
+                    <span style={styles.stockName}>{r.name}</span>
+                    {band.label && (
+                      <span style={{ ...styles.stockBand, color: band.color }}>{band.label}</span>
+                    )}
+                  </div>
+                  {/* The bar is the reading; the line under it is the audit. A
+                      percentage alone cannot be compared down a list at a
+                      glance, and a bar alone cannot be checked. */}
+                  <div style={styles.stockBarTrack}>
+                    <div
+                      style={{
+                        ...styles.stockBarFill,
+                        width: `${r.pct === null ? 0 : Math.max(2, r.pct)}%`,
+                        background: band.color,
+                      }}
+                    />
+                  </div>
+                  <div style={styles.stockSub}>
+                    {r.pct === null
+                      ? "Never counted — tap Edit and enter what is on the shelf"
+                      : `${r.have} of ${r.full} left${r.used ? ` · ${r.used} used since the count` : ""}`}
+                    {r.countedAt ? ` · counted ${gregDateStr(r.countedAt)}` : ""}
+                  </div>
+                </div>
+
+                <div style={styles.stockPctWrap}>
+                  <span style={{ ...styles.stockPct, color: band.color }}>
+                    {r.pct === null ? "—" : `${r.pct}%`}
+                  </span>
+                  <div style={styles.stockBtns}>
+                    <button style={styles.stockEdit} onClick={() => recount(r)} disabled={busy}>
+                      Edit
+                    </button>
+                    <button style={styles.stockGhost} onClick={() => rename(r)} disabled={busy}>
+                      Rename
+                    </button>
+                    <button style={styles.stockGhost} onClick={() => removeItem(r)} disabled={busy}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* Each truck against the standard load. */}
-      <div style={styles.invFleet}>
-        {fleet.map((u) => {
-          const rows = stockFor(items, moves, u.id);
-          const shortRows = rows.filter((r) => r.short > 0);
-          return (
-            <div key={u.id} style={styles.invTruck}>
-              <div style={styles.invTruckHead}>
-                <span style={styles.invTruckName}>{u.name}</span>
-                <span style={shortRows.length ? styles.invTruckShort : styles.invTruckOk}>
-                  {shortRows.length ? `${shortRows.length} short` : "at par"}
-                </span>
-                {shortRows.length > 0 && (
-                  <button style={styles.invRestockBtn} onClick={() => restockToPar(u)}>
-                    Restock to par
-                  </button>
-                )}
-              </div>
-              <div style={styles.invGrid}>
-                {rows.map((r) => (
-                  <div key={r.id} style={styles.invCell}>
-                    <span style={styles.invCellName}>{r.name}</span>
-                    <span
-                      style={{
-                        ...styles.invCellCount,
-                        color: r.out ? "var(--crit)" : r.low ? "var(--hold)" : "var(--ink)",
-                      }}
-                    >
-                      {r.have}
-                      <span style={styles.invCellPar}> / {r.par}</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* The standard load itself. Folded away because it is set once and then
-          left alone; a page that opens on a form invites fiddling. */}
-      <div style={styles.invEditWrap}>
-        <button style={styles.ghostBtnSm} onClick={() => setEditing((v) => !v)}>
-          {editing ? "Done editing the list" : "Edit the standard load"}
-        </button>
-
-        {editing && (
-          <>
-            <div style={styles.invEditNote}>
-              Par is what every truck should carry. Changing it changes what counts as short
-              on every vehicle at once; it does not move any stock.
-            </div>
-            {items.map((it) => (
-              <div key={it.id} style={styles.invEditRow}>
-                <span style={styles.invEditName}>{it.name}</span>
-                <input
-                  style={styles.invParInput}
-                  type="number"
-                  min="0"
-                  value={it.par}
-                  onChange={(e) => setPar(it.id, parseInt(e.target.value, 10) || 0)}
-                />
-                <button style={styles.invRemoveBtn} onClick={() => removeItem(it)}>
-                  Remove
-                </button>
-              </div>
-            ))}
-            <div style={styles.invEditRow}>
-              <input
-                style={styles.invNameInput}
-                placeholder="Item name"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-              />
-              <input
-                style={styles.invParInput}
-                type="number"
-                min="0"
-                placeholder="Par"
-                value={newPar}
-                onChange={(e) => setNewPar(e.target.value)}
-              />
-              <button style={styles.primaryBtnSm} onClick={addItem} disabled={!newName.trim()}>
-                Add
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Where it went. */}
       <div style={styles.invMovesWrap}>
-        <div style={styles.invShortHead}>RECENT MOVEMENTS</div>
+        <div style={styles.invShortHead}>RECENT USE</div>
         {recent.length === 0 ? (
           <div style={styles.formHint}>Nothing recorded yet.</div>
         ) : (
           recent.map((m) => (
             <div key={m.id} style={styles.invMoveRow}>
-              <span
-                style={{
-                  ...styles.invMoveDelta,
-                  color: m.delta < 0 ? "var(--crit)" : "var(--ok)",
-                }}
-              >
-                {m.delta > 0 ? `+${m.delta}` : m.delta}
-              </span>
+              <span style={{ ...styles.invMoveDelta, color: "var(--crit)" }}>{m.delta}</span>
               <span style={styles.invMoveItem}>{m.itemName}</span>
               <span style={styles.invMoveWho}>
-                {m.unitName}
+                {m.unitName || "—"}
                 {m.byName ? ` · ${m.byName}` : ""}
                 {m.requestNature ? ` · on ${m.requestNature}` : ""}
               </span>
@@ -14088,37 +14036,77 @@ function InventoryAdmin({ units, inventory, moves, setInventory, setMoves, user,
           ))
         )}
       </div>
+
+      {/* Adding an item is the rare job, so it is the last thing on the page. */}
+      <div style={styles.stockAdd}>
+        <div style={styles.invShortHead}>ADD AN ITEM</div>
+        <div style={styles.stockAddRow}>
+          <input
+            style={styles.invNameInput}
+            placeholder="Item name — e.g. IV cannula (18G)"
+            value={newName}
+            maxLength={80}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addItem();
+            }}
+          />
+          <button style={styles.primaryBtnSm} onClick={addItem} disabled={!newName.trim() || busy}>
+            Add
+          </button>
+        </div>
+        <div style={styles.invEditNote}>
+          Names only. Enter how many there are with <strong>Edit</strong> once somebody has counted
+          them.
+        </div>
+      </div>
     </FoldingSection>
   );
 }
 
-// ---------- inventory, as the crew sees it ----------
+// ---------- what a crew used on this call ----------
 //
-// One job: say what you used. It sits on the crew's own truck page and, while
-// a call is running, carries that call's name so the movement is attributed to
-// it without anybody having to choose anything.
-function InventoryCrew({ unit, inventory, moves, setMoves, user, request, addLog }) {
+// Paired to the call, not to the truck. "What did we get through today" is a
+// question nobody answers accurately at the end of a shift; "what did we use on
+// this patient" is answerable while standing next to the trolley, which is the
+// only moment the answer is reliable.
+//
+// Tap an item, say how many. It comes off the department's shelf carrying the
+// call, the truck and the person with it.
+function CallRestock({ inventory, moves, unit, user, request, setMoves }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(null);
-  if (!unit) return null;
+  const list = inventoryItems(inventory);
+  const mine = usedOnCall(moves, request && request.id);
 
-  const items = inventoryItems(inventory);
-  const rows = stockFor(items, moves, unit.id);
-  const shortCount = rows.filter((r) => r.short > 0).length;
+  if (!request || !unit) return null;
 
-  async function move(row, delta, kind) {
-    if (busy) return;
-    setBusy(row.id);
+  const byItem = new Map();
+  mine.forEach((m) => byItem.set(m.itemId, [...(byItem.get(m.itemId) || []), m]));
+
+  async function add(item) {
+    const asked = window.prompt(`${item.name}\n\nHow many did you use?`, "1");
+    if (asked === null) return;
+    const n = parseInt(String(asked).trim(), 10);
+    if (!Number.isFinite(n) || n < 1) {
+      window.alert("Enter a whole number of one or more.");
+      return;
+    }
+    setBusy(item.id);
     try {
-      const next = await recordStockMove({
-        unit,
-        item: row,
-        delta,
-        kind,
-        byName: (user && user.name) || "",
-        requestId: request ? request.id : null,
-        requestNature: request ? request.nature : "",
-      });
+      const next = await recordStockUse({ item, qty: n, unit, user, request });
+      if (next) setMoves(next);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function undo(move) {
+    if (!window.confirm(`Take "${move.itemName} ×${Math.abs(move.delta)}" back off this call?`))
+      return;
+    setBusy(move.itemId);
+    try {
+      const next = await undoStockUse({ moveId: move.id });
       if (next) setMoves(next);
     } finally {
       setBusy(null);
@@ -14127,50 +14115,45 @@ function InventoryCrew({ unit, inventory, moves, setMoves, user, request, addLog
 
   return (
     <FoldingSection
-      title="STOCK ON THIS TRUCK"
-      count={shortCount}
-      countLabel={shortCount ? "short" : "at par"}
+      title="ITEMS USED ON THIS CALL"
+      count={mine.length}
+      countLabel={mine.length ? "recorded" : "nothing yet"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      <InfoNote label="How this works">
-        Tap <strong>−</strong> for something you have used and <strong>+</strong> for something you
-        have put back. {request ? `Anything recorded now is attributed to ${request.nature}.` : "Recorded against this truck."}
-      </InfoNote>
-
-      <div style={styles.invCrewList}>
-        {rows.map((r) => (
-          <div key={r.id} style={styles.invCrewRow}>
-            <div style={styles.invCrewName}>
-              {r.name}
-              <span
-                style={{
-                  ...styles.invCrewCount,
-                  color: r.out ? "var(--crit)" : r.low ? "var(--hold)" : "var(--ink-3)",
-                }}
-              >
-                {r.have} of {r.par}
-              </span>
-            </div>
-            <div style={styles.invCrewBtns}>
-              <button
-                style={styles.invMinus}
-                disabled={busy === r.id || r.have === 0}
-                onClick={() => move(r, -1, "used")}
-              >
-                −
-              </button>
-              <button
-                style={styles.invPlus}
-                disabled={busy === r.id}
-                onClick={() => move(r, 1, "restock")}
-              >
-                +
-              </button>
-            </div>
+      {list.length === 0 ? (
+        <div style={styles.formHint}>Administration has not added any stock items yet.</div>
+      ) : (
+        <>
+          <div style={styles.formHint}>
+            Tap what you used and say how many. It comes off the department's stock.
           </div>
-        ))}
-      </div>
+          <div style={styles.useList}>
+            {list.map((it) => {
+              const lines = byItem.get(it.id) || [];
+              const used = lines.reduce((n, m) => n + Math.abs(m.delta || 0), 0);
+              return (
+                <div key={it.id} style={used ? styles.useRowOn : styles.useRow}>
+                  <button style={styles.useTap} onClick={() => add(it)} disabled={busy === it.id}>
+                    <span style={used ? styles.useTickOn : styles.useTick}>{used ? "✓" : "+"}</span>
+                    <span style={styles.useName}>{it.name}</span>
+                    {used > 0 && <span style={styles.useQty}>×{used}</span>}
+                  </button>
+                  {lines.length > 0 && (
+                    <div style={styles.useUndoRow}>
+                      {lines.map((m) => (
+                        <button key={m.id} style={styles.useUndo} onClick={() => undo(m)}>
+                          undo ×{Math.abs(m.delta)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </FoldingSection>
   );
 }
@@ -17647,19 +17630,6 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       <div style={styles.sectionHeader}>YOUR SHIFT</div>
       <CrewShiftCard user={user} unit={myUnit} onCall={!!myRequest} />
 
-      {/* On the truck page rather than on the call, because stock is a fact
-          about the vehicle. It knows about the live call anyway, so anything
-          recorded during one is attributed to it without the crew choosing. */}
-      <InventoryCrew
-        unit={myUnit}
-        inventory={inventory}
-        moves={inventoryMoves}
-        setMoves={setInventoryMoves}
-        user={user}
-        request={myRequest}
-        addLog={addLog}
-      />
-
       <div style={styles.sectionHeader}>YOUR UNIT — {myUnit.name}</div>
       <div style={styles.myUnitCard}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -18047,6 +18017,18 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           )}
 
           <CallStepper req={myRequest} />
+
+          {/* What came off the shelf for this patient, recorded here rather than
+              on the truck page: standing next to the trolley is the only moment
+              anybody can answer it accurately. */}
+          <CallRestock
+            inventory={inventory}
+            moves={inventoryMoves}
+            unit={myUnit}
+            user={user}
+            request={myRequest}
+            setMoves={setInventoryMoves}
+          />
 
           {/* Where the ask for a second ambulance has got to, on the card of the
               team who asked for it — a crew waiting for help should not have to
@@ -20961,11 +20943,9 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           went. */}
       {onPage("stock") && (
         <InventoryAdmin
-          units={units}
           inventory={inventory}
           moves={inventoryMoves}
           setInventory={setInventory}
-          setMoves={setInventoryMoves}
           user={user}
           addLog={addLog}
         />
@@ -23847,73 +23827,136 @@ const styles = {
   otCardBy: { fontSize: 11, color: "var(--ink-4)", marginTop: 5 },
   otCardBtns: { display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" },
 
-  invShortWrap: {
-    background: "var(--inset)", border: "1px solid var(--hair)",
-    borderLeft: "3px solid var(--crit)", borderRadius: 14,
-    padding: "12px 13px", marginBottom: 12,
-  },
   invShortHead: {
     fontSize: 10.5, fontWeight: 700, letterSpacing: 1.3,
     color: "var(--ink-4)", marginBottom: 9,
   },
-  invShortRow: {
-    display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0",
-    fontSize: 12.5, flexWrap: "wrap",
-  },
-  invShortUnit: { fontWeight: 700, color: "var(--ink-2)", minWidth: 78 },
-  invShortItem: { color: "var(--ink-3)", flex: 1, minWidth: 120 },
-  invShortOut: { fontWeight: 800, color: "var(--crit)", letterSpacing: 0.5 },
-  invShortLow: { fontWeight: 700, color: "var(--hold)", fontVariantNumeric: "tabular-nums" },
 
-  invFleet: { display: "flex", flexDirection: "column", gap: 12 },
-  invTruck: {
-    background: "var(--raised)", border: "1px solid var(--hair)",
-    borderRadius: 16, padding: "13px 14px",
-  },
-  invTruckHead: {
-    display: "flex", alignItems: "center", gap: 10,
-    marginBottom: 11, flexWrap: "wrap",
-  },
-  invTruckName: { fontSize: 15, fontWeight: 650 },
-  invTruckOk: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.8, color: "var(--ok)" },
-  invTruckShort: { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.8, color: "var(--hold)" },
-  invRestockBtn: {
-    marginLeft: "auto", background: "var(--inset-2)", border: "1px solid var(--hair-2)",
-    color: "var(--ink-2)", borderRadius: 999, padding: "6px 13px",
-    fontSize: 12, fontWeight: 650, cursor: "pointer",
-  },
-  invGrid: {
-    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8,
-  },
-  invCell: {
-    background: "var(--inset)", borderRadius: 10, padding: "8px 10px",
-    display: "flex", flexDirection: "column", gap: 3,
-  },
-  invCellName: { fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.35 },
-  invCellCount: { fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
-  invCellPar: { fontSize: 12, fontWeight: 500, color: "var(--ink-4)" },
-
-  invEditWrap: { marginTop: 14 },
-  invEditNote: {
-    fontSize: 12, lineHeight: 1.5, color: "var(--ink-4)", margin: "10px 0",
-  },
-  invEditRow: {
-    display: "flex", alignItems: "center", gap: 8, padding: "5px 0", flexWrap: "wrap",
-  },
-  invEditName: { flex: 1, minWidth: 150, fontSize: 13, color: "var(--ink-2)" },
-  invParInput: {
-    width: 74, background: "var(--inset)", border: "1px solid var(--hair-2)",
-    borderRadius: 9, color: "var(--ink)", padding: "7px 9px", fontSize: 13,
-    fontFamily: "inherit",
-  },
   invNameInput: {
-    flex: 1, minWidth: 150, background: "var(--inset)", border: "1px solid var(--hair-2)",
-    borderRadius: 9, color: "var(--ink)", padding: "7px 9px", fontSize: 13,
+    flex: 1, minWidth: 180, background: "var(--inset)", border: "1px solid var(--hair-2)",
+    borderRadius: 10, color: "var(--ink)", padding: "10px 12px", fontSize: 13.5,
     fontFamily: "inherit",
   },
-  invRemoveBtn: {
+  invEditNote: { fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)", marginTop: 9 },
+
+  // ---- the policy shelf ----
+  policyPage: {
+    background: "var(--panel)", border: "1px solid var(--hair)", borderRadius: 20,
+    padding: "18px 18px 20px",
+  },
+  policyPageHead: {
+    display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+    gap: 12, flexWrap: "wrap", marginBottom: 16,
+  },
+  policyAdd: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
+    borderRadius: 999, padding: "9px 16px", fontSize: 13, fontWeight: 650,
+    cursor: "pointer", flex: "none",
+  },
+  policyAddOff: {
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    borderRadius: 999, padding: "9px 16px", fontSize: 13, fontWeight: 650,
+    cursor: "default", flex: "none",
+  },
+  policyGrid: { display: "flex", flexDirection: "column", gap: 1, background: "var(--hair)",
+    border: "1px solid var(--hair)", borderRadius: 14, overflow: "hidden" },
+  policyItemName: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 },
+  policyKind: {
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.8, color: "var(--ink-4)",
+    border: "1px solid var(--hair-2)", borderRadius: 5, padding: "2px 5px", flex: "none",
+  },
+  policyViewer: {
+    background: "var(--inset)", padding: "12px 14px 14px",
+    display: "flex", flexDirection: "column", gap: 10,
+  },
+  policyImage: {
+    width: "100%", maxHeight: "70vh", objectFit: "contain",
+    borderRadius: 10, background: "#FFFFFF",
+  },
+  // Tall enough to actually read a page of A4 rather than peer at a strip.
+  policyPdf: { width: "100%", height: "min(72vh, 780px)", border: "none", borderRadius: 10 },
+  policyNoView: { fontSize: 13, lineHeight: 1.6, color: "var(--ink-3)", padding: "18px 4px" },
+  policyMeta: {
+    fontSize: 11.5, color: "var(--ink-4)", display: "flex", alignItems: "center",
+    gap: 12, flexWrap: "wrap",
+  },
+  policyRemove: {
+    marginLeft: "auto", background: "none", border: "1px solid var(--hair-2)",
+    color: "var(--crit-2)", borderRadius: 999, padding: "4px 12px",
+    fontSize: 11.5, cursor: "pointer",
+  },
+
+  stockList: { display: "flex", flexDirection: "column", gap: 10, marginTop: 12 },
+  stockRow: {
+    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 16,
+    padding: "13px 14px", display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap",
+  },
+  stockMain: { flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 8 },
+  stockNameRow: { display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" },
+  stockName: { fontSize: 14.5, fontWeight: 650, color: "var(--ink)" },
+  stockBand: { fontSize: 10, fontWeight: 800, letterSpacing: 0.9 },
+  stockBarTrack: {
+    height: 8, borderRadius: 999, background: "var(--inset)", overflow: "hidden",
+  },
+  stockBarFill: { height: "100%", borderRadius: 999 },
+  stockSub: { fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.45 },
+  stockPctWrap: {
+    display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, flex: "none",
+  },
+  stockPct: {
+    fontSize: 24, fontWeight: 700, letterSpacing: -0.6, lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+  },
+  stockBtns: { display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" },
+  stockEdit: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
+    borderRadius: 999, padding: "6px 15px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+  },
+  stockGhost: {
     background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
-    borderRadius: 999, padding: "5px 11px", fontSize: 11.5, cursor: "pointer",
+    borderRadius: 999, padding: "6px 11px", fontSize: 11.5, cursor: "pointer",
+  },
+  stockAdd: { marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--hair)" },
+  stockAddRow: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
+
+  // The crew's side: one tap per item, sized for a gloved thumb.
+  useList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
+  useRow: {
+    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 12,
+    overflow: "hidden",
+  },
+  useRowOn: {
+    background: "var(--raised)", border: "1px solid var(--hair-3)", borderRadius: 12,
+    overflow: "hidden",
+  },
+  useTap: {
+    width: "100%", minHeight: 52, display: "flex", alignItems: "center", gap: 12,
+    background: "none", border: "none", cursor: "pointer", padding: "10px 13px",
+    textAlign: "left", color: "var(--ink)",
+  },
+  useTick: {
+    width: 30, height: 30, borderRadius: 999, flex: "none",
+    background: "var(--inset)", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 17, fontWeight: 400, lineHeight: 1,
+  },
+  useTickOn: {
+    width: 30, height: 30, borderRadius: 999, flex: "none",
+    background: "var(--ok)", border: "1px solid var(--ok)", color: "var(--ground)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 15, fontWeight: 900, lineHeight: 1,
+  },
+  useName: { flex: 1, fontSize: 14, lineHeight: 1.35 },
+  useQty: {
+    fontSize: 15, fontWeight: 750, color: "var(--ok)", fontVariantNumeric: "tabular-nums",
+  },
+  useUndoRow: {
+    display: "flex", gap: 6, flexWrap: "wrap",
+    padding: "0 13px 10px", marginTop: -2,
+  },
+  useUndo: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
+    borderRadius: 999, padding: "4px 10px", fontSize: 11, cursor: "pointer",
   },
 
   invMovesWrap: { marginTop: 18 },
@@ -23928,29 +23971,6 @@ const styles = {
   invMoveWho: { color: "var(--ink-4)", flex: 1, minWidth: 140 },
   invMoveWhen: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
 
-  invCrewList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
-  invCrewRow: {
-    display: "flex", alignItems: "center", gap: 12,
-    background: "var(--raised)", border: "1px solid var(--hair)",
-    borderRadius: 12, padding: "10px 12px",
-  },
-  invCrewName: { flex: 1, fontSize: 13.5, color: "var(--ink)", lineHeight: 1.4 },
-  invCrewCount: {
-    display: "block", fontSize: 11.5, fontWeight: 650, marginTop: 2,
-    fontVariantNumeric: "tabular-nums",
-  },
-  invCrewBtns: { display: "flex", gap: 8, flex: "none" },
-  // Sized for a gloved thumb in a moving vehicle, not for a mouse.
-  invMinus: {
-    width: 48, height: 48, borderRadius: 12, cursor: "pointer",
-    background: "var(--inset-2)", border: "1px solid var(--hair-2)",
-    color: "var(--crit-2)", fontSize: 22, fontWeight: 700, lineHeight: 1,
-  },
-  invPlus: {
-    width: 48, height: 48, borderRadius: 12, cursor: "pointer",
-    background: "var(--inset-2)", border: "1px solid var(--hair-2)",
-    color: "var(--ok)", fontSize: 22, fontWeight: 700, lineHeight: 1,
-  },
 
   chatPanel: {
     width: "100%",
