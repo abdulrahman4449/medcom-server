@@ -3,9 +3,17 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>MEDCOM Dispatch</title>
+<title>PulseOps — Where Every Second Matters</title>
+<meta name="description" content="PulseOps — the ambulance dispatch board for Emergency Medical Services." />
+<meta name="apple-mobile-web-app-title" content="PulseOps" />
+<meta name="application-name" content="PulseOps" />
+<!-- Navy, off the mark: the colour the phone paints round the app. -->
+<meta name="theme-color" content="#070A11" />
+<!-- The mark, inline, so the tab and the home screen carry it without a file
+     to deploy, cache-bust and keep inside the native bundle as well. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='11' fill='%231E3A6E'/%3E%3Cg stroke='%23FFFFFF' stroke-width='5.4' stroke-linecap='round'%3E%3Cpath d='M20 24h8'/%3E%3Cpath d='M17.5 17.5L30.5 30.5'/%3E%3Cpath d='M30.5 17.5L17.5 30.5'/%3E%3Cpath d='M24 13.5v21'/%3E%3C/g%3E%3Cpath d='M6 24h7.5l3-7 4.5 14 3.5-9 2.5 4.5H42' stroke='%23E02B20' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E" />
 <style>
-  html, body, #root { height: 100%; margin: 0; background: #07090C; }
+  html, body, #root { height: 100%; margin: 0; background: #070A11; }
   * { box-sizing: border-box; }
 </style>
 
@@ -2462,6 +2470,82 @@ async function hashPassword(pw) {
   const enc = new TextEncoder().encode(pw);
   const buf = await crypto.subtle.digest("SHA-256", enc);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------- the brand ----------
+//
+// The name in one place. It goes on the sign-in screen, the masthead, every
+// printed report footer, the title of every exported workbook and the name of
+// every file that leaves the app — and it used to be typed out at each of those
+// twenty-odd places, which is how a rename becomes a week's work and still
+// leaves three screens saying the old thing.
+//
+// Split in two because the wordmark is two-tone, the way the logo is: "Pulse"
+// in white, "Ops" in the brand red.
+const APP_NAME_A = "Pulse";
+const APP_NAME_B = "Ops";
+const APP_NAME = `${APP_NAME_A}${APP_NAME_B}`;
+const APP_TAGLINE = "Where Every Second Matters";
+// Lower-case, hyphen-safe: the first word of every filename the app hands over.
+const APP_SLUG = APP_NAME.toLowerCase();
+
+// The mark, drawn rather than loaded.
+//
+// An <img> would need a file that has to be deployed, cached and version-bumped
+// alongside the app, and on the native shell it has to be inside the bundle as
+// well. This is a few hundred bytes of the same document, it is sharp at every
+// size, and it takes its colours from the theme — so it is right in both light
+// and dark without a second copy.
+//
+// The shape is the logo's: the star of life, a pulse crossing it, and the
+// signal arcs. `tone` lets the wordmark's mark sit in brand red while a small
+// one in a bar can be quieter.
+function BrandMark({ size = 40, plate = true }) {
+  // Drawn on its plate, the way the icon is.
+  //
+  // The first attempt drew the star of life bare on the page with the signal
+  // arcs beside it, and at 20px in the masthead it collapsed into a smudge —
+  // six white strokes, a red line and two arcs inside twenty pixels is more
+  // marks than that many pixels can hold. The plate does the work instead: a
+  // navy square carries the shape at any size, and the arcs are gone because
+  // they were the first thing to disappear and the last thing anyone needed.
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      {plate && <rect width="48" height="48" rx={48 * 0.23} fill="var(--brand-navy)" />}
+      {/* Star of life. Four strokes, not six: the upright counts as one. */}
+      <g
+        stroke={plate ? "#FFFFFF" : "currentColor"}
+        strokeWidth="4.6"
+        strokeLinecap="round"
+        opacity="0.96"
+      >
+        <path d="M24 12v24" />
+        <path d="M13.6 18 L34.4 30" />
+        <path d="M34.4 18 L13.6 30" />
+      </g>
+      {/* The pulse, straight across the middle — the one red thing, and the
+          only part that has to survive being shrunk. */}
+      <path
+        d="M5 24h6.4l2.6-6.2 4.2 12.4 3-8 2.2 4H43"
+        stroke="var(--brand)"
+        strokeWidth="2.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+// The name as it is set: two words, two weights, two colours. Used on the
+// sign-in screen and in the masthead so they cannot drift apart.
+function Wordmark({ size = 20, spacing = 3.2 }) {
+  return (
+    <span style={{ fontFamily: display, fontWeight: 700, fontSize: size, letterSpacing: spacing, whiteSpace: "nowrap" }}>
+      <span style={{ color: "var(--ink)" }}>{APP_NAME_A.toUpperCase()}</span>
+      <span style={{ color: "var(--brand)" }}>{APP_NAME_B.toUpperCase()}</span>
+    </span>
+  );
 }
 
 // The two crests are off the screen for the moment, and nothing about them has
@@ -5942,7 +6026,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
 
   const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
   const stationTag = station ? `-${stationShort(station).toLowerCase()}` : "-all-stations";
-  const filename = `medcom-dispatch-log${stationTag}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const filename = `${APP_SLUG}-dispatch-log${stationTag}-${new Date().toISOString().slice(0, 10)}.xlsx`;
 
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const file = new File([blob], filename, { type: blob.type });
@@ -5950,7 +6034,7 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
   // Prefer the native share sheet on mobile if the browser supports sharing files.
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-      await navigator.share({ files: [file], title: "MEDCOM Dispatch Log" });
+      await navigator.share({ files: [file], title: `${APP_NAME} — Dispatch Log` });
       return;
     }
   } catch (e) {
@@ -6061,14 +6145,14 @@ async function exportArchivedDay(archive, liveRequests) {
   const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
   const filename =
     archive.reason === "live"
-      ? `medcom-live-board-${archive.dayKey}.xlsx`
-      : `medcom-dispatch-log-${archive.dayKey}.xlsx`;
+      ? `${APP_SLUG}-live-board-${archive.dayKey}.xlsx`
+      : `${APP_SLUG}-dispatch-log-${archive.dayKey}.xlsx`;
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const file = new File([blob], filename, { type: blob.type });
 
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-      await navigator.share({ files: [file], title: `MEDCOM Dispatch Log — ${opDayLabel(archive.dayStart)}` });
+      await navigator.share({ files: [file], title: `${APP_NAME} — Dispatch Log, ${opDayLabel(archive.dayStart)}` });
       return;
     }
   } catch (e) {
@@ -7645,7 +7729,11 @@ function App() {
     return (
       <div style={styles.loadingScreen}>
         {!connectFailed ? (
-          <div style={styles.loadingText}>CONNECTING TO DISPATCH…</div>
+          <div style={styles.loadingMark}>
+            <BrandMark size={38} />
+            <Wordmark size={17} spacing={3} />
+            <div style={styles.loadingText}>CONNECTING TO DISPATCH…</div>
+          </div>
         ) : (
           <div style={styles.connectErrorBox}>
             <div style={styles.connectErrorTitle}>Still connecting…</div>
@@ -7973,8 +8061,16 @@ function GlobalFont() {
          Nothing in a component knows which is running: the attribute on the
          root element changes all of it at once. */
       :root {
-        --ground:#07090C; --panel:#0E1217; --raised:#141A21; --inset:#11161C;
-        --inset-2:#16232F; --hair:#1C242D; --hair-2:#28323D; --hair-3:#33475A;
+        /* PulseOps. Navy, red and white, taken off the mark.
+           The brand tokens are deliberately separate from the status ones. A
+           board where red means "critical call" cannot also have red mean
+           "our logo" in the same glance, so the brand red is used on the
+           wordmark, the rules and the chrome — never to say something about a
+           call. Status keeps its own five colours, untouched. */
+        --brand:#E02B20; --brand-2:#F4564C; --brand-navy:#1E3A6E;
+        --brand-navy-2:#2B54A0; --brand-deep:#132749;
+        --ground:#070A11; --panel:#0D1219; --raised:#131A24; --inset:#101720;
+        --inset-2:#16232F; --hair:#1B242F; --hair-2:#27323F; --hair-3:#33475A;
         --ink:#F7F9FB; --ink-alt:#F5F7FA; --ink-2:#D3DCE5; --ink-3:#93A2B1; --ink-4:#5A6775;
         --ok:#30D158; --flow:#0A84FF; --hold:#FF9F0A; --crit:#FF453A;
         --info:#5AC8FA; --gold:#E9C46A; --crit-2:#FF7A86; --hold-2:#FFC24D;
@@ -7982,14 +8078,16 @@ function GlobalFont() {
         --logo-plate:rgba(255,255,255,.94); --logo-pad:6px 10px; --logo-radius:10px;
         --veil:rgba(255,255,255,.055); --veil-2:rgba(255,255,255,.10);
         --lift:rgba(0,0,0,.38); --lift-2:rgba(0,0,0,.55);
-        --bar:rgba(14,18,23,.78);
+        --bar:rgba(13,18,25,.78);
         color-scheme: dark;
       }
       /* Light is not the dark palette inverted — that gives grey text on grey.
          The surfaces go white and the ink goes near-black, and the status
          colours are darkened only as far as they need to read on white. */
       [data-theme="light"] {
-        --ground:#F2F4F7; --panel:#FFFFFF; --raised:#FFFFFF; --inset:#EDF0F4;
+        --brand:#C2201A; --brand-2:#9E1912; --brand-navy:#1E3A6E;
+        --brand-navy-2:#2B54A0; --brand-deep:#EAF0FA;
+        --ground:#F1F4F8; --panel:#FFFFFF; --raised:#FFFFFF; --inset:#EDF0F4;
         --inset-2:#E7EBF0; --hair:#DDE3EA; --hair-2:#C6D0DA; --hair-3:#AEBBC8;
         --ink:#0F1721; --ink-alt:#16202B; --ink-2:#2B3846; --ink-3:#59687A; --ink-4:#7A8798;
         --ok:#1E9E42; --flow:#0866CC; --hold:#B87200; --crit:#CC2A21;
@@ -8051,13 +8149,11 @@ function GlobalFont() {
          three just smaller. Inline styles win over plain rules here, so these
          have to shout. */
       @media (max-width: 900px) {
-        .brand-title { font-size: 16px !important; letter-spacing: 1.4px !important; }
         .brand-logo-wide { height: 52px !important; }
         .brand-logo-badge { height: 60px !important; }
       }
       @media (max-width: 620px) {
         .brand-bar { padding: 7px 12px !important; gap: 8px !important; }
-        .brand-title { font-size: 11.5px !important; letter-spacing: 0.6px !important; }
         .brand-logo-wide { height: 38px !important; }
         .brand-logo-badge { height: 44px !important; }
       }
@@ -8075,10 +8171,15 @@ const ROLE_CHOICES = {
 };
 
 function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }) {
-  const [role, setRole] = useState(null); // null | "dispatcher" | "team" | "admin"
+  // The tab that is selected, never null. The screen used to open on a menu of
+  // three buttons and only then show a form; the approved design is one card
+  // with the choice as a tab strip along the top of it, so there is a field to
+  // type in the moment the app opens. Crew is the default because crew are
+  // most of the people signing in.
+  const [role, setRole] = useState("team"); // "dispatcher" | "team" | "admin"
 
   // ---- account sign-in state machine ----
-  const [stage, setStage] = useState("id"); // "id" | "createPassword" | "verifyPassword" | "roleChoice" | "chooseShift" | "chooseStation" | "chooseTeam" | "chooseSeat"
+  const [stage, setStage] = useState("id"); // "id" | "createPassword" | "roleChoice" | "chooseShift" | "chooseStation" | "chooseTeam" | "chooseSeat"
   const [idInput, setIdInput] = useState("");
   const [foundAccount, setFoundAccount] = useState(null);
   const [seatUnit, setSeatUnit] = useState(null);
@@ -8158,24 +8259,54 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
     setStage("chooseShift");
   }
 
-  async function handleIdContinue() {
+  // One press, both fields.
+  //
+  // The ID and the password used to be two screens with a Continue between
+  // them, which meant a crew member at a changeover typed, waited for a round
+  // trip, then typed again. The design puts them on one card, so this does the
+  // lookup and the check together — and the one case that genuinely needs a
+  // second screen, somebody signing in for the first time who has no password
+  // yet, is the only thing that moves them on to one.
+  async function handleSignIn() {
     if (!idInput.trim()) return;
     setBusy(true);
     setError("");
     const accts = await readKey("ems:accounts", []);
     const found = accts.find((a) => a.id.toLowerCase() === idInput.trim().toLowerCase());
-    setBusy(false);
     if (!found) {
-      setError("ID not recognized. Contact your admin.");
+      setBusy(false);
+      setError("ID not recognised. Contact your administrator.");
       return;
     }
     const expected = ROLE_CHOICES[role];
     if (expected && found.role !== expected.accountRole) {
-      setError(`That isn't a ${expected.label.toLowerCase()} ID — try the ${expected.other} option instead.`);
+      setBusy(false);
+      setError(`That isn't a ${expected.label.toLowerCase()} ID — try the ${expected.other} tab instead.`);
       return;
     }
     setFoundAccount(found);
-    setStage(found.passwordHash ? "verifyPassword" : "createPassword");
+
+    // No password on the account yet: this is their first time, and the next
+    // screen asks them to choose one. Whatever they typed in the password box
+    // is discarded rather than silently becoming their password — a field
+    // filled in before anyone said it would be kept is not a choice.
+    if (!found.passwordHash) {
+      setPw("");
+      setPw2("");
+      setBusy(false);
+      setStage("createPassword");
+      return;
+    }
+
+    const hash = await hashPassword(pw);
+    setBusy(false);
+    if (hash !== found.passwordHash) {
+      setError("That password doesn't match that ID.");
+      setPw("");
+      return;
+    }
+    setPw("");
+    await routeAfterPassword(found);
   }
 
   // Setting a password for the first time. The server decides whether that is
@@ -8200,17 +8331,6 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
     await routeAfterPassword(updatedAccount);
   }
 
-  async function handleVerifyPassword() {
-    setBusy(true);
-    const hash = await hashPassword(pw);
-    setBusy(false);
-    if (hash !== foundAccount.passwordHash) {
-      setError("Incorrect password.");
-      setPw("");
-      return;
-    }
-    await routeAfterPassword(foundAccount);
-  }
 
   // Crew members choose their own seat at sign-in — fetch the chosen medic's
   // live occupancy so the two seats can be offered accurately, along with who
@@ -8615,42 +8735,37 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
             <img src={DEPT_LOGO} alt={ORG_NAME ? `${ORG_NAME} Ambulance EMS` : "Ambulance EMS crest"} style={styles.loginDeptLogo} />
           </div>
         )}
-        {/* The wordmark from the approved design: the mark above the name,
-            the name stacked and letter-spaced, centred. With no crests to sit
-            beside, a single line of small caps beside an icon read as a label
-            on a form rather than as the front door of the department's board. */}
+        {/* The mark above the name, the name above the line it is sold on —
+            centred, as the approved design has it. */}
         <div style={styles.loginMark}>
-          <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="var(--flow)" strokeWidth="1.5" strokeLinecap="round">
-            <path d="M12 3v6" />
-            <circle cx="12" cy="12" r="2.2" />
-            <path d="M6.5 6.5a7.8 7.8 0 0 0 0 11M17.5 6.5a7.8 7.8 0 0 1 0 11" />
-            <path d="M3.4 3.4a12 12 0 0 0 0 17.2M20.6 3.4a12 12 0 0 1 0 17.2" opacity=".38" />
-          </svg>
+          <BrandMark size={46} />
           <div style={styles.loginWordmark}>
-            <span style={styles.loginWordTop}>MEDCOM</span>
-            <span style={styles.loginWordBottom}>DISPATCH</span>
+            <Wordmark size={22} spacing={3.6} />
+            <span style={styles.loginWordBottom}>{APP_TAGLINE}</span>
           </div>
         </div>
-        {!role && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 18 }}>
-            <button style={styles.roleBtn} onClick={() => setRole("dispatcher")}>
-              <div style={{ textAlign: "left" }}>
-                <div style={styles.roleBtnTitle}>Dispatcher</div>
-              </div>
-              <ChevronRight size={18} color="var(--ink-3)" />
-            </button>
-            <button style={styles.roleBtn} onClick={() => setRole("team")}>
-              <div style={{ textAlign: "left" }}>
-                <div style={styles.roleBtnTitle}>Team</div>
-              </div>
-              <ChevronRight size={18} color="var(--ink-3)" />
-            </button>
-            <button style={styles.roleBtn} onClick={() => setRole("admin")}>
-              <div style={{ textAlign: "left" }}>
-                <div style={styles.roleBtnTitle}>Admin</div>
-              </div>
-              <ChevronRight size={18} color="var(--ink-3)" />
-            </button>
+        {/* Which door, as a tab strip rather than a menu that has to be got
+            past. The choice is visible the whole time, so somebody who picked
+            the wrong one corrects it with one tap instead of a Back button. */}
+        {stage === "id" && (
+          <div style={styles.loginTabs}>
+            {[
+              { key: "team", label: "Crew" },
+              { key: "dispatcher", label: "Dispatch" },
+              { key: "admin", label: "Admin" },
+            ].map((t) => (
+              <button
+                key={t.key}
+                style={role === t.key ? styles.loginTabOn : styles.loginTab}
+                onClick={() => {
+                  if (role === t.key) return;
+                  setRole(t.key);
+                  resetAccountFlow();
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
         )}
 
@@ -8658,22 +8773,47 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
           <div style={{ marginTop: 18 }}>
             {stage === "id" && (
               <>
-                <div style={styles.loginSub}>{ROLE_CHOICES[role].label} sign-in</div>
-                <label style={styles.label}>Your ID</label>
+                <label style={styles.loginFieldLabel}>EMPLOYEE ID</label>
                 <input
-                  style={styles.input}
+                  style={styles.loginInput}
                   value={idInput}
                   onChange={(e) => setIdInput(e.target.value)}
-                  placeholder={role === "dispatcher" ? "e.g. D1000001" : "e.g. F1525518"}
+                  placeholder={role === "dispatcher" ? "D1000001" : "F1525518"}
                   autoCapitalize="characters"
-                  onKeyDown={(e) => e.key === "Enter" && handleIdContinue()}
+                  autoCorrect="off"
+                  spellCheck={false}
+                  onKeyDown={(e) => e.key === "Enter" && handleSignIn()}
+                />
+                <label style={{ ...styles.loginFieldLabel, marginTop: 14 }}>PASSWORD</label>
+                <input
+                  type="password"
+                  style={styles.loginInput}
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSignIn()}
                 />
                 {error && <div style={styles.loginError}>{error}</div>}
-                <div style={styles.loginActions}>
-                  <button style={styles.ghostBtn} onClick={() => { setRole(null); resetAccountFlow(); }}>Back</button>
-                  <button style={styles.primaryBtn} disabled={busy || !idInput.trim()} onClick={handleIdContinue}>
-                    {busy ? "Checking…" : "Continue"}
-                  </button>
+                <button
+                  style={busy || !idInput.trim() ? styles.loginSubmitOff : styles.loginSubmit}
+                  disabled={busy || !idInput.trim()}
+                  onClick={handleSignIn}
+                >
+                  {busy ? "Checking…" : "Sign in"}
+                </button>
+                <div style={styles.loginNote}>
+                  <svg
+                    width="15" height="15" viewBox="0 0 24 24" fill="none"
+                    stroke="var(--info)" strokeWidth="2" strokeLinecap="round"
+                    style={{ flex: "none" }}
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 11v5.5" />
+                    <circle cx="12" cy="7.9" r=".9" fill="var(--info)" stroke="none" />
+                  </svg>
+                  <span>
+                    The ambulance board for Emergency Medical Services. Sign in with the ID
+                    your administrator gave you.
+                  </span>
                 </div>
               </>
             )}
@@ -8702,28 +8842,6 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
                   <button style={styles.ghostBtn} onClick={resetAccountFlow}>Back</button>
                   <button style={styles.primaryBtn} disabled={busy} onClick={handleCreatePassword}>
                     {busy ? "Saving…" : "Set password & sign in"}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {stage === "verifyPassword" && (
-              <>
-                <div style={styles.loginSub}>Welcome back, {foundAccount.name || foundAccount.id}.</div>
-                <label style={styles.label}>Password</label>
-                <input
-                  type="password"
-                  style={styles.input}
-                  value={pw}
-                  onChange={(e) => setPw(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleVerifyPassword()}
-                  autoFocus
-                />
-                {error && <div style={styles.loginError}>{error}</div>}
-                <div style={styles.loginActions}>
-                  <button style={styles.ghostBtn} onClick={resetAccountFlow}>Back</button>
-                  <button style={styles.primaryBtn} disabled={busy || !pw} onClick={handleVerifyPassword}>
-                    {busy ? "Checking…" : "Sign in"}
                   </button>
                 </div>
               </>
@@ -8941,7 +9059,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
           reachable without an account. */}
       <div style={styles.loginFoot}>
         <div style={styles.loginFootWhat}>
-          MEDCOM Dispatch — the ambulance board for Emergency Medical Services.
+          {APP_NAME} — the ambulance board for Emergency Medical Services.
           Sign in with the ID your administrator gave you.
         </div>
         <div style={styles.legalNote}>
@@ -9047,8 +9165,8 @@ function Header({ user, clock, onLogout, onChangeShift, theme, onToggleTheme }) 
           />
         )}
         <div style={styles.brandTitleWrap}>
-          <Radio size={18} color="#1D4ED8" />
-          <span style={styles.brandTitle} className="brand-title">MEDCOM DISPATCH</span>
+          <BrandMark size={20} />
+          <Wordmark size={13.5} spacing={2.4} />
         </div>
         {SHOW_LOGOS && (
           <img
@@ -14320,14 +14438,14 @@ async function exportOvertime(claims, from, to, label) {
     const d = new Date(ts);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   };
-  const filename = `medcom-overtime-${ymd(from)}-to-${ymd(to - 1)}.xlsx`;
+  const filename = `${APP_SLUG}-overtime-${ymd(from)}-to-${ymd(to - 1)}.xlsx`;
   const blob = new Blob([buffer], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
   const file = new File([blob], filename, { type: blob.type });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-      await navigator.share({ files: [file], title: `MEDCOM Overtime — ${label}` });
+      await navigator.share({ files: [file], title: `${APP_NAME} — Overtime, ${label}` });
       return;
     }
   } catch (e) {
@@ -19779,7 +19897,7 @@ function buildStatisticsReport({ label, win, staff, origins, resp, mix, tops, ph
   const totalOrigin = origins.rows.reduce((n, r) => n + r.total, 0) || 1;
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-<title>MEDCOM Dispatch — ${esc(win.title || label)}</title>
+<title>${esc(APP_NAME)} — ${esc(win.title || label)}</title>
 <style>
 @page { size: A4; margin: 16mm 15mm; }
 *{box-sizing:border-box}
@@ -19836,7 +19954,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 </style></head><body>
 
 <div class="eyebrow">Performance report</div>
-<h1>MEDCOM Dispatch</h1>
+<h1>${esc(APP_NAME)}</h1>
 <p class="lede">${esc(win.title || label)} · ${esc(station || "All stations")}</p>
 <div class="rule"></div>
 
@@ -19934,7 +20052,7 @@ ${origins.unstated ? `<p class="small muted">${origins.unstated} call(s) with no
 </div>
 
 <div class="foot">
-  MEDCOM Dispatch · ${ORG_STAMP}Ambulance Services · Generated ${esc(gregDateTimeStr(Date.now()))}
+  ${esc(APP_NAME)} · ${ORG_STAMP}Ambulance Services · Generated ${esc(gregDateTimeStr(Date.now()))}
 </div>
 </body></html>`;
 }
@@ -20334,7 +20452,7 @@ function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `medcom-statistics-${range}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `${APP_SLUG}-statistics-${range}-${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -20858,7 +20976,7 @@ ${
   }
 
 <div class="foot">
-  MEDCOM Dispatch · ${ORG_STAMP}Ambulance Services · Shaded rows are night-shift calls ·
+  ${esc(APP_NAME)} · ${ORG_STAMP}Ambulance Services · Shaded rows are night-shift calls ·
   Amber marks overtime · Printed ${esc(gregDateTimeStr(Date.now()))}
 </div>
 </body></html>`;
@@ -22407,6 +22525,9 @@ const styles = {
     display: "flex",
     flexDirection: "column",
   },
+  loadingMark: {
+    display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+  },
   loadingScreen: {
     minHeight: "100vh",
     background: "var(--ground)",
@@ -22508,15 +22629,6 @@ const styles = {
     justifyContent: "center",
     gap: 10,
     minWidth: 0,
-  },
-  brandTitle: {
-    fontFamily: display,
-    fontWeight: 600,
-    fontSize: 13,
-    letterSpacing: 1.6,
-    color: "var(--ink-4)",
-    textTransform: "uppercase",
-    whiteSpace: "nowrap",
   },
   // Read from across a control room, so the crests are sized to be recognised
   // at that distance rather than to sit politely in a corner.
@@ -26183,7 +26295,7 @@ const styles = {
     // behind a lone form reads as an error page; this reads as a room with a
     // light on in it, and costs one gradient.
     background:
-      "radial-gradient(1000px 560px at 22% 14%, color-mix(in srgb, var(--flow) 9%, var(--panel)) 0%, var(--ground) 62%)",
+      "radial-gradient(1000px 560px at 22% 14%, color-mix(in srgb, var(--brand-navy) 22%, var(--panel)) 0%, var(--ground) 62%)",
     position: "relative",
     display: "flex",
     flexDirection: "column",
@@ -26204,11 +26316,56 @@ const styles = {
     marginBottom: 26,
   },
   loginWordmark: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5 },
-  loginWordTop: {
-    fontSize: 20, fontWeight: 600, letterSpacing: 3.6, color: "var(--ink)",
-  },
   loginWordBottom: {
-    fontSize: 11, fontWeight: 650, letterSpacing: 3.4, color: "var(--ink-4)",
+    fontSize: 10, fontWeight: 650, letterSpacing: 2.2, color: "var(--ink-4)",
+    textTransform: "uppercase",
+  },
+
+  // The tab strip along the top of the card: a tray with three slots, the
+  // chosen one raised out of it.
+  loginTabs: {
+    display: "flex", gap: 6, padding: 4, borderRadius: 12,
+    background: "var(--inset)", marginBottom: 18,
+  },
+  loginTab: {
+    flex: 1, padding: "10px 8px", borderRadius: 9, border: "none",
+    background: "none", color: "var(--ink-4)",
+    fontSize: 13.5, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
+  },
+  loginTabOn: {
+    flex: 1, padding: "10px 8px", borderRadius: 9,
+    border: "1px solid var(--hair-2)",
+    background: "var(--inset-2)", color: "var(--ink)",
+    fontSize: 13.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+  },
+
+  loginFieldLabel: {
+    display: "block", fontSize: 10.5, fontWeight: 700, letterSpacing: 1.2,
+    color: "var(--ink-4)", marginBottom: 7,
+  },
+  loginInput: {
+    width: "100%", boxSizing: "border-box",
+    padding: "14px 15px", borderRadius: 12,
+    background: "var(--inset)", border: "1px solid var(--hair-2)",
+    color: "var(--ink)", fontSize: 16, fontFamily: "inherit",
+    letterSpacing: 0.6, outline: "none",
+  },
+  // The one blue thing on the screen, and the only thing to press.
+  loginSubmit: {
+    width: "100%", marginTop: 18, padding: "15px 16px", borderRadius: 13,
+    background: "var(--brand-navy-2)", border: "none", color: "#FFFFFF",
+    fontSize: 15.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+    boxShadow: "0 8px 24px rgba(43,84,160,.34)",
+  },
+  loginSubmitOff: {
+    width: "100%", marginTop: 18, padding: "15px 16px", borderRadius: 13,
+    background: "var(--inset-2)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    fontSize: 15.5, fontWeight: 700, fontFamily: "inherit", cursor: "default",
+  },
+  loginNote: {
+    display: "flex", alignItems: "flex-start", gap: 9,
+    padding: "11px 13px", borderRadius: 11, background: "var(--inset)",
+    marginTop: 16, fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-3)",
   },
 
   loginCard: {

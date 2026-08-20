@@ -1,6 +1,7 @@
-# MEDCOM Dispatch
+# PulseOps
 
-An ambulance dispatch board for a hospital EMS department. Dispatchers raise
+**PulseOps** — "Where Every Second Matters". An ambulance dispatch board for
+a hospital EMS department. Dispatchers raise
 and assign calls; crews stamp the five timeline steps from the vehicle;
 administrators read statistics and file shift logs.
 
@@ -83,6 +84,19 @@ patch", that document is the target — do not start a fresh exploration.
 - **Overtime is written in hours, and approved hours are the only total.**
   `otHoursStr`, never `msDurationStr`, for anything paid. A declined claim
   is shown in its own column and adds to nothing.
+- **The name lives in `APP_NAME_A` / `APP_NAME_B` / `APP_TAGLINE` /
+  `APP_SLUG`, near the top of the app.** Never type "PulseOps" into a screen,
+  a report footer or an export filename — every one of those reads the
+  constants, so a rename is four lines. `BrandMark` and `Wordmark` draw the
+  identity; the mark is inline SVG on a navy plate, not an image file, so it
+  is sharp at every size and needs nothing deployed beside it. Brand colour
+  tokens (`--brand`, `--brand-navy`) are deliberately separate from the five
+  status colours: on this board red already means "critical call", and it
+  must not also mean "our logo" in the same glance.
+- **The Render service is still called `medcom-dispatch`, on purpose.** On
+  Render the service name is the hostname, and that hostname is compiled
+  into the native app as `LIVE_SITE`. Renaming it breaks every installed
+  phone. The app is PulseOps; the address it lives at is not.
 - **`SHOW_LOGOS` and `ORG_NAME`** near the top of the app switch the crests
   and the organisation's name back on. Both are deliberately off/empty.
 

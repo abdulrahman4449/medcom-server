@@ -1,4 +1,4 @@
-# Render blueprint for MEDCOM Dispatch.
+# Render blueprint for PulseOps.
 #
 # The one thing this file exists to guarantee is the disk. Without it the
 # database is written inside the app folder, and Render rebuilds that folder on
@@ -11,6 +11,10 @@
 # README section "Data disappears after every deploy".
 services:
   - type: web
+    # Deliberately NOT renamed to pulseops. On Render the service name is the
+    # hostname: renaming it changes the URL, and that URL is compiled into the
+    # native app as LIVE_SITE. The app is PulseOps; the server it is hosted on
+    # keeps the address every installed phone already knows.
     name: medcom-dispatch
     runtime: node
     # A persistent disk requires a paid instance type. Free tiers discard the

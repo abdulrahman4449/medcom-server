@@ -1,4 +1,4 @@
-// MEDCOM Dispatch — notification worker.
+// PulseOps — notification worker.
 //
 // Its only job is to raise and handle incoming-call notifications. On Android
 // (and anywhere else `new Notification()` is off-limits to a page) a service

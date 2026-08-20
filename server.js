@@ -1,4 +1,4 @@
-// MEDCOM Dispatch — self-hosted server.
+// PulseOps — self-hosted server.
 //
 // Replaces Netlify Functions + Netlify DB with a plain Node.js server and a
 // single SQLite file. Same job as before (serve the app, and read/write the
@@ -162,11 +162,11 @@ app.use(express.static(path.join(__dirname, "public")));
 // Kept for parity with the old Netlify download.mts — lets anyone grab the
 // current app file directly, e.g. to re-check what's actually deployed.
 app.get("/download", (req, res) => {
-  res.download(path.join(__dirname, "public", "index.html"), "medcom-dispatch.html");
+  res.download(path.join(__dirname, "public", "index.html"), "pulseops.html");
 });
 
 app.listen(PORT, () => {
-  console.log(`MEDCOM Dispatch server listening on port ${PORT}`);
+  console.log(`PulseOps server listening on port ${PORT}`);
   console.log(`Database file: ${DB_PATH}`);
   console.log(`Chosen from: ${DB_SOURCE}`);
 
