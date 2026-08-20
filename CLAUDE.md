@@ -54,16 +54,52 @@ patch", that document is the target — do not start a fresh exploration.
   Location Permissions declaration form, which is the thing this design exists
   to avoid. A refusal takes effect immediately; the admin acknowledgement is a
   record, never a gate.
+- **A day runs 07:00 to 07:00, and a shift belongs to the date it opened.**
+  The day shift of 20 August is 07:00–19:00 on the 20th; the night shift of
+  20 August is 19:00 on the 20th to 07:00 on the 21st, and files under the
+  20th. `opDayStart` is the boundary; nothing may invent a second idea of
+  what a date means. Three logs come out of each day: each station's day
+  shift, each station's night shift, and the operational day itself (both
+  stations, both shifts) which is kept automatically once every call raised
+  on it is closed — a night call still running at 08:00 holds its own day
+  open rather than being archived half-written.
+- **Never key a crew stay by the word "day" or "night".** It repeats every
+  24 hours, so one person's Tuesday and Thursday merge into a single stay
+  that appears to run for two days and overlaps every call between them.
+  Key by the shift window. See `medicCrewStamps`.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.
+- **Zahrawi's shift is 9:30, not 12:00.** It is the denominator of every UHU
+  figure its crews appear in. `shiftMsForUnit`.
+- **Overtime is written in hours, and approved hours are the only total.**
+  `otHoursStr`, never `msDurationStr`, for anything paid. A declined claim
+  is shown in its own column and adds to nothing.
 - **`SHOW_LOGOS` and `ORG_NAME`** near the top of the app switch the crests
   and the organisation's name back on. Both are deliberately off/empty.
 
 ## Checking your work
 
 There is no test suite. Before pushing a change to `public/index.html`,
-confirm the JSX still compiles — extract the `text/babel` block and run it
-through `@babel/preset-react`. The sandbox cannot reach the CDN, so the app
-itself cannot be rendered here; say so rather than implying it was tested in
-a browser.
+extract the `text/babel` block and run **three** checks over it. The sandbox
+cannot reach the CDN, so the app itself cannot be rendered here; say so
+rather than implying it was tested in a browser.
+
+1. **It compiles** — `@babel/preset-react`.
+2. **Every identifier resolves.** A green compile proves nothing about
+   whether the things the code names exist. Parse with `@babel/parser`,
+   walk `ReferencedIdentifier` with `@babel/traverse`, and assert
+   `path.scope.hasBinding(name, true)` for everything that is not a
+   browser global (uppercase JSX names included; lowercase ones are
+   intrinsics). This has caught two shipped bugs that Babel was happy
+   with: eleven components deleted by a bad splice, and a Policies tab
+   that named four variables nobody had declared — which threw before the
+   first element was built, so React unmounted the tree and the screen
+   went **black with nothing responding**. A blank screen in this app is
+   almost always an unresolved name.
+3. **Nothing is declared twice** — top-level functions and consts, and
+   keys inside the one `styles` object. A duplicate style key silently
+   wins over the earlier one.
+
+Then `git diff --stat`. An index-based splice that removed more than you
+meant to looks like a large deletion count and like nothing else.
