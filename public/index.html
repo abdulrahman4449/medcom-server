@@ -3425,8 +3425,11 @@ async function recordConsent({ accountId, name, status, reason }) {
       ackedAt: null,
     },
   };
-  await writeKey(TRACKING_CONSENT_KEY, next);
-  return next;
+  // These stores are keyed maps rather than lists of records, so they cannot
+  // ride the offline queue — that works on records with ids. What they can do
+  // is stop pretending. The caller is told whether it landed and says so.
+  const ok = await writeKey(TRACKING_CONSENT_KEY, next);
+  return ok ? next : null;
 }
 
 async function writePosition({ unit, coords, byName, accountId, requestId }) {
@@ -3651,7 +3654,6 @@ function overtimeStatusLabel(claim) {
 // and, where there was one, the call.
 const INVENTORY_KEY = "ems:inventory";
 const INVENTORY_MOVES_KEY = "ems:inventoryMoves";
-const INVENTORY_MOVES_CAP = 4000;
 
 // A starting shelf, so the page is not an empty box on the first open. These
 // are consumables every ambulance carries; administration edits the list and
@@ -3676,6 +3678,15 @@ function inventoryItems(inv) {
 // away, and a count is never allowed to read below nothing — a truck cannot
 // hold minus two cannulas, and showing that would only ever mean somebody
 // mis-tapped.
+//
+// Nothing trims this list, and that is deliberate. The movement log was capped
+// at four thousand entries, oldest dropped — which quietly changed the answer,
+// because the count IS the sum of the movements. Dropping a year-old "used 3"
+// silently gave that truck three cannulas back. A running total cannot have its
+// history truncated without becoming wrong, so either the whole log is kept or
+// the trimmed part has to be folded into a stored baseline. The log is small —
+// a shift is tens of lines — so it is kept, and the day it is not, the fold is
+// the fix, never the trim.
 function stockFor(items, moves, unitId) {
   const byItem = new Map(items.map((it) => [it.id, it.par || 0]));
   (moves || []).forEach((m) => {
@@ -3689,9 +3700,15 @@ function stockFor(items, moves, unitId) {
       ...it,
       have,
       short: Math.max(0, (it.par || 0) - have),
-      // Anything at or below a quarter of its par is worth flagging before it
-      // runs out on a call rather than after.
-      low: (it.par || 0) > 0 && have <= Math.max(1, Math.floor((it.par || 0) * 0.25)),
+      // Anything down to a quarter of its par is worth flagging before it runs
+      // out on a call rather than after — but only once it is actually BELOW
+      // par. Without that, every par-1 item (the sharps bin) read as low while
+      // sitting at full stock, and the SHORT NOW panel filled with trucks that
+      // had nothing wrong with them.
+      low:
+        (it.par || 0) > 0 &&
+        have < (it.par || 0) &&
+        have <= Math.max(1, Math.floor((it.par || 0) * 0.25)),
       out: have === 0 && (it.par || 0) > 0,
     };
   });
@@ -3714,8 +3731,10 @@ async function recordStockMove({ unit, item, delta, kind, byName, requestId, req
     requestNature: requestNature || "",
   };
   const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
-  const next = [...existing, entry].slice(-INVENTORY_MOVES_CAP);
-  await writeKey(INVENTORY_MOVES_KEY, next);
+  const next = [...existing, entry];
+  // Queued if it cannot be sent, like the messages: a crew restocking in a bay
+  // with no signal must not have the count silently not happen.
+  await writeList(INVENTORY_MOVES_KEY, next, existing);
   return next;
 }
 
@@ -3797,10 +3816,14 @@ async function postMessage({ unit, from, byName, byAccountId, text, station }) {
   const existing = (await readKey(MESSAGES_KEY, [])) || [];
   // Newest last in the thread, but the cap trims the oldest.
   const next = [...existing, entry].slice(-MESSAGES_CAP);
-  await writeKey(MESSAGES_KEY, next);
-  // Handed back whether or not the write reached the server. Offline, the store
-  // holds it and sends it up later; what must not happen is the sender's own
-  // line vanishing from their screen while that is arranged.
+  // writeList, not writeKey.
+  //
+  // writeKey posts and gives up. Only writeList queues what did not land, so a
+  // message typed in a lift or a basement — which is most of where this will be
+  // typed — went nowhere at all, while the comment here claimed the opposite.
+  // Now it is held on the device and drains on the next poll with signal, like
+  // every other record on the board.
+  await writeList(MESSAGES_KEY, next, existing);
   return next;
 }
 
@@ -6174,23 +6197,33 @@ function App() {
     setChecklistRuns(runs || []);
     // Messages ride the same poll as the rest of the board, so a line typed at
     // the desk reaches the truck on the next tick without a channel of its own.
-    const msgs = await readKey(MESSAGES_KEY, []);
+    // readKeyRaw, not readKey.
+    //
+    // readKey swallows a failed read and hands back the fallback, so
+    // `!== READ_FAILED` was always true and every one of these was overwriting
+    // good state with an empty default on any poll that could not reach the
+    // server. The chat emptied, the stock counts reset, and — worst of the
+    // four — the tracking consents vanished, which put the consent prompt back
+    // in front of a crew in the middle of a call. Only readKeyRaw reports a
+    // failure, so only readKeyRaw can be used where "keep what we had" is the
+    // right answer.
+    const msgs = await readKeyRaw(MESSAGES_KEY);
     if (msgs !== READ_FAILED) setMessages(msgs || []);
-    const inv = await readKey(INVENTORY_KEY, null);
+    const inv = await readKeyRaw(INVENTORY_KEY);
     if (inv !== READ_FAILED) setInventory(inv || null);
-    const invMoves = await readKey(INVENTORY_MOVES_KEY, []);
+    const invMoves = await readKeyRaw(INVENTORY_MOVES_KEY);
     if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
-    const ot = await readKey(OVERTIME_KEY, {});
+    const ot = await readKeyRaw(OVERTIME_KEY);
     if (ot !== READ_FAILED) setOvertimeDecisions(ot || {});
-    const locs = await readKey(LOCATION_KEY, {});
-    if (locs !== READ_FAILED) {
+    const locs = await readKeyRaw(LOCATION_KEY);
+    if (locs !== READ_FAILED && locs !== null) {
       // Swept on the way in. Only written back when something actually needed
       // removing, so an idle board is not rewriting this key every poll.
       const { kept, dropped } = pruneLocations(locs || {}, unitsToUse, requestsToUse, Date.now());
       setLocations(kept);
       if (dropped > 0) await writeKey(LOCATION_KEY, kept);
     }
-    const cons = await readKey(TRACKING_CONSENT_KEY, {});
+    const cons = await readKeyRaw(TRACKING_CONSENT_KEY);
     if (cons !== READ_FAILED) setTrackingConsents(cons || {});
     setLog(l || []);
     setAccounts(accountsToUse);
@@ -13148,8 +13181,15 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
   const now = Date.now();
   // A pay period, not a calendar month. Defaults to the last 30 days and is
   // then whatever the administrator types.
-  const [fromStr, setFromStr] = useState(() => new Date(now - 29 * 86400000).toISOString().slice(0, 10));
-  const [toStr, setToStr] = useState(() => new Date(now).toISOString().slice(0, 10));
+  // Local, for the same reason the filename is: a date input takes a local
+  // calendar day, and seeding it from a UTC string starts the picker on the
+  // wrong day for anyone east of Greenwich.
+  const localYmd = (ts) => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const [fromStr, setFromStr] = useState(() => localYmd(now - 29 * 86400000));
+  const [toStr, setToStr] = useState(() => localYmd(now));
   const [busy, setBusy] = useState(false);
 
   const from = new Date(`${fromStr}T00:00:00`).getTime();
@@ -13212,7 +13252,11 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
         granted: !!claim.granted,
       },
     };
-    await writeKey(OVERTIME_KEY, next);
+    const ok = await writeKey(OVERTIME_KEY, next);
+    if (!ok) {
+      window.alert("That decision could not be saved — no signal to the server. Nothing has changed; try again.");
+      return;
+    }
     setDecisions(next);
     await addLog(
       `Overtime ${status} for ${claim.name} (${claim.unitName}) — ` +
@@ -13231,9 +13275,21 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
       String(Math.round((claim.claimedMs || 0) / 60000))
     );
     if (asked === null) return;
-    const mins = Math.max(0, Math.min(Math.round((claim.claimedMs || 0) / 60000), parseInt(asked, 10) || 0));
+    // A blank or nonsense answer used to fall through `|| 0` and record a
+    // DECLINED claim with no reason — around the check that declining a claim
+    // needs one. An unreadable answer is not a decision.
+    const parsed = parseInt(String(asked).trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      window.alert("Give the number of minutes to approve, or use Decline.");
+      return;
+    }
+    const mins = Math.min(Math.round((claim.claimedMs || 0) / 60000), parsed);
+    if (mins === 0) {
+      window.alert("Approving nought minutes is a decline — use Decline, which records the reason.");
+      return;
+    }
     const note = window.prompt("A note, if this needs explaining. Leave blank for none.", "") || "";
-    await decide(claim, mins === 0 ? "declined" : "partial", mins * 60000, note.trim());
+    await decide(claim, "partial", mins * 60000, note.trim());
   }
 
   async function decline(claim) {
@@ -13555,7 +13611,17 @@ async function exportOvertime(claims, from, to, label) {
   XLSX.utils.book_append_sheet(wb, sumSheet, "By Person");
 
   const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const filename = `medcom-overtime-${new Date(from).toISOString().slice(0, 10)}-to-${new Date(to - 1).toISOString().slice(0, 10)}.xlsx`;
+  // Local date parts, not toISOString.
+  //
+  // The period is picked as local midnights, and toISOString converts to UTC —
+  // so east of Greenwich the file claimed to start the day before the one that
+  // was chosen. A pay period that names the wrong dates is a pay period
+  // somebody has to check by hand.
+  const ymd = (ts) => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const filename = `medcom-overtime-${ymd(from)}-to-${ymd(to - 1)}.xlsx`;
   const blob = new Blob([buffer], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
@@ -13605,7 +13671,11 @@ function InventoryAdmin({ units, inventory, moves, setInventory, setMoves, user,
 
   async function saveItems(next) {
     const payload = { items: next };
-    await writeKey(INVENTORY_KEY, payload);
+    const ok = await writeKey(INVENTORY_KEY, payload);
+    if (!ok) {
+      window.alert("The stock list could not be saved — no signal to the server. Nothing has changed.");
+      return;
+    }
     setInventory(payload);
   }
 
@@ -13922,7 +13992,11 @@ function TrackingConsentAdmin({ consents, user, setConsents, addLog }) {
         ackedAt: Date.now(),
       },
     };
-    await writeKey(TRACKING_CONSENT_KEY, next);
+    const ok = await writeKey(TRACKING_CONSENT_KEY, next);
+    if (!ok) {
+      window.alert("That could not be saved — no signal to the server. Try again.");
+      return;
+    }
     setConsents(next);
     await addLog(
       `Location refusal from ${row.name || row.accountId} acknowledged by ${(user && user.name) || "Administration"}`,
@@ -13997,10 +14071,25 @@ function TrackingConsentAdmin({ consents, user, setConsents, addLog }) {
 // says "the vehicle". It rotates to its heading where the device reports one,
 // and it fades as the fix ages — a dot that looks equally confident three
 // minutes after its last update is a dot that lies.
+// Leaflet takes HTML strings, so everything interpolated into one has to be
+// escaped. Unit names are set by an administrator and call natures are typed at
+// the desk — neither is hostile, but "typed by a person and rendered as HTML"
+// is the whole shape of an injection, and a call nature is exactly the kind of
+// free text somebody eventually pastes something odd into.
+function escHtml(v) {
+  return String(v === null || v === undefined ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function FleetMap({ units, locations, requests, station }) {
   const holderRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef(new Map());
+  // Which set of trucks the view was last framed to.
+  const framedRef = useRef("");
   const [tilesFailed, setTilesFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -14062,7 +14151,7 @@ function FleetMap({ units, locations, requests, station }) {
       const html =
         `<div class="amb-marker${stale ? " amb-stale" : ""}">` +
         `<div class="amb-glyph"${fix.heading !== null && fix.heading !== undefined ? ` style="transform:rotate(${Math.round(fix.heading)}deg)"` : ""}>🚑</div>` +
-        `<div class="amb-label">${u.name}</div>` +
+        `<div class="amb-label">${escHtml(u.name)}</div>` +
         `</div>`;
       const icon = L.divIcon({
         html,
@@ -14071,12 +14160,12 @@ function FleetMap({ units, locations, requests, station }) {
         iconAnchor: [32, 23],
       });
       const popup =
-        `<strong>${u.name}</strong><br/>` +
-        `${statusMeta(u.status).label}<br/>` +
-        (req ? `${req.nature}<br/>` : "") +
+        `<strong>${escHtml(u.name)}</strong><br/>` +
+        `${escHtml(statusMeta(u.status).label)}<br/>` +
+        (req ? `${escHtml(req.nature)}<br/>` : "") +
         `Updated ${age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}` +
-        (fix.accuracy ? `<br/>Accurate to about ${fix.accuracy} m` : "") +
-        (fix.byName ? `<br/>From ${fix.byName}` : "");
+        (fix.accuracy ? `<br/>Accurate to about ${Math.round(fix.accuracy)} m` : "") +
+        (fix.byName ? `<br/>From ${escHtml(fix.byName)}` : "");
 
       if (marker) {
         marker.setLatLng([fix.lat, fix.lng]);
@@ -14088,14 +14177,23 @@ function FleetMap({ units, locations, requests, station }) {
       }
     });
 
-    // Frame whatever is out, once there is something to frame. Only when the
-    // set of trucks changes, so a dispatcher who has panned somewhere is not
-    // yanked back every minute.
-    if (live.length > 0 && markersRef.current.size !== live.length) {
+    // Frame whatever is out, but only when the SET of trucks changes.
+    //
+    // The old guard compared the marker count with the number of live fixes —
+    // which the loop immediately above had just made equal, every time. It
+    // could never be true, so the map never framed anything and sat on its
+    // hard-coded default view while the ambulances were somewhere off-screen.
+    // Comparing the ids catches a truck arriving or leaving and ignores the
+    // per-minute movement, so a dispatcher who has panned somewhere stays
+    // where they put themselves.
+    const key = Array.from(markersRef.current.keys()).sort().join("|");
+    if (live.length > 0 && key !== framedRef.current) {
+      framedRef.current = key;
       try {
         map.fitBounds(L.latLngBounds(live), { padding: [50, 50], maxZoom: 15 });
       } catch (e) {}
     }
+    if (live.length === 0) framedRef.current = "";
   }, [units, locations, requests, station, now, ready]);
 
   const tracked = (units || []).filter(
@@ -14168,7 +14266,7 @@ function FleetMap({ units, locations, requests, station }) {
 // minute. What is throttled is the WRITING — one save a minute — because the
 // board is sent whole on every write and a position every second would be a
 // board sent every second.
-function useTracking({ unit, request, user, consents, setLocations, active }) {
+function useTracking({ unit, request, user, consents, setLocations, active, responsible }) {
   const [state, setState] = useState("off"); // off | on | refused
   const [lastTs, setLastTs] = useState(null);
   const [error, setError] = useState("");
@@ -14191,10 +14289,18 @@ function useTracking({ unit, request, user, consents, setLocations, active }) {
 
     if (!active) {
       stop();
-      setState(allowed ? "off" : accountId ? "off" : "off");
-      // Back in service: take the truck off the map. Guarded so it happens once
-      // per call rather than on every render of an idle screen.
-      if (unit && clearedForRef.current !== unit.id) {
+      setState("off");
+      // Back in service: take the truck off the map.
+      //
+      // Only from the device that would have been sending. Bravo's tablet also
+      // has `active` false — it is not the Alpha seat — and without this guard
+      // it deleted the position Alpha was publishing, every poll, for the whole
+      // call. The truck simply never appeared on the map whenever both crew had
+      // the app open, which is most of the time.
+      //
+      // Guarded once per unit as well, so an idle screen is not writing to the
+      // board on every render.
+      if (responsible && unit && clearedForRef.current !== unit.id) {
         clearedForRef.current = unit.id;
         clearPosition(unit.id).then((next) => {
           if (next) setLocations(next);
@@ -14255,7 +14361,7 @@ function useTracking({ unit, request, user, consents, setLocations, active }) {
     );
 
     return stop;
-  }, [active, allowed, unit && unit.id, request && request.id, accountId]);
+  }, [active, responsible, allowed, unit && unit.id, request && request.id, accountId]);
 
   return { state, lastTs, error };
 }
@@ -14465,6 +14571,8 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
 
   async function send() {
     const text = draft.trim();
+    // Send stayed enabled before the desk had picked a truck, and swallowed
+    // whatever had been typed.
     if (!text || !active || sending) return;
     setSending(true);
     try {
@@ -14559,7 +14667,14 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
           value={draft}
           maxLength={MESSAGE_MAX}
           rows={2}
-          placeholder={isCrew ? "Message the desk…" : `Message ${active ? active.name : "the team"}…`}
+          disabled={!active}
+          placeholder={
+            isCrew
+              ? "Message the desk…"
+              : active
+              ? `Message ${active.name}…`
+              : "Pick a truck above first"
+          }
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             // Enter sends; shift-enter is a new line. A thumb on a tablet wants
@@ -14571,9 +14686,9 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
           }}
         />
         <button
-          style={draft.trim() ? styles.chatSend : styles.chatSendOff}
+          style={draft.trim() && active ? styles.chatSend : styles.chatSendOff}
           onClick={send}
-          disabled={!draft.trim() || sending}
+          disabled={!draft.trim() || !active || sending}
         >
           {sending ? "…" : "Send"}
         </button>
@@ -16359,6 +16474,9 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     consents: trackingConsents,
     setLocations,
     active: shouldTrack,
+    // Whose job it is to clean up when the call ends — the same seat that does
+    // the sending, and nobody else.
+    responsible: isAlpha,
   });
 
   // Asked when a call arrives, not at sign-on: consent for something is asked
@@ -16380,7 +16498,14 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       status,
       reason,
     });
-    if (next) setTrackingConsents(next);
+    if (!next) {
+      window.alert(
+        "That could not be saved — there is no signal to the server right now.\n\n" +
+          "Nothing is being shared in the meantime. Try again when the connection is back."
+      );
+      return;
+    }
+    setTrackingConsents(next);
     setConsentOpen(false);
     await addLog(
       status === "granted"
@@ -18777,7 +18902,14 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
 //
 // Drawn as an SVG arc rather than a bar: a target of ninety per cent is a
 // position on a dial, and a dial is read without arithmetic.
-function Gauge({ label, pct, caption, good = 90, unmeasured }) {
+// `lowerIsBetter` for a measure where a big number is the warning.
+//
+// Every other gauge here is a compliance figure: past the mark is good. Fleet
+// UHU is not — it is how much of the fleet's time is already spoken for, and a
+// service running at 85% has no capacity left for the call it has not had yet.
+// Painted by the same rule as the others it read bright green at 85% and red at
+// 20%, which is precisely backwards on the one dial that warns about workload.
+function Gauge({ label, pct, caption, good = 90, unmeasured, lowerIsBetter }) {
   const size = 132;
   const stroke = 11;
   const r = (size - stroke) / 2 - 2;
@@ -18799,7 +18931,19 @@ function Gauge({ label, pct, caption, good = 90, unmeasured }) {
 
   const has = pct !== null && pct !== undefined;
   const value = has ? Math.max(0, Math.min(100, pct)) : 0;
-  const color = !has ? "var(--hair-3)" : value >= good ? "var(--ok)" : value >= good - 20 ? "var(--hold)" : "var(--crit)";
+  const color = !has
+    ? "var(--hair-3)"
+    : lowerIsBetter
+    ? value <= good
+      ? "var(--ok)"
+      : value <= good + 20
+      ? "var(--hold)"
+      : "var(--crit)"
+    : value >= good
+    ? "var(--ok)"
+    : value >= good - 20
+    ? "var(--hold)"
+    : "var(--crit)";
 
   return (
     <div style={styles.gaugeCard}>
@@ -19216,6 +19360,7 @@ function IndicatorBand({ requests, units, log, checklistRuns, range, setRange })
         <Gauge
           label="Fleet UHU"
           pct={uhu}
+          lowerIsBetter
           // Not a pass mark. Utilisation is a workload reading, and high is not
           // good — a fleet above about half its hours on calls is a fleet with
           // no slack left, so the dial is set where "comfortable" ends.
