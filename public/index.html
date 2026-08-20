@@ -975,6 +975,16 @@ function isZahrawi(unit) {
   return /ZAHRAWI|^ZAH$/i.test((unit && unit.name) || "");
 }
 
+// Zahrawi stands a shorter tour than the rest of the fleet — nine and a half
+// hours against twelve. It is the denominator of every UHU figure its crews
+// appear in, so it has to be the department's number and not a rounded twelve.
+const ZAHRAWI_SHIFT_HOURS = 9.5;
+const ZAHRAWI_SHIFT_MS = ZAHRAWI_SHIFT_HOURS * 60 * 60 * 1000;
+
+function shiftMsForUnit(unit) {
+  return isZahrawi(unit) ? ZAHRAWI_SHIFT_MS : SHIFT_MS;
+}
+
 // The units that count towards coverage at a station.
 function coverageUnits(units, station) {
   return (units || []).filter((u) => stationOf(u) === station && !isZahrawi(u) && isStaffed(u));
@@ -1402,6 +1412,22 @@ async function archiveOpDay({ dayStart, requests, units, log, scheduled, closedB
   const after = (await readKey(ARCHIVE_KEY, [])) || [];
   const mine = after.find((a) => a && a.dayKey === key);
   return !!(mine && mine.claimId === boardId);
+}
+
+// Has this day actually finished?
+//
+// The clock is not the whole answer. A call raised at 05:40 that is still
+// running at 08:00 belongs to the day that has just ended — the crew are still
+// on it, the times are still being stamped, and archiving the day now would
+// keep a half-written call and call it the record. So a day is finished when
+// the clock has passed it *and* every call raised on it is closed.
+//
+// Crews are deliberately not part of this test. A crew signed on at 07:00 is
+// working the new day, not holding the old one open, and the administrator does
+// not have to sign out for the day to be kept — this runs on its own.
+function opDayComplete(requests, dayStart, now) {
+  if (now < opDayEnd(dayStart)) return false;
+  return requestsForOpDay(requests, dayStart).every((r) => r && r.status === "completed");
 }
 
 // Which days are finished but not yet kept. Normally none or one; more than one
@@ -3080,8 +3106,11 @@ function playAlertTone(ctx, priorityIn, force) {
 // mistaken for one: two soft sine notes a fifth apart, faded in over a tenth of
 // a second and left to ring out, at roughly a third of the loudness of a
 // routine call tone. Audible across a quiet room, ignorable mid-sentence.
-function softTone(ctx, freq, startOffset, dur, peak) {
-  const level = peak * soundGain();
+function softTone(ctx, freq, startOffset, dur, peak, force) {
+  // `force` means the same thing here as it does for a dispatch tone: this is
+  // not a preference. A message the desk has to answer is worth hearing over a
+  // volume chip somebody nudged down three hours ago.
+  const level = Math.min(0.7, peak * (force ? 1 : soundGain()));
   if (level <= 0.0002) return;
   const gain = ctx.createGain();
   gain.connect(ctx.destination);
@@ -3158,11 +3187,14 @@ function soundStandDown(audioCtxRef) {
   speakStandDown();
 }
 
-function playSoftReminderTone(ctx) {
+function playSoftReminderTone(ctx, force) {
   try {
     if (!ctx) return;
-    softTone(ctx, 587.33, 0, 0.75, 0.05); // D5
-    softTone(ctx, 880.0, 0.28, 0.95, 0.045); // A5
+    // Two notes, not an alarm — but audible in a room with a radio in it. The
+    // old peaks were set for a quiet office and were inaudible on a desk
+    // tablet at arm's length.
+    softTone(ctx, 587.33, 0, 0.75, force ? 0.3 : 0.05, force); // D5
+    softTone(ctx, 880.0, 0.28, 0.95, force ? 0.28 : 0.045, force); // A5
   } catch (e) {
     // audio not available; ignore
   }
@@ -3243,9 +3275,9 @@ function soundCallAlert(audioCtxRef, priority, unmissable) {
   playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
 }
 
-function soundReminderTone(audioCtxRef) {
-  if (soundSilenced()) return;
-  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playSoftReminderTone(ctx));
+function soundReminderTone(audioCtxRef, force) {
+  if (!force && soundSilenced()) return;
+  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playSoftReminderTone(ctx, force));
 }
 
 // ---------- reaching the crew when the page isn't in front of them ----------
@@ -3689,6 +3721,90 @@ function overtimeApprovedMs(claim) {
   return null;
 }
 
+// Counting somebody's whole tour as overtime — called in on a rest day, or held
+// over for a full shift rather than the hour or two the board works out on its
+// own. It is not derived from anything, so it is a decision recorded in its own
+// right, and it is written the same way from wherever it is pressed.
+//
+// It covers the rostered shift and nothing beyond it. If they then work past
+// the end of that shift, the board raises the usual overtime claim for the
+// excess when they sign off, and administration has to approve that separately.
+// A grant is not a blank cheque on the rest of the day.
+async function grantWholeShiftOvertime({ unit, slot, member, user, decisions, setDecisions, addLog }) {
+  const start = member && member.shiftStart;
+  const end = member && member.shiftEnd;
+  if (!start || !end) {
+    window.alert(
+      `${(member && member.name) || "That person"} has no shift window recorded, so a whole shift ` +
+        `cannot be worked out. They need to sign on again for it to be counted.`
+    );
+    return false;
+  }
+  const whole = Math.max(0, end - start);
+  const now = Date.now();
+  // How far past the rostered end they already are. Named in the confirmation,
+  // because it is the part this grant does *not* cover.
+  const beyond = Math.max(0, now - end);
+
+  const ok = window.confirm(
+    `Count ${member.name}'s whole shift as overtime?\n\n` +
+      `${shiftLabelWithWindow(member.shift)} — ${otHoursStr(whole)}\n\n` +
+      (beyond > 0
+        ? `They are already ${otHoursStr(beyond)} past the end of that shift. This grant covers ` +
+          `the ${otHoursStr(whole)} of the shift itself. Anything past it is a separate claim ` +
+          `that you will be asked to approve again when they sign off.\n\n`
+        : `If the shift runs past its twelve hours, the extra is a separate claim you will be ` +
+          `asked to approve again.\n\n`) +
+      `Recorded as done by you.`
+  );
+  if (!ok) return false;
+
+  const id = `GRANT::${overtimeClaimId({
+    accountId: member.accountId,
+    name: member.name,
+    shiftStart: start,
+    unitId: unit.id,
+    seat: slot,
+  })}`;
+
+  const next = {
+    ...(decisions || {}),
+    [id]: {
+      ...(decisions || {})[id],
+      status: "approved",
+      approvedMs: whole,
+      decidedBy: (user && user.name) || "Administration",
+      decidedAt: now,
+      note: "Whole shift granted as overtime",
+      name: member.name,
+      accountId: member.accountId || "",
+      unitId: unit.id,
+      unitName: unit.name,
+      seat: slot,
+      station: stationOf(unit),
+      shift: member.shift,
+      shiftStart: start,
+      shiftEnd: end,
+      claimedMs: whole,
+      granted: true,
+    },
+  };
+
+  const saved = await writeKey(OVERTIME_KEY, next);
+  if (!saved) {
+    window.alert("That could not be saved — no signal to the server. Nothing has changed; try again.");
+    return false;
+  }
+  setDecisions(next);
+  await addLog(
+    `Whole shift granted as overtime — ${member.name} (${unit.name} · ${seatLabel(slot)}), ` +
+      `${shiftLabelWithWindow(member.shift)}, ${otHoursStr(whole)}` +
+      (beyond > 0 ? ` · ${otHoursStr(beyond)} already past the shift end, to be claimed separately` : ""),
+    "status"
+  );
+  return true;
+}
+
 function overtimeStatusLabel(claim) {
   const d = claim && claim.decision;
   if (!d) return "AWAITING APPROVAL";
@@ -4039,6 +4155,17 @@ function msDurationStr(ms) {
   return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
+// Overtime is claimed, approved and paid in hours, so it is written in hours
+// everywhere it appears. HH:MM:SS is the right shape for a call — a response
+// time of four and a half minutes is a real thing somebody reads — but nobody
+// has ever been paid 02:45:00, and a payroll clerk reading it had to do the
+// division themselves. Two decimals, because a quarter of an hour is the
+// smallest unit anybody argues about.
+function otHoursStr(ms) {
+  const h = Math.max(0, ms || 0) / 3600000;
+  return `${(Math.round(h * 100) / 100).toFixed(2)} h`;
+}
+
 function durationStr(startTs, endTs) {
   if (!startTs || !endTs) return "";
   return msDurationStr(endTs - startTs);
@@ -4307,7 +4434,25 @@ function medicCrewStamps(unit, log, now) {
     idByName.get((p.name || "").trim().toLowerCase()) ||
     (p.name || "?").trim().toLowerCase();
 
-  const keyOf = (p) => [identityOf(p), p.seat || "", p.shift || ""].join("|");
+  // A tour is a shift *on a date*, not the word "day".
+  //
+  // The key used to end in `p.shift`, which is only ever "day" or "night" — so
+  // the same person, in the same seat, on the same kind of shift, two weeks
+  // apart, was one stay. The merge then took the earliest sign-on and the
+  // latest sign-off, producing a single stay that appeared to run for a
+  // fortnight and therefore overlapped every call in between. That is a
+  // date leak: it put people on shifts they had not worked, and it is exactly
+  // what "no leaks from a certain day into the wrong date" is asking about.
+  //
+  // The window a stay was booked against is the tour. Where a line has no
+  // window — an older board — the operational day it happened on stands in,
+  // which still separates one Tuesday from the next.
+  const tourOf = (p) =>
+    p.shiftStart
+      ? `w${p.shiftStart}`
+      : `d${opDayStart(p.tourAt || p.signedOnAt || p.signedOffAt || at)}|${p.shift || ""}`;
+
+  const keyOf = (p) => [identityOf(p), p.seat || "", tourOf(p)].join("|");
 
   const earlier = (a, b) => (a && b ? Math.min(a, b) : a || b || null);
   const later = (a, b) => (a && b ? Math.max(a, b) : a || b || null);
@@ -4336,10 +4481,14 @@ function medicCrewStamps(unit, log, now) {
       // first, since either line may be the one that carried it.
       overtimeMs: Math.max(prev.overtimeMs || 0, p.overtimeMs || 0),
       onDutyNow: prev.onDutyNow || p.onDutyNow,
+      tourAt: earlier(prev.tourAt, p.tourAt),
     });
   };
 
-  const blank = (d) => ({
+  const blank = (d, ts) => ({
+    // When this line was written, so a stay with no shift window recorded can
+    // still be placed on the right day.
+    tourAt: ts || null,
     name: d.name || "",
     accountId: d.accountId || "",
     // Where this stamp was made. Carried on the stamp itself so the sheet can
@@ -4400,7 +4549,7 @@ function medicCrewStamps(unit, log, now) {
     .forEach((e) => {
       const d = e.detail;
       if (d.kind === "off") {
-        record({ ...blank(d), signedOffAt: e.ts || null });
+        record({ ...blank(d, e.ts), signedOffAt: e.ts || null });
         return;
       }
       // A swap that names the shift it came from is one person re-basing their
@@ -4409,18 +4558,18 @@ function medicCrewStamps(unit, log, now) {
       // left, so it stays with that stay rather than opening the new one an hour
       // already in hand.
       if (d.kind === "swap" && d.fromShift && d.fromShift !== d.shift) {
-        record({ ...blank(d), shift: d.fromShift, shiftStart: null, shiftEnd: null, signedOffAt: e.ts || null });
-        record({ ...blank(d), overtimeMs: 0, signedOnAt: e.ts || null });
+        record({ ...blank(d, e.ts), shift: d.fromShift, shiftStart: null, shiftEnd: null, signedOffAt: e.ts || null });
+        record({ ...blank(d, e.ts), overtimeMs: 0, signedOnAt: e.ts || null });
         return;
       }
-      record({ ...blank(d), signedOnAt: e.ts || null });
+      record({ ...blank(d, e.ts), signedOnAt: e.ts || null });
     });
 
   ["alpha", "bravo"].forEach((slot) => {
     const seated = unit[slot];
     if (seated) {
       record({
-        ...blank({ ...seated, seat: slot }),
+        ...blank({ ...seated, seat: slot }, seated.signedOnAt || at),
         signedOnAt: seated.signedOnAt || null,
         overtimeMs: overtimeMs(seated, at),
         onDutyNow: true,
@@ -4429,7 +4578,7 @@ function medicCrewStamps(unit, log, now) {
     const last = unit.lastCrew ? unit.lastCrew[slot] : null;
     if (last) {
       record({
-        ...blank({ ...last, seat: slot }),
+        ...blank({ ...last, seat: slot }, last.signedOnAt || last.signedOffAt || null),
         signedOnAt: last.signedOnAt || null,
         signedOffAt: last.signedOffAt || null,
       });
@@ -4619,22 +4768,130 @@ function computePersonUhu(unit, person, requests, now, from, to) {
   const end = stay.end || shiftTo;
   const win = { start, end: Math.max(start, end) };
 
-  const shiftMs =
-    person.shiftStart && person.shiftEnd ? person.shiftEnd - person.shiftStart : SHIFT_MS;
+  // The tour this person is measured against, which is the roster's twelve
+  // hours — or Zahrawi's nine and a half. It used to be `shiftEnd - shiftStart`
+  // off the stamp, which is the same twelve hours for everybody and had no way
+  // of knowing Zahrawi is shorter, so Zahrawi's crews were being divided by a
+  // shift two and a half hours longer than the one they actually stood.
+  const shiftMs = shiftMsForUnit(unit);
 
   const inShift = (requests || []).filter((r) => r && r.createdAt >= shiftFrom);
   let totalMs = 0;
-  let calls = 0;
+  // Which calls, not just how many. A person who moved trucks mid-shift is one
+  // person with one list, and the aggregate needs the ids to say so.
+  const callIds = [];
   inShift.forEach((r) => {
     const iv = unitCallInterval(r, unit.id, now);
     if (!iv) return;
     const ms = overlapMs(iv, win);
     if (ms <= 0) return;
     totalMs += ms;
-    calls += 1;
+    callIds.push(r.id);
   });
 
-  return { calls, totalMs, shiftMs, pct: shiftMs > 0 ? Math.min(100, (totalMs / shiftMs) * 100) : 0 };
+  return {
+    calls: callIds.length,
+    callIds,
+    totalMs,
+    shiftMs,
+    pct: shiftMs > 0 ? Math.min(100, (totalMs / shiftMs) * 100) : 0,
+  };
+}
+
+// ---------- UHU as a person, not as a seat ----------
+//
+// The sheet used to print one row per stay: a name, the truck it sat in and the
+// seat it sat in. Somebody who moved from MEDIC 2 to MEDIC 5 halfway through
+// appeared twice, each with a fraction of a shift's worth of calls and a
+// percentage that was true of neither half — and a supervisor adding the two
+// together got a number that meant nothing.
+//
+// A shift is a person's, so the row is a person's: name and employee ID, their
+// calls across whatever they sat in, and their time on call over their own
+// tour. The trucks are still carried for the detailed spreadsheet; the printed
+// report drops them, because on the report they were only ever noise.
+function personUhuRows(units, crewIndex, requests, now, from, to) {
+  const byPerson = new Map();
+  const order = [];
+
+  (units || [])
+    .slice()
+    .sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
+    )
+    .forEach((unit) => {
+      // Belt and braces: a stamp recorded at one station can never be counted
+      // into another station's sheet, whatever happened upstream.
+      const stamps = (crewIndex.get(unit.id) || []).filter(
+        (p) => p && (!p.station || p.station === stationOf(unit))
+      );
+
+      stamps.forEach((p) => {
+        const name = String(p.name || "").trim();
+        if (!name) return;
+        // Second guard, on the date this time. A truck carries its current crew
+        // and its `lastCrew` regardless of when they sat there, so without this
+        // a shift report lists people who were not on it — with nought calls
+        // and nought per cent, which reads as a crew who did nothing rather
+        // than as a crew who were not there. A stay counts only if it actually
+        // overlaps the window being reported.
+        if (typeof from === "number" && typeof to === "number") {
+          const w = stayWindow(p, now);
+          if (!w.start || w.start >= to || w.end <= from) return;
+        }
+        // Employee ID first — two people can share a name, and one person can
+        // be stamped with and without an ID across a changeover.
+        const key = p.accountId ? `id:${p.accountId}` : `name:${name.toUpperCase()}`;
+        let agg = byPerson.get(key);
+        if (!agg) {
+          agg = {
+            key,
+            name,
+            id: p.accountId || "",
+            teams: [],
+            on: null,
+            off: null,
+            stillOn: false,
+            otMs: 0,
+            totalMs: 0,
+            seen: new Set(),
+            onlyZahrawi: true,
+          };
+          byPerson.set(key, agg);
+          order.push(agg);
+        }
+        const row = computePersonUhu(unit, p, requests, now, from, to);
+        agg.totalMs += row.totalMs;
+        row.callIds.forEach((id) => agg.seen.add(id));
+        if (unit.name && !agg.teams.includes(unit.name)) agg.teams.push(unit.name);
+        if (!isZahrawi(unit)) agg.onlyZahrawi = false;
+        if (p.signedOnAt) agg.on = agg.on === null ? p.signedOnAt : Math.min(agg.on, p.signedOnAt);
+        if (p.signedOffAt) agg.off = agg.off === null ? p.signedOffAt : Math.max(agg.off, p.signedOffAt);
+        else agg.stillOn = true;
+        agg.otMs += p.overtimeMs || 0;
+      });
+    });
+
+  return order.map((a) => {
+    // One shift, however many trucks it was spent across. Zahrawi's nine and a
+    // half only applies to somebody who spent the whole shift on Zahrawi.
+    const shiftMs = a.onlyZahrawi ? ZAHRAWI_SHIFT_MS : SHIFT_MS;
+    const pct = shiftMs > 0 ? Math.min(100, (a.totalMs / shiftMs) * 100) : 0;
+    return {
+      name: a.name,
+      id: a.id,
+      teams: a.teams.join(", "),
+      on: a.on ? clockStr(a.on) : "",
+      off: a.stillOn ? "Still on" : a.off ? clockStr(a.off) : "",
+      ot: a.otMs ? otHoursStr(a.otMs) : "",
+      otMs: a.otMs,
+      calls: a.seen.size,
+      totalMs: a.totalMs,
+      shiftMs,
+      uhu: pct.toFixed(1),
+      pct,
+    };
+  });
 }
 
 // Builds a sheet matching the column layout of the hospital's own
@@ -5256,11 +5513,11 @@ function buildShiftHandoverRows(log) {
         "Shift Date": shiftDateOf(d.shiftStart),
         "Shift Start": d.shiftStart ? gregDateTimeStr(d.shiftStart) : "",
         "Shift End": d.shiftEnd ? gregDateTimeStr(d.shiftEnd) : "",
-        Overtime: d.overtimeMs ? msDurationStr(d.overtimeMs) : "",
+        Overtime: d.overtimeMs ? otHoursStr(d.overtimeMs) : "",
         "Swapped From": from ? shiftLabelWithWindow(from.key) : "",
         Relieved: d.relievedName || "",
         "Relieved Shift": relieved ? shiftLabelWithWindow(relieved.key) : "",
-        "Relieved Overtime": d.relievedOvertimeMs ? msDurationStr(d.relievedOvertimeMs) : "",
+        "Relieved Overtime": d.relievedOvertimeMs ? otHoursStr(d.relievedOvertimeMs) : "",
         Details: e.message || "",
       };
     });
@@ -5519,70 +5776,33 @@ async function exportAndShareLog(log, requests, units, scheduled, station, cover
     ? [{ key: station, label: stationLabel(station) }]
     : STATIONS.map((st) => ({ key: st.key, label: st.label }));
 
-  const seatOrder = { alpha: 0, bravo: 1 };
-
   uhuGroups.forEach((g) => {
-    const stationUnitsForUhu = atStation(units, g.key).slice().sort((a, b) =>
-      (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
-    );
+    const stationUnitsForUhu = atStation(units, g.key);
+    // One row per person, not per seat. Somebody who moved trucks mid-shift is
+    // one line with one percentage, and the trucks they sat in are named in
+    // their own column rather than splitting them into two half-shifts.
+    const rows = personUhuRows(
+      stationUnitsForUhu,
+      crewIndex,
+      requests,
+      exportedAt,
+      uhuFrom,
+      exportedAt
+    ).map((r) => ({
+      Name: r.name,
+      "Employee ID": r.id,
+      "Team(s)": r.teams,
+      "Signed On": r.on,
+      "Signed Off": r.off || "Still signed on",
+      Overtime: r.ot,
+      Calls: r.calls,
+      "UHU %": Number(r.uhu),
+    }));
 
-    const rows = [];
-    stationUnitsForUhu.forEach((unit) => {
-      const stamps = (crewIndex.get(unit.id) || [])
-        .slice()
-        .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
-
-      if (stamps.length === 0) {
-        rows.push({
-          Medic: unit.name,
-          Seat: "",
-          Name: "No crew signed in",
-          "Employee ID": "",
-          "Signed On": "",
-          "Signed Off": "",
-          Overtime: "",
-          Calls: 0,
-          "UHU %": 0,
-        });
-        return;
-      }
-
-      stamps.forEach((p) => {
-        // This person's own time on a call against this person's own hours —
-        // not the truck's total handed to whoever sat in it. The printed report
-        // works it out the same way, so the two files cannot disagree about the
-        // same cell.
-        const row = computePersonUhu(unit, p, requests, exportedAt, uhuFrom, exportedAt);
-        rows.push({
-          Medic: unit.name,
-          Seat: p.seat ? seatLabel(p.seat) : "",
-          Name: p.name,
-          "Employee ID": p.accountId || "",
-          "Signed On": p.signedOnAt ? clockStr(p.signedOnAt) : "",
-          "Signed Off": p.signedOffAt ? clockStr(p.signedOffAt) : "Still signed on",
-          Overtime: p.overtimeMs ? msDurationStr(p.overtimeMs) : "",
-          Calls: row.calls,
-          "UHU %": Number(row.pct.toFixed(1)),
-        });
-      });
-    });
-
-    // The date and shift, once, at the top — not repeated on every row.
-    //
-    // This line used to be worked out by scanning the station's crew stamps and
-    // taking the shift off whichever one happened to come back first. Crew
-    // stamps include the seat's previous occupants, so the first one found was
-    // routinely a stay from days earlier — and since each station's units are
-    // scanned separately, the two stations picked different stale stays and
-    // dated their sheets differently. One export came out with the dispatch log
-    // on the right day, Main Office's UHU on the 15th and CCC's on the 12th.
-    //
-    // The sheet does not have to work out what it covers. The caller knows,
-    // because the caller chose the window, so the caller says.
-    const headers = ["Medic", "Seat", "Name", "Employee ID", "Signed On", "Signed Off", "Overtime", "Calls", "UHU %"];
+    const headers = ["Name", "Employee ID", "Team(s)", "Signed On", "Signed Off", "Overtime", "Calls", "UHU %"];
     const aoa = [
       [`UHU — ${g.label}`],
-      [periodLabel ? `${periodLabel} · time on call by seat` : "Time on call by seat"],
+      [periodLabel ? `${periodLabel} · time on call, per employee` : "Time on call, per employee"],
       [],
       headers,
       ...rows.map((r) => headers.map((h) => r[h])),
@@ -5772,7 +5992,9 @@ async function exportArchivedDay(archive, liveRequests) {
     // has changed since the day was closed.
     aoa.splice(1, 0, [
       `OPERATIONAL DAY: ${opDayLabel(archive.dayStart)} 07:00 → ${opDayLabel(archive.dayEnd)} 07:00` +
-        ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}` +
+        (archive.reason === "live"
+          ? ` · LIVE BOARD, taken ${gregDateTimeStr(archive.closedAt)} — this day is still running`
+          : ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}`) +
         (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : ""),
     ]);
     const sheet = dressLogSheet(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4), aoa);
@@ -5794,20 +6016,28 @@ async function exportArchivedDay(archive, liveRequests) {
         "Logged By": e.actor && e.actor.name ? e.actor.name : "",
         Post: actorPost(e.actor),
       }));
-  const eventRows = eventRowsFor(station);
-  XLSX.utils.book_append_sheet(
-    wb,
-    autoFitSheet(
-      eventRows.length
-        ? XLSX.utils.json_to_sheet(eventRows)
-        : XLSX.utils.aoa_to_sheet([["No events recorded for this day."]]),
-      0
-    ),
-    "Event Log"
-  );
+  // One per station, matching the dispatch log above. This read a bare
+  // `station` that is not in scope here, so exporting a kept day threw a
+  // ReferenceError and produced no file at all.
+  STATIONS.forEach((st) => {
+    const eventRows = eventRowsFor(st.key);
+    XLSX.utils.book_append_sheet(
+      wb,
+      autoFitSheet(
+        eventRows.length
+          ? XLSX.utils.json_to_sheet(eventRows)
+          : XLSX.utils.aoa_to_sheet([["No events recorded for this day."]]),
+        0
+      ),
+      `EVENTS — ${stationShort(st.key)}`
+    );
+  });
 
   const buffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const filename = `medcom-dispatch-log-${archive.dayKey}.xlsx`;
+  const filename =
+    archive.reason === "live"
+      ? `medcom-live-board-${archive.dayKey}.xlsx`
+      : `medcom-dispatch-log-${archive.dayKey}.xlsx`;
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const file = new File([blob], filename, { type: blob.type });
 
@@ -5867,6 +6097,56 @@ async function exportSubmission(sub, liveRequests, liveCoverage) {
 // their screen has actually reached the desk. A screen that looks identical
 // online and offline is how times get lost without anyone knowing, so this says
 // it plainly and stays there until the last held record has gone up.
+// ---------- is this board actually being kept? ----------
+//
+// The code has done its part for a while now: server.js puts the database on a
+// persistent disk when it can find one, and render.yaml declares that disk. But
+// Render only reads render.yaml for services created *from* a blueprint. A
+// service someone set up by hand in the dashboard ignores the file entirely, so
+// the database lands back inside the app folder — which is rebuilt on every
+// deploy, taking the whole board with it.
+//
+// That is a server setting, not something the app can change from in here. What
+// the app can do is stop the loss being a surprise. /api/health already knows
+// the answer; this asks it once and says so, at the top of the screen, until
+// somebody fixes it.
+function StorageBanner({ role }) {
+  const [state, setState] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/health`);
+        if (!res.ok) return;
+        const body = await res.json();
+        if (alive && body && body.database) setState(body.database);
+      } catch (e) {
+        // Unreachable is the connection banner's job, not this one's.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Only the people who can do something about it, and only when the answer is
+  // bad. A crew mid-call does not need this.
+  if (!state || state.survivesRedeploy) return null;
+  if (role !== "admin" && role !== "dispatcher") return null;
+
+  return (
+    <div style={styles.storageBanner}>
+      <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+      <strong>This server is not keeping the board.</strong> The database is on{" "}
+      {state.chosenFrom || "temporary storage"} ({state.path}), which is rebuilt
+      on every deploy — the statistics, the filed logs and the archive will be
+      erased the next time the app is updated. Attach a persistent disk in the
+      hosting dashboard and point DB_PATH at a file on it.
+    </div>
+  );
+}
+
 function ConnectionBanner() {
   const [, force] = useState(0);
 
@@ -5978,6 +6258,15 @@ function App() {
   const [overtimeDecisions, setOvertimeDecisions] = useState({});
   const [locations, setLocations] = useState({});
   const [trackingConsents, setTrackingConsents] = useState({});
+  // The policy shelf, and whether an upload is in flight.
+  //
+  // These four were referenced by the Policies tab but never declared, so
+  // opening that tab threw a ReferenceError before the first element was
+  // built. React unmounts the whole tree on a render error, which is why the
+  // screen went black and nothing on it responded — the app was gone, not
+  // frozen.
+  const [policies, setPolicies] = useState([]);
+  const [policyBusy, setPolicyBusy] = useState(false);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [clock, setClock] = useState(nowTime());
@@ -6315,6 +6604,8 @@ function App() {
     }
     const cons = await readKeyRaw(TRACKING_CONSENT_KEY);
     if (cons !== READ_FAILED) setTrackingConsents(cons || {});
+    const pols = await readKeyRaw(POLICY_KEY);
+    if (pols !== READ_FAILED) setPolicies(pols || []);
     setLog(l || []);
     setAccounts(accountsToUse);
     setReady(true);
@@ -6499,6 +6790,77 @@ function App() {
     };
   }, [ready, user && user.role]);
 
+  // Keeping the whole day.
+  //
+  // Two logs a day were already being filed — a day shift and a night shift,
+  // per station. The third, the one this fills, is the operational day itself:
+  // both shifts, both stations, one workbook. All of the machinery for it
+  // existed and nothing ever called it, so the archive an administrator opens
+  // was always empty.
+  //
+  // It runs from the clock and the board, on any admin or dispatcher screen
+  // that happens to be open. Nobody has to sign out and nobody has to press
+  // anything: when the last call of a finished day is closed, the day is kept.
+  const archiveRef = useRef(false);
+
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
+    let alive = true;
+
+    const run = async () => {
+      if (archiveRef.current) return;
+      archiveRef.current = true;
+      try {
+        const now = Date.now();
+        const freshRequests = await readKey("ems:requests", requests);
+        const have = (await readKey(ARCHIVE_KEY, [])) || [];
+        const days = unarchivedOpDays(freshRequests, have, now);
+        if (!days.length) return;
+
+        const freshUnits = await readKey("ems:units", units);
+        const freshLog = await readKey("ems:log", log);
+        const freshScheduled = await readKey("ems:scheduled", scheduled);
+
+        for (const dayStart of days) {
+          // A night call that ran past 07:00 holds its own day open until the
+          // crew close it. That is the point: the archive gets the finished
+          // call, not a snapshot of one halfway through.
+          if (!opDayComplete(freshRequests, dayStart, now)) continue;
+
+          const won = await archiveOpDay({
+            dayStart,
+            requests: freshRequests,
+            units: freshUnits,
+            log: freshLog,
+            scheduled: freshScheduled,
+            closedBy: "",
+            reason: "clock",
+            boardId: clientIdRef.current,
+          });
+          if (!won) continue;
+          if (alive) setArchives((await readKey(ARCHIVE_KEY, [])) || []);
+          await addLog(
+            `Operational day ${opDayLabel(dayStart)} (07:00 → 07:00) kept to the archive automatically · ` +
+              `${requestsForOpDay(freshRequests, dayStart).length} calls, both stations`,
+            "status"
+          );
+        }
+      } catch (e) {
+        console.error("day archive pass failed:", e);
+      } finally {
+        archiveRef.current = false;
+      }
+    };
+
+    run();
+    const t = setInterval(run, 60000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [ready, user && user.role]);
+
   // Finishing off submissions that were filed with a call still running: once
   // the last call is closed and the station's crews are off, the submission
   // completes itself with the final times and the overtime counted.
@@ -6605,6 +6967,44 @@ function App() {
     const prevLog = log;
     setLog(next);
     await writeList("ems:log", next, prevLog);
+  }
+
+  // Administration names the policy, then attaches the file that already
+  // exists — a signed PDF, or a photograph of the sheet on the wall. The name
+  // is what everybody navigates by, so it is typed rather than inherited from
+  // whatever the scanner called the file.
+  async function addPolicy(title, file) {
+    const name = String(title || "").trim();
+    if (!name) {
+      alert("Give the policy a name first.");
+      return;
+    }
+    setPolicyBusy(true);
+    try {
+      const doc = await readPolicyFile(file);
+      doc.title = name.slice(0, 120);
+      const stamp = actorStamp(userRef.current);
+      doc.addedBy = (stamp && stamp.name) || "";
+      const existing = (await readKey(POLICY_KEY, [])) || [];
+      const next = [...existing, doc];
+      setPolicies(next);
+      await writeList(POLICY_KEY, next, existing);
+      await addLog(`Policy added: ${doc.title}`, "admin");
+    } catch (e) {
+      alert(e && e.message ? e.message : "That file could not be added.");
+    } finally {
+      setPolicyBusy(false);
+    }
+  }
+
+  async function removePolicy(pol) {
+    if (!pol) return;
+    if (!confirm(`Remove "${pol.title}" from the policy shelf?`)) return;
+    const existing = (await readKey(POLICY_KEY, [])) || [];
+    const next = existing.filter((p) => p && p.id !== pol.id);
+    setPolicies(next);
+    await writeList(POLICY_KEY, next, existing);
+    await addLog(`Policy removed: ${pol.title}`, "admin");
   }
 
   // Every board save goes through writeList, which keeps whatever didn't reach
@@ -6976,7 +7376,7 @@ function App() {
           const pot = overtimeMs(partner, now);
           await addLog(
             `${unit.name} — ${partner.name} (${seatLabel(otherSlot)}) signed off with the shared device` +
-              ` ${shiftPhrase(partner)}` + (pot > 0 ? ` · ${msDurationStr(pot)} overtime` : ""),
+              ` ${shiftPhrase(partner)}` + (pot > 0 ? ` · ${otHoursStr(pot)} overtime` : ""),
             "shift",
             {
               kind: "off",
@@ -7020,7 +7420,7 @@ function App() {
 
         await addLog(
           `${unit.name} — ${user.name} (${seatLabel(user.slot)}) signed off ${shiftPhrase(user)}` +
-            (ot > 0 ? ` · ${msDurationStr(ot)} overtime` : ""),
+            (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
           "shift",
           {
             kind: "off",
@@ -7040,7 +7440,7 @@ function App() {
       const ot = overtimeMs(user, now);
       await addLog(
         `Dispatch — ${user.name} signed off ${shiftPhrase(user)}` +
-          (ot > 0 ? ` · ${msDurationStr(ot)} overtime` : ""),
+          (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
         "shift",
         {
           kind: "off",
@@ -7097,14 +7497,14 @@ function App() {
       await addLog(
         `${detail.unitName ? `${detail.unitName} — ` : ""}${user.name} (${seatLabel(user.slot)}) swapped ` +
           `${from ? from.label : "shift"} → ${shiftPhrase(next)}` +
-          (carried > 0 ? ` · ${msDurationStr(carried)} overtime carried over` : ""),
+          (carried > 0 ? ` · ${otHoursStr(carried)} overtime carried over` : ""),
         "shift",
         detail
       );
     } else {
       await addLog(
         `Dispatch — ${user.name} swapped ${from ? from.label : "shift"} → ${shiftPhrase(next)}` +
-          (carried > 0 ? ` · ${msDurationStr(carried)} overtime carried over` : ""),
+          (carried > 0 ? ` · ${otHoursStr(carried)} overtime carried over` : ""),
         "shift",
         detail
       );
@@ -7256,15 +7656,9 @@ function App() {
           // out, and the call it became.
           { key: "history", glyph: "🗓", label: "Schedule" },
           { key: "teams", glyph: "👥", label: "Teams" },
-          // Talking to the trucks, and the shelf the answers live on. Two
-          // utilities rather than two places, but they belong in the bar for
-          // the same reason the board does: they are reached from anywhere.
-          {
-            key: "messages",
-            glyph: "💬",
-            label: "Messages",
-            badge: unreadForRole(messages, units, user.station, "dispatch", null),
-          },
+          // The shelf the answers live on. Messages are not here on purpose:
+          // they are a pill above the bar, so reading one never costs the
+          // dispatcher the board they were reading it about.
           { key: "policies", glyph: "📖", label: "Policies" },
           // Filing the shift's log.
           { key: "log", glyph: "📤", label: "Submit" },
@@ -7288,19 +7682,13 @@ function App() {
             { key: "board", glyph: "🚨", label: "My call" },
             { key: "history", glyph: "🕘", label: "History" },
             { key: "teams", glyph: "🚑", label: "My truck" },
-            {
-              key: "messages",
-              glyph: "💬",
-              label: "Messages",
-              badge: unreadForRole(messages, units, null, "crew", user.unitId),
-            },
             { key: "policies", glyph: "📖", label: "Policies" },
           ];
 
   // The two shared pages replace whatever the role would otherwise show, rather
   // than appearing above it — a messages page with the whole board underneath
   // it is not a page.
-  const onSharedPage = navTab === "messages" || navTab === "policies";
+  const onSharedPage = navTab === "policies";
 
   return (
     <div style={styles.app}>
@@ -7317,20 +7705,10 @@ function App() {
           should have to scroll to find out whether the board is reaching the
           server. */}
       <ConnectionBanner />
+      <StorageBanner role={user.role} />
       {/* The bar floats over the board, so the last section needs room to clear
           it — otherwise the final call on a long day sits underneath it. */}
       <div style={{ ...styles.body, paddingBottom: 128 }}>
-        {navTab === "messages" && (
-          <ChatDock
-            user={user}
-            units={units}
-            messages={messages}
-            station={user.station}
-            myUnitId={user.role === "team" ? user.unitId : null}
-            onSent={setMessages}
-          />
-        )}
-
         {navTab === "policies" && (
           <PolicyLibrary
             policies={policies}
@@ -7389,6 +7767,7 @@ function App() {
           {!onSharedPage && user.role === "admin" && (
             <AdminView
               page={navTab}
+              archives={archives}
               user={user}
               units={units}
               requests={requests}
@@ -7872,7 +8251,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
     const confirmed = window.confirm(
       `Take over ${seatLabel(seat)} on ${seatUnit ? seatUnit.name : "this team"}?\n\n` +
         `${holder.name} is still signed on${holderMeta ? ` for the ${holderMeta.label.toLowerCase()}` : ""}` +
-        `${ot > 0 ? ` and is ${msDurationStr(ot)} into overtime` : ""}.\n\n` +
+        `${ot > 0 ? ` and is ${otHoursStr(ot)} into overtime` : ""}.\n\n` +
         `They will be stood down and the shift swap recorded on the log sheet.`
     );
     if (!confirmed) return;
@@ -8051,7 +8430,7 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
     const relievedNote = relieved
       ? ` — ${displaced ? "taking over from" : "relieving"} ${relieved.name}` +
         (relievedMeta
-          ? ` (${relievedMeta.label}${relieved.overtimeMs ? `, ${msDurationStr(relieved.overtimeMs)} overtime` : ""})`
+          ? ` (${relievedMeta.label}${relieved.overtimeMs ? `, ${otHoursStr(relieved.overtimeMs)} overtime` : ""})`
           : "")
       : "";
     const session = {
@@ -8770,7 +9149,7 @@ function ShiftChip({ user, onChangeShift }) {
         <span style={{ fontWeight: 700 }}>{meta.short}</span>
         <span style={styles.shiftChipTime}>
           {ot > 0
-            ? `OT ${msDurationStr(ot)}`
+            ? `OT ${otHoursStr(ot)}`
             : starts
             ? `starts ${hhmm(user.shiftStart)}`
             : `${msDurationStr(left)} left`}
@@ -9691,9 +10070,17 @@ function fleetToneFor(req) {
   return "ok";
 }
 
+// A truck on a call, in the same shape as the roster card on the Teams page: a
+// colour bar the full width of the card, the name, the state in a word, and
+// then what it is actually doing.
+//
+// It used to be a full-width row, which made a board of three calls read as a
+// list of settings rather than as three ambulances. The department already
+// recognises the roster card; this is that card with a call in it, so there is
+// one shape to learn rather than two.
 function FleetRow({ unit, req, onOpen, now }) {
   const tone = fleetToneFor(req);
-  const colour = tone ? FLEET_TONES[tone] : null;
+  const colour = tone ? FLEET_TONES[tone] : "var(--hair-2)";
   const stage = req ? stageIndexOf(req) : -1;
   const crew = [unit.alpha && unit.alpha.name, unit.bravo && unit.bravo.name]
     .filter(Boolean)
@@ -9701,60 +10088,96 @@ function FleetRow({ unit, req, onOpen, now }) {
   const elapsed = req ? Math.max(0, (now || Date.now()) - callStartTs(req)) : null;
 
   return (
-    <button style={{ ...styles.truckRow, ...(req ? null : styles.truckIdle) }} onClick={onOpen}>
-      <span style={{ ...styles.truckEdge, background: colour || "transparent" }} />
-
-      <div style={styles.truckHead}>
-        <span style={styles.truckName}>{unit.name}</span>
-        <span style={styles.truckCrew}>{crew || "No crew signed on"}</span>
-        <span style={{ ...styles.truckClock, color: req ? "var(--ink)" : "var(--ink-4)" }}>
-          {req ? shortDurationStr(elapsed) : "—"}
-        </span>
-      </div>
-
-      {req ? (
-        <React.Fragment>
-          <div style={styles.truckJob}>
-            <strong style={styles.truckJobNature}>{req.nature}</strong>
-            <span style={styles.truckJobRoute}> · {callRoute(req)}</span>
-          </div>
-
-          {/* The five stamps, filled as far as the crew has got. Always in the
-              same place, so the fleet reads as a set of shapes rather than a
-              column of sentences. */}
-          <div style={styles.rail}>
-            {CALL_STAGES.map((st, i) => (
-              <span
-                key={st.key}
-                style={{
-                  ...styles.railSeg,
-                  background: i <= stage ? colour : "var(--hair)",
-                  opacity: i < stage ? 0.7 : 1,
-                }}
-              />
-            ))}
-          </div>
-          <div style={styles.railLabels}>
-            {CALL_STAGES.map((st, i) => (
-              <span key={st.key} style={i === stage ? styles.railLabelOn : styles.railLabel}>
-                {st.label}
-              </span>
-            ))}
-          </div>
-        </React.Fragment>
-      ) : (
-        <div style={styles.truckJob}>
-          <span
-            style={{
-              ...styles.truckChip,
-              ...(unit.status === "available" ? styles.truckChipFree : null),
-            }}
-          >
-            {statusMeta(unit.status).label}
+    <button style={styles.callCardTile} onClick={onOpen}>
+      <span style={{ ...styles.unitCardBar, background: colour }} />
+      <span style={styles.callCardTileBody}>
+        <span style={styles.unitCardTop}>
+          <span style={styles.unitCardName}>{unit.name}</span>
+          <span style={{ ...styles.truckClock, color: req ? colour : "var(--ink-4)" }}>
+            {req ? shortDurationStr(elapsed) : "—"}
           </span>
-          {unit.ambulanceNumber ? <span style={styles.truckJobRoute}> · {unit.ambulanceNumber}</span> : null}
-        </div>
-      )}
+        </span>
+
+        <span style={styles.unitCardStatusRow}>
+          <span style={{ ...styles.unitCardDot, background: colour }} />
+          <span style={{ ...styles.unitCardStatusText, color: colour }}>
+            {req ? (CALL_STAGES[stage] || CALL_STAGES[0]).label.toUpperCase() : statusMeta(unit.status).label}
+          </span>
+        </span>
+
+        <span style={styles.callCardTileCrew}>{crew || "No crew signed on"}</span>
+
+        {req ? (
+          <React.Fragment>
+            <span style={styles.callCardTileNature}>{req.nature}</span>
+            <span style={styles.callCardTileRoute}>{callRoute(req)}</span>
+
+            {/* The five stamps, filled as far as the crew has got. Always in the
+                same place, so the fleet reads as a set of shapes rather than a
+                column of sentences. */}
+            <span style={styles.rail}>
+              {CALL_STAGES.map((st, i) => (
+                <span
+                  key={st.key}
+                  style={{
+                    ...styles.railSeg,
+                    background: i <= stage ? colour : "var(--hair)",
+                    opacity: i < stage ? 0.7 : 1,
+                  }}
+                />
+              ))}
+            </span>
+
+            {(assistPending(req) || req.handover) && (
+              <span style={styles.callCardTileTags}>
+                {assistPending(req) && <span style={styles.callTileAssist}>ASSIST</span>}
+                {req.handover && <span style={styles.callTileHandover}>HANDED OVER</span>}
+              </span>
+            )}
+          </React.Fragment>
+        ) : (
+          <span style={styles.callCardTileRoute}>Standing by</span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+// A call with nobody on it yet. Same card, and deliberately so — the board is
+// one fleet of ambulances and one queue of calls, and both are read the same
+// way. What separates them is the square they sit in, not the shape they are.
+function PendingCallCard({ req, onOpen, now }) {
+  const pri = PRIORITY[priorityKeyOf(req)];
+  const waited = Math.max(0, (now || Date.now()) - callStartTs(req));
+
+  return (
+    <button style={styles.callCardTile} onClick={onOpen}>
+      <span style={{ ...styles.unitCardBar, background: pri.color }} />
+      <span style={styles.callCardTileBody}>
+        <span style={styles.unitCardTop}>
+          <span style={styles.unitCardName}>{req.nature}</span>
+          <span style={{ ...styles.truckClock, color: pri.color }}>
+            {shortDurationStr(waited)}
+          </span>
+        </span>
+
+        <span style={styles.unitCardStatusRow}>
+          <span style={{ ...styles.unitCardDot, background: pri.color }} />
+          <span style={{ ...styles.unitCardStatusText, color: pri.color }}>{pri.label}</span>
+        </span>
+
+        <span style={styles.callCardTileRoute}>{callRoute(req)}</span>
+        <span style={styles.callCardTileWait}>NO TEAM ASSIGNED</span>
+
+        {(req.scheduledFor || req.handover) && (
+          <span style={styles.callCardTileTags}>
+            {req.scheduledFor && (
+              <span style={styles.callTileHandover}>BOOKED {hhmm(req.scheduledFor)}</span>
+            )}
+            {req.handover && <span style={styles.callTileHandover}>HANDED OVER</span>}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
@@ -13268,6 +13691,10 @@ function policyIsImage(pol) {
 function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
   const list = policyList(policies);
   const [openId, setOpenId] = useState(null);
+  // Name first, then the file. The name is what the shelf is read by, and a
+  // scanner's filename is not a name — "SCAN_0043" tells a dispatcher at 3am
+  // nothing about which policy they are looking at.
+  const [draftName, setDraftName] = useState("");
 
   return (
     <div style={styles.policyPage}>
@@ -13276,23 +13703,36 @@ function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
           <div style={styles.policyEyebrow}>DEPARTMENT POLICIES</div>
           <div style={styles.policyTitle}>What the desk is expected to do</div>
         </div>
-        {canManage && (
-          <label style={busy ? styles.policyAddOff : styles.policyAdd}>
-            {busy ? "Adding…" : "+ Add a policy"}
+      </div>
+
+      {canManage && (
+        <div style={styles.policyAddRow}>
+          <input
+            style={styles.policyNameInput}
+            value={draftName}
+            maxLength={120}
+            placeholder="Name of the policy"
+            onChange={(e) => setDraftName(e.target.value)}
+          />
+          <label style={busy || !draftName.trim() ? styles.policyAddOff : styles.policyAdd}>
+            {busy ? "Adding…" : "Attach PDF or picture"}
             <input
               type="file"
               accept="application/pdf,image/*"
               style={{ display: "none" }}
-              disabled={busy}
+              disabled={busy || !draftName.trim()}
               onChange={(e) => {
                 const f = e.target.files && e.target.files[0];
                 e.target.value = "";
-                if (f) onAdd(f);
+                if (f) {
+                  onAdd(draftName, f);
+                  setDraftName("");
+                }
               }}
             />
           </label>
-        )}
-      </div>
+        </div>
+      )}
 
       {list.length === 0 ? (
         <div style={styles.formHint}>
@@ -13420,15 +13860,23 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
     ? `${gregDateStr(from)} → ${gregDateStr(to - 1)}`
     : "Pick a period";
 
+  // Three figures, and only one of them is money.
+  //
+  // The third used to be everything anybody had ever claimed, declined hours
+  // included, under the heading CLAIMED IN TOTAL — so the largest number on the
+  // panel was the one nobody was being paid, sitting beside the one they were.
+  // A declined claim is not a total, it is a refusal. It is counted on its own
+  // and named as such, and the approved figure is the one the period comes to.
   const totals = claims.reduce(
     (acc, c) => {
       const ms = overtimeApprovedMs(c);
-      acc.claimed += c.claimedMs || 0;
+      const dec = c.decision;
       if (ms === null) acc.undecided += c.claimedMs || 0;
+      else if (dec && dec.status === "declined") acc.declined += c.claimedMs || 0;
       else acc.approved += ms;
       return acc;
     },
-    { claimed: 0, approved: 0, undecided: 0 }
+    { approved: 0, undecided: 0, declined: 0 }
   );
 
   // Everybody signed on right now who is already past their shift end. This is
@@ -13477,36 +13925,37 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
     setDecisions(next);
     await addLog(
       `Overtime ${status} for ${claim.name} (${claim.unitName}) — ` +
-        `${msDurationStr(claim.claimedMs)} claimed, ` +
-        `${status === "declined" ? "none" : msDurationStr(approvedMs || claim.claimedMs)} approved` +
+        `${otHoursStr(claim.claimedMs)} claimed, ` +
+        `${status === "declined" ? "none" : otHoursStr(approvedMs || claim.claimedMs)} approved` +
         (note ? ` · ${note}` : ""),
       "status"
     );
   }
 
   async function approvePartial(claim) {
+    const claimedHours = (claim.claimedMs || 0) / 3600000;
     const asked = window.prompt(
       `Approve part of ${claim.name}'s overtime.\n\n` +
-        `Claimed: ${msDurationStr(claim.claimedMs)}\n\n` +
-        `How many minutes are approved?`,
-      String(Math.round((claim.claimedMs || 0) / 60000))
+        `Claimed: ${otHoursStr(claim.claimedMs)}\n\n` +
+        `How many hours are approved? (e.g. 1.5 for an hour and a half)`,
+      (Math.round(claimedHours * 100) / 100).toFixed(2)
     );
     if (asked === null) return;
     // A blank or nonsense answer used to fall through `|| 0` and record a
     // DECLINED claim with no reason — around the check that declining a claim
     // needs one. An unreadable answer is not a decision.
-    const parsed = parseInt(String(asked).trim(), 10);
+    const parsed = Number(String(asked).trim());
     if (!Number.isFinite(parsed) || parsed < 0) {
-      window.alert("Give the number of minutes to approve, or use Decline.");
+      window.alert("Give the number of hours to approve, or use Decline.");
       return;
     }
-    const mins = Math.min(Math.round((claim.claimedMs || 0) / 60000), parsed);
-    if (mins === 0) {
-      window.alert("Approving nought minutes is a decline — use Decline, which records the reason.");
+    const hours = Math.min(claimedHours, parsed);
+    if (Math.round(hours * 3600000) === 0) {
+      window.alert("Approving nought hours is a decline — use Decline, which records the reason.");
       return;
     }
     const note = window.prompt("A note, if this needs explaining. Leave blank for none.", "") || "";
-    await decide(claim, "partial", mins * 60000, note.trim());
+    await decide(claim, "partial", Math.round(hours * 3600000), note.trim());
   }
 
   async function decline(claim) {
@@ -13521,47 +13970,18 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
     await decide(claim, "declined", 0, note.trim());
   }
 
-  // A whole shift counted as overtime, for somebody called in on a rest day or
-  // held over for a whole tour. Not derived from anything, so it is a decision
-  // recorded on its own.
+  // The same grant the Teams roster offers, from the panel that shows who is
+  // standing past their shift right now. One function behind both.
   async function grantWholeShift(entry) {
-    const { unit, slot, member } = entry;
-    const start = member.shiftStart;
-    const end = member.shiftEnd;
-    if (!start || !end) {
-      window.alert(`${member.name} has no shift window recorded, so a whole shift cannot be worked out.`);
-      return;
-    }
-    const whole = Math.max(0, end - start);
-    if (
-      !window.confirm(
-        `Count ${member.name}'s whole shift as overtime?\n\n` +
-          `${shiftLabelWithWindow(member.shift)} — ${msDurationStr(whole)}\n\n` +
-          `This is recorded as a grant, separately from any overtime they run past the end of it.`
-      )
-    )
-      return;
-    const claim = {
-      id: `GRANT::${overtimeClaimId({
-        accountId: member.accountId,
-        name: member.name,
-        shiftStart: start,
-        unitId: unit.id,
-        seat: slot,
-      })}`,
-      name: member.name,
-      accountId: member.accountId || "",
-      unitId: unit.id,
-      unitName: unit.name,
-      seat: slot,
-      station: stationOf(unit),
-      shift: member.shift,
-      shiftStart: start,
-      shiftEnd: end,
-      claimedMs: whole,
-      granted: true,
-    };
-    await decide(claim, "approved", whole, "Whole shift granted as overtime");
+    await grantWholeShiftOvertime({
+      unit: entry.unit,
+      slot: entry.slot,
+      member: entry.member,
+      user,
+      decisions,
+      setDecisions,
+      addLog,
+    });
   }
 
   async function download() {
@@ -13602,18 +14022,20 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
 
       <div style={styles.otTotals}>
         <div style={styles.otTotal}>
-          <span style={styles.otTotalFig}>{msDurationStr(totals.approved)}</span>
-          <span style={styles.otTotalLabel}>APPROVED</span>
+          <span style={styles.otTotalFig}>{otHoursStr(totals.approved)}</span>
+          <span style={styles.otTotalLabel}>APPROVED — THE PERIOD'S TOTAL</span>
         </div>
         <div style={styles.otTotal}>
           <span style={{ ...styles.otTotalFig, color: totals.undecided ? "var(--hold)" : "var(--ink-4)" }}>
-            {msDurationStr(totals.undecided)}
+            {otHoursStr(totals.undecided)}
           </span>
           <span style={styles.otTotalLabel}>AWAITING A DECISION</span>
         </div>
         <div style={styles.otTotal}>
-          <span style={{ ...styles.otTotalFig, color: "var(--ink-3)" }}>{msDurationStr(totals.claimed)}</span>
-          <span style={styles.otTotalLabel}>CLAIMED IN TOTAL</span>
+          <span style={{ ...styles.otTotalFig, color: totals.declined ? "var(--crit)" : "var(--ink-4)" }}>
+            {otHoursStr(totals.declined)}
+          </span>
+          <span style={styles.otTotalLabel}>DECLINED — NOT COUNTED ABOVE</span>
         </div>
       </div>
 
@@ -13629,7 +14051,7 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
                 <span style={styles.otLiveUnit}>
                   {x.unit.name} · {seatLabel(x.slot)}
                 </span>
-                <span style={styles.otLiveMs}>{msDurationStr(x.over)}</span>
+                <span style={styles.otLiveMs}>{otHoursStr(x.over)}</span>
                 <button style={styles.otGrantBtn} onClick={() => grantWholeShift(x)}>
                   Count whole shift
                 </button>
@@ -13637,8 +14059,10 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
             ))}
           <div style={styles.otLiveNote}>
             These become claims when they sign off. The button counts the whole tour as overtime —
-            for somebody called in on a rest day — and is recorded separately from anything they run
-            past the end of it.
+            for somebody called in on a rest day — and covers the rostered shift only. If the shift
+            runs past its twelve hours, the extra arrives here as its own claim and has to be
+            approved again; a granted shift is not a blank cheque on the rest of the day. The same
+            button is on each seat on the Teams page.
           </div>
         </div>
       )}
@@ -13679,9 +14103,9 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
                   {c.signedOffAt ? ` · signed off ${clockStr(c.signedOffAt)}` : ""}
                 </div>
                 <div style={styles.otCardFigures}>
-                  <span style={styles.otClaimed}>{msDurationStr(c.claimedMs)} claimed</span>
+                  <span style={styles.otClaimed}>{otHoursStr(c.claimedMs)} claimed</span>
                   {approved !== null && (
-                    <span style={styles.otApproved}>{msDurationStr(approved)} approved</span>
+                    <span style={styles.otApproved}>{otHoursStr(approved)} approved</span>
                   )}
                   {!c.granted && (
                     <span style={c.onCall ? styles.otHeld : styles.otNotHeld}>
@@ -13703,7 +14127,7 @@ function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecis
                       style={styles.primaryBtnSm}
                       onClick={() => decide(c, "approved", c.claimedMs, "")}
                     >
-                      Approve {msDurationStr(c.claimedMs)}
+                      Approve {otHoursStr(c.claimedMs)}
                     </button>
                     <button style={styles.ghostBtnSm} onClick={() => approvePartial(c)}>
                       Approve part
@@ -13746,10 +14170,10 @@ async function exportOvertime(claims, from, to, label) {
       "Held by": c.onCallNature || "",
       // Hours as decimals as well as written out: payroll adds the column up,
       // a supervisor reads the sentence.
-      "Claimed": c.claimedMs ? msDurationStr(c.claimedMs) : "",
+      "Claimed": c.claimedMs ? otHoursStr(c.claimedMs) : "",
       "Claimed (hrs)": c.claimedMs ? Number((c.claimedMs / 3600000).toFixed(2)) : 0,
       Status: overtimeStatusLabel(c),
-      "Approved": approved === null ? "" : msDurationStr(approved),
+      "Approved": approved === null ? "" : otHoursStr(approved),
       "Approved (hrs)": approved === null ? "" : Number((approved / 3600000).toFixed(2)),
       "Decided By": (c.decision && c.decision.decidedBy) || "",
       "Decided At": c.decision && c.decision.decidedAt ? gregDateTimeStr(c.decision.decidedAt) : "",
@@ -13786,6 +14210,13 @@ async function exportOvertime(claims, from, to, label) {
   XLSX.utils.book_append_sheet(wb, sheet, "Overtime");
 
   // A second sheet totalling by person, because that is what goes to payroll.
+  //
+  // There is deliberately no "claimed" total on this sheet. It used to carry
+  // one, and it added declined hours in with approved ones — so the biggest
+  // figure against a name was the number nobody was being paid, sitting next to
+  // the number they were, and the two had to be told apart by column heading.
+  // Approved hours are the total; declined hours are shown so a refusal is on
+  // the record, in their own column, adding to nothing.
   const byPerson = new Map();
   claims.forEach((c) => {
     const key = (c.accountId || c.name || "?").toUpperCase();
@@ -13795,28 +14226,30 @@ async function exportOvertime(claims, from, to, label) {
         "Employee ID": c.accountId || "",
         Station: stationLabel(c.station),
         Claims: 0,
-        "Claimed (hrs)": 0,
         "Approved (hrs)": 0,
-        "Awaiting decision": 0,
+        "Awaiting a decision (hrs)": 0,
+        "Declined (hrs)": 0,
       });
     }
     const row = byPerson.get(key);
     const approved = overtimeApprovedMs(c);
+    const declined = !!(c.decision && c.decision.status === "declined");
     row.Claims += 1;
-    row["Claimed (hrs)"] += (c.claimedMs || 0) / 3600000;
-    if (approved === null) row["Awaiting decision"] += 1;
+    if (approved === null) row["Awaiting a decision (hrs)"] += (c.claimedMs || 0) / 3600000;
+    else if (declined) row["Declined (hrs)"] += (c.claimedMs || 0) / 3600000;
     else row["Approved (hrs)"] += approved / 3600000;
   });
   const sumRows = Array.from(byPerson.values())
     .map((r) => ({
       ...r,
-      "Claimed (hrs)": Number(r["Claimed (hrs)"].toFixed(2)),
       "Approved (hrs)": Number(r["Approved (hrs)"].toFixed(2)),
+      "Awaiting a decision (hrs)": Number(r["Awaiting a decision (hrs)"].toFixed(2)),
+      "Declined (hrs)": Number(r["Declined (hrs)"].toFixed(2)),
     }))
     .sort((a, b) => b["Approved (hrs)"] - a["Approved (hrs)"]);
-  const sumHeaders = ["Name", "Employee ID", "Station", "Claims", "Claimed (hrs)", "Approved (hrs)", "Awaiting decision"];
+  const sumHeaders = ["Name", "Employee ID", "Station", "Claims", "Approved (hrs)", "Awaiting a decision (hrs)", "Declined (hrs)"];
   const sumAoa = [
-    ["OVERTIME BY PERSON"],
+    ["OVERTIME BY PERSON — APPROVED HOURS ARE THE TOTAL"],
     [label],
     [],
     sumHeaders,
@@ -14749,8 +15182,17 @@ function TrackingBar({ state, lastTs, error, reason }) {
 // a crew has exactly one thread and lands straight in it. The difference is two
 // props, not two components — which is what keeps the two halves of a
 // conversation looking like one conversation.
-function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSent }) {
-  const [open, setOpen] = useState(false);
+// Two shapes, one component.
+//
+// `floating` is the shape this started as and the one the board wants back: a
+// pill above the bottom bar that opens a panel over the page. Given a whole tab
+// to itself it displaced the board — a dispatcher who wanted to read one line
+// lost the calls they were reading it about, on every page, all shift.
+//
+// Without `floating` it is still a full page, which is what a crew's own truck
+// screen uses.
+function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSent, floating }) {
+  const [open, setOpen] = useState(!floating);
   const [activeId, setActiveId] = useState(myUnitId || null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -14770,6 +15212,10 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
   const thread = active ? threadFor(messages, active.id, shiftFrom) : [];
 
   const totalUnread = threads.reduce((n, u) => n + unreadIn(messages, u.id, mine, shiftFrom), 0);
+  // The trucks with something unread on them. Their names are what the closed
+  // pill shows and what the thread strip lights up, so the desk can see who is
+  // talking without opening anything.
+  const speaking = threads.filter((u) => unreadIn(messages, u.id, mine, shiftFrom) > 0);
 
   // Opening a thread marks it read on this device, and so does a new message
   // arriving while it is already open — otherwise the badge counts lines the
@@ -14817,8 +15263,8 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
 
   if (!threads.length) return null;
 
-  return (
-    <div style={styles.chatPanel}>
+  const panel = (
+    <div style={floating ? styles.chatPanelFloat : styles.chatPanel}>
       <div style={styles.chatHead}>
         <div style={styles.chatHeadTitle}>
           <MessageSquare size={14} />
@@ -14833,12 +15279,12 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
           {threads.map((u) => {
             const n = unreadIn(messages, u.id, mine, shiftFrom);
             const on = active && active.id === u.id;
+            // Selected beats unread: the truck being read is the one the strip
+            // should show as current. Unread but not selected is the one the
+            // desk has not got to yet, and that is the name worth lighting.
+            const look = on ? styles.chatThreadOn : n > 0 ? styles.chatThreadHot : styles.chatThread;
             return (
-              <button
-                key={u.id}
-                style={on ? styles.chatThreadOn : styles.chatThread}
-                onClick={() => setActiveId(u.id)}
-              >
+              <button key={u.id} style={look} onClick={() => setActiveId(u.id)}>
                 {u.name}
                 {n > 0 && <span style={styles.chatThreadBadge}>{n}</span>}
               </button>
@@ -14905,6 +15351,35 @@ function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef, onSen
       </div>
     </div>
   );
+
+  if (!floating) return panel;
+
+  // Closed, the pill says who is waiting. Open, it says how to shut it. The
+  // count sits above the pill rather than inside it so it is still legible at
+  // arm's length on a desk tablet.
+  const label = open
+    ? "Close"
+    : speaking.length
+    ? speaking.map((u) => u.name).join(" · ")
+    : isCrew
+    ? "Dispatch"
+    : "Messages";
+
+  return (
+    <>
+      {open && <div style={styles.chatFloatWrap}>{panel}</div>}
+      <button
+        style={open ? styles.chatLauncherOn : speaking.length ? styles.chatLauncherHot : styles.chatLauncher}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <MessageSquare size={15} />
+        <span style={styles.chatLauncherLabel}>{label}</span>
+        {!open && totalUnread > 0 && (
+          <span style={styles.chatLauncherBadge}>{totalUnread}</span>
+        )}
+      </button>
+    </>
+  );
 }
 
 // A message that arrives silently is a message nobody reads. Same reasoning as
@@ -14920,7 +15395,9 @@ function useMessageAlerts(messages, mine, unitIds, audioCtxRef) {
     const newest = relevant.reduce((n, m) => Math.max(n, m.ts || 0), 0);
     if (lastSeen.current !== null && newest > lastSeen.current) {
       const fresh = relevant.filter((m) => (m.ts || 0) > lastSeen.current);
-      soundReminderTone(audioCtxRef);
+      // Forced. A message that arrives under a lowered volume chip is a
+      // message the desk finds twenty minutes later.
+      soundReminderTone(audioCtxRef, true);
       buzz([180, 90, 180]);
       fresh.slice(-1).forEach(notifyMessage);
     }
@@ -15677,6 +16154,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
 
       {/* Reachable from every dispatcher page, closed until it is wanted. */}
       <ChatDock
+        floating
         user={user}
         units={units}
         messages={messages}
@@ -16093,16 +16571,22 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
           {/* Only the trucks that are working. A standing ambulance needs no
               row of its own — it needs one word, once, at the bottom. */}
           {working.length > 0 && (
-            <div style={styles.fleetList}>
-              {working.map(({ unit, req }) => (
-                <FleetRow
-                  key={unit.id}
-                  unit={unit}
-                  req={req}
-                  now={nowTick}
-                  onOpen={() => setOpenCallId(req.id)}
-                />
-              ))}
+            <div style={styles.boardSquare}>
+              <div style={styles.boardSquareHead}>
+                <span style={styles.boardSquareTitle}>OUT ON A CALL</span>
+                <span style={styles.boardSquareCount}>{working.length}</span>
+              </div>
+              <div style={styles.callCardGrid}>
+                {working.map(({ unit, req }) => (
+                  <FleetRow
+                    key={unit.id}
+                    unit={unit}
+                    req={req}
+                    now={nowTick}
+                    onOpen={() => setOpenCallId(req.id)}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
@@ -16115,30 +16599,28 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
             </div>
           )}
 
+          {/* Its own square, and the same card as an ambulance carries.
+              These used to be a striped amber strip of one-line rows, which a
+              desk read as a warning banner rather than as a queue of calls it
+              could pick up and give to somebody. */}
           {!active.some((r) => r.id === openCallId) && waiting.length > 0 && (
-          <div style={styles.waitList}>
-            {waiting
-              .map((r) => (
-                <button key={r.id} style={styles.waitRow} onClick={() => setOpenCallId(r.id)}>
-                  {/* The dot carries what the call needs, so a queue of ten is
-                      read by colour before it is read by word. */}
-                  <span
-                    style={{
-                      ...styles.waitDot,
-                      background: (PRIORITY[priorityKeyOf(r)]).color,
-                    }}
+            <div style={styles.boardSquareWaiting}>
+              <div style={styles.boardSquareHead}>
+                <span style={styles.boardSquareTitleWait}>WAITING FOR A TEAM</span>
+                <span style={styles.boardSquareCountWait}>{waiting.length}</span>
+              </div>
+              <div style={styles.callCardGrid}>
+                {waiting.map((r) => (
+                  <PendingCallCard
+                    key={r.id}
+                    req={r}
+                    now={nowTick}
+                    onOpen={() => setOpenCallId(r.id)}
                   />
-                  <span style={styles.waitBody}>
-                    <span style={styles.waitNature}>{r.nature}</span>
-                    <span style={styles.waitRoute}>{callRoute(r)}</span>
-                  </span>
-                  <span style={styles.waitClock}>
-                    {shortDurationStr(Math.max(0, nowTick - callStartTs(r)))}
-                  </span>
-                </button>
-              ))}
-          </div>
-        )}
+                ))}
+              </div>
+            </div>
+          )}
 
           {standing.length > 0 && (
             <div style={styles.standingRow}>
@@ -16465,7 +16947,7 @@ function DispatcherView({ user, units, requests, scheduled, saveUnits, saveReque
   );
 }
 
-function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
+function UnitRosterCard({ unit, onRelieve, onGrantOt, requests, onRename, onRemove }) {
   const now = Date.now();
   return (
     <div style={styles.unitCard}>
@@ -16496,6 +16978,7 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
         unit={unit}
         slot="alpha"
         onRelieve={onRelieve}
+        onGrantOt={onGrantOt}
         requests={requests}
         now={now}
       />
@@ -16505,6 +16988,7 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
         unit={unit}
         slot="bravo"
         onRelieve={onRelieve}
+        onGrantOt={onGrantOt}
         requests={requests}
         now={now}
       />
@@ -16533,7 +17017,7 @@ function UnitRosterCard({ unit, onRelieve, requests, onRename, onRemove }) {
 // One crew seat on a roster card: who's in it, which shift they signed on for,
 // and — when they're past the end of their 12 hours — how much overtime they're
 // into. Seats taken before shifts were tracked simply show no shift tag.
-function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
+function SeatLine({ label, member, unit, slot, onRelieve, onGrantOt, requests, now }) {
   const meta = member ? shiftMeta(member.shift) : null;
   const ot = member ? overtimeMs(member, Date.now()) : 0;
   // Somebody queued to take this seat when its crew clear.
@@ -16563,6 +17047,14 @@ function SeatLine({ label, member, unit, slot, onRelieve, requests, now }) {
         {canRelieve && (
           <button style={styles.relieveBtn} onClick={() => onRelieve(unit, slot, member)}>
             Sign out
+          </button>
+        )}
+        {/* Called in on a rest day, or held over for a whole tour. Only where
+            administration is looking, and only against somebody actually in the
+            seat — there is no shift to count otherwise. */}
+        {onGrantOt && member && (
+          <button style={styles.grantOtBtn} onClick={() => onGrantOt(unit, slot, member)}>
+            Whole shift as OT
           </button>
         )}
       </span>
@@ -17392,7 +17884,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     );
     await addLog(
       `${unit.name} — ${p.name} (${seatLabel(otherSeat)}) stood down by ${user.name || "the crew"}` +
-        (ot > 0 ? ` · ${msDurationStr(ot)} overtime` : ""),
+        (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
       "shift",
       {
         kind: "off",
@@ -17671,6 +18163,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         {/* One thread, straight into it — a crew has only ever one desk to
             talk to, so there is nothing to pick from. */}
         <ChatDock
+          floating
           user={user}
           units={units}
           messages={messages}
@@ -18300,7 +18793,7 @@ function CrewShiftCard({ user, unit, onCall }) {
         <div style={styles.shiftCardOvertime}>
           <Circle size={8} fill="var(--crit)" style={{ animation: "pulse-dot 1.4s ease-in-out infinite" }} />
           <span style={styles.shiftCardOvertimeLabel}>ON OVERTIME</span>
-          <span style={styles.shiftCardOvertimeTime}>{msDurationStr(ot)}</span>
+          <span style={styles.shiftCardOvertimeTime}>{otHoursStr(ot)}</span>
         </div>
       ) : (
         <div style={styles.shiftCardRemaining}>
@@ -20146,63 +20639,21 @@ function buildShiftReport({ sub, requests, coverage }) {
     (n, c) => n + Math.max(0, Math.min(c.endedAt || gapEnd, gapEnd) - c.startedAt),
     0
   );
-  // Each period spelled out on one line. No table — the total on its own says
-  // how long but never when, and "when" is the first thing anybody reading a
-  // shift back asks about a station that had no ambulance.
-  const gapLine = gaps
-    .map((c) => {
-      const end = Math.min(c.endedAt || gapEnd, gapEnd);
-      return (
-        `${clockStr(c.startedAt)}–${c.endedAt ? clockStr(c.endedAt) : "changeover"}` +
-        ` (${msDurationStr(Math.max(0, end - c.startedAt))})`
-      );
-    })
-    .join(" · ");
+  // No sentence spelling the periods out. The figure in the corner — how long
+  // in total, over how many periods — is the whole answer the report needs to
+  // give, and a paragraph of red under it read as an accusation rather than as
+  // a number.
 
-  // UHU, ordered by truck and seat exactly as the spreadsheet is.
+  // UHU by person. One row each, whatever they sat in — see personUhuRows.
   const crewIndex = medicCrewIndex(units, sub.log || [], sub.finalisedAt || sub.submittedAt);
-  const seatOrder = { alpha: 0, bravo: 1 };
-  const uhuRows = [];
-  units
-    .slice()
-    .sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" }))
-    .forEach((u) => {
-      // Belt and braces: a stamp recorded at one station can never print on
-      // another station's sheet, whatever happened upstream. This is the check
-      // that would have caught a Main Office medic appearing under CCC.
-      const stamps = (crewIndex.get(u.id) || [])
-        .filter((p) => !p.station || p.station === stationOf(u))
-        .slice()
-        .sort((a, b) => (seatOrder[a.seat] ?? 9) - (seatOrder[b.seat] ?? 9) || (a.signedOnAt || 0) - (b.signedOnAt || 0));
-      if (!stamps.length) {
-        uhuRows.push({ medic: u.name, seat: "", name: "No crew signed in", id: "", on: "", off: "", ot: "", calls: 0, uhu: 0 });
-        return;
-      }
-      stamps.forEach((p) => {
-        // Worked out for this person's own stay, not for the truck. Two crews
-        // who shared a medic across a changeover get the calls each of them
-        // actually ran, not one total printed twice.
-        const row = computePersonUhu(
-          u,
-          p,
-          calls,
-          sub.windowEnd || sub.submittedAt,
-          sub.windowStart,
-          sub.windowEnd || sub.submittedAt
-        );
-        uhuRows.push({
-          medic: u.name,
-          seat: p.seat ? seatLabel(p.seat) : "",
-          name: p.name,
-          id: p.accountId || "",
-          on: p.signedOnAt ? clockStr(p.signedOnAt) : "",
-          off: p.signedOffAt ? clockStr(p.signedOffAt) : "Still on",
-          ot: p.overtimeMs ? msDurationStr(p.overtimeMs) : "",
-          calls: row.calls,
-          uhu: row.pct.toFixed(1),
-        });
-      });
-    });
+  const uhuRows = personUhuRows(
+    units,
+    crewIndex,
+    calls,
+    sub.windowEnd || sub.submittedAt,
+    sub.windowStart,
+    sub.windowEnd || sub.submittedAt
+  );
 
   const handover = buildShiftHandoverRows(sub.log || []);
   const bookings = sub.scheduled || [];
@@ -20252,10 +20703,6 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
    it in a quieter grey. Both tables carry it, so neither has to be read with a
    finger on the other. */
 .dim{color:#5A6B7B;font-size:6.9pt}
-/* The no-coverage periods, as a sentence under the figures rather than a table
-   of their own — a station is without an ambulance a handful of times a shift,
-   and three lines of table for two entries reads as more than it is. */
-.gapline{margin:-4pt 0 0;font-size:8.5pt;color:#7F0000;break-inside:avoid}
 </style></head><body>
 
 <div class="eyebrow">Dispatch log</div>
@@ -20276,11 +20723,6 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
       gaps.length ? ` · ${gaps.length} period${gaps.length === 1 ? "" : "s"}` : ""
     }</div></div>
 </div>
-${
-    gaps.length
-      ? `<p class="gapline"><strong>No coverage at ${esc(stationLabel(sub.station))}:</strong> ${esc(gapLine)}</p>`
-      : ""
-  }
 
 <h2>Calls</h2>
 <table>
@@ -20341,26 +20783,30 @@ ${
   </tbody>
 </table>
 
-<h2>UHU <span class="sub">— each person's own time on call, as a share of the shift</span></h2>
-<table>
+<h2>UHU <span class="sub">— each person's own time on call, as a share of their shift</span></h2>
+${
+    uhuRows.length === 0
+      ? `<p class="none">No crew signed on during this shift.</p>`
+      : `<table>
   <thead><tr>
-    <th style="width:12%">Medic</th><th style="width:9%">Seat</th><th style="width:22%">Name</th>
-    <th style="width:12%">Employee ID</th><th class="c" style="width:10%">Signed on</th>
-    <th class="c" style="width:10%">Signed off</th><th class="c" style="width:11%">Overtime</th>
-    <th class="n" style="width:7%">Calls</th><th class="n" style="width:7%">UHU %</th>
+    <th style="width:30%">Name</th>
+    <th style="width:16%">Employee ID</th><th class="c" style="width:12%">Signed on</th>
+    <th class="c" style="width:12%">Signed off</th><th class="c" style="width:13%">Overtime</th>
+    <th class="n" style="width:8%">Calls</th><th class="n" style="width:9%">UHU %</th>
   </tr></thead>
   <tbody>
   ${uhuRows
     .map(
       (r) =>
-        `<tr><td>${esc(r.medic)}</td><td>${esc(r.seat)}</td><td>${esc(r.name)}</td><td>${esc(r.id)}</td>` +
+        `<tr><td>${esc(r.name)}</td><td>${esc(r.id)}</td>` +
         `<td class="c">${esc(r.on)}</td><td class="c">${esc(r.off)}</td>` +
         `<td class="${r.ot ? "ot" : "c"}">${esc(r.ot)}</td>` +
         `<td class="n">${esc(r.calls)}</td><td class="n">${esc(r.uhu)}%</td></tr>`
     )
     .join("")}
   </tbody>
-</table>
+</table>`
+  }
 
 <div class="foot">
   MEDCOM Dispatch · ${ORG_STAMP}Ambulance Services · Shaded rows are night-shift calls ·
@@ -20540,11 +20986,165 @@ function SavedLogs({ submissions, requests, coverage }) {
   );
 }
 
-function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
+// ---------- the whole day, both stations ----------
+//
+// The third log. The two shift logs above are each one station's own twelve
+// hours; this is the operational day itself — 07:00 to 07:00, both stations,
+// both shifts, in one workbook.
+//
+// Two things live here. The day running now, which an administrator can take a
+// copy of at any moment without waiting for anything, and the days already
+// kept. The live copy is built from exactly the same code as a kept day, so a
+// board exported at 14:00 and the same day downloaded a week later are the same
+// document — one of them just says on its front page that the day was still
+// running when it was taken.
+//
+// The boundary is 07:00, not midnight, so at 07:00 the live copy starts again
+// from nothing and last night's calls are on last night's day where they
+// belong. Nothing carries over.
+function DayArchive({ archives, requests, units, log, scheduled }) {
+  const [open, setOpen] = useState(true);
+  const [busy, setBusy] = useState(null);
+
+  const now = Date.now();
+  const todayStart = opDayStart(now);
+  const today = requestsForOpDay(requests, todayStart);
+  const stillRunning = today.filter((r) => r && r.status !== "completed");
+
+  const kept = (archives || [])
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => (b.dayStart || 0) - (a.dayStart || 0));
+
+  // The day so far, in the shape a kept day has. `reason: "live"` is the only
+  // difference, and it is what makes the sheet say so on its front page.
+  function liveSnapshot() {
+    return {
+      id: "live",
+      dayKey: opDayKey(todayStart),
+      dayStart: todayStart,
+      dayEnd: opDayEnd(todayStart),
+      closedAt: Date.now(),
+      closedBy: "",
+      reason: "live",
+      requests: today.map((r) => ({ ...r, openAtClose: r.status !== "completed" })),
+      log: logForOpDay(log, todayStart),
+      scheduled: (scheduled || []).filter(
+        (x) => x && x.scheduledFor && opDayStart(x.scheduledFor) === todayStart
+      ),
+      units: (units || []).map((u) => ({ ...u })),
+    };
+  }
+
+  async function download(archive, id) {
+    setBusy(id);
+    try {
+      await exportArchivedDay(archive, requests);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <FoldingSection
+      title="OPERATIONAL DAY — BOTH STATIONS"
+      count={kept.length}
+      countLabel="days kept"
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div style={styles.liveDayRow}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={styles.savedDay}>
+            {opDayLabel(todayStart)}
+            <span style={styles.archOpenTag}>running now</span>
+          </div>
+          <div style={styles.savedMeta}>
+            07:00 → 07:00 · {today.length} call{today.length === 1 ? "" : "s"} so far, both stations
+            {stillRunning.length
+              ? ` · ${stillRunning.length} still running`
+              : " · all closed"}
+          </div>
+        </div>
+        <button
+          style={styles.primaryBtnSm}
+          disabled={busy === "live"}
+          onClick={() => download(liveSnapshot(), "live")}
+        >
+          {busy === "live" ? "…" : "Export the board now"}
+        </button>
+      </div>
+
+      <InfoNote label="How this works">
+        The day runs 07:00 to 07:00, so a night that crosses midnight stays on the day it
+        started. At 07:00 this starts again at nothing — last night's calls are on last
+        night's day and do not carry over. A call raised before 07:00 and still running
+        after it holds its own day open: the day is kept once that call is closed, which
+        happens on its own. Nobody has to sign out, and nobody has to press anything.
+      </InfoNote>
+
+      {kept.length === 0 ? (
+        <div style={styles.emptyState}>
+          No day has finished and been kept yet. The first one is kept once every call on it
+          is closed.
+        </div>
+      ) : (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          {kept.map((a) => {
+            const n = (a.requests || []).length;
+            return (
+              <div key={a.id || a.dayKey} style={styles.savedRow}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={styles.savedDay}>{opDayLabel(a.dayStart)}</div>
+                  <div style={styles.savedMeta}>
+                    {n} {n === 1 ? "call" : "calls"} · kept {gregDateTimeStr(a.closedAt)}
+                    {a.closedBy ? ` by ${a.closedBy}` : " automatically"}
+                    {STATIONS.map(
+                      (st) =>
+                        ` · ${stationShort(st.key)} ${
+                          (a.counts && a.counts[st.key]) != null
+                            ? a.counts[st.key]
+                            : (a.requests || []).filter((r) => stationOf(r) === st.key).length
+                        }`
+                    ).join("")}
+                  </div>
+                </div>
+                <button
+                  style={styles.primaryBtnSm}
+                  disabled={busy === (a.id || a.dayKey)}
+                  onClick={() => download(a, a.id || a.dayKey)}
+                >
+                  {busy === (a.id || a.dayKey) ? "…" : "Excel"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </FoldingSection>
+  );
+}
+
+function AdminView({ archives, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
   // worked until now.
+  // Counting a whole tour as overtime, from the roster where administration is
+  // already looking at the person. The panel on the statistics page can do the
+  // same thing; both go through one function so they cannot record it two ways.
+  async function grantWholeShift(unit, slot, member) {
+    await grantWholeShiftOvertime({
+      unit,
+      slot,
+      member,
+      user,
+      decisions: overtimeDecisions,
+      setDecisions: setOvertimeDecisions,
+      addLog,
+    });
+  }
+
   async function relieveSeat(unit, slot, member) {
     const endedAt = member.shiftEnd || Date.now();
     const ok = window.confirm(
@@ -20927,6 +21527,13 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           something about it. */}
       {onPage("log") && (
         <>
+          <DayArchive
+            archives={archives}
+            requests={requests}
+            units={units}
+            log={log}
+            scheduled={scheduled}
+          />
           <SavedLogs submissions={submissions} requests={requests} coverage={coverage} />
           <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
         </>
@@ -21177,6 +21784,7 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
                   key={u.id}
                   unit={u}
                   onRelieve={relieveSeat}
+                  onGrantOt={grantWholeShift}
                   requests={requests}
                   onRename={() => renameUnit(u)}
                   onRemove={() => removeUnit(u)}
@@ -21255,23 +21863,53 @@ function AdminView({ user, units, requests, scheduled, accounts, log, saveUnits,
           const idle = fleet.filter(
             (u) => isStaffed(u) && !active.some((r) => r.assignedUnitId === u.id)
           );
+          // The station's calls with nobody on them. The desk has had its own
+          // square for these for a while; an administrator watching both
+          // stations is the person most likely to notice one going stale.
+          const queued = active.filter(
+            (r) => stationOf(r) === st.key && !r.assignedUnitId
+          );
           return (
             <div key={`fleet-${st.key}`} style={{ marginTop: 14 }}>
               <div style={styles.uhuStationHead}>{st.label}</div>
               {busy.length > 0 && (
-                <div style={styles.fleetList}>
-                  {busy.map(({ unit, req }) => (
-                    <FleetRow
-                      key={unit.id}
-                      unit={unit}
-                      req={req}
-                      now={adminTick}
-                      onOpen={() => setAdminOpenId(req.id)}
-                    />
-                  ))}
+                <div style={styles.boardSquare}>
+                  <div style={styles.boardSquareHead}>
+                    <span style={styles.boardSquareTitle}>OUT ON A CALL</span>
+                    <span style={styles.boardSquareCount}>{busy.length}</span>
+                  </div>
+                  <div style={styles.callCardGrid}>
+                    {busy.map(({ unit, req }) => (
+                      <FleetRow
+                        key={unit.id}
+                        unit={unit}
+                        req={req}
+                        now={adminTick}
+                        onOpen={() => setAdminOpenId(req.id)}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
-              {busy.length === 0 && (
+              {queued.length > 0 && (
+                <div style={styles.boardSquareWaiting}>
+                  <div style={styles.boardSquareHead}>
+                    <span style={styles.boardSquareTitleWait}>WAITING FOR A TEAM</span>
+                    <span style={styles.boardSquareCountWait}>{queued.length}</span>
+                  </div>
+                  <div style={styles.callCardGrid}>
+                    {queued.map((r) => (
+                      <PendingCallCard
+                        key={r.id}
+                        req={r}
+                        now={adminTick}
+                        onOpen={() => setAdminOpenId(r.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {busy.length === 0 && queued.length === 0 && (
                 <div style={styles.calmBoard}>
                   <div style={styles.calmTitle}>Nothing running</div>
                   <div style={styles.calmSub}>
@@ -23848,6 +24486,16 @@ const styles = {
     display: "flex", alignItems: "flex-start", justifyContent: "space-between",
     gap: 12, flexWrap: "wrap", marginBottom: 16,
   },
+  policyAddRow: {
+    display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 14, padding: 10, marginBottom: 14,
+  },
+  policyNameInput: {
+    flex: 1, minWidth: 180, background: "var(--ground)", color: "var(--ink)",
+    border: "1px solid var(--hair-2)", borderRadius: 10,
+    padding: "9px 12px", fontSize: 14, fontFamily: "inherit", outline: "none",
+  },
   policyAdd: {
     background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
     borderRadius: 999, padding: "9px 16px", fontSize: 13, fontWeight: 650,
@@ -23972,6 +24620,99 @@ const styles = {
   invMoveWhen: { color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
 
 
+  // The floating shape: anchored above the bottom bar, never taller than the
+  // screen it is floating over.
+  chatFloatWrap: {
+    position: "fixed",
+    left: 12,
+    right: 12,
+    bottom: "calc(140px + env(safe-area-inset-bottom))",
+    zIndex: 1204,
+    display: "flex",
+    justifyContent: "flex-start",
+    pointerEvents: "none",
+  },
+  chatPanelFloat: {
+    pointerEvents: "auto",
+    width: "min(420px, 100%)",
+    height: "min(460px, calc(100vh - 300px))",
+    background: "var(--panel)",
+    border: "1px solid var(--hair-2)",
+    borderRadius: 20,
+    boxShadow: "0 24px 64px var(--lift-2)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  chatLauncher: {
+    position: "fixed",
+    left: 16,
+    bottom: "calc(86px + env(safe-area-inset-bottom))",
+    zIndex: 1205,
+    display: "inline-flex", alignItems: "center", gap: 7,
+    background: "var(--bar)",
+    backdropFilter: "blur(18px) saturate(140%)",
+    WebkitBackdropFilter: "blur(18px) saturate(140%)",
+    border: "1px solid var(--veil-2)",
+    color: "var(--ink-2)", borderRadius: 999,
+    padding: "12px 18px", fontSize: 13.5, fontWeight: 700,
+    cursor: "pointer", boxShadow: "0 12px 30px var(--lift-2)",
+    maxWidth: "52vw", overflow: "hidden",
+  },
+  chatLauncherHot: {
+    position: "fixed",
+    left: 16,
+    bottom: "calc(86px + env(safe-area-inset-bottom))",
+    zIndex: 1205,
+    display: "inline-flex", alignItems: "center", gap: 7,
+    background: "linear-gradient(180deg,#1D4E8F,#0A2F5E)",
+    border: "1px solid rgba(255,255,255,.18)",
+    color: "#FFFFFF", borderRadius: 999,
+    padding: "12px 18px", fontSize: 13.5, fontWeight: 750,
+    cursor: "pointer", boxShadow: "0 12px 30px rgba(10,47,94,.5)",
+    maxWidth: "52vw", overflow: "hidden",
+  },
+  chatLauncherOn: {
+    position: "fixed",
+    left: 16,
+    bottom: "calc(86px + env(safe-area-inset-bottom))",
+    zIndex: 1205,
+    display: "inline-flex", alignItems: "center", gap: 7,
+    background: "var(--raised)",
+    border: "1px solid var(--hair-3)",
+    color: "var(--ink)", borderRadius: 999,
+    padding: "12px 18px", fontSize: 13.5, fontWeight: 700,
+    cursor: "pointer", boxShadow: "0 12px 30px var(--lift-2)",
+  },
+  chatLauncherLabel: {
+    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+  },
+  // Above the pill, not inside it.
+  chatLauncherBadge: {
+    position: "absolute",
+    top: -9,
+    right: -6,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 999,
+    background: "var(--crit)",
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: 800,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "0 6px",
+    border: "2px solid var(--ground)",
+    boxShadow: "0 4px 12px rgba(255,69,58,.5)",
+  },
+  chatThreadHot: {
+    background: "rgba(10,132,255,.16)",
+    border: "1px solid rgba(10,132,255,.55)",
+    color: "var(--ink)",
+    borderRadius: 999, padding: "6px 12px", fontSize: 12.5, fontWeight: 800,
+    cursor: "pointer", flex: "none", display: "inline-flex", alignItems: "center", gap: 6,
+  },
   chatPanel: {
     width: "100%",
     height: "min(620px, calc(100vh - 260px))",
@@ -24314,42 +25055,15 @@ const styles = {
   checkFlagTag: { fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, flex: "none" },
   checkNoteShown: { fontSize: 12.5, color: "var(--ink-3)", marginTop: 7, fontStyle: "italic" },
 
-  truckRow: {
-    display: "block", width: "100%", textAlign: "left", background: "none",
-    border: "none", borderBottom: "0.5px solid var(--veil)",
-    padding: "11px 14px 12px", cursor: "pointer", position: "relative", color: "var(--ink)",
-  },
-  truckIdle: { opacity: 0.62 },
-  truckEdge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
-  truckHead: { display: "flex", alignItems: "baseline", gap: 9 },
-  truckName: { fontSize: 17, fontWeight: 650, letterSpacing: -0.35, minWidth: 78 },
-  truckCrew: {
-    fontSize: 13, color: "var(--ink-4)", flex: 1, minWidth: 0,
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-  },
   truckClock: {
     fontFamily: mono, fontSize: 17, fontWeight: 500, letterSpacing: -0.7,
     fontVariantNumeric: "tabular-nums",
   },
-  truckJob: {
-    fontSize: 13.5, color: "var(--ink-3)", marginTop: 4, letterSpacing: -0.1,
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-  },
-  truckJobNature: { color: "var(--ink)", fontWeight: 600 },
-  truckJobRoute: { color: "var(--ink-3)" },
-  truckChip: {
-    display: "inline-block", fontSize: 11, fontWeight: 600, letterSpacing: 0.2,
-    padding: "2px 9px", borderRadius: 999, background: "var(--hair)", color: "var(--ink-3)",
-  },
-  truckChipFree: { background: "rgba(48,209,88,.14)", color: "var(--ok)" },
   rail: { display: "flex", gap: 3, marginTop: 8 },
   railSeg: { flex: 1, height: 3, borderRadius: 2 },
   // Only the stage the crew is at is named. Five labels under every row was a
   // second sentence of the same information, and on six trucks that is thirty
   // words of chrome.
-  railLabels: { marginTop: 5 },
-  railLabel: { display: "none" },
-  railLabelOn: { fontSize: 11, color: "var(--ink-3)", fontWeight: 600, letterSpacing: 0.1 },
 
   callTile: {
     position: "relative",
@@ -24508,37 +25222,92 @@ const styles = {
     border: "0.5px solid rgba(48,209,88,.26)",
   },
 
-  waitList: {
-    background: "rgba(255,159,10,.06)",
-    border: "0.5px solid rgba(255,159,10,.28)",
-    borderRadius: 18, overflow: "hidden", marginTop: 4, marginBottom: 12,
-  },
-  // Tighter, because a busy morning puts a dozen of these on one screen and a
-  // desk needs to see the bottom of the list without scrolling.
-  waitRow: {
-    display: "flex", alignItems: "center", gap: 10, width: "100%",
-    background: "none", border: "none",
-    borderBottom: "0.5px solid var(--veil)",
-    padding: "9px 14px", cursor: "pointer", textAlign: "left", color: "var(--ink)",
-  },
-  waitDot: { width: 7, height: 7, borderRadius: "50%", background: "var(--hold)", flex: "none" },
-  waitBody: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 },
-  waitNature: { fontSize: 14.5, fontWeight: 550, letterSpacing: -0.22 },
-  waitRoute: {
-    fontSize: 12, color: "var(--ink-4)",
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-  },
-  waitClock: {
-    fontFamily: mono, fontSize: 15, color: "var(--hold)", fontVariantNumeric: "tabular-nums",
-  },
-
-  fleetList: {
+  // The two squares the board is read in: what is out, and what is waiting.
+  // Same shape, different edge — the waiting one is amber because a call with
+  // nobody on it is the thing the desk has to do something about.
+  boardSquare: {
     background: "var(--panel)",
     border: "0.5px solid var(--veil)",
     borderRadius: 18,
-    overflow: "hidden",
+    padding: 12,
     marginTop: 4,
+    marginBottom: 12,
   },
+  boardSquareWaiting: {
+    background: "rgba(255,159,10,.06)",
+    border: "0.5px solid rgba(255,159,10,.30)",
+    borderRadius: 18,
+    padding: 12,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  boardSquareHead: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "1px 2px 10px",
+  },
+  boardSquareTitle: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 1.4, color: "var(--ink-4)",
+  },
+  boardSquareTitleWait: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 1.4, color: "var(--hold)",
+  },
+  boardSquareCount: {
+    fontSize: 11, fontWeight: 800, color: "var(--ink-3)",
+    background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 999, padding: "1px 8px",
+  },
+  boardSquareCountWait: {
+    fontSize: 11, fontWeight: 800, color: "var(--hold)",
+    background: "rgba(255,159,10,.12)", border: "1px solid rgba(255,159,10,.4)",
+    borderRadius: 999, padding: "1px 8px",
+  },
+  callCardGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
+    gap: 10,
+  },
+  // The roster card, with a call in it. A button, so every part of it is the
+  // target — a desk with a phone in one hand is not aiming at a chevron.
+  callCardTile: {
+    background: "var(--raised)",
+    border: "1px solid var(--hair)",
+    boxShadow: "0 6px 18px var(--lift)",
+    borderRadius: 16,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+    padding: 0,
+    cursor: "pointer",
+    textAlign: "left",
+    color: "var(--ink)",
+    width: "100%",
+    font: "inherit",
+  },
+  callCardTileBody: {
+    padding: "11px 13px 13px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 7,
+  },
+  callCardTileCrew: {
+    fontSize: 12, color: "var(--ink-4)",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  callCardTileNature: {
+    fontSize: 14, fontWeight: 650, letterSpacing: -0.2, color: "var(--ink)",
+  },
+  callCardTileRoute: {
+    fontSize: 12, color: "var(--ink-4)",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  callCardTileWait: {
+    fontSize: 10, fontWeight: 800, letterSpacing: 1, color: "var(--hold)",
+  },
+  callCardTileTags: { display: "flex", gap: 5, flexWrap: "wrap" },
+
+  // Tighter, because a busy morning puts a dozen of these on one screen and a
+  // desk needs to see the bottom of the list without scrolling.
+
 
   callTileGrid: {
     display: "grid",
@@ -24796,6 +25565,26 @@ const styles = {
   stationCount: { marginLeft: 8, fontSize: 12.5, fontWeight: 600, color: "var(--ink-4)", letterSpacing: 0.3 },
   addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
 
+  grantOtBtn: {
+    background: "rgba(255,159,10,.12)", border: "1px solid rgba(255,159,10,.45)",
+    color: "var(--hold)", borderRadius: 999, padding: "3px 9px",
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.3, cursor: "pointer", flex: "none",
+  },
+  liveDayRow: {
+    display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+    background: "rgba(48,209,88,.08)", border: "1px solid rgba(48,209,88,.34)",
+    borderRadius: 14, padding: "12px 14px", marginTop: 10,
+  },
+  storageBanner: {
+    margin: "0 12px 8px",
+    background: "rgba(255,69,58,.14)",
+    border: "1px solid rgba(255,69,58,.5)",
+    color: "var(--ink)",
+    borderRadius: 12,
+    padding: "10px 14px",
+    fontSize: 12.5,
+    lineHeight: 1.5,
+  },
   offlineBanner: {
     background: "color-mix(in srgb, var(--hold) 22%, var(--panel))",
     borderTop: "1px solid var(--hold)",
