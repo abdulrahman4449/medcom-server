@@ -3471,6 +3471,41 @@ function positionAgeMs(fix, now) {
   return fix && fix.ts ? Math.max(0, (now || Date.now()) - fix.ts) : null;
 }
 
+// Nothing outlives the call it belongs to.
+//
+// Deleting the fix at back in service is done by the crew's own device, and a
+// device is exactly the thing that cannot be relied on to do it: a tablet whose
+// battery goes flat mid-call, a browser closed at the destination, a crew who
+// sign off without stamping. Any of those leaves a position sitting in the
+// store — written into the database, surviving deploys, quietly becoming the
+// history this feature was designed not to keep.
+//
+// So the deletion does not depend on the device that made it. Every open board
+// checks on each poll and drops anything that should not be there: a truck that
+// no longer exists, a truck that is not on a call, or a fix old enough that
+// whatever was sending it has plainly stopped. Whoever is looking at the board
+// does the tidying, so it happens whether or not the crew's tablet ever comes
+// back.
+const LOCATION_MAX_AGE_MS = 15 * 60 * 1000;
+
+function pruneLocations(locations, units, requests, now) {
+  const kept = {};
+  let dropped = 0;
+  Object.keys(locations || {}).forEach((unitId) => {
+    const fix = locations[unitId];
+    const unit = (units || []).find((u) => u.id === unitId);
+    const onCall = unit ? !!liveRequestFor(unit, requests) : false;
+    const age = positionAgeMs(fix, now);
+    const stale = age === null || age > LOCATION_MAX_AGE_MS;
+    if (!unit || !onCall || stale) {
+      dropped += 1;
+      return;
+    }
+    kept[unitId] = fix;
+  });
+  return { kept, dropped };
+}
+
 // ---------- overtime ----------
 //
 // Overtime here is not claimed, it is observed. The board already knows when
@@ -6148,7 +6183,13 @@ function App() {
     const ot = await readKey(OVERTIME_KEY, {});
     if (ot !== READ_FAILED) setOvertimeDecisions(ot || {});
     const locs = await readKey(LOCATION_KEY, {});
-    if (locs !== READ_FAILED) setLocations(locs || {});
+    if (locs !== READ_FAILED) {
+      // Swept on the way in. Only written back when something actually needed
+      // removing, so an idle board is not rewriting this key every poll.
+      const { kept, dropped } = pruneLocations(locs || {}, unitsToUse, requestsToUse, Date.now());
+      setLocations(kept);
+      if (dropped > 0) await writeKey(LOCATION_KEY, kept);
+    }
     const cons = await readKey(TRACKING_CONSENT_KEY, {});
     if (cons !== READ_FAILED) setTrackingConsents(cons || {});
     setLog(l || []);
