@@ -7918,6 +7918,7 @@ function App() {
           )}
           {!onSharedPage && user.role === "team" && (
             <TeamView
+              onGoToBoard={() => setNavTab("board")}
               messages={messages}
               setMessages={setMessages}
               inventory={inventory}
@@ -17422,7 +17423,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, onGrantOt, requests, n
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, locations, setLocations, trackingConsents, setTrackingConsents }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToBoard, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, locations, setLocations, trackingConsents, setTrackingConsents }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -17593,7 +17594,27 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       by: gone.closedBy || "the desk",
       at: gone.closedAt || Date.now(),
     });
+    // And put it in front of them. A stand-down that arrives while the crew are
+    // reading the inventory is a stand-down nobody sees, and they are driving.
+    if (onGoToBoard) onGoToBoard();
   }, [myRequest && myRequest.id, requests, myUnit && myUnit.id]);
+
+  // It keeps sounding until somebody says they have heard it.
+  //
+  // One tone was not enough: the whole point of a stand-down is that the crew
+  // are moving, often with a siren on, and a single chime behind that is
+  // nothing. It repeats every six seconds — long enough not to be a wall of
+  // noise, short enough that it cannot be mistaken for having stopped — until
+  // "Understood" is pressed, which is also the only thing that clears the
+  // banner. Nothing else silences it: not switching pages, not the volume chip.
+  useEffect(() => {
+    if (!calledOff) return;
+    const t = setInterval(() => {
+      soundStandDown(audioCtxRef);
+      buzz([400, 150, 400]);
+    }, 6000);
+    return () => clearInterval(t);
+  }, [calledOff]);
 
   // A reply that arrives silently is a reply nobody reads.
   //
@@ -18531,26 +18552,6 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
           onSent={setMessages}
         />
 
-        {/* The call was called off while they were on their way. Loud, red, and
-            it does not clear itself: a crew still driving to a stood-down call
-            is the thing this whole banner exists to stop. */}
-        {calledOff && (
-          <div style={styles.calledOff} className="breathing">
-            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
-            <strong>Call cancelled — stand down</strong>
-            <div style={styles.calledOffWhat}>{calledOff.nature}</div>
-            {calledOff.reason && (
-              <div style={styles.calledOffWhy}>“{calledOff.reason}”</div>
-            )}
-            <div style={styles.calledOffWho}>
-              Closed by {calledOff.by} at {clockStr(calledOff.at)}
-            </div>
-            <button style={styles.primaryBtnSm} onClick={() => setCalledOff(null)}>
-              Understood — standing down
-            </button>
-          </div>
-        )}
-
         {myUnit.oosRequest &&
           myUnit.oosRequest.status === "refused" &&
           !dismissedOos && (
@@ -18615,12 +18616,6 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
               </button>
             </div>
           </div>
-        )}
-
-        {!myRequest && (
-          <button style={styles.foundEmergencyBtn} onClick={raiseOwnEmergency}>
-            🚨 Emergency in front of us
-          </button>
         )}
 
         {!myRequest && (
@@ -18785,6 +18780,45 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       {/* My call: the thing a crew must never have to hunt for. */}
       {onPage("board") && (
         <>
+      {/* The call was called off while they were on their way.
+          On this page, not the truck page: this is the first thing the crew
+          look at, and a stand-down they have to go and find is a crew still
+          driving to a call that no longer exists. It does not clear itself and
+          the tone does not stop until somebody presses the button — see the
+          repeat in the effect that raises it. */}
+      {calledOff && (
+        <div style={styles.calledOff} className="breathing">
+          <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+          <strong>Call cancelled — stand down</strong>
+          <div style={styles.calledOffWhat}>{calledOff.nature}</div>
+          {calledOff.reason && <div style={styles.calledOffWhy}>“{calledOff.reason}”</div>}
+          <div style={styles.calledOffWho}>
+            Closed by {calledOff.by} at {clockStr(calledOff.at)}
+          </div>
+          <button style={styles.standDownBtn} onClick={() => setCalledOff(null)}>
+            Understood — standing down
+          </button>
+        </div>
+      )}
+
+      {/* Something has happened in front of the truck. Its own thing, on the
+          page the crew are already on — it used to sit on the truck page next
+          to "Request out of service", which is a different kind of decision
+          entirely and made this one easy to miss.
+
+          On a call it stays put and goes grey rather than disappearing: a
+          control that vanishes teaches nobody where it lives, and the crew
+          need to know where it is for the time they are not on a call. */}
+      <button
+        style={myRequest ? styles.foundEmergencyBtnOff : styles.foundEmergencyBtn}
+        onClick={raiseOwnEmergency}
+        disabled={!!myRequest}
+        title={myRequest ? "You are already on a call" : "Raise a call you have come across"}
+      >
+        🚨 Emergency in front of us
+        {myRequest && <span style={styles.foundEmergencyWhy}>already on a call</span>}
+      </button>
+
       {!myRequest ? (
         <div style={styles.emptyState}>No active call. You'll be notified here the moment dispatch assigns one.</div>
       ) : (
@@ -24596,6 +24630,26 @@ const styles = {
     fontSize: 13.5, color: "var(--crit-2)", lineHeight: 1.5,
   },
   oosRefusedWhy: { fontSize: 14, color: "#FFFFFF", marginTop: 7, fontStyle: "italic" },
+  // The one thing that stops the tone, so it is the one thing on the banner
+  // that looks like a button.
+  standDownBtn: {
+    width: "100%", marginTop: 4, padding: "13px 16px", borderRadius: 12,
+    background: "#FFFFFF", border: "none", color: "#7F0000",
+    fontSize: 15, fontWeight: 800, fontFamily: "inherit", cursor: "pointer",
+  },
+  // On a call: still there, still where the crew learned it is, plainly not
+  // pressable.
+  foundEmergencyBtnOff: {
+    width: "100%", marginBottom: 12,
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+    background: "var(--inset)", border: "1px solid var(--hair)", color: "var(--ink-4)",
+    borderRadius: 14, padding: "13px 16px", fontSize: 14.5, fontWeight: 700,
+    fontFamily: "inherit", cursor: "not-allowed",
+  },
+  foundEmergencyWhy: {
+    fontSize: 11, fontWeight: 600, letterSpacing: 0.3, color: "var(--ink-4)",
+    textTransform: "uppercase",
+  },
   calledOff: {
     background: "var(--crit)", color: "#FFFFFF",
     borderRadius: 16, padding: "16px 18px", marginBottom: 12,
