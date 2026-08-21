@@ -4057,18 +4057,29 @@ function restockIsDone(done, requestId) {
 
 // The calls this truck has finished on this shift that nobody has restocked
 // against yet, newest first.
+//
+// Measured on when the call ENDED, not when it was raised. Restocking happens
+// after a call, so "did this land in my shift" is a question about the end of
+// it — and keying on the start dropped calls off this list minutes after they
+// finished: one raised at 18:40 and cleared at 19:10 was created before the
+// window it ended in, so it disappeared at exactly the moment the crew were
+// walking back to the truck to restock it.
+//
+// `from` is the crew's own shift window, the same one their completed-call list
+// uses, so the two agree about which calls are theirs.
 function callsAwaitingRestock(requests, unitId, from, done) {
   if (!unitId) return [];
+  const now = Date.now();
   return (requests || [])
     .filter(
       (r) =>
         r &&
         r.status === "completed" &&
         r.assignedUnitId === unitId &&
-        (r.createdAt || 0) >= (from || 0) &&
+        callEndTs(r, now) >= (from || 0) &&
         !restockIsDone(done, r.id)
     )
-    .sort((a, b) => callEndTs(b, Date.now()) - callEndTs(a, Date.now()));
+    .sort((a, b) => callEndTs(b, now) - callEndTs(a, now));
 }
 
 async function markRestocked({ request, unit, user }) {
@@ -7952,7 +7963,7 @@ function App() {
               badge: callsAwaitingRestock(
                 requests,
                 user.unitId,
-                uhuWindowStart(Date.now()),
+                crewShiftWindow(user, Date.now()).start,
                 restockDone
               ).length,
             },
@@ -8017,7 +8028,7 @@ function App() {
           )}
           {!onSharedPage && user.role === "team" && (
             <TeamView
-              onGoToBoard={() => setNavTab("board")}
+              onGoToPage={(t) => setNavTab(t)}
               restockDone={restockDone}
               setRestockDone={setRestockDone}
               messages={messages}
@@ -17900,7 +17911,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, onGrantOt, requests, n
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToBoard, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -18047,7 +18058,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
   const awaitingRestock = callsAwaitingRestock(
     requests,
     myUnit && myUnit.id,
-    uhuWindowStart(Date.now()),
+    crewShiftWindow(user, Date.now()).start,
     restockDone
   );
 
@@ -18082,7 +18093,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     });
     // And put it in front of them. A stand-down that arrives while the crew are
     // reading the inventory is a stand-down nobody sees, and they are driving.
-    if (onGoToBoard) onGoToBoard();
+    if (onGoToPage) onGoToPage("board");
   }, [myRequest && myRequest.id, requests, myUnit && myUnit.id]);
 
   // It keeps sounding until somebody says they have heard it.
@@ -19304,6 +19315,28 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         🚨 Emergency in front of us
         {myRequest && <span style={styles.foundEmergencyWhy}>already on a call</span>}
       </button>
+
+      {/* The truck still has to be made up after a call.
+          The red number on History is the record of it; this is the thing that
+          actually catches a crew, because after Back in Service they are
+          standing on this page looking at "no active call" and there is nothing
+          else here telling them there is a job left. */}
+      {!myRequest && awaitingRestock.length > 0 && (
+        <button style={styles.restockNudge} onClick={() => onGoToPage && onGoToPage("history")}>
+          <span style={styles.restockNudgeCount}>{awaitingRestock.length}</span>
+          <span style={styles.restockNudgeBody}>
+            <span style={styles.restockNudgeTitle}>
+              Restock the truck
+            </span>
+            <span style={styles.restockNudgeSub}>
+              {awaitingRestock.length === 1
+                ? `After ${awaitingRestock[0].nature || "your last call"} — tap to tick off what you used`
+                : `${awaitingRestock.length} calls waiting — tap to tick off what you used`}
+            </span>
+          </span>
+          <ChevronRight size={18} color="var(--hold)" />
+        </button>
+      )}
 
       {!myRequest ? (
         <div style={styles.emptyState}>No active call. You'll be notified here the moment dispatch assigns one.</div>
@@ -25550,6 +25583,21 @@ const styles = {
   // ---- restock, crew side: a tick-list ----
   // The queue of calls the truck has not been made up after. Amber, because it
   // is a job outstanding rather than an emergency.
+  restockNudge: {
+    width: "100%", display: "flex", alignItems: "center", gap: 12,
+    background: "rgba(255,159,10,.11)", border: "1px solid rgba(255,159,10,.45)",
+    borderRadius: 16, padding: "13px 14px", marginBottom: 12,
+    cursor: "pointer", textAlign: "left", fontFamily: "inherit", color: "var(--ink)",
+  },
+  restockNudgeCount: {
+    width: 34, height: 34, borderRadius: 999, flex: "none",
+    background: "var(--crit)", color: "#fff",
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    fontSize: 15, fontWeight: 800,
+  },
+  restockNudgeBody: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 },
+  restockNudgeTitle: { fontSize: 15, fontWeight: 750, color: "var(--hold)" },
+  restockNudgeSub: { fontSize: 12, color: "var(--ink-4)", lineHeight: 1.4 },
   restockQueue: {
     border: "1px solid rgba(255,159,10,.34)",
     background: "rgba(255,159,10,.06)",
