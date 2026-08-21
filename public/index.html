@@ -931,7 +931,43 @@ function checklistPartForSeat(seat) {
 }
 
 function emptyChecklists() {
-  return { medic: [], emt: [] };
+  return { medic: [], emt: [], categories: { medic: [], emt: [] } };
+}
+
+// The lists have sections, the way the inventory does — "Airway", "Drugs bag",
+// "Vehicle" — because a flat run of thirty items is a scroll a crew stops
+// reading about a third of the way down, which is the opposite of what a
+// checklist is for.
+//
+// The items stay a flat array under `checklists[part]`, exactly as before, with
+// a `categoryId` on each. Everything that already reads the list — the filed
+// runs, the flags, the statistics — keeps working untouched, and an item from
+// before sections existed simply has no categoryId and collects in a holding
+// section at the end.
+const UNSORTED_CHECK = "__unsorted";
+
+function checklistItems(checklists, part) {
+  const list = (checklists && checklists[part]) || [];
+  return Array.isArray(list) ? list.filter((x) => x && x.id) : [];
+}
+
+function checklistCategories(checklists, part) {
+  const cats = (checklists && checklists.categories && checklists.categories[part]) || [];
+  return Array.isArray(cats) ? cats.filter((c) => c && c.id && c.name) : [];
+}
+
+function checklistTree(checklists, part) {
+  const cats = checklistCategories(checklists, part);
+  const items = checklistItems(checklists, part);
+  const known = new Set(cats.map((c) => c.id));
+  const groups = cats.map((c) => ({
+    id: c.id,
+    name: c.name,
+    items: items.filter((it) => it.categoryId === c.id),
+  }));
+  const loose = items.filter((it) => !it.categoryId || !known.has(it.categoryId));
+  if (loose.length) groups.push({ id: UNSORTED_CHECK, name: "Not in a section", items: loose });
+  return groups;
 }
 
 // One run per truck, per list, per operational day. A crew coming on at 19:00
@@ -10702,11 +10738,22 @@ function CallTile({ req, unit, onOpen, dim, now }) {
 // The crew's own list. Three answers per item, nothing pre-selected, and it
 // cannot be filed until every item has one — a checklist with blanks in it is
 // the thing everybody signs and nobody reads.
-function ChecklistCard({ part, items, onSubmit, onCancel }) {
+function ChecklistCard({ part, items, checklists, onSubmit, onCancel }) {
   const [answers, setAnswers] = useState({});
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [shut, setShut] = useState({});
   if (!items || items.length === 0) return null;
+
+  // The sections as administration arranged them, filtered to the items this
+  // list actually carries — so a section emptied since the crew signed on does
+  // not appear as an empty heading.
+  const groups = checklistTree(checklists, part.key)
+    .map((g) => ({ ...g, items: g.items.filter((it) => items.some((x) => x.id === it.id)) }))
+    .filter((g) => g.items.length);
+  const known = new Set(groups.flatMap((g) => g.items.map((it) => it.id)));
+  const orphans = items.filter((it) => !known.has(it.id));
+  if (orphans.length) groups.push({ id: "__rest", name: "Other", items: orphans });
 
   const answered = items.filter((it) => answers[it.id]).length;
   const ready = answered === items.length;
@@ -10720,36 +10767,70 @@ function ChecklistCard({ part, items, onSubmit, onCancel }) {
         </span>
       </div>
 
-      <div style={styles.checkList}>
-        {items.map((it) => (
-          <div key={it.id} style={styles.checkItem}>
-            <div style={styles.checkItemText}>{it.text}</div>
-            {/* Three narrow buttons on one line: available, not available, not
-                complete. A tick box would force a half-restocked bag to be
-                called either fine or broken, and it would always be called
-                fine — which is why there are three and not two. */}
-            <div style={styles.checkItemBtns}>
-              {CHECK_ANSWERS.map((a) => {
-                const on = answers[it.id] === a.key;
-                return (
-                  <button
-                    key={a.key}
-                    title={a.label}
-                    style={{
-                      ...styles.checkAnswerBtn,
-                      ...(on
-                        ? { background: a.color, color: "var(--ground)", borderColor: a.color }
-                        : { color: "var(--ink-4)", borderColor: "var(--hair-2)" }),
-                    }}
-                    onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
-                  >
-                    {a.short}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+      {/* The key, once, at the top. Three letters down the rows instead of
+          three words on a line of their own under every item — which is what
+          made a twenty-item list four screens long on a phone. */}
+      <div style={styles.checkKey}>
+        {CHECK_ANSWERS.map((a) => (
+          <span key={a.key} style={styles.checkKeyItem}>
+            <span style={{ ...styles.checkKeyDot, background: a.color }} />
+            {a.label}
+          </span>
         ))}
+      </div>
+
+      <div style={styles.checkList}>
+        {groups.map((g) => {
+          const done = g.items.filter((it) => answers[it.id]).length;
+          const folded = shut[g.id];
+          return (
+            <div key={g.id} style={styles.checkGroup}>
+              <button
+                style={styles.checkGroupHead}
+                onClick={() => setShut((m) => ({ ...m, [g.id]: !m[g.id] }))}
+              >
+                <span style={styles.checkGroupChev}>{folded ? "▸" : "▾"}</span>
+                <span style={styles.checkGroupName}>{g.name}</span>
+                <span
+                  style={
+                    done === g.items.length ? styles.checkGroupTallyOn : styles.checkGroupTally
+                  }
+                >
+                  {done}/{g.items.length}
+                </span>
+              </button>
+
+              {!folded &&
+                g.items.map((it) => (
+                  <div key={it.id} style={styles.checkRow}>
+                    <span style={styles.checkRowText}>{it.text}</span>
+                    {/* Three squares on the same line as the item. */}
+                    <span style={styles.checkRowBtns}>
+                      {CHECK_ANSWERS.map((a) => {
+                        const on = answers[it.id] === a.key;
+                        return (
+                          <button
+                            key={a.key}
+                            title={a.label}
+                            aria-label={`${it.text}: ${a.label}`}
+                            style={{
+                              ...styles.checkDot,
+                              ...(on
+                                ? { background: a.color, color: "var(--ground)", borderColor: a.color }
+                                : { color: "var(--ink-4)", borderColor: "var(--hair-2)" }),
+                            }}
+                            onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
+                          >
+                            {a.key === "available" ? "✓" : a.key === "incomplete" ? "!" : "✕"}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          );
+        })}
       </div>
 
       <input
@@ -19259,6 +19340,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
         <ChecklistCard
           part={myPart}
           items={myChecklistItems}
+          checklists={checklists}
           onSubmit={async (v) => {
             await fileChecklist(v);
             setChecklistOpen(false);
@@ -20376,41 +20458,95 @@ function CoveragePanel({ coverage, units, requests }) {
 function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLog, user }) {
   const [open, setOpen] = useState(false);
   const [part, setPart] = useState("medic");
-  const [draft, setDraft] = useState("");
-  const items = (checklists && checklists[part]) || [];
+  const [newCat, setNewCat] = useState("");
+  const [addingTo, setAddingTo] = useState(null);
+  const [newItem, setNewItem] = useState("");
+  const items = checklistItems(checklists, part);
+  const cats = checklistCategories(checklists, part);
+  const groups = checklistTree(checklists, part);
   const today = shiftKeyFor(Date.now());
+  const partName = part === "medic" ? "medic" : "EMT";
 
   async function save(next) {
-    const merged = { ...emptyChecklists(), ...(checklists || {}), [part]: next };
+    const base = { ...emptyChecklists(), ...(checklists || {}) };
+    const merged = {
+      ...base,
+      [part]: next.items ?? items,
+      categories: {
+        ...emptyChecklists().categories,
+        ...(base.categories || {}),
+        [part]: next.categories ?? cats,
+      },
+    };
     setChecklists(merged);
     await writeKey(CHECKLIST_KEY, merged);
   }
 
-  async function addItem() {
-    const text = draft.trim();
+  async function addCategory() {
+    const name = newCat.trim();
+    if (!name) return;
+    await save({ categories: [...cats, { id: uid("cc"), name }] });
+    setNewCat("");
+    await addLog(`${user.name || "Admin"} added the section "${name}" to the ${partName} checklist`, "status");
+  }
+
+  async function renameCategory(g) {
+    const asked = window.prompt("Rename this section", g.name);
+    if (asked === null) return;
+    const name = asked.trim();
+    if (!name) return;
+    await save({ categories: cats.map((c) => (c.id === g.id ? { ...c, name } : c)) });
+  }
+
+  async function removeCategory(g) {
+    if (
+      !window.confirm(
+        `Remove the section "${g.name}"?\n\nIts ${g.items.length} item` +
+          `${g.items.length === 1 ? "" : "s"} are kept — they move to "Not in a section". ` +
+          `Lists already filed keep their answers.`
+      )
+    )
+      return;
+    await save({ categories: cats.filter((c) => c.id !== g.id) });
+  }
+
+  async function addItem(categoryId) {
+    const text = newItem.trim();
     if (!text) return;
-    await save([...items, { id: uid("ci"), text }]);
-    setDraft("");
-    await addLog(
-      `${user.name || "Admin"} added "${text}" to the ${part === "medic" ? "medic" : "EMT"} checklist`,
-      "status"
-    );
+    await save({ items: [...items, { id: uid("ci"), text, categoryId }] });
+    setNewItem("");
+    await addLog(`${user.name || "Admin"} added "${text}" to the ${partName} checklist`, "status");
+  }
+
+  async function renameItem(it) {
+    const asked = window.prompt("Reword this item", it.text);
+    if (asked === null) return;
+    const text = asked.trim();
+    if (!text) return;
+    await save({ items: items.map((x) => (x.id === it.id ? { ...x, text } : x)) });
   }
 
   async function removeItem(it) {
-    if (!window.confirm(`Remove "${it.text}" from the list?\n\nLists already filed keep their answers.`)) return;
-    await save(items.filter((x) => x.id !== it.id));
-    await addLog(`${user.name || "Admin"} removed "${it.text}" from the ${part} checklist`, "status");
+    if (!window.confirm(`Remove "${it.text}" from the list?\n\nLists already filed keep their answers.`))
+      return;
+    await save({ items: items.filter((x) => x.id !== it.id) });
+    await addLog(`${user.name || "Admin"} removed "${it.text}" from the ${partName} checklist`, "status");
   }
 
-  function move(it, dir) {
-    const i = items.findIndex((x) => x.id === it.id);
+  // Order within a section. Swapping neighbours inside the group has to move
+  // them in the flat array, which is where the order actually lives.
+  function move(g, it, dir) {
+    const within = g.items;
+    const i = within.findIndex((x) => x.id === it.id);
     const j = i + dir;
-    if (i < 0 || j < 0 || j >= items.length) return;
+    if (i < 0 || j < 0 || j >= within.length) return;
+    const a = items.findIndex((x) => x.id === within[i].id);
+    const b = items.findIndex((x) => x.id === within[j].id);
+    if (a < 0 || b < 0) return;
     const next = items.slice();
-    next[i] = items[j];
-    next[j] = items[i];
-    save(next);
+    next[a] = items[b];
+    next[b] = items[a];
+    save({ items: next });
   }
 
   // What came back today, per truck — the exceptions first, because a list
@@ -20440,53 +20576,133 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
           <button
             key={pt.key}
             style={pt.key === part ? styles.archTabOn : styles.archTab}
-            onClick={() => setPart(pt.key)}
+            onClick={() => {
+              setPart(pt.key);
+              setAddingTo(null);
+            }}
           >
             {pt.label}
-            <span style={styles.archTabCount}>{((checklists || {})[pt.key] || []).length}</span>
+            <span style={styles.archTabCount}>{checklistItems(checklists, pt.key).length}</span>
           </button>
         ))}
       </div>
 
       <InfoNote label="How the checklist works">
-        Each list is checked once a day per vehicle — the medic list by whoever is in Alpha, the EMT
-        list by Bravo. Every item is answered available, not available, or not complete, and the
-        answers appear here and in the statistics. Changing the list here changes what crews see
-        next time they sign on; lists already filed keep the answers they were given.
+        Each list is checked once a shift, per vehicle — the medic list by whoever is in Alpha, the
+        EMT list by Bravo. Build it in sections, the way the kit is actually laid out. Every item is
+        answered available, not complete or not available, and the answers appear here and in the
+        statistics. Changing the list changes what crews see next time they sign on; lists already
+        filed keep the answers they were given.
       </InfoNote>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-        <input
-          style={styles.input}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Add an item, e.g. Oxygen cylinder above half"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addItem();
-          }}
-        />
-        <button style={styles.primaryBtnSm} disabled={!draft.trim()} onClick={addItem}>
-          Add
-        </button>
-      </div>
-
-      {items.length === 0 ? (
-        <div style={styles.emptyState}>
-          Nothing on this list yet. Crews see no checklist until something is added.
+      {groups.length === 0 ? (
+        <div style={styles.formHint}>
+          Nothing on this list yet. Add a section below — “Airway”, “Drugs bag”, “Vehicle” — then
+          the items in it. Crews see no checklist until something is added.
         </div>
       ) : (
-        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-          {items.map((it, idx) => (
-            <div key={it.id} style={styles.checkAdminRow}>
-              <span style={styles.checkAdminNum}>{idx + 1}</span>
-              <span style={{ flex: 1, minWidth: 0 }}>{it.text}</span>
-              <button style={styles.checkMoveBtn} onClick={() => move(it, -1)} disabled={idx === 0}>↑</button>
-              <button style={styles.checkMoveBtn} onClick={() => move(it, 1)} disabled={idx === items.length - 1}>↓</button>
-              <button style={styles.checkRemoveBtn} onClick={() => removeItem(it)}>Remove</button>
+        <div style={styles.catGrid}>
+          {groups.map((g) => (
+            <div key={g.id} style={styles.catCard}>
+              <div style={styles.catCardHead}>
+                <span style={styles.catCardName}>{g.name}</span>
+                <span style={styles.catCardCount}>{g.items.length}</span>
+              </div>
+
+              {g.items.length === 0 ? (
+                <div style={styles.catCardEmpty}>Nothing in here yet.</div>
+              ) : (
+                g.items.map((it, idx) => (
+                  <div key={it.id} style={styles.tinyRow}>
+                    <button style={styles.tinyTap} onClick={() => renameItem(it)} title="Reword">
+                      <span style={styles.tinyName}>{it.text}</span>
+                    </button>
+                    <button
+                      style={styles.tinyMore}
+                      onClick={() => move(g, it, -1)}
+                      disabled={idx === 0}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      style={styles.tinyMore}
+                      onClick={() => move(g, it, 1)}
+                      disabled={idx === g.items.length - 1}
+                    >
+                      ↓
+                    </button>
+                    <button style={styles.tinyMore} onClick={() => removeItem(it)} title="Remove">
+                      ×
+                    </button>
+                  </div>
+                ))
+              )}
+
+              {g.id !== UNSORTED_CHECK &&
+                (addingTo === g.id ? (
+                  <div style={styles.itemAddRow}>
+                    <input
+                      autoFocus
+                      style={styles.itemAddInput}
+                      placeholder="e.g. Oxygen above half"
+                      value={newItem}
+                      maxLength={120}
+                      onChange={(e) => setNewItem(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addItem(g.id);
+                        if (e.key === "Escape") setAddingTo(null);
+                      }}
+                    />
+                    <button
+                      style={styles.primaryBtnSm}
+                      onClick={() => addItem(g.id)}
+                      disabled={!newItem.trim()}
+                    >
+                      Add
+                    </button>
+                  </div>
+                ) : (
+                  <div style={styles.catCardFoot}>
+                    <button
+                      style={styles.catCardAdd}
+                      onClick={() => {
+                        setNewItem("");
+                        setAddingTo(g.id);
+                      }}
+                    >
+                      + Item
+                    </button>
+                    <button style={styles.catTool} onClick={() => renameCategory(g)}>
+                      Rename
+                    </button>
+                    <button style={styles.catTool} onClick={() => removeCategory(g)}>
+                      Remove
+                    </button>
+                  </div>
+                ))}
             </div>
           ))}
         </div>
       )}
+
+      <div style={styles.stockAdd}>
+        <div style={styles.invShortHead}>ADD A SECTION</div>
+        <div style={styles.stockAddRow}>
+          <input
+            style={styles.invNameInput}
+            placeholder="Section — e.g. Airway"
+            value={newCat}
+            maxLength={60}
+            onChange={(e) => setNewCat(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addCategory();
+            }}
+          />
+          <button style={styles.primaryBtnSm} onClick={addCategory} disabled={!newCat.trim()}>
+            Add
+          </button>
+        </div>
+      </div>
 
       <div style={styles.sectionHeader}>TODAY</div>
       {staffed.length === 0 ? (
@@ -25152,20 +25368,6 @@ const styles = {
     border: "1px solid rgba(233,196,106,.5)", borderRadius: 14, padding: "12px 14px",
     boxShadow: "0 8px 22px var(--lift)",
   },
-  checkAdminRow: {
-    display: "flex", alignItems: "center", gap: 8,
-    background: "var(--panel)", border: "1px solid var(--hair)", borderRadius: 10,
-    padding: "9px 11px", fontSize: 13.5, color: "var(--ink)",
-  },
-  checkAdminNum: { fontSize: 11.5, color: "var(--ink-4)", fontWeight: 700, minWidth: 16 },
-  checkMoveBtn: {
-    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
-    borderRadius: 6, width: 26, height: 26, cursor: "pointer", fontSize: 12,
-  },
-  checkRemoveBtn: {
-    background: "none", border: "1px solid rgba(255,77,94,.4)", color: "var(--crit-2)",
-    borderRadius: 6, padding: "3px 8px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
-  },
   checkTodayRow: {
     display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
     background: "var(--panel)", border: "1px solid var(--hair)", borderRadius: 10, padding: "8px 11px",
@@ -26106,19 +26308,50 @@ const styles = {
     textTransform: "uppercase",
   },
   checkCount: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "var(--ink-4)" },
+  // The key, once, at the top of the card.
+  checkKey: {
+    display: "flex", gap: 12, flexWrap: "wrap",
+    padding: "8px 2px 10px", fontSize: 10.5, color: "var(--ink-4)",
+  },
+  checkKeyItem: { display: "inline-flex", alignItems: "center", gap: 5 },
+  checkKeyDot: { width: 8, height: 8, borderRadius: 3, display: "inline-block", flex: "none" },
+
+  checkGroup: { marginBottom: 4 },
+  checkGroupHead: {
+    display: "flex", alignItems: "center", gap: 7, width: "100%",
+    background: "none", border: "none", color: "var(--ink-3)",
+    padding: "6px 2px", cursor: "pointer", textAlign: "left", font: "inherit",
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.8, textTransform: "uppercase",
+  },
+  checkGroupChev: { fontSize: 9, color: "var(--ink-4)", flex: "none" },
+  checkGroupName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  checkGroupTally: {
+    marginLeft: "auto", fontSize: 10.5, fontWeight: 800, color: "var(--ink-4)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  checkGroupTallyOn: {
+    marginLeft: "auto", fontSize: 10.5, fontWeight: 800, color: "var(--ok)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  // One item, one line: the words on the left, the three answers on the right.
+  // The old card put the three answers on a line of their own underneath every
+  // item, which made a twenty-item list four screens on a phone.
+  checkRow: {
+    display: "flex", alignItems: "center", gap: 8,
+    borderTop: "1px solid var(--veil)", padding: "5px 0",
+  },
+  checkRowText: {
+    flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.35, color: "var(--ink-2)",
+  },
+  checkRowBtns: { display: "flex", gap: 4, flex: "none" },
+  checkDot: {
+    width: 30, height: 30, borderRadius: 8, flex: "none",
+    background: "none", border: "1px solid", fontSize: 13, fontWeight: 800,
+    lineHeight: 1, cursor: "pointer", fontFamily: "inherit",
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+  },
   checkList: { marginTop: 10, display: "flex", flexDirection: "column", gap: 1,
     background: "var(--hair)", border: "1px solid var(--hair)", borderRadius: 10, overflow: "hidden" },
-  checkItem: {
-    background: "var(--raised)", padding: "9px 11px",
-    display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-  },
-  checkItemText: { fontSize: 13.5, color: "var(--ink)", lineHeight: 1.4, flex: 1, minWidth: 120 },
-  checkItemBtns: { display: "flex", gap: 4, marginLeft: "auto" },
-  checkAnswerBtn: {
-    background: "none", border: "1px solid", borderRadius: 8,
-    padding: "6px 9px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
-    minHeight: 34, minWidth: 58,
-  },
   checkActions: { display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" },
   checkSubmit: {
     minHeight: 42, padding: "0 18px",
