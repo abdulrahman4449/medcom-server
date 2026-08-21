@@ -20,7 +20,9 @@ services:
     # A persistent disk requires a paid instance type. Free tiers discard the
     # disk, which is the problem this file is here to solve.
     plan: starter
-    buildCommand: npm install
+    # --include=dev because esbuild is a devDependency and the build needs it.
+    # public/index.html is generated from src/ by this step.
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     disk:
       name: data

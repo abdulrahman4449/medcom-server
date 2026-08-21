@@ -7,9 +7,20 @@ administrators read statistics and file shift logs.
 
 ## Shape of the repo
 
-- `public/index.html` — **the entire application**, ~21k lines: React via
-  Babel-standalone in one `<script type="text/babel">` block, styles in a
-  single `styles` object. There is no build step. Edit this file directly.
+- `src/` — **the application**, ~78 ES modules under `lib/`, `domain/`,
+  `export/`, `brand/`, `ui/`, plus `styles.jsx` and the `main.jsx` entry
+  point. **This is what you edit.** Every module is named after the section
+  banner it came from, so `// ---------- no coverage ----------` is now
+  `src/domain/coverage.jsx`.
+- `build.mjs` — esbuild packs `src/` into one script and inlines it into
+  `public/index.template.html`. `npm run build`.
+- `public/index.html` — **GENERATED. Never edit it by hand**; the next build
+  silently discards your change. It stays committed because the server serves
+  it, the native shell bundles it, and a deploy must not depend on the build
+  succeeding.
+- `public/index.template.html` — the surrounding HTML: the CDN script tags,
+  the `<style>` reset, and an `<!--APP-->` marker where the bundle lands.
+- `scripts/check.mjs` — the checks below. `npm run check`.
 - `server.js` — Express + SQLite. Serves the app, the `/api/board` key/value
   store the app reads and writes, and the two Play Store policy pages.
 - `public/sw.js` — notification service worker. Deliberately **no fetch
@@ -113,26 +124,42 @@ patch", that document is the target — do not start a fresh exploration.
 
 ## Checking your work
 
-There is no test suite. Before pushing a change to `public/index.html`,
-extract the `text/babel` block and run **three** checks over it. The sandbox
-cannot reach the CDN, so the app itself cannot be rendered here; say so
-rather than implying it was tested in a browser.
+There is no test suite. `npm run check` is what stands in for one, and it must
+pass before you build. It walks every module in `src/` and asserts:
 
-1. **It compiles** — `@babel/preset-react`.
-2. **Every identifier resolves.** A green compile proves nothing about
-   whether the things the code names exist. Parse with `@babel/parser`,
-   walk `ReferencedIdentifier` with `@babel/traverse`, and assert
-   `path.scope.hasBinding(name, true)` for everything that is not a
-   browser global (uppercase JSX names included; lowercase ones are
-   intrinsics). This has caught two shipped bugs that Babel was happy
-   with: eleven components deleted by a bad splice, and a Policies tab
-   that named four variables nobody had declared — which threw before the
-   first element was built, so React unmounted the tree and the screen
-   went **black with nothing responding**. A blank screen in this app is
-   almost always an unresolved name.
-3. **Nothing is declared twice** — top-level functions and consts, and
-   keys inside the one `styles` object. A duplicate style key silently
-   wins over the earlier one.
+1. **It parses.**
+2. **Every identifier resolves** — declared locally, imported, or a browser
+   global. A green compile proves nothing about whether the things the code
+   names exist; esbuild will happily build a module that references something
+   it never imported, and it only fails when that line runs. This has caught
+   two shipped bugs: eleven components deleted by a bad splice, and a Policies
+   tab that named four variables nobody had declared — which threw before the
+   first element was built, so React unmounted the tree and the screen went
+   **black with nothing responding**. A blank screen in this app is almost
+   always an unresolved name.
+3. **Nothing is declared twice** in a module, and no key appears twice inside
+   the `styles` object, where the later one silently wins.
 
-Then `git diff --stat`. An index-based splice that removed more than you
-meant to looks like a large deletion count and like nothing else.
+Then `npm run build`, and `git diff --stat`. An index-based splice that removed
+more than you meant to looks like a large deletion count and like nothing else.
+
+### Two things the checks cannot see
+
+- **A name that moves between modules must move its import with it.** The
+  checker catches the module that lost it. It cannot tell you the split was
+  wrong, only that it does not resolve.
+- **`String.replace` with a `$` in the replacement.** `build.mjs` inlines the
+  bundle with a *function* replacement on purpose: a minified bundle is full of
+  `$&` (from `x && y`), and in a replacement **string** `$&` means "the matched
+  text". It silently rewrote part of the app and produced a syntax error 470 KB
+  in. Never pass a bundle as a replacement string.
+
+### Rendering it for real
+
+The sandbox cannot reach unpkg, so the CDN copies of React never arrive and the
+app cannot be opened from `public/index.html` directly. npm *is* reachable, so
+`npm install react react-dom leaflet xlsx-js-style` puts the same UMD builds on
+disk; serve them locally, stub `/api/board` (the key is a **query parameter**,
+`?key=`, and writes are `POST {key, value}`) and the app boots in headless
+Chromium. That is how the split was verified: sign in as `F1525518`, walk the
+tabs, and compare screenshots against the same walk on the previous build.

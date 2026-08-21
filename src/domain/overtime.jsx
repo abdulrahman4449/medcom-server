@@ -1,0 +1,214 @@
+import { DEFAULT_STATION, stationOf } from "./live-sheet.jsx";
+import { otHoursStr } from "./messages.jsx";
+import { seatLabel, shiftLabelWithWindow } from "./shift-helpers.jsx";
+import { callEndTs, callStartTs } from "./uhu.jsx";
+import { writeKey } from "../lib/offline-queue.jsx";
+
+// ---------- overtime ----------
+//
+// Overtime here is not claimed, it is observed. The board already knows when
+// somebody signed on, which shift they signed on for, and when they signed off,
+// so a stay that ran past its shift end is a fact the log already holds — and
+// asking a crew to fill in a form about something the app watched happen is
+// how overtime goes unrecorded.
+//
+// So the claims are DERIVED from the log and never stored. What is stored is
+// the decision: approved, approved in part, or declined, keyed to the stay it
+// answers. That keeps one source of truth for what happened and a separate one
+// for what was agreed about it, and it means correcting a sign-off time
+// corrects the claim rather than leaving an orphan.
+export const OVERTIME_KEY = "ems:overtime";
+
+// One stay, one claim. The seat is in the key because a person who worked two
+// trucks in one shift did two stays and each is answerable separately.
+export function overtimeClaimId(d) {
+  const who = (d.accountId || d.name || "?").toUpperCase();
+  return `${who}::${d.shiftStart || 0}::${d.unitId || "?"}::${d.seat || "?"}`;
+}
+
+// Was this person on a call when their shift ended? Both cases count as
+// overtime — the department pays for the hour either way — but they are
+// different conversations, and an administrator deciding should be able to see
+// which one this is without opening the call list.
+export function heldByCallAt(requests, unitId, at) {
+  if (!unitId || !at) return null;
+  return (
+    (requests || []).find((r) => {
+      if (!r || r.assignedUnitId !== unitId) return false;
+      const start = callStartTs(r);
+      if (!start || start > at) return false;
+      const end = callEndTs(r, at + 1);
+      return end >= at;
+    }) || null
+  );
+}
+
+// Every stay in the window that ran past its shift end, with whatever has been
+// decided about it attached.
+export function overtimeClaims(log, requests, from, to, decisions) {
+  const decided = decisions || {};
+  const out = [];
+  (log || []).forEach((e) => {
+    if (!e || e.type !== "shift") return;
+    const d = e.detail || {};
+    if (d.kind !== "off" || d.role !== "team") return;
+    if (!d.overtimeMs || d.overtimeMs <= 0) return;
+    if (!e.ts || e.ts < from || e.ts >= to) return;
+    const id = overtimeClaimId(d);
+    const held = heldByCallAt(requests, d.unitId, d.shiftEnd);
+    out.push({
+      id,
+      ts: e.ts,
+      station: d.station || DEFAULT_STATION,
+      name: d.name || "",
+      accountId: d.accountId || "",
+      unitId: d.unitId || null,
+      unitName: d.unitName || "",
+      seat: d.seat || null,
+      shift: d.shift || null,
+      shiftStart: d.shiftStart || null,
+      shiftEnd: d.shiftEnd || null,
+      signedOffAt: e.ts,
+      claimedMs: d.overtimeMs,
+      onCall: !!held,
+      onCallNature: held ? held.nature : "",
+      decision: decided[id] || null,
+      granted: false,
+    });
+  });
+
+  // Whole shifts an administrator granted outright. These are not derived from
+  // anything — they are a decision on their own — so they are read straight out
+  // of the store and shown beside the observed ones.
+  Object.keys(decided).forEach((id) => {
+    const dec = decided[id];
+    if (!dec || !dec.granted) return;
+    if (!dec.shiftStart || dec.shiftStart < from || dec.shiftStart >= to) return;
+    out.push({
+      id,
+      ts: dec.decidedAt || dec.shiftStart,
+      station: dec.station || DEFAULT_STATION,
+      name: dec.name || "",
+      accountId: dec.accountId || "",
+      unitId: dec.unitId || null,
+      unitName: dec.unitName || "",
+      seat: dec.seat || null,
+      shift: dec.shift || null,
+      shiftStart: dec.shiftStart || null,
+      shiftEnd: dec.shiftEnd || null,
+      signedOffAt: null,
+      claimedMs: dec.claimedMs || 0,
+      onCall: false,
+      onCallNature: "",
+      decision: dec,
+      granted: true,
+    });
+  });
+
+  return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+// What was actually agreed, in milliseconds. Undecided is not zero — it is
+// undecided, and a total that quietly counts pending claims as nought is a
+// total somebody will budget against.
+export function overtimeApprovedMs(claim) {
+  const d = claim && claim.decision;
+  if (!d) return null;
+  if (d.status === "declined") return 0;
+  if (d.status === "partial") return Math.max(0, d.approvedMs || 0);
+  if (d.status === "approved") return Math.max(0, d.approvedMs || claim.claimedMs || 0);
+  return null;
+}
+
+// Counting somebody's whole tour as overtime — called in on a rest day, or held
+// over for a full shift rather than the hour or two the board works out on its
+// own. It is not derived from anything, so it is a decision recorded in its own
+// right, and it is written the same way from wherever it is pressed.
+//
+// It covers the rostered shift and nothing beyond it. If they then work past
+// the end of that shift, the board raises the usual overtime claim for the
+// excess when they sign off, and administration has to approve that separately.
+// A grant is not a blank cheque on the rest of the day.
+export async function grantWholeShiftOvertime({ unit, slot, member, user, decisions, setDecisions, addLog }) {
+  const start = member && member.shiftStart;
+  const end = member && member.shiftEnd;
+  if (!start || !end) {
+    window.alert(
+      `${(member && member.name) || "That person"} has no shift window recorded, so a whole shift ` +
+        `cannot be worked out. They need to sign on again for it to be counted.`
+    );
+    return false;
+  }
+  const whole = Math.max(0, end - start);
+  const now = Date.now();
+  // How far past the rostered end they already are. Named in the confirmation,
+  // because it is the part this grant does *not* cover.
+  const beyond = Math.max(0, now - end);
+
+  const ok = window.confirm(
+    `Count ${member.name}'s whole shift as overtime?\n\n` +
+      `${shiftLabelWithWindow(member.shift)} — ${otHoursStr(whole)}\n\n` +
+      (beyond > 0
+        ? `They are already ${otHoursStr(beyond)} past the end of that shift. This grant covers ` +
+          `the ${otHoursStr(whole)} of the shift itself. Anything past it is a separate claim ` +
+          `that you will be asked to approve again when they sign off.\n\n`
+        : `If the shift runs past its twelve hours, the extra is a separate claim you will be ` +
+          `asked to approve again.\n\n`) +
+      `Recorded as done by you.`
+  );
+  if (!ok) return false;
+
+  const id = `GRANT::${overtimeClaimId({
+    accountId: member.accountId,
+    name: member.name,
+    shiftStart: start,
+    unitId: unit.id,
+    seat: slot,
+  })}`;
+
+  const next = {
+    ...(decisions || {}),
+    [id]: {
+      ...(decisions || {})[id],
+      status: "approved",
+      approvedMs: whole,
+      decidedBy: (user && user.name) || "Administration",
+      decidedAt: now,
+      note: "Whole shift granted as overtime",
+      name: member.name,
+      accountId: member.accountId || "",
+      unitId: unit.id,
+      unitName: unit.name,
+      seat: slot,
+      station: stationOf(unit),
+      shift: member.shift,
+      shiftStart: start,
+      shiftEnd: end,
+      claimedMs: whole,
+      granted: true,
+    },
+  };
+
+  const saved = await writeKey(OVERTIME_KEY, next);
+  if (!saved) {
+    window.alert("That could not be saved — no signal to the server. Nothing has changed; try again.");
+    return false;
+  }
+  setDecisions(next);
+  await addLog(
+    `Whole shift granted as overtime — ${member.name} (${unit.name} · ${seatLabel(slot)}), ` +
+      `${shiftLabelWithWindow(member.shift)}, ${otHoursStr(whole)}` +
+      (beyond > 0 ? ` · ${otHoursStr(beyond)} already past the shift end, to be claimed separately` : ""),
+    "status"
+  );
+  return true;
+}
+
+export function overtimeStatusLabel(claim) {
+  const d = claim && claim.decision;
+  if (!d) return "AWAITING APPROVAL";
+  if (d.status === "declined") return "DECLINED";
+  if (d.status === "partial") return "APPROVED IN PART";
+  if (d.status === "approved") return claim.granted ? "WHOLE SHIFT GRANTED" : "APPROVED";
+  return "AWAITING APPROVAL";
+}

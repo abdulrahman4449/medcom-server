@@ -1,0 +1,183 @@
+import { COVERAGE_KEY, coverageGapsIn } from "./coverage.jsx";
+import { stationOf } from "./live-sheet.jsx";
+import { opDayKey, opDayLabel, opDayStart } from "./op-day.jsx";
+import { SHIFTS } from "./shifts.jsx";
+import { readKey, writeKey } from "../lib/offline-queue.jsx";
+
+// ---------- submitting a shift's log ----------
+//
+// The desk submits its own log at the end of its own shift. Two submissions make
+// a day: the day shift's and the night shift's, filed under the same operational
+// date, and each station files separately — so 6 August holds up to four, one
+// per shift per station.
+//
+// A submission is not always finished when it is made. A call raised at 06:30
+// that is still running at 07:00 belongs to the shift that took it, but its
+// remaining times and the crew's overtime are not known yet. So the desk submits
+// and goes home; the submission stays open in the background and completes
+// itself once that call is closed and its crew has signed out. Nobody has to
+// come back and do anything.
+export const SUBMISSION_KEY = "ems:submissions";
+export const SUBMISSION_CAP = 600;
+
+export function submissionId(dayStart, shiftKey, station) {
+  return `${opDayKey(dayStart)}::${shiftKey}::${station}`;
+}
+
+// Every call this desk's shift is answerable for: raised inside the shift
+// window, at this station. A call belongs to the shift that took it, not the
+// one that happened to be on when it finished.
+export function requestsForShift(requests, station, windowStart, windowEnd) {
+  return (requests || []).filter(
+    (r) =>
+      stationOf(r) === station &&
+      r.createdAt >= windowStart &&
+      r.createdAt < windowEnd
+  );
+}
+
+export function logForShift(log, station, windowStart, windowEnd) {
+  return (log || []).filter(
+    (e) => e && e.ts >= windowStart && e.ts < windowEnd && stationOf(e) === station
+  );
+}
+
+// What is still outstanding on a submission: calls not closed, and crews from
+// those calls not yet signed out. While either is true the submission is held
+// open and its overtime is not final.
+export function submissionOutstanding(sub, requests, units) {
+  const ids = new Set((sub.requestIds || []));
+  const openCalls = (requests || []).filter((r) => ids.has(r.id) && r.status !== "completed");
+  const crewStillOn = (units || []).filter(
+    (u) => stationOf(u) === sub.station && (u.alpha || u.bravo)
+  );
+  return { openCalls, crewStillOn };
+}
+
+// The desk submitting its shift. Safe to press with a call still running: what
+// is known now is filed, and what is not yet known is marked as still open. The
+// background pass below finishes it off later.
+export async function submitShiftLog({ requests, units, log, scheduled, station, windowStart, windowEnd, shiftKey, by, coverageList }) {
+  const all = (await readKey(SUBMISSION_KEY, [])) || [];
+  const dayStart = opDayStart(windowStart);
+  const id = submissionId(dayStart, shiftKey, station);
+  if (all.some((s) => s && s.id === id)) return { ok: false, reason: "already" };
+
+  const mine = requestsForShift(requests, station, windowStart, windowEnd);
+  const openIds = mine.filter((r) => r.status !== "completed").map((r) => r.id);
+
+  // The gaps have to come from somewhere. Neither caller was passing a list, so
+  // every submission was filed with an empty one and every sheet printed off it
+  // said the station had never been without an ambulance — including the
+  // shifts where it plainly had. A caller that holds the list can still hand it
+  // over; one that doesn't gets it from the same store the panel reads.
+  const gaps = coverageList || (await readKey(COVERAGE_KEY, [])) || [];
+
+  const entry = {
+    id,
+    dayKey: opDayKey(dayStart),
+    dayStart,
+    dayLabel: opDayLabel(dayStart),
+    shiftKey,
+    shiftLabel: SHIFTS[shiftKey] ? SHIFTS[shiftKey].label : shiftKey,
+    station,
+    windowStart,
+    windowEnd,
+    submittedAt: Date.now(),
+    submittedBy: by || "",
+    // Open until every call it covers is closed and the crews are off.
+    status: openIds.length ? "open" : "final",
+    requestIds: mine.map((r) => r.id),
+    openRequestIds: openIds,
+    // The snapshot as submitted. The live record is preferred on download when
+    // it has moved on, and the sheet says so.
+    requests: mine.map((r) => ({ ...r })),
+    log: logForShift(log, station, windowStart, windowEnd),
+    scheduled: (scheduled || []).filter(
+      (s) => s && stationOf(s) === station && s.scheduledFor >= windowStart && s.scheduledFor < windowEnd
+    ),
+    units: (units || []).filter((u) => stationOf(u) === station).map((u) => ({ ...u })),
+    // The gaps that happened on this shift travel with it, so a submitted log
+    // carries its own evidence rather than depending on a live list.
+    coverage: coverageGapsIn(gaps, station, windowStart, windowEnd),
+    callCount: mine.length,
+  };
+
+  const next = [entry, ...all].slice(0, SUBMISSION_CAP);
+  const ok = await writeKey(SUBMISSION_KEY, next);
+  return { ok, entry, openCount: openIds.length };
+}
+
+// Finishing off submissions that were filed with a call still running. Runs in
+// the background on any desk or admin board: once the last call is closed and
+// the station's crews are signed out, the submission is completed — its calls
+// refreshed to their final times and the overtime that was still accruing when
+// it was submitted now counted.
+// A shift filed by hand before its window closed still has to take whatever the
+// rest of the window brings. Without this, a desk that submitted at 16:00
+// because it looked finished would leave every later call off the sheet — and
+// nobody would notice until the month was counted.
+export async function amendSubmissionsWithLateCalls({ requests, log }) {
+  const all = (await readKey(SUBMISSION_KEY, [])) || [];
+  if (!all.length) return 0;
+  let changed = 0;
+  const next = all.map((sub) => {
+    if (!sub) return sub;
+    const known = new Set(sub.requestIds || []);
+    const late = requestsForShift(requests, sub.station, sub.windowStart, sub.windowEnd)
+      .filter((r) => !known.has(r.id));
+    if (!late.length) return sub;
+    changed += 1;
+    const merged = [...(sub.requests || []), ...late.map((r) => ({ ...r }))];
+    const stillOpen = merged.filter((r) => r.status !== "completed").map((r) => r.id);
+    return {
+      ...sub,
+      requestIds: merged.map((r) => r.id),
+      requests: merged,
+      openRequestIds: stillOpen,
+      // Taking on a call that has not finished re-opens the submission, so the
+      // overtime is counted when it does.
+      status: stillOpen.length ? "open" : sub.status,
+      callCount: merged.length,
+      log: logForShift(log, sub.station, sub.windowStart, Date.now()),
+      amendedAt: Date.now(),
+      amendedCount: (sub.amendedCount || 0) + late.length,
+    };
+  });
+  if (!changed) return 0;
+  await writeKey(SUBMISSION_KEY, next);
+  return changed;
+}
+
+export async function finaliseOpenSubmissions({ requests, units, log, boardId }) {
+  const all = (await readKey(SUBMISSION_KEY, [])) || [];
+  const open = all.filter((s) => s && s.status === "open");
+  if (!open.length) return 0;
+
+  let changed = 0;
+  const next = all.map((s) => {
+    if (!s || s.status !== "open") return s;
+    const { openCalls, crewStillOn } = submissionOutstanding(s, requests, units);
+    if (openCalls.length || crewStillOn.length) return s;
+    changed += 1;
+    const byId = new Map((requests || []).map((r) => [r.id, r]));
+    return {
+      ...s,
+      status: "final",
+      finalisedAt: Date.now(),
+      finalisedBy: boardId,
+      openRequestIds: [],
+      requests: (s.requestIds || []).map((id) => {
+        const live = byId.get(id);
+        return live ? { ...live } : (s.requests || []).find((r) => r.id === id);
+      }).filter(Boolean),
+      // The log is re-cut at completion so the closing stamps and the sign-outs
+      // that happened after submission are in the record too.
+      log: logForShift(log, s.station, s.windowStart, Date.now()),
+    };
+  });
+
+  if (!changed) return 0;
+  await writeKey(SUBMISSION_KEY, next);
+  return changed;
+}

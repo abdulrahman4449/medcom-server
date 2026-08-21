@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PulseOps — Where Every Second Matters</title>
+<meta name="description" content="PulseOps — the ambulance dispatch board for Emergency Medical Services." />
+<meta name="apple-mobile-web-app-title" content="PulseOps" />
+<meta name="application-name" content="PulseOps" />
+<!-- Navy, off the mark: the colour the phone paints round the app. -->
+<meta name="theme-color" content="#070A11" />
+<!-- The mark, inline, so the tab and the home screen carry it without a file
+     to deploy, cache-bust and keep inside the native bundle as well. -->
+<link rel="icon" href="./brand/pulseops-mark-192.png" />
+<link rel="apple-touch-icon" href="./brand/pulseops-mark-512.png" />
+<style>
+  html, body, #root { height: 100%; margin: 0; background: #070A11; }
+  * { box-sizing: border-box; }
+</style>
+
+<!--
+  THIS FILE IS GENERATED. Edit src/ and run `npm run build`.
+
+  FOR IT — THESE THREE FILES MUST BE SERVED LOCALLY.
+
+  The app itself is built ahead of time and inlined below, so nothing is
+  compiled in the browser any more. Three libraries are still loaded from a
+  public CDN (unpkg.com). On an internal server with no internet access they
+  will never arrive, and the app will not start. Download each one, place it
+  beside this file, and change the three src attributes below to relative
+  paths:
+
+      react.production.min.js       →  src="./vendor/react.production.min.js"
+      react-dom.production.min.js   →  src="./vendor/react-dom.production.min.js"
+      xlsx.bundle.js                →  src="./vendor/xlsx.bundle.js"
+
+  Nothing else in the application reaches outside the hospital network.
+-->
+
+<!-- React -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!-- Spreadsheet export -->
+<!--
+  xlsx-js-style, not the plain xlsx build.
+
+  The community SheetJS build reads cell styles but does not write them: every
+  fill and font colour set on a cell is silently discarded when the workbook is
+  saved. That is why the night-shift shading and the category colours never
+  appeared, however correctly they were set. This fork is the same library with
+  the same API and style writing restored.
+
+  For the internal deployment this should be served from the hospital's own
+  server rather than a public CDN, like everything else the app loads.
+-->
+<script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<!--
+  Map, for the live position of a truck that is out on a call.
+
+  Leaflet with OpenStreetMap tiles: no API key, no billing account, and no
+  third party named as a data recipient beyond the tile host itself. The
+  tiles are the ONLY thing here that reaches a server outside the hospital
+  besides the three scripts above.
+
+  If the hospital network blocks the tile host, the map still works — the
+  ambulances sit in the right places on a blank ground, and the panel says
+  the background could not be loaded rather than pretending the trucks are
+  missing. Same note as the others: for the internal deployment these should
+  be served from the hospital's own server.
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<!--APP-->
+</body>
+</html>

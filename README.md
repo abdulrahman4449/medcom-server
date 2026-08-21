@@ -11,8 +11,10 @@ nothing tied to any one platform. It runs anywhere Node.js runs.
   `design/README.md` before redesigning any screen.
 - `server.js` — the whole backend. Serves the app and the `/api/board`
   endpoint the app reads and writes to.
-- `public/index.html` — your actual app (same one from `testapp449`,
-  unchanged except where it reads its API address — see below).
+- `src/` — the app's source, split into modules. **Edit here.**
+- `public/index.html` — the built app: one self-contained file, generated
+  from `src/` by `npm run build`. **Never edit it by hand** — the next build
+  overwrites it.
 - `public/sw.js` — the notification service worker, unchanged.
 - `data/` — where the database file lives once the server runs. Empty until
   then.
@@ -73,13 +75,13 @@ When it's done, Render gives you a URL like `https://medcom-dispatch.onrender.co
 — that's your permanent server address.
 
 ### 3. Point the app at its own server
-Open `public/index.html`, find this line near the top:
+Open `src/lib/board-api.jsx`, find this line:
 ```js
-const LIVE_SITE = "https://REPLACE_WITH_YOUR_SERVER_URL";
+export const LIVE_SITE = "https://REPLACE_WITH_YOUR_SERVER_URL";
 ```
-Replace it with your actual Render URL, then re-upload that one changed file
-to your GitHub repo (same "upload a file" method as before) — Render
-redeploys automatically whenever the repo changes.
+Replace it with your actual Render URL, run `npm run build`, and push both the
+changed source and the rebuilt `public/index.html`. Render redeploys
+automatically whenever the repo changes, and rebuilds the app as it deploys.
 
 ### 4. Check it worked
 Visit your Render URL in a browser. Sign in, create a test call — same
