@@ -26,7 +26,7 @@
 <body>
 
 <h1>Privacy Policy — PulseOps</h1>
-<p class="sub">Last updated: 19 August 2026</p>
+<p class="sub">Last updated: 21 August 2026</p>
 
 <div class="notice">
   <strong>This app is not a medical device.</strong> It does not diagnose, treat, cure or
@@ -69,21 +69,19 @@
         service records it — a patient medical record number (MRN).</td>
   </tr>
   <tr>
-    <td>Vehicle location<br/>(only while on a call)</td>
-    <td>
-      When a crew is dispatched to a call, the position of the ambulance is shared with the
-      dispatch desk so it can see where its vehicles are. It is asked for first: a crew member
-      is shown what is collected and why, and may decline — everything else in the app works
-      the same either way.
-      <br/><br/>
-      <strong>It runs only during a call</strong> — it starts on dispatch and stops the moment
-      the crew go back in service — and <strong>only while the app is open on screen</strong>.
-      There is no background location tracking. A position is taken about once a minute.
-      <br/><br/>
-      <strong>Only the latest position is kept.</strong> Each one replaces the one before it,
-      and the record is deleted when the call ends. No route, journey history or record of
-      where a member of staff has been is stored.
-    </td>
+    <td>Vehicle location <em>(only on an active call, and only if you agree)</em></td>
+    <td>Where your vehicle is while it is running a call: latitude and longitude, how
+        accurate the fix is, heading and speed where the device reports them, the time of
+        the fix, the vehicle and call it belongs to, and the name and employee ID of the
+        crew member whose device sent it. Only the most recent position for a vehicle is
+        held, and it is deleted when the call ends. See
+        <a href="#location">Location while on a call</a> below.</td>
+  </tr>
+  <tr>
+    <td>Your answer about location</td>
+    <td>Whether you agreed to share your vehicle's position or declined, the date and time
+        of that answer, the reason you gave if you declined, and whether an administrator
+        has acknowledged it. The answer is also noted in the shift activity log.</td>
   </tr>
   <tr>
     <td>On your device</td>
@@ -100,13 +98,63 @@
   service's own clinical records and confidentiality rules.
 </p>
 
+<h2 id="location">Location while on a call</h2>
+<p>
+  So that the desk can send the nearest available vehicle, the app can share a vehicle's
+  position with the dispatch desk while that vehicle is running a call. This is off until
+  you agree to it, and it works under fixed limits:
+</p>
+<ul>
+  <li><strong>Only if you agree.</strong> Before any position is collected, the app explains
+      in plain language what is shared, when, who sees it, and what happens if you say no.
+      That is separate from the permission dialog your phone or tablet shows. Nothing is
+      collected until you have said yes to both.</li>
+  <li><strong>Only during an active call.</strong> It starts when your vehicle is dispatched
+      and stops the moment you go back in service. Between calls, on standby, and off shift,
+      nothing is collected.</li>
+  <li><strong>Never in the background.</strong> It runs only while the app is open on the
+      screen. Locking the device or switching to another app stops it. There is no
+      background location collection and no persistent notification keeping it alive.</li>
+  <li><strong>One device per vehicle.</strong> Only the device signed into the seat
+      responsible for the call sends a position. A second crew member's device on the same
+      vehicle sends nothing.</li>
+  <li><strong>No route and no history.</strong> A position is saved about once a minute and
+      each one replaces the one before it, so only the vehicle's latest position exists.
+      No trail, route or history of where you have been is built or stored.</li>
+  <li><strong>Deleted when the call ends.</strong> Going back in service removes the
+      position. As a backstop, any open board also removes a stored position when the
+      vehicle is no longer on a call or the position has not been updated for 15 minutes —
+      so nothing is left behind by a device whose battery went flat or that was closed
+      mid-call.</li>
+  <li><strong>Who can see it.</strong> Dispatch staff and administrators of your own
+      service, on that service's own server, alongside the rest of the board. It is not
+      sent to any other company, is not used for advertising or analytics, and is not used
+      to monitor staff outside the call it belongs to.</li>
+</ul>
+<p>
+  <strong>If you say no.</strong> Everything else in the app works exactly as it does now —
+  you take calls, stamp times, file checklists, all of it. The desk simply sees no position
+  for your vehicle. A refusal takes effect immediately and needs nobody's approval; an
+  administrator can record that they have read it, but cannot overturn it. The service asks
+  you to give a reason, which is kept for administration, and you will be asked again on
+  your next call.
+</p>
+<p>
+  <strong>Changing your mind after agreeing.</strong> Turning location off for this app in
+  your device settings stops any position being sent, straight away — the app is told the
+  device refused and says so on your screen. Tell your administrator as well, so the record
+  of your answer matches what you have decided.
+</p>
+
 <h2>What the app does not do</h2>
 <ul>
   <li>No advertising, and no advertising identifiers.</li>
   <li>No analytics or tracking software, and no third-party trackers of any kind.</li>
   <li>No sale or sharing of any data with third parties.</li>
-  <li>No location tracking outside a live call, and none at all in the background.</li>
-  <li>No journey history — positions are overwritten and then deleted, never accumulated.</li>
+  <li>No location tracking outside an active call, and none at all unless you have agreed
+      to it — see <a href="#location">Location while on a call</a>. No background location,
+      no tracking between calls or off shift, and no history of where a vehicle has
+      been.</li>
   <li>No access to contacts, photos, microphone or camera.</li>
 </ul>
 
@@ -135,6 +183,8 @@
   Operational records are retained by the ambulance service under its own records-retention
   rules, which typically require ambulance and patient records to be kept for a defined
   period. Staff accounts are kept while the person is employed in a role that needs one.
+  Vehicle positions are the exception: they are not retained at all beyond the call they
+  belong to, and are removed within 15 minutes at the latest.
 </p>
 
 <h2>Your rights and how to exercise them</h2>
