@@ -91,7 +91,7 @@ export const NARROW_COLUMNS = {
   "E-PCR AUTHOR": 22,
 };
 
-export function autoFitSheet(ws, headerRow) {
+export function autoFitSheet(ws, headerRow, foldFrom) {
   if (!ws || !ws["!ref"]) return ws;
   const range = XLSX.utils.decode_range(ws["!ref"]);
   const heading = headerRow || 0;
@@ -110,7 +110,11 @@ export function autoFitSheet(ws, headerRow) {
     const cap = NARROW_COLUMNS[headText.trim()];
     let wch = Math.min(XL_COL_MAX_WIDTH, Math.max(XL_COL_MIN_WIDTH, Math.ceil(widest + XL_COL_PADDING)));
     if (cap) wch = Math.min(wch, cap);
-    cols.push({ wch });
+    // Everything past the shift log's own columns is folded away: grouped one
+    // level down and hidden, so the sheet opens looking exactly like the filed
+    // log sheet and the rest is one click on the + away. Nothing is dropped.
+    const folded = typeof foldFrom === "number" && foldFrom > 0 && c >= foldFrom;
+    cols.push(folded ? { wch, level: 1, hidden: true } : { wch });
   }
   ws["!cols"] = cols;
 
@@ -163,7 +167,7 @@ export async function exportAndShareLog(log, requests, units, scheduled, station
     requests, units, crewIndex, scheduled, exportedAt, station, coverage, dayStart
   );
   const dispatchLogSheet = dressLogSheet(
-    autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), dispatchAoa.headerRowIndex || 4),
+    autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), dispatchAoa.headerRowIndex || 4, dispatchAoa.coreColumns),
     dispatchAoa
   );
   XLSX.utils.book_append_sheet(wb, dispatchLogSheet, "DISPATCH LOG");
@@ -491,7 +495,10 @@ export async function exportArchivedDay(archive, liveRequests) {
           : ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}`) +
         (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : ""),
     ]);
-    const sheet = dressLogSheet(autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4), aoa);
+    const sheet = dressLogSheet(
+      autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4, aoa.coreColumns),
+      aoa
+    );
     XLSX.utils.book_append_sheet(wb, sheet, `DISPATCH LOG — ${stationShort(st.key)}`);
   });
 

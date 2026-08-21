@@ -52,8 +52,31 @@ const vendorDir = path.join(root, "vendor");
 const readVendor = (f) => {
   const p = path.join(vendorDir, f);
   if (!fs.existsSync(p)) throw new Error(`vendor/${f} is missing - see vendor/README.md`);
-  return fs.readFileSync(p, "utf8");
+  let text = fs.readFileSync(p, "utf8");
+  if (f === "xlsx.js") text = fixOutlineAttribute(text);
+  return text;
 };
+
+// xlsx-js-style writes a grouped column as BOTH outlineLevel="1" (correct) and
+// level="1" (not an attribute <col> has). The stray one makes the file fail a
+// strict reader outright - openpyxl refuses to open it - and risks Excel
+// offering to "repair" a shift log. The grouping is what puts the extra
+// columns behind a + on the dispatch sheet, so it has to work.
+//
+// One exact replacement, and a hard failure if the library changes underneath
+// it, so upgrading xlsx tells you rather than quietly shipping broken files.
+function fixOutlineAttribute(text) {
+  const bad = "r.outlineLevel=r.level=t.level";
+  const good = "r.outlineLevel=t.level";
+  if (!text.includes(bad)) {
+    throw new Error(
+      "vendor/xlsx.js: the outlineLevel patch no longer applies. The library has " +
+      "changed - check whether it still emits an invalid `level` attribute on <col> " +
+      "before removing this (see vendor/README.md)."
+    );
+  }
+  return text.split(bad).join(good);
+}
 // Order matters: react before react-dom, and both before the app.
 const vendorJs = ["react.js", "react-dom.js", "xlsx.js", "leaflet.js"];
 const vendorBlock =

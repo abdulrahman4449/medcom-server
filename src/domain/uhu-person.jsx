@@ -306,6 +306,9 @@ export function titleSheet(sheet, title, subtitle) {
     t.s = {
       font: { name: XL_FONT, sz: 16, bold: true, color: { rgb: "FF16222E" } },
       alignment: { vertical: "center", horizontal: "left", wrapText: false },
+      // The gold rule the filed shift log sets its headings against. It is the
+      // one mark that makes the two documents read as the same stationery.
+      border: { bottom: { style: "medium", color: { rgb: "FFE9C46A" } } },
     };
   }
   const sub = sheet["A2"];
@@ -391,7 +394,8 @@ export function fillBlankCells(sheet, headerRowIndex, dataRows) {
 export function gridLogSheet(sheet, headerRowIndex, dataRows) {
   if (!sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
-  const hair = { style: "thin", color: { rgb: "FFB7C2CC" } };
+  // #C9D4DD - the rule colour the filed shift log uses between its rows.
+  const hair = { style: "thin", color: { rgb: "FFC9D4DD" } };
   // Only rows that are a call. A blank on a call means "not applicable" and is
   // worth saying; a blank on a spacer row, or on a sheet with no calls at all,
   // means there is nothing there — and writing NA across it made an empty day
@@ -462,7 +466,8 @@ export function shadeNightRows(sheet, aoa, offset) {
         // Light grey, not black. Solid black across forty rows made the sheet
         // painful to read for the sake of a distinction that only needs to be
         // noticeable, not loud.
-        fill: { patternType: "solid", fgColor: { rgb: "FFD9D9D9" } },
+        // #E9E9E9 - the same grey the filed shift log shades a night row with.
+        fill: { patternType: "solid", fgColor: { rgb: "FFE9E9E9" } },
         font: { name: XL_FONT, ...((cell.s || {}).font || {}), color: { rgb: "FF1A1A1A" }, bold: false, sz: 10 },
       };
     }
@@ -474,7 +479,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // Section 1 as the sheet has it, with the two changes asked for: where the
   // patient is coming from leads the sheet rather than trailing it, and the call
   // category sits immediately after the category of call it qualifies.
-  const header = [
+  let header = [
     "Location where the patient is coming from",
     "Coming from?",
     "Transported to?",
@@ -535,6 +540,52 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     "JOURNEY",
   ];
 
+  // ---------- the filed shift log is the master ----------
+  //
+  // The department reads the dispatcher's shift log sheet. This sheet now
+  // carries that sheet's columns, in its order, under its captions, so the two
+  // documents read as one thing rather than as two versions of the same day.
+  //
+  // Nothing is dropped to achieve it. Everything else the app records follows
+  // behind those columns and is grouped into an outline the sheet opens with
+  // collapsed - one click on the + and it is all there.
+  //
+  // "Call" is genuinely new. The shift log leads with what the call was, and
+  // this sheet had no column for it at all: the route was here, the nature of
+  // the call was not.
+  header.splice(1, 0, "Call");
+
+  // Export caption -> the shift log's caption for the same column.
+  const SHIFT_LOG_COLUMNS = [
+    ["Location where the patient is coming from", "Patient coming from"],
+    ["Call", "Call"],
+    ["MRN", "MRN"],
+    ["Dispatch time", "Disp."],
+    ["En-route time", "En route"],
+    ["On-scene time", "Scene"],
+    ["Departure time", "Depart"],
+    ["Arrived on destination", "Arrived"],
+    ["Back in service", "In svc"],
+    ["RESPONSE TIME", "Resp."],
+    ["MEDIC TEAM", "Team"],
+    ["TYPE OF SERVICE", "Svc"],
+    ["KILO METER", "Km"],
+    ["CALL CATEGORY", "Call category"],
+    ["E-PCR AUTHOR", "E-PCR author"],
+    ["OUTCOME", "Outcome"],
+  ];
+  const coreIdx = SHIFT_LOG_COLUMNS.map(([from]) => {
+    const i = header.indexOf(from);
+    // A caption renamed upstream must stop the build rather than quietly drop a
+    // column off the front of the sheet.
+    if (i < 0) throw new Error(`dispatch log: no column named "${from}"`);
+    return i;
+  });
+  const coreSet = new Set(coreIdx);
+  const COLUMN_ORDER = [...coreIdx, ...header.map((_, i) => i).filter((i) => !coreSet.has(i))];
+  const CORE_COLUMNS = coreIdx.length;
+  header = COLUMN_ORDER.map((i, n) => (n < CORE_COLUMNS ? SHIFT_LOG_COLUMNS[n][1] : header[i]));
+
   const rowFor = (r) => {
     const unit = units.find((u) => u.id === r.assignedUnitId) || {};
     const t = r.times || {};
@@ -542,8 +593,11 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     const shiftKey = scheduledShiftKey(r.createdAt);
     const shiftRun = shiftWindowFor(shiftKey, r.createdAt);
     const shift = shiftMeta(shiftKey);
-    return [
+    const cells = [
       r.patientOrigin || "",
+      // The shift log leads with what the call actually was; this sheet had
+      // only the route.
+      r.nature || "",
       callFrom(r),
       callTo(r),
       r.mrn || "",
@@ -597,6 +651,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
       journeyLabel(r),
     ];
+    return COLUMN_ORDER.map((i) => cells[i]);
   };
 
   // Ordered the way the department works through a day: the day shift's calls in
@@ -705,11 +760,14 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // knows how many title lines it wrote.
   out.headerRowIndex = firstHeaderRow;
   out.callRows = callRows;
-  out.categoryCol = header.indexOf("CALL CATEGORY") + 1; // +1 for the "#" column
-  out.serviceCol = header.indexOf("TYPE OF SERVICE") + 1;
+  out.categoryCol = header.indexOf("Call category") + 1; // +1 for the "#" column
+  out.serviceCol = header.indexOf("Svc") + 1;
   // The service column now carries the level, so it is the one that gets the
   // colour. There is no separate category-of-call column any more.
   out.callTypeCol = -1;
+  // Where the shift log's own columns stop and everything else begins. The
+  // dresser groups from here on and opens the sheet with the group collapsed.
+  out.coreColumns = CORE_COLUMNS + 1; // +1 for the "#" column
   return out;
 }
 
