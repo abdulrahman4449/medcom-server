@@ -3962,9 +3962,37 @@ const INVENTORY_KEY = "ems:inventory";
 const INVENTORY_MOVES_KEY = "ems:inventoryMoves";
 const INVENTORY_MOVES_CAP = 4000;
 
+// The shelf has sections. "IV catheters" is the section; 18G, 20G, extension
+// sets and dressings are what is in it. A flat list of eighty items is a scroll
+// nobody reads, and it is not how the store room is actually arranged.
+const UNSORTED_CATEGORY = "__unsorted";
+
 function inventoryItems(inv) {
   const list = inv && Array.isArray(inv.items) ? inv.items : [];
   return list.filter((it) => it && it.id && it.name);
+}
+
+function inventoryCategories(inv) {
+  const list = inv && Array.isArray(inv.categories) ? inv.categories : [];
+  return list.filter((c) => c && c.id && c.name);
+}
+
+// Rows arranged the way the store room is: sections in the order they were
+// added, each with its items. Anything from before sections existed — or left
+// behind when a section is removed — collects in one holding section at the
+// end rather than disappearing from the page with the count still on it.
+function inventoryTree(inv, moves) {
+  const cats = inventoryCategories(inv);
+  const rows = stockLevels(inventoryItems(inv), moves);
+  const known = new Set(cats.map((c) => c.id));
+  const groups = cats.map((c) => ({
+    id: c.id,
+    name: c.name,
+    rows: rows.filter((r) => r.categoryId === c.id),
+  }));
+  const loose = rows.filter((r) => !r.categoryId || !known.has(r.categoryId));
+  if (loose.length) groups.push({ id: UNSORTED_CATEGORY, name: "Not in a category", rows: loose });
+  return groups;
 }
 
 // Everything that has happened to this item since the count it is measured
@@ -14478,17 +14506,26 @@ async function exportOvertime(claims, from, to, label) {
 // at the bottom out of the way.
 function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
   const [open, setOpen] = useState(true);
-  const [newName, setNewName] = useState("");
+  const [newCat, setNewCat] = useState("");
+  const [addingTo, setAddingTo] = useState(null);
+  const [newItem, setNewItem] = useState("");
+  // Which row has its rename/remove showing. One at a time: these are rare
+  // jobs and a pair of buttons on every line is what made this page enormous.
+  const [manageId, setManageId] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const items = inventoryItems(inventory);
-  const rows = stockLevels(items, moves);
-  const short = rows.filter((r) => r.band === "low" || r.band === "out");
+  const cats = inventoryCategories(inventory);
+  const groups = inventoryTree(inventory, moves);
+  const short = groups.reduce(
+    (n, g) => n + g.rows.filter((r) => r.band === "low" || r.band === "out").length,
+    0
+  );
 
-  async function saveItems(next, note) {
+  async function save(next, note) {
     setBusy(true);
     try {
-      const payload = { items: next };
+      const payload = { categories: next.categories ?? cats, items: next.items ?? items };
       await writeKey(INVENTORY_KEY, payload);
       setInventory(payload);
       if (note) await addLog(note, "status");
@@ -14497,16 +14534,52 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
     }
   }
 
-  async function addItem() {
-    const name = newName.trim();
+  async function addCategory() {
+    const name = newCat.trim();
+    if (!name) return;
+    await save(
+      { categories: [...cats, { id: uid("cat"), name }] },
+      `Inventory — added the category "${name}"`
+    );
+    setNewCat("");
+  }
+
+  async function renameCategory(g) {
+    const asked = window.prompt("Rename this category", g.name);
+    if (asked === null) return;
+    const name = asked.trim();
+    if (!name) return;
+    await save(
+      { categories: cats.map((c) => (c.id === g.id ? { ...c, name } : c)) },
+      `Inventory — category "${g.name}" renamed to "${name}"`
+    );
+  }
+
+  async function removeCategory(g) {
+    if (
+      !window.confirm(
+        `Remove the category "${g.name}"?\n\n` +
+          `Its ${g.rows.length} item${g.rows.length === 1 ? "" : "s"} are kept — they move to ` +
+          `"Not in a category" so nothing loses its count.`
+      )
+    )
+      return;
+    await save(
+      { categories: cats.filter((c) => c.id !== g.id) },
+      `Inventory — removed the category "${g.name}"`
+    );
+  }
+
+  async function addItem(categoryId) {
+    const name = newItem.trim();
     if (!name) return;
     // A name only. Inventing a number at the moment an item is named is how a
     // shelf ends up carrying a figure nobody ever counted.
-    await saveItems(
-      [...items, { id: uid("inv"), name, full: 0, countedAt: null }],
+    await save(
+      { items: [...items, { id: uid("inv"), categoryId, name, full: 0, countedAt: null }] },
       `Inventory — added "${name}"`
     );
-    setNewName("");
+    setNewItem("");
   }
 
   // The count. Whatever number administration enters is the full shelf: it is
@@ -14524,19 +14597,19 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
       window.alert("Enter a whole number — how many are on the shelf.");
       return;
     }
-    await saveItems(
-      items.map((it) => (it.id === row.id ? { ...it, full: parsed, countedAt: Date.now() } : it)),
+    await save(
+      { items: items.map((it) => (it.id === row.id ? { ...it, full: parsed, countedAt: Date.now() } : it)) },
       `Inventory — ${row.name} counted at ${parsed}`
     );
   }
 
-  async function rename(row) {
+  async function renameItem(row) {
     const asked = window.prompt("Rename this item", row.name);
     if (asked === null) return;
     const name = asked.trim();
     if (!name) return;
-    await saveItems(
-      items.map((it) => (it.id === row.id ? { ...it, name } : it)),
+    await save(
+      { items: items.map((it) => (it.id === row.id ? { ...it, name } : it)) },
       `Inventory — "${row.name}" renamed to "${name}"`
     );
   }
@@ -14548,84 +14621,170 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
       )
     )
       return;
-    await saveItems(items.filter((it) => it.id !== row.id), `Inventory — removed "${row.name}"`);
+    await save({ items: items.filter((it) => it.id !== row.id) }, `Inventory — removed "${row.name}"`);
   }
 
   const recent = (moves || [])
     .slice()
     .sort((x, y) => (y.ts || 0) - (x.ts || 0))
-    .slice(0, 40);
+    .slice(0, 25);
 
   return (
     <FoldingSection
       title="INVENTORY"
-      count={short.length}
-      countLabel={short.length ? "running low" : "stocked"}
+      count={short}
+      countLabel={short ? "running low" : "stocked"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
       <InfoNote label="How this works">
-        One shelf for the department, not one per truck. Enter what a count found and that number
-        becomes 100%. Crews record what they use against the call they used it on, and it comes off
-        here.
+        One shelf for the department, arranged in categories. Add a category, add the items in it,
+        then enter what a count found — that number becomes 100%. Crews record what they use against
+        the call they used it on and it comes off here.
       </InfoNote>
 
-      {rows.length === 0 ? (
-        <div style={styles.formHint}>No items yet. Add them at the bottom of this page.</div>
-      ) : (
-        <div style={styles.stockList}>
-          {rows.map((r) => {
-            const band = STOCK_BANDS[r.band];
-            return (
-              <div key={r.id} style={styles.stockRow}>
-                <div style={styles.stockMain}>
-                  <div style={styles.stockNameRow}>
-                    <span style={styles.stockName}>{r.name}</span>
-                    {band.label && (
-                      <span style={{ ...styles.stockBand, color: band.color }}>{band.label}</span>
-                    )}
-                  </div>
-                  {/* The bar is the reading; the line under it is the audit. A
-                      percentage alone cannot be compared down a list at a
-                      glance, and a bar alone cannot be checked. */}
-                  <div style={styles.stockBarTrack}>
-                    <div
-                      style={{
-                        ...styles.stockBarFill,
-                        width: `${r.pct === null ? 0 : Math.max(2, r.pct)}%`,
-                        background: band.color,
-                      }}
-                    />
-                  </div>
-                  <div style={styles.stockSub}>
-                    {r.pct === null
-                      ? "Never counted — tap Edit and enter what is on the shelf"
-                      : `${r.have} of ${r.full} left${r.used ? ` · ${r.used} used since the count` : ""}`}
-                    {r.countedAt ? ` · counted ${gregDateStr(r.countedAt)}` : ""}
-                  </div>
-                </div>
-
-                <div style={styles.stockPctWrap}>
-                  <span style={{ ...styles.stockPct, color: band.color }}>
-                    {r.pct === null ? "—" : `${r.pct}%`}
-                  </span>
-                  <div style={styles.stockBtns}>
-                    <button style={styles.stockEdit} onClick={() => recount(r)} disabled={busy}>
-                      Edit
-                    </button>
-                    <button style={styles.stockGhost} onClick={() => rename(r)} disabled={busy}>
-                      Rename
-                    </button>
-                    <button style={styles.stockGhost} onClick={() => removeItem(r)} disabled={busy}>
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+      {groups.length === 0 ? (
+        <div style={styles.formHint}>
+          Nothing here yet. Add a category below — “IV catheters”, “Airway”, “Dressings” — then the
+          items that go in it.
         </div>
+      ) : (
+        groups.map((g) => (
+          <div key={g.id} style={styles.catBlock}>
+            <div style={styles.catHead}>
+              <span style={styles.catName}>{g.name}</span>
+              <span style={styles.catCount}>
+                {g.rows.length} {g.rows.length === 1 ? "item" : "items"}
+              </span>
+              {g.id !== UNSORTED_CATEGORY && (
+                <span style={styles.catTools}>
+                  <button style={styles.catTool} onClick={() => renameCategory(g)} disabled={busy}>
+                    Rename
+                  </button>
+                  <button style={styles.catTool} onClick={() => removeCategory(g)} disabled={busy}>
+                    Remove
+                  </button>
+                </span>
+              )}
+            </div>
+
+            {/* One line per item. Name, a slim bar, the percentage — the whole
+                row is the Edit button, because entering a count is the only
+                thing anybody comes to this page to do. Rename and remove are
+                behind the ⋯ so they cost no height until they are wanted. */}
+            {g.rows.map((r) => {
+              const band = STOCK_BANDS[r.band];
+              const managing = manageId === r.id;
+              return (
+                <div key={r.id}>
+                  <div style={styles.itemRow}>
+                    <button
+                      style={styles.itemTap}
+                      onClick={() => recount(r)}
+                      disabled={busy}
+                      title="Enter what is on the shelf"
+                    >
+                      <span style={styles.itemName}>{r.name}</span>
+                      <span style={styles.itemBarTrack}>
+                        <span
+                          style={{
+                            ...styles.itemBarFill,
+                            width: `${r.pct === null ? 0 : Math.max(3, r.pct)}%`,
+                            background: band.color,
+                          }}
+                        />
+                      </span>
+                      <span style={{ ...styles.itemPct, color: band.color }}>
+                        {r.pct === null ? "—" : `${r.pct}%`}
+                      </span>
+                    </button>
+                    <button
+                      style={styles.itemMore}
+                      onClick={() => setManageId(managing ? null : r.id)}
+                    >
+                      ⋯
+                    </button>
+                  </div>
+                  {managing && (
+                    <div style={styles.itemManage}>
+                      <span style={styles.itemManageNote}>
+                        {r.pct === null
+                          ? "Never counted"
+                          : `${r.have} of ${r.full} left` +
+                            (r.used ? ` · ${r.used} used since the count` : "") +
+                            (r.countedAt ? ` · counted ${gregDateStr(r.countedAt)}` : "")}
+                      </span>
+                      <button style={styles.catTool} onClick={() => renameItem(r)} disabled={busy}>
+                        Rename
+                      </button>
+                      <button style={styles.catTool} onClick={() => removeItem(r)} disabled={busy}>
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {g.id !== UNSORTED_CATEGORY &&
+              (addingTo === g.id ? (
+                <div style={styles.itemAddRow}>
+                  <input
+                    autoFocus
+                    style={styles.itemAddInput}
+                    placeholder="Item name — e.g. 18G"
+                    value={newItem}
+                    maxLength={80}
+                    onChange={(e) => setNewItem(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addItem(g.id);
+                      if (e.key === "Escape") setAddingTo(null);
+                    }}
+                  />
+                  <button
+                    style={styles.primaryBtnSm}
+                    onClick={() => addItem(g.id)}
+                    disabled={!newItem.trim() || busy}
+                  >
+                    Add
+                  </button>
+                  <button style={styles.catTool} onClick={() => setAddingTo(null)}>
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <button
+                  style={styles.itemAddBtn}
+                  onClick={() => {
+                    setNewItem("");
+                    setAddingTo(g.id);
+                  }}
+                >
+                  + Add an item to {g.name}
+                </button>
+              ))}
+          </div>
+        ))
       )}
+
+      <div style={styles.stockAdd}>
+        <div style={styles.invShortHead}>ADD A CATEGORY</div>
+        <div style={styles.stockAddRow}>
+          <input
+            style={styles.invNameInput}
+            placeholder="Category — e.g. IV catheters"
+            value={newCat}
+            maxLength={60}
+            onChange={(e) => setNewCat(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addCategory();
+            }}
+          />
+          <button style={styles.primaryBtnSm} onClick={addCategory} disabled={!newCat.trim() || busy}>
+            Add
+          </button>
+        </div>
+      </div>
 
       <div style={styles.invMovesWrap}>
         <div style={styles.invShortHead}>RECENT USE</div>
@@ -14646,30 +14805,6 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
           ))
         )}
       </div>
-
-      {/* Adding an item is the rare job, so it is the last thing on the page. */}
-      <div style={styles.stockAdd}>
-        <div style={styles.invShortHead}>ADD AN ITEM</div>
-        <div style={styles.stockAddRow}>
-          <input
-            style={styles.invNameInput}
-            placeholder="Item name — e.g. IV cannula (18G)"
-            value={newName}
-            maxLength={80}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") addItem();
-            }}
-          />
-          <button style={styles.primaryBtnSm} onClick={addItem} disabled={!newName.trim() || busy}>
-            Add
-          </button>
-        </div>
-        <div style={styles.invEditNote}>
-          Names only. Enter how many there are with <strong>Edit</strong> once somebody has counted
-          them.
-        </div>
-      </div>
     </FoldingSection>
   );
 }
@@ -14684,83 +14819,129 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
 // Tap an item, say how many. It comes off the department's shelf carrying the
 // call, the truck and the person with it.
 function CallRestock({ inventory, moves, unit, user, request, setMoves }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(null);
-  const list = inventoryItems(inventory);
+  // Which categories are folded shut. Open by default: a crew standing at the
+  // trolley wants to see the list, not go looking for it.
+  const [shut, setShut] = useState({});
+  const groups = inventoryTree(inventory, moves);
   const mine = usedOnCall(moves, request && request.id);
 
   if (!request || !unit) return null;
 
-  const byItem = new Map();
-  mine.forEach((m) => byItem.set(m.itemId, [...(byItem.get(m.itemId) || []), m]));
+  // How many of each item are already down against this call, and the lines
+  // behind that number so one can be taken back off.
+  const lines = new Map();
+  mine.forEach((m) => lines.set(m.itemId, [...(lines.get(m.itemId) || []), m]));
+  const countOf = (id) =>
+    (lines.get(id) || []).reduce((n, m) => n + Math.abs(m.delta || 0), 0);
+  const total = mine.reduce((n, m) => n + Math.abs(m.delta || 0), 0);
 
-  async function add(item) {
-    const asked = window.prompt(`${item.name}\n\nHow many did you use?`, "1");
-    if (asked === null) return;
-    const n = parseInt(String(asked).trim(), 10);
-    if (!Number.isFinite(n) || n < 1) {
-      window.alert("Enter a whole number of one or more.");
-      return;
-    }
+  // One tap is one item. No dialogue box asking how many — a crew who used
+  // three taps three times, which is quicker than typing a number and cannot be
+  // got wrong. The minus takes one back off.
+  async function addOne(item) {
     setBusy(item.id);
     try {
-      const next = await recordStockUse({ item, qty: n, unit, user, request });
+      const next = await recordStockUse({ item, qty: 1, unit, user, request });
       if (next) setMoves(next);
     } finally {
       setBusy(null);
     }
   }
 
-  async function undo(move) {
-    if (!window.confirm(`Take "${move.itemName} ×${Math.abs(move.delta)}" back off this call?`))
-      return;
-    setBusy(move.itemId);
+  async function removeOne(item) {
+    const ls = lines.get(item.id) || [];
+    if (!ls.length) return;
+    const last = ls[ls.length - 1];
+    setBusy(item.id);
     try {
-      const next = await undoStockUse({ moveId: move.id });
+      const next = await undoStockUse({ moveId: last.id });
       if (next) setMoves(next);
     } finally {
       setBusy(null);
     }
   }
+
+  const anyItems = groups.some((g) => g.rows.length > 0);
 
   return (
     <FoldingSection
-      title="ITEMS USED ON THIS CALL"
-      count={mine.length}
-      countLabel={mine.length ? "recorded" : "nothing yet"}
+      title="RESTOCK THIS CALL"
+      count={total}
+      countLabel={total ? "items to replace" : "nothing yet"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      {list.length === 0 ? (
+      {!anyItems ? (
         <div style={styles.formHint}>Administration has not added any stock items yet.</div>
       ) : (
         <>
           <div style={styles.formHint}>
-            Tap what you used and say how many. It comes off the department's stock.
+            Tick what you used on this call. Tap once per item — tap again for a second one. It comes
+            off the department's stock and stays attached to this call.
           </div>
-          <div style={styles.useList}>
-            {list.map((it) => {
-              const lines = byItem.get(it.id) || [];
-              const used = lines.reduce((n, m) => n + Math.abs(m.delta || 0), 0);
-              return (
-                <div key={it.id} style={used ? styles.useRowOn : styles.useRow}>
-                  <button style={styles.useTap} onClick={() => add(it)} disabled={busy === it.id}>
-                    <span style={used ? styles.useTickOn : styles.useTick}>{used ? "✓" : "+"}</span>
-                    <span style={styles.useName}>{it.name}</span>
-                    {used > 0 && <span style={styles.useQty}>×{used}</span>}
-                  </button>
-                  {lines.length > 0 && (
-                    <div style={styles.useUndoRow}>
-                      {lines.map((m) => (
-                        <button key={m.id} style={styles.useUndo} onClick={() => undo(m)}>
-                          undo ×{Math.abs(m.delta)}
+
+          {groups.map((g) =>
+            g.rows.length === 0 ? null : (
+              <div key={g.id} style={styles.todoCat}>
+                <button
+                  style={styles.todoCatHead}
+                  onClick={() => setShut((m) => ({ ...m, [g.id]: !m[g.id] }))}
+                >
+                  <span style={styles.todoCatChev}>{shut[g.id] ? "▸" : "▾"}</span>
+                  <span style={styles.todoCatName}>{g.name}</span>
+                  {(() => {
+                    const n = g.rows.reduce((a, r) => a + countOf(r.id), 0);
+                    return n > 0 ? <span style={styles.todoCatTally}>{n}</span> : null;
+                  })()}
+                </button>
+
+                {!shut[g.id] &&
+                  g.rows.map((r) => {
+                    const n = countOf(r.id);
+                    return (
+                      <div key={r.id} style={n ? styles.todoRowOn : styles.todoRow}>
+                        <button
+                          style={styles.todoTap}
+                          onClick={() => addOne(r)}
+                          disabled={busy === r.id}
+                        >
+                          <span style={n ? styles.todoBoxOn : styles.todoBox}>{n ? "✓" : ""}</span>
+                          <span style={n ? styles.todoNameOn : styles.todoName}>{r.name}</span>
                         </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                        {n > 0 && (
+                          <span style={styles.todoQtyWrap}>
+                            <button
+                              style={styles.todoStep}
+                              onClick={() => removeOne(r)}
+                              disabled={busy === r.id}
+                              aria-label={`One fewer ${r.name}`}
+                            >
+                              −
+                            </button>
+                            <span style={styles.todoQty}>{n}</span>
+                            <button
+                              style={styles.todoStep}
+                              onClick={() => addOne(r)}
+                              disabled={busy === r.id}
+                              aria-label={`One more ${r.name}`}
+                            >
+                              +
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            )
+          )}
+
+          <div style={styles.todoFoot}>
+            {total === 0
+              ? "Nothing ticked yet. If you used nothing, there is nothing to do."
+              : `${total} item${total === 1 ? "" : "s"} recorded against this call.`}
           </div>
         </>
       )}
@@ -24646,7 +24827,6 @@ const styles = {
     borderRadius: 10, color: "var(--ink)", padding: "10px 12px", fontSize: 13.5,
     fontFamily: "inherit",
   },
-  invEditNote: { fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)", marginTop: 9 },
 
   // ---- the policy shelf ----
   policyPage: {
@@ -24705,78 +24885,133 @@ const styles = {
     fontSize: 11.5, cursor: "pointer",
   },
 
-  stockList: { display: "flex", flexDirection: "column", gap: 10, marginTop: 12 },
-  stockRow: {
-    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 16,
-    padding: "13px 14px", display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap",
+  // ---- inventory, admin side ----
+  //
+  // One line per item. The old rows were a name, a full-width bar, a sentence
+  // and three buttons — about 90px each, so a shelf of thirty items was a
+  // three-thousand-pixel scroll. These are 34.
+  catBlock: {
+    border: "1px solid var(--hair)", borderRadius: 14,
+    background: "var(--inset)", padding: "8px 10px 10px", marginTop: 10,
   },
-  stockMain: { flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 8 },
-  stockNameRow: { display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" },
-  stockName: { fontSize: 14.5, fontWeight: 650, color: "var(--ink)" },
-  stockBand: { fontSize: 10, fontWeight: 800, letterSpacing: 0.9 },
-  stockBarTrack: {
-    height: 8, borderRadius: 999, background: "var(--inset)", overflow: "hidden",
+  catHead: {
+    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+    padding: "2px 2px 8px",
   },
-  stockBarFill: { height: "100%", borderRadius: 999 },
-  stockSub: { fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.45 },
-  stockPctWrap: {
-    display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, flex: "none",
+  catName: { fontSize: 13, fontWeight: 800, letterSpacing: 0.3, color: "var(--ink)" },
+  catCount: { fontSize: 11, color: "var(--ink-4)" },
+  catTools: { marginLeft: "auto", display: "flex", gap: 6 },
+  catTool: {
+    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
+    borderRadius: 999, padding: "2px 9px", fontSize: 10.5, fontWeight: 700,
+    cursor: "pointer", fontFamily: "inherit",
   },
-  stockPct: {
-    fontSize: 24, fontWeight: 700, letterSpacing: -0.6, lineHeight: 1,
+  itemRow: {
+    display: "flex", alignItems: "center", gap: 4,
+    borderTop: "1px solid var(--veil)",
+  },
+  itemTap: {
+    flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10,
+    background: "none", border: "none", color: "var(--ink)",
+    padding: "7px 2px", cursor: "pointer", textAlign: "left", font: "inherit",
+  },
+  itemName: {
+    fontSize: 13, flex: "0 1 auto", minWidth: 0, maxWidth: "46%",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  itemBarTrack: {
+    flex: 1, height: 5, minWidth: 40, borderRadius: 999,
+    background: "var(--hair)", overflow: "hidden", display: "block",
+  },
+  itemBarFill: { display: "block", height: "100%", borderRadius: 999 },
+  itemPct: {
+    fontSize: 11.5, fontWeight: 800, width: 38, textAlign: "right", flex: "none",
     fontVariantNumeric: "tabular-nums",
   },
-  stockBtns: { display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" },
-  stockEdit: {
-    background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
-    borderRadius: 999, padding: "6px 15px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+  itemMore: {
+    background: "none", border: "none", color: "var(--ink-4)",
+    fontSize: 15, lineHeight: 1, padding: "6px 6px", cursor: "pointer", flex: "none",
   },
-  stockGhost: {
-    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
-    borderRadius: 999, padding: "6px 11px", fontSize: 11.5, cursor: "pointer",
+  itemManage: {
+    display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap",
+    padding: "0 2px 8px 2px",
   },
+  itemManageNote: { fontSize: 11, color: "var(--ink-4)", flex: 1, minWidth: 120 },
+  itemAddRow: { display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" },
+  itemAddInput: {
+    flex: 1, minWidth: 130, background: "var(--ground)", color: "var(--ink)",
+    border: "1px solid var(--hair-2)", borderRadius: 9,
+    padding: "7px 10px", fontSize: 13, fontFamily: "inherit", outline: "none",
+  },
+  itemAddBtn: {
+    background: "none", border: "1px dashed var(--hair-2)", color: "var(--ink-4)",
+    borderRadius: 9, padding: "6px 10px", fontSize: 11.5, fontWeight: 650,
+    cursor: "pointer", marginTop: 8, fontFamily: "inherit", width: "100%", textAlign: "left",
+  },
+
+  // ---- restock, crew side: a tick-list ----
+  todoCat: { marginTop: 10 },
+  todoCatHead: {
+    display: "flex", alignItems: "center", gap: 7, width: "100%",
+    background: "none", border: "none", color: "var(--ink-3)",
+    padding: "5px 2px", cursor: "pointer", textAlign: "left", font: "inherit",
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.8, textTransform: "uppercase",
+  },
+  todoCatChev: { fontSize: 10, color: "var(--ink-4)", flex: "none" },
+  todoCatName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  todoCatTally: {
+    marginLeft: "auto", background: "var(--ok)", color: "var(--ground)",
+    borderRadius: 999, padding: "1px 8px", fontSize: 11, fontWeight: 800,
+  },
+  todoRow: {
+    display: "flex", alignItems: "center", gap: 6,
+    borderTop: "1px solid var(--veil)",
+  },
+  todoRowOn: {
+    display: "flex", alignItems: "center", gap: 6,
+    borderTop: "1px solid var(--veil)", background: "rgba(48,209,88,.08)",
+  },
+  // A big target. This is tapped in the back of an ambulance, standing up.
+  todoTap: {
+    flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 11,
+    background: "none", border: "none", color: "var(--ink)",
+    padding: "11px 4px", cursor: "pointer", textAlign: "left", font: "inherit",
+  },
+  todoBox: {
+    width: 21, height: 21, borderRadius: 6, flex: "none",
+    border: "1.5px solid var(--hair-3)", display: "inline-block",
+  },
+  todoBoxOn: {
+    width: 21, height: 21, borderRadius: 6, flex: "none",
+    border: "1.5px solid var(--ok)", background: "var(--ok)", color: "var(--ground)",
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    fontSize: 13, fontWeight: 900,
+  },
+  todoName: {
+    fontSize: 14, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  todoNameOn: {
+    fontSize: 14, fontWeight: 650, minWidth: 0,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  todoQtyWrap: { display: "flex", alignItems: "center", gap: 2, flex: "none", paddingRight: 2 },
+  todoStep: {
+    width: 30, height: 30, borderRadius: 8, flex: "none",
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)", color: "var(--ink)",
+    fontSize: 16, lineHeight: 1, cursor: "pointer", fontFamily: "inherit",
+  },
+  todoQty: {
+    minWidth: 22, textAlign: "center", fontSize: 14, fontWeight: 800,
+    fontVariantNumeric: "tabular-nums",
+  },
+  todoFoot: {
+    marginTop: 12, fontSize: 12, color: "var(--ink-4)", lineHeight: 1.5,
+  },
+
   stockAdd: { marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--hair)" },
   stockAddRow: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
 
   // The crew's side: one tap per item, sized for a gloved thumb.
-  useList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
-  useRow: {
-    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 12,
-    overflow: "hidden",
-  },
-  useRowOn: {
-    background: "var(--raised)", border: "1px solid var(--hair-3)", borderRadius: 12,
-    overflow: "hidden",
-  },
-  useTap: {
-    width: "100%", minHeight: 52, display: "flex", alignItems: "center", gap: 12,
-    background: "none", border: "none", cursor: "pointer", padding: "10px 13px",
-    textAlign: "left", color: "var(--ink)",
-  },
-  useTick: {
-    width: 30, height: 30, borderRadius: 999, flex: "none",
-    background: "var(--inset)", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontSize: 17, fontWeight: 400, lineHeight: 1,
-  },
-  useTickOn: {
-    width: 30, height: 30, borderRadius: 999, flex: "none",
-    background: "var(--ok)", border: "1px solid var(--ok)", color: "var(--ground)",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontSize: 15, fontWeight: 900, lineHeight: 1,
-  },
-  useName: { flex: 1, fontSize: 14, lineHeight: 1.35 },
-  useQty: {
-    fontSize: 15, fontWeight: 750, color: "var(--ok)", fontVariantNumeric: "tabular-nums",
-  },
-  useUndoRow: {
-    display: "flex", gap: 6, flexWrap: "wrap",
-    padding: "0 13px 10px", marginTop: -2,
-  },
-  useUndo: {
-    background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
-    borderRadius: 999, padding: "4px 10px", fontSize: 11, cursor: "pointer",
-  },
 
   invMovesWrap: { marginTop: 18 },
   invMoveRow: {
