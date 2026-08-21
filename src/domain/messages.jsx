@@ -1,7 +1,7 @@
 import { callRoute } from "./call-locations.jsx";
 import { stationOf } from "./live-sheet.jsx";
 import { uhuWindowStart } from "./uhu.jsx";
-import { gregFmt } from "../lib/dates.jsx";
+import { gregFmt, stopNativeAlarm } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { CALL_ALERT_TAG, ESCALATION_ALERT_TAG_PREFIX, alertWorker, alertsSupported, directNotification, setDirectNotification } from "../lib/notify.jsx";
 import { readKey, writeList } from "../lib/offline-queue.jsx";
@@ -174,6 +174,9 @@ export function notifyEscalation(request, esc) {
 
 // Takes down whatever is on screen, whichever route put it there.
 export function clearCallAlert() {
+  // A tone playing on the native alarm stream has to be stopped there; it is
+  // not a Notification and closing one does not touch it.
+  stopNativeAlarm();
   try {
     if (directNotification) directNotification.close();
   } catch (e) {

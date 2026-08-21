@@ -331,8 +331,60 @@ export function playWhenAwake(ctx, play) {
 //
 // Everything else on the board still respects the setting. Reminders, replies
 // and confirmation sounds are things you may legitimately not want to hear.
+// ---------- the native alarm channel ----------
+//
+// What the web layer cannot do, at all, on any browser: override the hardware
+// silent switch, the OS volume slider, or Do Not Disturb. An AudioContext
+// declared as "playback" gets through more than an ambient one does, and that
+// is the whole of what a page is allowed. A phone on silent can still miss a
+// dispatch.
+//
+// Beating that needs the operating system's alarm path, which only native code
+// can ask for: on Android a notification channel built with USAGE_ALARM, so
+// the tone plays on the alarm stream that wakes people up; on iOS an
+// AVAudioSession set to .playback with .duckOthers.
+//
+// The native shell installs a Capacitor plugin under this name. When it is
+// there, a dispatch goes through it. When it is not - the web build, or a
+// shell that has not been rebuilt yet - everything falls back to the Web Audio
+// path below and behaves exactly as it did before. See native/README.md.
+export function nativeAlarm() {
+  try {
+    const cap = typeof window !== "undefined" && window.Capacitor;
+    const plugin = cap && cap.Plugins && cap.Plugins.PulseOpsAlarm;
+    return plugin && typeof plugin.alert === "function" ? plugin : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Called where the alert is taken down, so a tone playing on the alarm stream
+// stops with the banner rather than outliving it.
+export function stopNativeAlarm() {
+  try {
+    const plugin = nativeAlarm();
+    if (plugin && typeof plugin.stop === "function") plugin.stop();
+  } catch (e) {
+    // the shell is not there, or is older than this call
+  }
+}
+
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
   if (!unmissable && soundSilenced()) return;
+  // A dispatch on the native shell goes out on the alarm stream, which is the
+  // only thing that gets past a muted phone. Everything else, and every device
+  // without the shell, uses the Web Audio path.
+  if (unmissable) {
+    const plugin = nativeAlarm();
+    if (plugin) {
+      try {
+        plugin.alert({ priority: String(priority || "routine") });
+        return;
+      } catch (e) {
+        // fall through to the tone rather than going silent
+      }
+    }
+  }
   playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
 }
 
