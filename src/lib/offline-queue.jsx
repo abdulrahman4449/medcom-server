@@ -202,8 +202,12 @@ export async function readKey(key, fallback) {
     // you", not "no signal", and one forbidden key must not make a working
     // board look offline.
     if (res.status === 403) {
+      // The fallback, not null. This function is handed one precisely so a
+      // caller always gets something usable, and a refusal is exactly that
+      // case - returning null made `readKey(k, []).some(...)` throw on the very
+      // next line and killed the whole handler without a word to anybody.
       setConnectionOk(true);
-      return null;
+      return fallback;
     }
     if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
     const { value } = await res.json();

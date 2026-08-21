@@ -374,7 +374,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     if (!crewName.trim() || !crewId.trim()) return;
     setCrewBusy(true);
     setCrewError("");
-    const accts = await readKey("ems:accounts", accounts);
+    const accts = accounts || [];
     if (accts.some((a) => a.id.toLowerCase() === crewId.trim().toLowerCase())) {
       setCrewBusy(false);
       setCrewError("That ID already exists.");
@@ -403,7 +403,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     if (!adminName.trim() || !adminId.trim()) return;
     setAdminBusy(true);
     setAdminError("");
-    const accts = await readKey("ems:accounts", accounts);
+    const accts = accounts || [];
     if (accts.some((a) => a.id.toLowerCase() === adminId.trim().toLowerCase())) {
       setAdminBusy(false);
       setAdminError("That ID already exists.");
@@ -424,7 +424,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     if (!dispName.trim() || !dispId.trim()) return;
     setDispBusy(true);
     setDispError("");
-    const accts = await readKey("ems:accounts", accounts);
+    const accts = accounts || [];
     if (accts.some((a) => a.id.toLowerCase() === dispId.trim().toLowerCase())) {
       setDispBusy(false);
       setDispError("That ID already exists.");
@@ -482,7 +482,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     });
     if (unitsTouched) await saveUnits(nextUnits);
 
-    const accts = await readKey("ems:accounts", accounts);
+    const accts = accounts || [];
     await saveAccounts(accts.filter((a) => a.id !== account.id));
     await addLog(
       `Admin removed ${ROLE_LABELS[account.role] || account.role} ID for ${account.name}${seat ? ` (stood down from ${seat})` : ""}`,
