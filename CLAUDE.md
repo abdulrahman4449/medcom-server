@@ -76,6 +76,17 @@ patch", that document is the target — do not start a fresh exploration.
   scanned PDFs is megabytes, so it is read only when that tab is opened.
   `GET /api/health` lists every key with its size; check there before
   putting anything new on the fast path.
+- **Restocking belongs to History, not to the live call.** A crew cannot do
+  the paperwork of replacing a cannula while the patient is still in the
+  truck. A finished call joins `callsAwaitingRestock`, the History tab
+  carries a red count, and it clears only when somebody presses the button —
+  `RESTOCK_KEY` marks it per call, because "we used nothing" has to be
+  distinguishable from "nobody has looked at it".
+- **Signing in again is not a handover.** `seatHeldBy` — if the person
+  already holds a seat, offer "Continue as MEDIC 1" and write nothing. The
+  old code offered them "take over" against their own name, which stood them
+  down, reset their hours and recorded a swap saying they relieved
+  themselves.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.
