@@ -6415,6 +6415,9 @@ function App() {
   // screen went black and nothing on it responded — the app was gone, not
   // frozen.
   const [policies, setPolicies] = useState([]);
+  // Who is locked out. Cold: it changes when somebody cannot get in, which is
+  // rare, and the page that shows it refreshes on every tab change anyway.
+  const [passwordResets, setPasswordResets] = useState([]);
   const [policyBusy, setPolicyBusy] = useState(false);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -6763,6 +6766,8 @@ function App() {
     if (runs !== READ_FAILED) setChecklistRuns(runs || []);
     const invMoves = await readKeyRaw(INVENTORY_MOVES_KEY);
     if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
+    const pwr = await readKeyRaw(PWRESET_KEY);
+    if (pwr !== READ_FAILED) setPasswordResets(pwr || []);
   }, []);
 
   // Read when the shelf is actually being looked at, and never on the poll.
@@ -7843,7 +7848,15 @@ function App() {
         ? [
             { key: "board", glyph: "🚑", label: "Board" },
             { key: "stats", glyph: "📊", label: "Statistics" },
-            { key: "teams", glyph: "👥", label: "Teams" },
+            // Badged when somebody cannot sign in. They are standing at a
+            // tablet waiting, and an administrator who never opens this tab
+            // would otherwise not find out until they were told in person.
+            {
+              key: "teams",
+              glyph: "👥",
+              label: "Teams",
+              badge: pendingResets(passwordResets).length,
+            },
             // What is on the trucks. Its own page rather than a panel inside
             // Teams: a supervisor chasing a missing cylinder is doing a
             // different job from one looking at a roster.
@@ -7945,6 +7958,8 @@ function App() {
             <AdminView
               page={navTab}
               archives={archives}
+              passwordResets={passwordResets}
+              setPasswordResets={setPasswordResets}
               user={user}
               units={units}
               requests={requests}
@@ -8347,6 +8362,49 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
     }
     setPw("");
     await routeAfterPassword(found);
+  }
+
+  // Forgotten it. This asks an administrator; it does not let anybody in.
+  async function askForReset() {
+    const typed = idInput.trim();
+    if (!typed) {
+      setError("Type your employee ID first, then press this.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const accts = (await readKey("ems:accounts", [])) || [];
+      const found = accts.find((a) => a && a.id.toLowerCase() === typed.toLowerCase());
+      // Deliberately says the ID is not recognised rather than staying vague.
+      // This is an internal board where IDs are issued by the department, not a
+      // public site where confirming an account exists tells an attacker
+      // something; being unclear here just leaves somebody stuck at a door.
+      if (!found) {
+        setError("ID not recognised. Contact your administrator.");
+        return;
+      }
+      const res = await requestPasswordReset(found);
+      if (res === "already") {
+        window.alert(
+          `A request for ${found.name || found.id} is already waiting.\n\n` +
+            `Your administrator will clear it — nothing is lost in the meantime, and your ` +
+            `record stays exactly as it is.`
+        );
+        return;
+      }
+      if (!res) {
+        setError("No signal — that request did not send. Try again in a moment.");
+        return;
+      }
+      window.alert(
+        `Sent to your administrator.\n\n` +
+          `Once they clear it, sign in with your ID and you will be asked to choose a new ` +
+          `password. Your account is not deleted and nothing on your record is lost.`
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   // Setting a password for the first time. The server decides whether that is
@@ -8839,6 +8897,10 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
                 >
                   {busy ? "Checking…" : "Sign in"}
                 </button>
+                <button style={styles.forgotBtn} onClick={askForReset} disabled={busy}>
+                  Forgot your password?
+                </button>
+
                 <div style={styles.loginNote}>
                   <svg
                     width="15" height="15" viewBox="0 0 24 24" fill="none"
@@ -13856,6 +13918,75 @@ function PendingEditsInbox({ requests, units, user, saveRequests, addLog }) {
   );
 }
 
+// ---------- forgotten passwords ----------
+//
+// A crew member who cannot remember their password used to be a deleted account
+// and a new one with the same ID — which loses the thing the ID exists to hold.
+// Their sign-ons, their overtime, their UHU and every call they ran are keyed to
+// the account; recreating it starts all of that again at zero and quietly puts a
+// hole in the month's figures.
+//
+// So nothing is deleted. The person asks, an administrator clears the password,
+// and the next time they sign in they choose a new one through the same
+// first-login screen that already exists. The account, and everything hanging
+// off it, is untouched.
+//
+// The request is only a request. It carries no authority: it cannot clear a
+// password by itself, and an administrator has to look at it and decide. That is
+// deliberate — anybody standing at the sign-in screen can type an ID, so this
+// asks a person, it does not perform an action.
+const PWRESET_KEY = "ems:passwordResets";
+const PWRESET_CAP = 200;
+
+function pendingResets(list) {
+  return (Array.isArray(list) ? list : []).filter((r) => r && r.status === "pending");
+}
+
+function resetAlreadyOpen(list, accountId) {
+  const id = String(accountId || "").toUpperCase();
+  return pendingResets(list).some((r) => String(r.accountId || "").toUpperCase() === id);
+}
+
+async function requestPasswordReset(account) {
+  if (!account || !account.id) return false;
+  const existing = (await readKey(PWRESET_KEY, [])) || [];
+  // Asking twice is not two requests. A crew member who taps it again because
+  // nothing visibly happened should not fill an administrator's page.
+  if (resetAlreadyOpen(existing, account.id)) return "already";
+  const entry = {
+    id: uid("pwr"),
+    ts: Date.now(),
+    accountId: account.id,
+    name: account.name || "",
+    role: account.role || "",
+    status: "pending",
+  };
+  const next = [entry, ...existing].slice(0, PWRESET_CAP);
+  const ok = await writeList(PWRESET_KEY, next, existing);
+  return ok ? next : false;
+}
+
+// Clearing it. The account stays; only the password goes, and the next sign-in
+// walks them through choosing a new one.
+async function clearPasswordFor(accountId) {
+  const accts = (await readKey("ems:accounts", [])) || [];
+  const next = accts.map((a) =>
+    a && a.id === accountId ? { ...a, passwordHash: null } : a
+  );
+  return await writeKey("ems:accounts", next);
+}
+
+async function decideReset(row, status, by) {
+  const existing = (await readKey(PWRESET_KEY, [])) || [];
+  const next = existing.map((r) =>
+    r && r.id === row.id
+      ? { ...r, status, decidedBy: by || "Administration", decidedAt: Date.now() }
+      : r
+  );
+  await writeList(PWRESET_KEY, next, existing);
+  return next;
+}
+
 // ---------- department policies ----------
 //
 // The desk is where the policy questions land — can this patient travel with a
@@ -14958,6 +15089,132 @@ function CallRestock({ inventory, moves, unit, user, request, setMoves }) {
 // control here that would: a refusal that a supervisor can overrule is not a
 // refusal, and an app that keeps locating somebody who said no is the thing
 // this whole feature must never turn into.
+// ---------- people who cannot get in ----------
+//
+// Somebody is standing at a tablet at handover unable to sign on. That is the
+// urgency this panel has, so it opens itself when there is anything in it and
+// the action is one button.
+//
+// Clearing a password does not delete anything. The account keeps its ID, its
+// name, its shifts, its overtime and every call on its record; only the
+// password goes, and the next sign-in walks them through choosing a new one.
+function PasswordResets({ resets, setResets, user, addLog }) {
+  const pending = pendingResets(resets);
+  const [open, setOpen] = useState(true);
+  const [busy, setBusy] = useState(null);
+  const recent = (Array.isArray(resets) ? resets : [])
+    .filter((r) => r && r.status !== "pending")
+    .sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0))
+    .slice(0, 8);
+
+  async function clearIt(row) {
+    if (
+      !window.confirm(
+        `Clear the password for ${row.name || row.accountId} (${row.accountId})?\n\n` +
+          `Nothing else changes: their account, their shifts, their overtime and every call on ` +
+          `their record stay exactly as they are. The next time they sign in with this ID they ` +
+          `will be asked to choose a new password.\n\n` +
+          `Only do this if you know who is asking.`
+      )
+    )
+      return;
+    setBusy(row.id);
+    try {
+      const ok = await clearPasswordFor(row.accountId);
+      if (!ok) {
+        window.alert("That did not save — no signal to the server. Nothing has changed.");
+        return;
+      }
+      setResets(await decideReset(row, "cleared", user && user.name));
+      await addLog(
+        `Password cleared for ${row.name || row.accountId} (${row.accountId}) — they choose a new ` +
+          `one at their next sign-in. Account and record untouched.`,
+        "admin"
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function dismiss(row) {
+    if (!window.confirm(`Dismiss the request from ${row.name || row.accountId}?\n\nTheir password is not changed.`))
+      return;
+    setBusy(row.id);
+    try {
+      setResets(await decideReset(row, "declined", user && user.name));
+      await addLog(
+        `Password reset request from ${row.name || row.accountId} (${row.accountId}) dismissed.`,
+        "admin"
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <FoldingSection
+      title="PASSWORD HELP"
+      count={pending.length}
+      countLabel={pending.length ? "waiting on you" : "nothing waiting"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <InfoNote label="What this does">
+        Clearing a password deletes nothing. The account keeps its ID, its name and every shift,
+        hour and call on its record — only the password goes, and the person chooses a new one the
+        next time they sign in. Check who is asking before you clear it.
+      </InfoNote>
+
+      {pending.length === 0 ? (
+        <div style={styles.formHint}>Nobody is locked out.</div>
+      ) : (
+        <div style={styles.resetList}>
+          {pending.map((r) => (
+            <div key={r.id} style={styles.resetRow}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.resetName}>
+                  {r.name || "—"} <span style={styles.resetId}>{r.accountId}</span>
+                </div>
+                <div style={styles.resetWhen}>
+                  {(r.role || "crew").toUpperCase()} · asked {gregDateTimeStr(r.ts)}
+                </div>
+              </div>
+              <button
+                style={styles.primaryBtnSm}
+                disabled={busy === r.id}
+                onClick={() => clearIt(r)}
+              >
+                {busy === r.id ? "…" : "Clear password"}
+              </button>
+              <button style={styles.ghostBtnSm} disabled={busy === r.id} onClick={() => dismiss(r)}>
+                Dismiss
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {recent.length > 0 && (
+        <div style={styles.invMovesWrap}>
+          <div style={styles.invShortHead}>RECENTLY HANDLED</div>
+          {recent.map((r) => (
+            <div key={r.id} style={styles.invMoveRow}>
+              <span style={styles.invMoveItem}>{r.name || r.accountId}</span>
+              <span style={styles.invMoveWho}>
+                {r.status === "cleared" ? "password cleared" : "dismissed"}
+                {r.decidedBy ? ` by ${r.decidedBy}` : ""}
+              </span>
+              <span style={styles.invMoveWhen}>
+                {r.decidedAt ? gregDateTimeStr(r.decidedAt) : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </FoldingSection>
+  );
+}
+
 function TrackingConsentAdmin({ consents, user, setConsents, addLog }) {
   const [open, setOpen] = useState(false);
   const rows = Object.values(consents || {}).sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -21517,7 +21774,7 @@ function DayArchive({ archives, requests, units, log, scheduled }) {
   );
 }
 
-function AdminView({ archives, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
+function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -22153,6 +22410,15 @@ function AdminView({ archives, user, units, requests, scheduled, accounts, log, 
         </InfoNote>
       </div>
       </FoldingSection>
+
+      {/* Somebody who cannot sign in is standing at a tablet right now, so this
+          sits with the accounts rather than on the statistics page. */}
+      <PasswordResets
+        resets={passwordResets}
+        setResets={setPasswordResets}
+        user={user}
+        addLog={addLog}
+      />
 
       {/* Both stations, one under the other, each with its own roster and its
           own way of adding a truck. Administration is the only place the two
@@ -25067,6 +25333,15 @@ const styles = {
 
   // The crew's side: one tap per item, sized for a gloved thumb.
 
+  resetList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 },
+  resetRow: {
+    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+    background: "rgba(255,159,10,.08)", border: "1px solid rgba(255,159,10,.34)",
+    borderRadius: 12, padding: "10px 12px",
+  },
+  resetName: { fontSize: 14, fontWeight: 700, color: "var(--ink)" },
+  resetId: { fontSize: 12, fontWeight: 600, color: "var(--ink-4)", marginLeft: 6 },
+  resetWhen: { fontSize: 11.5, color: "var(--ink-4)", marginTop: 3 },
   invMovesWrap: { marginTop: 18 },
   invMoveRow: {
     display: "flex", alignItems: "baseline", gap: 10, padding: "6px 0",
@@ -26656,6 +26931,11 @@ const styles = {
     width: "100%", marginTop: 18, padding: "15px 16px", borderRadius: 13,
     background: "var(--inset-2)", border: "1px solid var(--hair)", color: "var(--ink-4)",
     fontSize: 15.5, fontWeight: 700, fontFamily: "inherit", cursor: "default",
+  },
+  forgotBtn: {
+    display: "block", margin: "12px auto 0", background: "none", border: "none",
+    color: "var(--ink-3)", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit",
+    textDecoration: "underline", cursor: "pointer", padding: 4,
   },
   loginNote: {
     display: "flex", alignItems: "flex-start", gap: 9,
