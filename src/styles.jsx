@@ -2875,6 +2875,13 @@ export const styles = {
     display: "flex", flexDirection: "column", gap: 2,
     borderTop: "1px solid var(--hair-2)", margin: "14px 0 0", padding: "12px 0 0",
   },
+  // Said under a form that has refused, beside the boxes marked with
+  // inputMissing above. The mark says which box; this says what to do. Neither
+  // is any use alone.
+  requiredNote: {
+    fontSize: 12.5, lineHeight: 1.5, color: "var(--crit)", fontWeight: 600,
+    margin: "8px 0 0",
+  },
   checkOwingRow: {
     fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-3)",
     background: "rgba(240,180,60,.07)", border: "1px solid rgba(240,180,60,.28)",

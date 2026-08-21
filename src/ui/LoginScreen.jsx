@@ -183,6 +183,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // second screen, somebody signing in for the first time who has no password
   // yet, is the only thing that moves them on to one.
   async function handleSignIn() {
+    // The Sign in button is already disabled while this is empty, so there is
+    // nothing to mark: it cannot be pressed with a blank ID in the first place.
     if (!idInput.trim()) return;
     setBusy(true);
     setError("");

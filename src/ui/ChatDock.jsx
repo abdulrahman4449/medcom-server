@@ -735,7 +735,15 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
     // MRN are all often given later, over the radio or by the ward ringing back,
     // and requiring them up front only meant the desk typed something plausible
     // to get the truck moving — which is worse than an honest blank.
-    if (!locationFrom.trim()) return;
+    // The highlight the form already draws had nothing driving it:
+    // missingFields was declared, read by the inputs, cleared as somebody
+    // typed - and never once set. So pressing Dispatch with the pickup point
+    // blank did nothing at all, silently, which is the worst thing a form can
+    // do to somebody trying to send an ambulance.
+    const missing = [];
+    if (!locationFrom.trim()) missing.push("locationFrom");
+    setMissingFields(missing);
+    if (missing.length) return;
     const createdAt = Date.now();
     // Read fresh before deciding anything, so we never clobber a change another
     // device made in the last few seconds (this is what caused assigned calls
@@ -1409,6 +1417,11 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
 
           <div style={{ display: "flex", gap: 8 }}>
             <button style={styles.primaryBtn} onClick={submitRequest}>Dispatch call</button>
+            {missingFields.length > 0 && (
+              <div style={styles.requiredNote}>
+                Where the patient is coming from is needed before a call can go out.
+              </div>
+            )}
             <button style={styles.ghostBtn} onClick={() => setShowForm(false)}>Cancel</button>
           </div>
         </div>

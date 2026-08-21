@@ -168,6 +168,41 @@ export function DayArchive({ archives, requests, units, log, scheduled }) {
   );
 }
 
+// Shared trash control for every roster row. Disabled (with the reason in the
+// tooltip) for the account you're signed in with and for the last admin.
+//
+// Declared here, not inside AdminView. A component defined inside another is a
+// brand new component type on every render, which makes React throw the old
+// button away and build a fresh one - so a tap landing while the board polls
+// can hit a node that is on its way out. Out here its identity is stable and
+// React updates the button in place.
+export function RemoveBtn({ account, user, adminAccounts, removingId, onRemove }) {
+  const isSelf = user && user.accountId === account.id;
+  const lastAdmin = account.role === "admin" && adminAccounts.length <= 1;
+  const blocked = isSelf || lastAdmin;
+  const title = isSelf
+    ? "You can't remove the account you're signed in with"
+    : lastAdmin
+    ? "The only admin can't be removed"
+    : `Remove ${account.name}`;
+  return (
+    <button
+      style={{ ...styles.removeBtn, opacity: blocked ? 0.3 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
+      title={title}
+      disabled={blocked || removingId === account.id}
+      onClick={() => onRemove(account)}
+    >
+      {removingId === account.id ? "…" : <Trash size={13} />}
+    </button>
+  );
+}
+
+// Removal feedback, shown under whichever roster the admin clicked in.
+export function RemoveError({ role, removeError }) {
+  if (!removeError || removeError.role !== role) return null;
+  return <div style={styles.loginError}>{removeError.message}</div>;
+}
+
 export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
@@ -249,6 +284,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   const [crewName, setCrewName] = useState("");
   const [crewId, setCrewId] = useState("");
   const [crewError, setCrewError] = useState("");
+  // Which required boxes are empty, so the form can point at them.
+  const [crewMissing, setCrewMissing] = useState({});
   const [crewBusy, setCrewBusy] = useState(false);
 
   // Adding a truck to a station. One box is shared between the two station
@@ -356,11 +393,13 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   const [adminName, setAdminName] = useState("");
   const [adminId, setAdminId] = useState("");
   const [adminError, setAdminError] = useState("");
+  const [adminMissing, setAdminMissing] = useState({});
   const [adminBusy, setAdminBusy] = useState(false);
 
   const [dispName, setDispName] = useState("");
   const [dispId, setDispId] = useState("");
   const [dispError, setDispError] = useState("");
+  const [dispMissing, setDispMissing] = useState({});
   const [dispBusy, setDispBusy] = useState(false);
 
   // { role, message } — scoped so the message renders under the roster the
@@ -371,9 +410,15 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   const [escFor, setEscFor] = useState(null);
 
   async function addCrewAccount() {
-    if (!crewName.trim() || !crewId.trim()) return;
+    const missingCrew = { name: !crewName.trim(), id: !crewId.trim() };
+    setCrewMissing(missingCrew);
+    if (missingCrew.name || missingCrew.id) {
+      setCrewError("Both a name and an employee ID are needed.");
+      return;
+    }
     setCrewBusy(true);
     setCrewError("");
+    setCrewMissing({});
     const accts = accounts || [];
     if (accts.some((a) => a.id.toLowerCase() === crewId.trim().toLowerCase())) {
       setCrewBusy(false);
@@ -400,9 +445,15 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   }
 
   async function addAdminAccount() {
-    if (!adminName.trim() || !adminId.trim()) return;
+    const missingAdmin = { name: !adminName.trim(), id: !adminId.trim() };
+    setAdminMissing(missingAdmin);
+    if (missingAdmin.name || missingAdmin.id) {
+      setAdminError("Both a name and an employee ID are needed.");
+      return;
+    }
     setAdminBusy(true);
     setAdminError("");
+    setAdminMissing({});
     const accts = accounts || [];
     if (accts.some((a) => a.id.toLowerCase() === adminId.trim().toLowerCase())) {
       setAdminBusy(false);
@@ -421,9 +472,15 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   }
 
   async function addDispatcherAccount() {
-    if (!dispName.trim() || !dispId.trim()) return;
+    const missingDisp = { name: !dispName.trim(), id: !dispId.trim() };
+    setDispMissing(missingDisp);
+    if (missingDisp.name || missingDisp.id) {
+      setDispError("Both a name and an employee ID are needed.");
+      return;
+    }
     setDispBusy(true);
     setDispError("");
+    setDispMissing({});
     const accts = accounts || [];
     if (accts.some((a) => a.id.toLowerCase() === dispId.trim().toLowerCase())) {
       setDispBusy(false);
@@ -508,35 +565,6 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   // An admin sees every escalation on the board — the inbox below, the banner
   // on each live call, and the same banner on every call in the history.
   const escViewer = escalationViewer(user, null, null);
-
-  // Shared trash control for every roster row. Disabled (with the reason in the
-  // tooltip) for the account you're signed in with and for the last admin.
-  function RemoveBtn({ account }) {
-    const isSelf = user && user.accountId === account.id;
-    const lastAdmin = account.role === "admin" && adminAccounts.length <= 1;
-    const blocked = isSelf || lastAdmin;
-    const title = isSelf
-      ? "You can't remove the account you're signed in with"
-      : lastAdmin
-      ? "The only admin can't be removed"
-      : `Remove ${account.name}`;
-    return (
-      <button
-        style={{ ...styles.removeBtn, opacity: blocked ? 0.3 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
-        title={title}
-        disabled={blocked || removingId === account.id}
-        onClick={() => removeAccount(account)}
-      >
-        {removingId === account.id ? "…" : <Trash size={13} />}
-      </button>
-    );
-  }
-
-  // Removal feedback, shown under whichever roster the admin clicked in.
-  function RemoveError({ role }) {
-    if (!removeError || removeError.role !== role) return null;
-    return <div style={styles.loginError}>{removeError.message}</div>;
-  }
 
   return (
     <div>
@@ -678,11 +706,11 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         <div style={styles.formRow}>
           <div style={{ flex: 1 }}>
             <label style={styles.label}>Name</label>
-            <input style={styles.input} value={crewName} onChange={(e) => setCrewName(e.target.value)} placeholder="e.g. R. Chen" />
+            <input style={{ ...styles.input, ...(crewMissing.name ? styles.inputMissing : null) }} value={crewName} onChange={(e) => setCrewName(e.target.value)} placeholder="e.g. R. Chen" />
           </div>
           <div style={{ flex: 1 }}>
             <label style={styles.label}>ID</label>
-            <input style={styles.input} value={crewId} onChange={(e) => setCrewId(e.target.value)} placeholder="e.g. F1122334" />
+            <input style={{ ...styles.input, ...(crewMissing.id ? styles.inputMissing : null) }} value={crewId} onChange={(e) => setCrewId(e.target.value)} placeholder="e.g. F1122334" />
           </div>
         </div>
         <InfoNote label="More about this">
@@ -705,13 +733,13 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `Online — ${seat}` : a.hasPassword ? "Offline" : "Pending first login"}
                   </span>
-                  <RemoveBtn account={a} />
+                  <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
               );
             })}
           </div>
         )}
-        <RemoveError role="crew" />
+        <RemoveError role="crew" removeError={removeError} />
       </div>
       </FoldingSection>
 
@@ -726,11 +754,11 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         <div style={styles.formRow}>
           <div style={{ flex: 1 }}>
             <label style={styles.label}>Name</label>
-            <input style={styles.input} value={dispName} onChange={(e) => setDispName(e.target.value)} placeholder="e.g. J. Alvarez" />
+            <input style={{ ...styles.input, ...(dispMissing.name ? styles.inputMissing : null) }} value={dispName} onChange={(e) => setDispName(e.target.value)} placeholder="e.g. J. Alvarez" />
           </div>
           <div style={{ flex: 1 }}>
             <label style={styles.label}>ID</label>
-            <input style={styles.input} value={dispId} onChange={(e) => setDispId(e.target.value)} placeholder="e.g. D1000002" />
+            <input style={{ ...styles.input, ...(dispMissing.id ? styles.inputMissing : null) }} value={dispId} onChange={(e) => setDispId(e.target.value)} placeholder="e.g. D1000002" />
           </div>
         </div>
         <div style={styles.formHint}>Dispatchers can also join a team as crew when a unit is short-staffed.</div>
@@ -750,13 +778,13 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
-                  <RemoveBtn account={a} />
+                  <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
               );
             })}
           </div>
         )}
-        <RemoveError role="dispatcher" />
+        <RemoveError role="dispatcher" removeError={removeError} />
       </div>
       </FoldingSection>
 
@@ -771,11 +799,11 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         <div style={styles.formRow}>
           <div style={{ flex: 1 }}>
             <label style={styles.label}>Name</label>
-            <input style={styles.input} value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="e.g. S. Al-Otaibi" />
+            <input style={{ ...styles.input, ...(adminMissing.name ? styles.inputMissing : null) }} value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="e.g. S. Al-Otaibi" />
           </div>
           <div style={{ flex: 1 }}>
             <label style={styles.label}>ID</label>
-            <input style={styles.input} value={adminId} onChange={(e) => setAdminId(e.target.value)} placeholder="e.g. F9988776" />
+            <input style={{ ...styles.input, ...(adminMissing.id ? styles.inputMissing : null) }} value={adminId} onChange={(e) => setAdminId(e.target.value)} placeholder="e.g. F9988776" />
           </div>
         </div>
         {adminError && <div style={styles.loginError}>{adminError}</div>}
@@ -794,13 +822,13 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
-                  <RemoveBtn account={a} />
+                  <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
               );
             })}
           </div>
         )}
-        <RemoveError role="admin" />
+        <RemoveError role="admin" removeError={removeError} />
         <InfoNote label="About removing an ID">
           Removing an ID frees it up — the same ID can be added again whenever you need it.
         </InfoNote>

@@ -16,6 +16,23 @@
 <style>
   html, body, #root { height: 100%; margin: 0; background: #070A11; }
   * { box-sizing: border-box; }
+
+  /* Taps that do not seem to register.
+     
+     `manipulation` tells the browser this page has no double-tap-to-zoom, so
+     it stops holding each tap back to see whether a second one is coming.
+     Panning and pinch-zoom are unaffected. Leaflet sets its own touch-action
+     on the map and its class selector beats this one, so the map keeps its
+     gestures. */
+  html { touch-action: manipulation; }
+
+  /* And feedback, because half of "it did not work" is "it worked and looked
+     identical". Every control now dims the instant it is pressed, so a tap
+     that registered is visibly a tap that registered. */
+  button, [role="button"], input, select, textarea, label {
+    -webkit-tap-highlight-color: rgba(255,255,255,.14);
+  }
+  button:active, [role="button"]:active { filter: brightness(1.35); }
 </style>
 
 <!--
