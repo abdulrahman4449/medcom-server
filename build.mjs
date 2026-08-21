@@ -37,8 +37,32 @@ const result = await esbuild.build({
 });
 
 const js = result.outputFiles[0].text;
-const html = fs.readFileSync(template, "utf8");
+let html = fs.readFileSync(template, "utf8");
 if (!html.includes("<!--APP-->")) throw new Error("template has no <!--APP--> marker");
+if (!html.includes("<!--VENDOR-JS-->")) throw new Error("template has no <!--VENDOR-JS--> marker");
+
+// The libraries go in too, from vendor/ rather than from a CDN.
+//
+// unpkg is a free service with nobody on call for it. Loading the board's
+// React from it meant somebody else's outage was our outage - the app would
+// not open at all, which on a dispatch board at three in the morning is not
+// an inconvenience. Inlining costs no extra bytes over fetching them (the
+// same code arrives either way) and turns five requests into one.
+const vendorDir = path.join(root, "vendor");
+const readVendor = (f) => {
+  const p = path.join(vendorDir, f);
+  if (!fs.existsSync(p)) throw new Error(`vendor/${f} is missing - see vendor/README.md`);
+  return fs.readFileSync(p, "utf8");
+};
+// Order matters: react before react-dom, and both before the app.
+const vendorJs = ["react.js", "react-dom.js", "xlsx.js", "leaflet.js"];
+const vendorBlock =
+  `<style>\n${readVendor("leaflet.css")}\n</style>\n` +
+  vendorJs
+    .map((f) => `<script>\n${readVendor(f).replace(/<\/script>/gi, "<\\/script>")}\n</script>`)
+    .join("\n");
+const vendorBytes = vendorBlock.length;
+html = html.replace("<!--VENDOR-JS-->", () => vendorBlock);
 
 // The replacement MUST be a function. A minified bundle is full of `$&`
 // (from `x && y`), and in a replacement *string* `$&` is a special token
@@ -49,4 +73,6 @@ const out = html.replace("<!--APP-->", () => tag);
 fs.writeFileSync(outFile, out);
 
 const kb = (n) => (n / 1024).toFixed(0) + " KB";
-console.log(`bundled ${kb(js.length)} of script -> public/index.html (${kb(out.length)})`);
+console.log(
+  `app ${kb(js.length)} + libraries ${kb(vendorBytes)} -> public/index.html (${kb(out.length)}), self-contained`
+);

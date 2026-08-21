@@ -21,25 +21,13 @@
 <!--
   THIS FILE IS GENERATED. Edit src/ and run `npm run build`.
 
-  FOR IT — THESE THREE FILES MUST BE SERVED LOCALLY.
-
-  The app itself is built ahead of time and inlined below, so nothing is
-  compiled in the browser any more. Three libraries are still loaded from a
-  public CDN (unpkg.com). On an internal server with no internet access they
-  will never arrive, and the app will not start. Download each one, place it
-  beside this file, and change the three src attributes below to relative
-  paths:
-
-      react.production.min.js       →  src="./vendor/react.production.min.js"
-      react-dom.production.min.js   →  src="./vendor/react-dom.production.min.js"
-      xlsx.bundle.js                →  src="./vendor/xlsx.bundle.js"
-
-  Nothing else in the application reaches outside the hospital network.
+  There are no external dependencies. React, Leaflet and the spreadsheet
+  writer are inlined below from vendor/, along with the app itself, so this
+  one file is the whole application: it opens on a machine with no internet,
+  and the native shell bundles it without a folder of assets beside it.
 -->
 
-<!-- React -->
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!--VENDOR-JS-->
 <!-- Spreadsheet export -->
 <!--
   xlsx-js-style, not the plain xlsx build.
@@ -53,7 +41,6 @@
   For the internal deployment this should be served from the hospital's own
   server rather than a public CDN, like everything else the app loads.
 -->
-<script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <!--
   Map, for the live position of a truck that is out on a call.
 
@@ -68,8 +55,6 @@
   missing. Same note as the others: for the internal deployment these should
   be served from the hospital's own server.
 -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 <div id="root"></div>
