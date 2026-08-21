@@ -1380,6 +1380,148 @@ async function finaliseOpenSubmissions({ requests, units, log, boardId }) {
   return changed;
 }
 
+// ---------- return journeys and repeating bookings ----------
+//
+// A transfer that comes back is two dispatches, not one. Each leg has its own
+// five timestamps, its own response, its own loaded kilometres and its own crew
+// time; one record cannot hold two journeys, and forcing it to would put the
+// call count and every UHU figure out. So: two calls, linked, each a full row
+// on the sheet — which is also how the department counts them.
+//
+// The return is created when the outbound goes back in service, with the route
+// reversed. Where the ward gives a time it is booked for that time; where they
+// say "ring when ready" it waits, which is the awaitCall state the board has
+// had all along.
+const RETURN_MODES = [
+  { key: "none", label: "No" },
+  { key: "ready", label: "Yes — ring when ready" },
+  { key: "timed", label: "Yes — at a set time" },
+];
+
+function wantsReturn(x) {
+  const m = x && x.returnMode;
+  return m === "ready" || m === "timed";
+}
+
+function isReturnLeg(x) {
+  return !!(x && x.leg === "return");
+}
+
+function isOutLeg(x) {
+  return !!(x && x.leg === "out");
+}
+
+// OUT / RETURN / blank, for the column appended to the sheet.
+function journeyLabel(x) {
+  return isReturnLeg(x) ? "RETURN" : isOutLeg(x) ? "OUT" : "";
+}
+
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function repeatDays(x) {
+  const d = x && x.repeat && x.repeat.days;
+  return Array.isArray(d) ? d.filter((n) => n >= 0 && n <= 6) : [];
+}
+
+function isRecurring(x) {
+  return repeatDays(x).length > 0;
+}
+
+function repeatLabel(x) {
+  const d = repeatDays(x);
+  if (!d.length) return "";
+  if (d.length === 7) return "EVERY DAY";
+  return d
+    .slice()
+    .sort((a, b) => a - b)
+    .map((n) => DAY_SHORT[n].toUpperCase())
+    .join(" ");
+}
+
+// One occurrence of a repeat is keyed by its local calendar day — local rather
+// than UTC, because a booking at 08:00 belongs to the day the department is
+// standing in, not the day Greenwich is having. `localDayKey` further down
+// already does exactly this and is what the history filter compares against, so
+// this uses that rather than keeping a second idea of what a day is.
+
+// The occurrences a repeating booking should have in the window ahead. Only two
+// days: the forward book is something a desk reads, and forty copies of the
+// dialysis run stretching into next month is not a book, it is a wall.
+const REPEAT_HORIZON_DAYS = 2;
+
+function repeatOccurrencesDue(template, now) {
+  const days = repeatDays(template);
+  if (!days.length || !template.scheduledFor) return [];
+  const src = new Date(template.scheduledFor);
+  const out = [];
+  for (let i = 0; i <= REPEAT_HORIZON_DAYS; i++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + i);
+    if (!days.includes(d.getDay())) continue;
+    d.setHours(src.getHours(), src.getMinutes(), 0, 0);
+    const at = d.getTime();
+    // Never behind the clock, and never the template's own occurrence.
+    if (at <= now) continue;
+    if (localDayKey(at) === localDayKey(template.scheduledFor)) continue;
+    out.push({ at, key: localDayKey(at) });
+  }
+  return out;
+}
+
+// The return leg of a call that has just finished, with the route reversed and
+// everything about the patient carried across so nothing is retyped.
+function returnBookingFor(req, now) {
+  const mode = req.returnMode;
+  const at = mode === "timed" && req.returnAt ? req.returnAt : null;
+  return {
+    id: uid("sch"),
+    station: stationOf(req),
+    // Reversed. This is the whole point.
+    locationFrom: callTo(req),
+    locationTo: callFrom(req),
+    nature: req.nature,
+    priority: req.priority || "routine",
+    mrn: req.mrn || "",
+    requirements: req.requirements || [],
+    notes: req.notes || "",
+    callType: callTypeMeta(req.callType) ? req.callType : null,
+    loadedKm: null,
+    scheduledFor: at,
+    dispatchAt: null,
+    // No time given: it waits for the ward, which is the state the board
+    // already knows how to hold.
+    awaitCall: mode !== "timed",
+    shift: at ? scheduledShiftKey(at) : null,
+    // Deliberately unassigned. If the truck that took the patient out is on
+    // something else when the ward rings, the patient should not wait for it.
+    assignedUnitId: null,
+    status: "scheduled",
+    leg: "return",
+    returnOf: req.id,
+    // When the patient was actually delivered, so the wait for the ward to ring
+    // is measurable — the gap nobody can currently evidence.
+    deliveredAt: (req.times || {}).arrivalDestination || null,
+    createdAt: now,
+    createdBy: "Return leg",
+  };
+}
+
+// Calls that have finished, were booked with a return, and have not had one
+// made for them yet.
+function callsNeedingReturn(requests, scheduled) {
+  const made = new Set(
+    (scheduled || []).filter((s) => s && s.returnOf).map((s) => s.returnOf)
+  );
+  return (requests || []).filter(
+    (r) =>
+      r &&
+      r.status === "completed" &&
+      wantsReturn(r) &&
+      !isReturnLeg(r) &&
+      !made.has(r.id)
+  );
+}
+
 // ---------- the operational day ----------
 //
 // A day here is not midnight to midnight. It runs 07:00 to 07:00: the day shift
@@ -5609,6 +5751,11 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
     "BOOKING NOTES",
     "CLOSED BY",
     "CLOSE REASON",
+    // Which leg of a there-and-back this row is. Appended at the end with the
+    // app's other extra columns, so the department's own columns stay exactly
+    // where they are. Filter it and the sheet answers how much of the work is
+    // return legs, and how long patients wait to be collected.
+    "JOURNEY",
   ];
 
   const rowFor = (r) => {
@@ -5671,6 +5818,7 @@ function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station
       r.bookingNotes || "",
       r.closedBy || "",
       r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
+      journeyLabel(r),
     ];
   };
 
@@ -7574,6 +7722,14 @@ function App() {
           loadedKm: loadedKmMeta(entry.loadedKm) ? entry.loadedKm : null,
           loadedKmBy: loadedKmMeta(entry.loadedKm) ? entry.createdBy || "" : "",
           loadedKmAt: loadedKmMeta(entry.loadedKm) ? entry.createdAt || createdAt : null,
+          // Which leg this is, and whether another follows it. Carried onto the
+          // call so the board, the crew screen and the sheet can all say so
+          // without going back to the booking.
+          leg: entry.leg || (wantsReturn(entry) ? "out" : null),
+          returnMode: entry.returnMode || null,
+          returnAt: entry.returnAt || null,
+          returnOf: entry.returnOf || null,
+          deliveredAt: entry.deliveredAt || null,
         };
         reqList = [req, ...reqList];
         if (assignNow) {
@@ -7612,6 +7768,111 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Making the return leg, and keeping a repeating booking topped up.
+  //
+  // Both write to the forward book, and both have to survive two desks being
+  // open — so both check first whether the thing they are about to make has
+  // already been made, and neither invents anything the desk did not ask for.
+  const bookingsRef = useRef(false);
+
+  const ensureBookings = useCallback(async () => {
+    const u = userRef.current;
+    if (!u || (u.role !== "dispatcher" && u.role !== "admin")) return;
+    if (bookingsRef.current) return;
+    bookingsRef.current = true;
+    try {
+      const now = Date.now();
+      const schedRaw = await readKeyRaw("ems:scheduled");
+      const reqRaw = await readKeyRaw("ems:requests");
+      if (schedRaw === READ_FAILED || reqRaw === READ_FAILED) return;
+      let list = Array.isArray(schedRaw) ? schedRaw : [];
+      const reqs = Array.isArray(reqRaw) ? reqRaw : [];
+      const made = [];
+      const lines = [];
+
+      // 1. The patient has been delivered and the call is closed, so the
+      //    journey home exists now.
+      for (const req of callsNeedingReturn(reqs, list)) {
+        const back = returnBookingFor(req, now);
+        made.push(back);
+        lines.push(
+          `Return journey raised for ${back.nature} (${callRoute(back)})` +
+            (back.awaitCall
+              ? " — no time yet, the ward will call when the patient is ready"
+              : ` — booked for ${whenStr(back.scheduledFor)}`)
+        );
+      }
+
+      // 2. A repeating booking keeps the next couple of days stocked. Keyed by
+      //    the calendar day so the same Tuesday is never booked twice, however
+      //    many desks are watching.
+      const templates = list.filter(
+        (x) => x && isRecurring(x) && !isReturnLeg(x) && !x.repeatOf
+      );
+      for (const t of templates) {
+        for (const occ of repeatOccurrencesDue(t, now)) {
+          const exists = [...list, ...made].some(
+            (x) => x && x.repeatOf === t.id && x.repeatKey === occ.key
+          );
+          if (exists) continue;
+          made.push({
+            ...t,
+            id: uid("sch"),
+            scheduledFor: occ.at,
+            dispatchAt: t.dispatchAt ? occ.at - (t.scheduledFor - t.dispatchAt) : null,
+            shift: scheduledShiftKey(occ.at),
+            status: "scheduled",
+            createdAt: now,
+            createdBy: t.createdBy || "Repeat",
+            repeatOf: t.id,
+            repeatKey: occ.key,
+            // The copy is an occurrence, not a second template — otherwise
+            // every copy would start making copies of its own.
+            repeat: null,
+            releasedAt: null,
+            releasedRequestId: null,
+            releasedUnitId: null,
+            cancelledAt: null,
+            cancelledBy: null,
+            readyCalledAt: null,
+            readyCalledBy: null,
+            claimedBy: null,
+          });
+          lines.push(
+            `Repeating booking — ${t.nature} (${callRoute(t)}) added for ${whenStr(occ.at)}`
+          );
+        }
+      }
+
+      if (!made.length) return;
+      // Re-read immediately before writing: another desk may have made the same
+      // ones in the seconds this took, and a duplicate booking is a second
+      // ambulance sent to the same patient.
+      const before = await readKeyRaw("ems:scheduled");
+      if (before === READ_FAILED || !Array.isArray(before)) return;
+      const keep = made.filter((m) =>
+        m.returnOf
+          ? !before.some((x) => x && x.returnOf === m.returnOf)
+          : !before.some((x) => x && x.repeatOf === m.repeatOf && x.repeatKey === m.repeatKey)
+      );
+      if (!keep.length) return;
+      await saveScheduled([...before, ...keep]);
+      for (const line of lines.slice(0, keep.length)) await addLog(line, "call");
+    } catch (e) {
+      console.error("booking pass failed:", e);
+    } finally {
+      bookingsRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (user.role !== "dispatcher" && user.role !== "admin") return;
+    ensureBookings();
+    const t = setInterval(ensureBookings, 15000);
+    return () => clearInterval(t);
+  }, [ready, user && user.role, ensureBookings]);
 
   // Checked on the same cadence as the board itself, and once straight away so
   // a desk opening after a booking's time has passed sends it out immediately
@@ -10671,10 +10932,14 @@ function FleetRow({ unit, req, onOpen, now }) {
               ))}
             </span>
 
-            {(assistPending(req) || req.handover) && (
+            {(assistPending(req) || req.handover || wantsReturn(req) || isReturnLeg(req)) && (
               <span style={styles.callCardTileTags}>
                 {assistPending(req) && <span style={styles.callTileAssist}>ASSIST</span>}
                 {req.handover && <span style={styles.callTileHandover}>HANDED OVER</span>}
+                {isReturnLeg(req) && <span style={styles.legReturn}>↩ RETURN</span>}
+                {wantsReturn(req) && !isReturnLeg(req) && (
+                  <span style={styles.legOut}>OUT · RETURN TO FOLLOW</span>
+                )}
               </span>
             )}
           </React.Fragment>
@@ -10705,15 +10970,25 @@ function PendingCallCard({ req, onOpen, now }) {
         </span>
 
         <span style={styles.unitCardStatusRow}>
-          <span style={{ ...styles.unitCardDot, background: pri.color }} />
-          <span style={{ ...styles.unitCardStatusText, color: pri.color }}>{pri.label}</span>
+          <span
+            style={{ ...styles.unitCardDot, background: isReturnLeg(req) ? "var(--move)" : pri.color }}
+          />
+          <span
+            style={{
+              ...styles.unitCardStatusText,
+              color: isReturnLeg(req) ? "var(--move)" : pri.color,
+            }}
+          >
+            {isReturnLeg(req) ? "RETURN LEG" : pri.label}
+          </span>
         </span>
 
         <span style={styles.callCardTileRoute}>{callRoute(req)}</span>
         <span style={styles.callCardTileWait}>NO TEAM ASSIGNED</span>
 
-        {(req.scheduledFor || req.handover) && (
+        {(req.scheduledFor || req.handover || isReturnLeg(req)) && (
           <span style={styles.callCardTileTags}>
+            {isReturnLeg(req) && <span style={styles.legReturn}>↩ RETURN</span>}
             {req.scheduledFor && (
               <span style={styles.callTileHandover}>BOOKED {hhmm(req.scheduledFor)}</span>
             )}
@@ -13321,6 +13596,12 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
   // Set when the ward can't say when the patient will be ready and will phone
   // the desk instead. The booking is then held with no time on it.
   const [awaitCall, setAwaitCall] = useState(false);
+  // Does the patient come back? "ready" waits for the ward to ring; "timed"
+  // books the journey home for a time they have already given.
+  const [returnMode, setReturnMode] = useState("none");
+  const [returnWhen, setReturnWhen] = useState(null);
+  // Which days of the week this booking repeats on. Empty means once.
+  const [repeatOn, setRepeatOn] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -13417,6 +13698,9 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
     setWhen(defaultScheduleTs(Date.now()));
     setDispatchWhen(null);
     setAwaitCall(false);
+    setReturnMode("none");
+    setReturnWhen(null);
+    setRepeatOn([]);
     setError("");
   }
 
@@ -13505,6 +13789,14 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
       // No time yet: the ward calls when the patient is ready and the desk sends
       // it out then. Nothing about it is automatic, which is the whole point.
       awaitCall: !!awaitCall,
+      // The journey home. Made when this leg goes back in service, with the
+      // route reversed — nothing about it is typed twice.
+      returnMode: returnMode === "none" ? null : returnMode,
+      returnAt: returnMode === "timed" ? returnWhen || null : null,
+      leg: returnMode === "none" ? null : "out",
+      // Days of the week, if this is a standing transfer. The booking itself is
+      // the first occurrence; the rest are made a couple of days ahead.
+      repeat: repeatOn.length ? { days: repeatOn.slice().sort((a, b) => a - b) } : null,
       // The shift the booking falls in, so it can be read a shift at a time —
       // this is the shift that will be working when it goes out, not the one
       // the desk is on while booking it. A booking with no time belongs to no
@@ -13766,6 +14058,74 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                     />
                   )}
 
+                  {/* Does the patient come back?
+                      One question, three answers, and the app does the rest:
+                      the journey home is made when this leg goes back in
+                      service, with the route reversed. The desk types nothing
+                      twice, and the return is a call in its own right — which
+                      is what keeps the count and every UHU figure honest. */}
+                  <div style={{ marginTop: 14 }}>
+                    <label style={styles.label}>Does the patient come back?</label>
+                    <div style={styles.kindPick}>
+                      {RETURN_MODES.map((m) => (
+                        <button
+                          key={m.key}
+                          style={returnMode === m.key ? styles.kindPickOn : styles.kindPickOff}
+                          onClick={() => setReturnMode(m.key)}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                    {returnMode === "ready" && (
+                      <div style={styles.formHint}>
+                        The return waits on the board with no time until the ward rings. How long
+                        they wait is recorded.
+                      </div>
+                    )}
+                    {returnMode === "timed" && (
+                      <div style={{ marginTop: 8 }}>
+                        <WhenPicker value={returnWhen} onChange={setReturnWhen} />
+                        <div style={styles.formHint}>
+                          The journey home, booked. It appears on the forward book once this leg is
+                          finished.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* A standing transfer — dialysis three times a week, the
+                      same clinic every Tuesday. The desk says which days once
+                      instead of typing the same booking all month. */}
+                  {!awaitCall && (
+                    <div style={{ marginTop: 14 }}>
+                      <label style={styles.label}>Repeat</label>
+                      <div style={styles.dayPick}>
+                        {DAY_SHORT.map((d, i) => {
+                          const on = repeatOn.includes(i);
+                          return (
+                            <button
+                              key={d}
+                              style={on ? styles.dayPickOn : styles.dayPickOff}
+                              onClick={() =>
+                                setRepeatOn((v) =>
+                                  v.includes(i) ? v.filter((x) => x !== i) : [...v, i]
+                                )
+                              }
+                            >
+                              {d}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={styles.formHint}>
+                        {repeatOn.length
+                          ? `Repeats ${repeatLabel({ repeat: { days: repeatOn } }).toLowerCase()} at this time. The next couple of days are put on the book automatically.`
+                          : "Leave all off for a one-off booking."}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Optional second time. Most transfers need only one —
                           the patient is expected somewhere and the ambulance
                           goes when it goes. A distance, a lift or a patient who
@@ -14017,6 +14377,11 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                         <Bell size={10} /> REMINDER RUNNING
                       </span>
                     )}
+                    {isOutLeg(entry) && <span style={styles.legOut}>OUT</span>}
+                    {isReturnLeg(entry) && <span style={styles.legReturn}>↩ RETURN</span>}
+                    {isRecurring(entry) && (
+                      <span style={styles.repeatTag}>↻ REPEATS · {repeatLabel(entry)}</span>
+                    )}
                     {shift && (
                       <span style={{ ...styles.shiftTag, color: shift.color, borderColor: shift.color }}>
                         {shift.glyph} {shift.short}
@@ -14024,6 +14389,41 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                     )}
                     <span style={{ ...styles.pill, background: meta.color }}>{meta.label}</span>
                   </div>
+
+                  {/* What is coming after this leg, said on the card rather
+                      than left for the desk to remember. */}
+                  {wantsReturn(entry) && !isReturnLeg(entry) && (
+                    <div style={styles.legLink}>
+                      <span style={styles.legLinkArrow}>↩</span>
+                      <span>
+                        {entry.returnMode === "timed" && entry.returnAt ? (
+                          <>
+                            <strong style={styles.legLinkStrong}>
+                              Return booked {whenStr(entry.returnAt)}
+                            </strong>{" "}
+                            — it goes on the book once this leg is finished.
+                          </>
+                        ) : (
+                          <>
+                            <strong style={styles.legLinkStrong}>Return journey to follow</strong> —
+                            ring when ready. It appears on the board on its own when this leg
+                            closes.
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* A return leg waiting on the ward: how long the patient has
+                      been sitting there. Nobody could evidence this before. */}
+                  {isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && (
+                    <div style={styles.historyClosedBy}>
+                      Return leg · patient delivered {clockStr(entry.deliveredAt)} ·{" "}
+                      <strong style={styles.legWaiting}>
+                        waiting {shortDurationStr(Math.max(0, now - entry.deliveredAt))}
+                      </strong>
+                    </div>
+                  )}
 
                   <div style={styles.callCardMeta}>
                     <CallRoute req={entry} />
@@ -14071,7 +14471,10 @@ function ScheduledRequests({ user, units, requests, scheduled, allScheduled, sav
                             get from a call phoned in on the spot. */}
                         {waiting && (
                           <button style={styles.readyNowBtn} onClick={() => markReady(entry)}>
-                            <PhoneIncoming size={13} /> Patient ready — send it out now
+                            <PhoneIncoming size={13} />{" "}
+                            {isReturnLeg(entry)
+                              ? "The ward has rung — send it now"
+                              : "Patient ready — send it out now"}
                           </button>
                         )}
                         <select
@@ -24345,6 +24748,31 @@ const styles = {
   historyNote: { fontSize: 15, color: "var(--ink-3)", lineHeight: 1.55, fontWeight: 500 },
   historyDuration: { fontSize: 13, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
   historyClosedBy: { fontSize: 12.5, color: "var(--ink-4)", marginTop: 8 },
+  // Which leg of a there-and-back, and whether the booking is a standing one.
+  legOut: {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.7, color: "var(--flow)",
+    border: "1px solid var(--flow)", borderRadius: 5, padding: "1px 6px",
+  },
+  legReturn: {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.7, color: "var(--move)",
+    border: "1px solid var(--move)", borderRadius: 5, padding: "1px 6px",
+  },
+  repeatTag: {
+    display: "inline-flex", alignItems: "center", gap: 5,
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.7, color: "var(--land)",
+    border: "1px solid var(--land)", borderRadius: 5, padding: "1px 6px",
+  },
+  legLink: {
+    display: "flex", alignItems: "flex-start", gap: 7, marginTop: 9,
+    padding: "8px 10px", borderRadius: 10,
+    background: "rgba(167,139,250,.10)", border: "1px solid rgba(167,139,250,.34)",
+    fontSize: 12, color: "var(--ink-3)", lineHeight: 1.45,
+  },
+  legLinkArrow: { fontSize: 15, lineHeight: 1, flex: "none", color: "var(--move)" },
+  legLinkStrong: { color: "var(--move)", fontWeight: 750 },
+  legWaiting: { color: "var(--hold)", fontWeight: 750 },
   scheduledTag: {
     display: "inline-flex",
     alignItems: "center",
@@ -26453,6 +26881,17 @@ const styles = {
     fontSize: 8, fontWeight: 800, letterSpacing: 0.6, color: "var(--flow)",
     border: "1px solid var(--flow)", borderRadius: 4, padding: "0 3px",
     flex: "none", marginLeft: 6,
+  },
+  dayPick: { display: "flex", gap: 5, flexWrap: "wrap", marginTop: 2 },
+  dayPickOn: {
+    minWidth: 44, background: "var(--brand-navy-2)", border: "1px solid var(--brand-navy-2)",
+    color: "#FFFFFF", borderRadius: 9, padding: "7px 6px",
+    fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+  },
+  dayPickOff: {
+    minWidth: 44, background: "none", border: "1px solid var(--hair-2)",
+    color: "var(--ink-4)", borderRadius: 9, padding: "7px 6px",
+    fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
   },
   kindPick: { display: "flex", gap: 5, width: "100%", marginTop: 6 },
   kindPickOn: {
