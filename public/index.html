@@ -4032,6 +4032,75 @@ const STOCK_BANDS = {
   unset: { label: "NOT COUNTED", color: "var(--ink-4)" },
 };
 
+// ---------- restocking, after the call ----------
+//
+// Restocking happens when the truck is back at station, not while the patient
+// is in the back of it. Putting the tick-list on the live call card asked a
+// crew to do the paperwork of replacing a cannula at the moment they were
+// still using it, which is both the wrong moment and the one they are least
+// able to give it.
+//
+// So it waits for them. A call goes on this list when it closes, the History
+// tab carries a red count while anything is on it, and it stays there until
+// somebody says the truck is restocked. Nothing else clears it: not the end of
+// the shift, not signing out.
+//
+// Marked per call rather than counted from the movements, because "we used
+// nothing on that one" is a real and common answer and it has to be
+// distinguishable from "nobody has looked at it yet".
+const RESTOCK_KEY = "ems:restockDone";
+const RESTOCK_CAP = 600;
+
+function restockIsDone(done, requestId) {
+  return !!(done && requestId && done[requestId]);
+}
+
+// The calls this truck has finished on this shift that nobody has restocked
+// against yet, newest first.
+function callsAwaitingRestock(requests, unitId, from, done) {
+  if (!unitId) return [];
+  return (requests || [])
+    .filter(
+      (r) =>
+        r &&
+        r.status === "completed" &&
+        r.assignedUnitId === unitId &&
+        (r.createdAt || 0) >= (from || 0) &&
+        !restockIsDone(done, r.id)
+    )
+    .sort((a, b) => callEndTs(b, Date.now()) - callEndTs(a, Date.now()));
+}
+
+async function markRestocked({ request, unit, user }) {
+  if (!request) return null;
+  const existing = (await readKey(RESTOCK_KEY, {})) || {};
+  const next = {
+    ...existing,
+    [request.id]: {
+      ts: Date.now(),
+      byName: (user && user.name) || "",
+      accountId: (user && user.accountId) || null,
+      unitId: unit ? unit.id : null,
+    },
+  };
+  // Oldest entries fall off: this is a list of what has been done, and a call
+  // from six months ago is never coming back onto the outstanding list.
+  const keys = Object.keys(next);
+  if (keys.length > RESTOCK_CAP) {
+    const trimmed = {};
+    keys
+      .sort((a, b) => (next[b].ts || 0) - (next[a].ts || 0))
+      .slice(0, RESTOCK_CAP)
+      .forEach((k) => {
+        trimmed[k] = next[k];
+      });
+    await writeKey(RESTOCK_KEY, trimmed);
+    return trimmed;
+  }
+  await writeKey(RESTOCK_KEY, next);
+  return next;
+}
+
 // What a crew took off the shelf on one call. Negative deltas only — this half
 // of the system records consumption; putting stock back is a count, which is
 // administration's job and is recorded as one.
@@ -6418,6 +6487,8 @@ function App() {
   // Who is locked out. Cold: it changes when somebody cannot get in, which is
   // rare, and the page that shows it refreshes on every tab change anyway.
   const [passwordResets, setPasswordResets] = useState([]);
+  // Which finished calls have had the truck made up again after them.
+  const [restockDone, setRestockDone] = useState({});
   const [policyBusy, setPolicyBusy] = useState(false);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -6768,6 +6839,8 @@ function App() {
     if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
     const pwr = await readKeyRaw(PWRESET_KEY);
     if (pwr !== READ_FAILED) setPasswordResets(pwr || []);
+    const rst = await readKeyRaw(RESTOCK_KEY);
+    if (rst !== READ_FAILED) setRestockDone(rst || {});
   }, []);
 
   // Read when the shelf is actually being looked at, and never on the poll.
@@ -7869,7 +7942,20 @@ function App() {
         : [
             // A crew's own call, their own record, and their own truck.
             { key: "board", glyph: "🚨", label: "My call" },
-            { key: "history", glyph: "🕘", label: "History" },
+            // Red while the truck still has to be made up after a call. The
+            // crew are back at station by then and this is the only prompt
+            // they get.
+            {
+              key: "history",
+              glyph: "🕘",
+              label: "History",
+              badge: callsAwaitingRestock(
+                requests,
+                user.unitId,
+                uhuWindowStart(Date.now()),
+                restockDone
+              ).length,
+            },
             { key: "teams", glyph: "🚑", label: "My truck" },
             { key: "policies", glyph: "📖", label: "Policies" },
           ];
@@ -7932,6 +8018,8 @@ function App() {
           {!onSharedPage && user.role === "team" && (
             <TeamView
               onGoToBoard={() => setNavTab("board")}
+              restockDone={restockDone}
+              setRestockDone={setRestockDone}
               messages={messages}
               setMessages={setMessages}
               inventory={inventory}
@@ -8225,6 +8313,24 @@ const ROLE_CHOICES = {
   admin: { accountRole: "admin", label: "Admin", other: "Dispatcher or Team" },
 };
 
+// Is this person already sitting somewhere?
+//
+// A crew member signing in on a second device — their own phone as well as the
+// truck tablet, or a tablet that was restarted — is not a handover. The board
+// used to offer them "take over" against their own name, which stands them
+// down and writes a shift swap recording that they relieved themselves. That is
+// a fiction on the log sheet and it resets their own hours.
+function seatHeldBy(units, accountId) {
+  if (!accountId) return null;
+  for (const u of units || []) {
+    for (const slot of ["alpha", "bravo"]) {
+      const m = u && u[slot];
+      if (m && m.accountId === accountId) return { unit: u, slot, member: m };
+    }
+  }
+  return null;
+}
+
 function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }) {
   // The tab that is selected, never null. The screen used to open on a menu of
   // three buttons and only then show a form; the approved design is one card
@@ -8306,12 +8412,47 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
   const canJoinTeam = (accountRole) => accountRole === "admin" || accountRole === "dispatcher";
 
   async function routeAfterPassword(account) {
+    // Already on a seat? Then they are signing in again, not signing on. Offer
+    // to carry on being who they already are before anything else.
+    const held = seatHeldBy(units, account.id);
+    if (held) {
+      setSeatUnit(held.unit);
+      setJoinTeamId(held.unit.id);
+      setStage("resume");
+      return;
+    }
     if (canJoinTeam(account.role)) {
       setStage("roleChoice");
       return;
     }
     setPendingRole("team");
     setStage("chooseShift");
+  }
+
+  // Carrying on. Nothing is written: they are already signed on, the seat is
+  // already theirs, and their hours have been running since they took it. This
+  // only tells this device who it is.
+  function resumeSeat() {
+    const held = seatHeldBy(units, foundAccount && foundAccount.id);
+    if (!held) {
+      // The seat went while they were reading the screen.
+      setStage(canJoinTeam(foundAccount.role) ? "roleChoice" : "chooseShift");
+      return;
+    }
+    const { unit, slot, member } = held;
+    onLogin({
+      role: "team",
+      accountId: foundAccount.id,
+      name: foundAccount.name || member.name || foundAccount.id,
+      unitId: unit.id,
+      unitName: unit.name,
+      station: stationOf(unit),
+      slot,
+      shift: member.shift || scheduledShiftKey(Date.now()),
+      shiftStart: member.shiftStart || null,
+      shiftEnd: member.shiftEnd || null,
+      signedOnAt: member.signedOnAt || Date.now(),
+    });
   }
 
   // One press, both fields.
@@ -9042,6 +9183,53 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
               </>
             )}
 
+            {/* Signing in again, on a second device. */}
+            {stage === "resume" && (() => {
+              const held = seatHeldBy(units, foundAccount && foundAccount.id);
+              if (!held) return null;
+              const meta = shiftMeta(held.member.shift);
+              return (
+                <>
+                  <div style={styles.loginSub}>
+                    Welcome back, {foundAccount.name || foundAccount.id}.
+                  </div>
+                  <div style={styles.resumeCard}>
+                    <div style={styles.resumeWhat}>You are already signed on</div>
+                    <div style={styles.resumeWho}>
+                      {held.unit.name} · {seatLabel(held.slot)}
+                    </div>
+                    <div style={styles.resumeMeta}>
+                      {meta ? `${meta.label} · ` : ""}
+                      {held.member.signedOnAt
+                        ? `on since ${clockStr(held.member.signedOnAt)}`
+                        : "shift in progress"}
+                    </div>
+                  </div>
+                  <button style={styles.loginSubmit} onClick={resumeSeat}>
+                    Continue as {held.unit.name}
+                  </button>
+                  <div style={styles.formHint}>
+                    Nothing is changed by this — your seat, your shift and your hours carry on
+                    exactly as they are. Use it whenever you sign in on a second device.
+                  </div>
+                  <div style={styles.loginActions}>
+                    <button style={styles.ghostBtn} onClick={resetAccountFlow}>
+                      Not me
+                    </button>
+                    <button
+                      style={styles.ghostBtn}
+                      onClick={() => {
+                        setPendingRole("team");
+                        setStage(canJoinTeam(foundAccount.role) ? "roleChoice" : "chooseShift");
+                      }}
+                    >
+                      Sign on somewhere else
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+
             {stage === "chooseSeat" && (
               <>
                 <div style={styles.loginSub}>
@@ -9058,7 +9246,11 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
                         style={styles.roleBtn}
                         disabled={busy}
                         onClick={() =>
-                          holder ? takeOverSeat(seat, holder) : finishTeamLogin(foundAccount, seat)
+                          holder && holder.accountId === foundAccount.id
+                            ? resumeSeat()
+                            : holder
+                            ? takeOverSeat(seat, holder)
+                            : finishTeamLogin(foundAccount, seat)
                         }
                       >
                         <div style={{ textAlign: "left" }}>
@@ -9066,6 +9258,8 @@ function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }
                           <div style={styles.roleBtnSub}>
                             {!holder
                               ? "Available"
+                              : holder.accountId === foundAccount.id
+                              ? "This is you — continue"
                               : `Held by ${holder.name}` +
                                 (holderMeta ? ` · ${holderMeta.short}` : "") +
                                 (holderOt > 0 ? ` · ${shortDurationStr(holderOt)} overtime` : "") +
@@ -14781,122 +14975,120 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
           items that go in it.
         </div>
       ) : (
-        groups.map((g) => (
-          <div key={g.id} style={styles.catBlock}>
-            <div style={styles.catHead}>
-              <span style={styles.catName}>{g.name}</span>
-              <span style={styles.catCount}>
-                {g.rows.length} {g.rows.length === 1 ? "item" : "items"}
-              </span>
-              {g.id !== UNSORTED_CATEGORY && (
-                <span style={styles.catTools}>
-                  <button style={styles.catTool} onClick={() => renameCategory(g)} disabled={busy}>
-                    Rename
-                  </button>
-                  <button style={styles.catTool} onClick={() => removeCategory(g)} disabled={busy}>
-                    Remove
-                  </button>
-                </span>
-              )}
-            </div>
+        <div style={styles.catGrid}>
+          {groups.map((g) => (
+            <div key={g.id} style={styles.catCard}>
+              <div style={styles.catCardHead}>
+                <span style={styles.catCardName}>{g.name}</span>
+                <span style={styles.catCardCount}>{g.rows.length}</span>
+              </div>
 
-            {/* One line per item. Name, a slim bar, the percentage — the whole
-                row is the Edit button, because entering a count is the only
-                thing anybody comes to this page to do. Rename and remove are
-                behind the ⋯ so they cost no height until they are wanted. */}
-            {g.rows.map((r) => {
-              const band = STOCK_BANDS[r.band];
-              const managing = manageId === r.id;
-              return (
-                <div key={r.id}>
-                  <div style={styles.itemRow}>
+              {/* One line per item: name, a short bar, the percentage. About
+                  24px each, so a category of a dozen sizes is a card rather
+                  than a page. The whole line is the count button. */}
+              {g.rows.length === 0 ? (
+                <div style={styles.catCardEmpty}>Nothing in here yet.</div>
+              ) : (
+                g.rows.map((r) => {
+                  const band = STOCK_BANDS[r.band];
+                  const managing = manageId === r.id;
+                  return (
+                    <div key={r.id}>
+                      <div style={styles.tinyRow}>
+                        <button
+                          style={styles.tinyTap}
+                          onClick={() => recount(r)}
+                          disabled={busy}
+                          title="Enter what is on the shelf"
+                        >
+                          <span style={styles.tinyName}>{r.name}</span>
+                          <span style={styles.tinyBarTrack}>
+                            <span
+                              style={{
+                                ...styles.tinyBarFill,
+                                width: `${r.pct === null ? 0 : Math.max(4, r.pct)}%`,
+                                background: band.color,
+                              }}
+                            />
+                          </span>
+                          <span style={{ ...styles.tinyPct, color: band.color }}>
+                            {r.pct === null ? "—" : `${r.pct}%`}
+                          </span>
+                        </button>
+                        <button
+                          style={styles.tinyMore}
+                          onClick={() => setManageId(managing ? null : r.id)}
+                        >
+                          ⋯
+                        </button>
+                      </div>
+                      {managing && (
+                        <div style={styles.tinyManage}>
+                          <span style={styles.tinyManageNote}>
+                            {r.pct === null
+                              ? "Never counted"
+                              : `${r.have} of ${r.full}` +
+                                (r.used ? ` · ${r.used} used` : "") +
+                                (r.countedAt ? ` · ${gregDateStr(r.countedAt)}` : "")}
+                          </span>
+                          <button style={styles.catTool} onClick={() => renameItem(r)} disabled={busy}>
+                            Rename
+                          </button>
+                          <button style={styles.catTool} onClick={() => removeItem(r)} disabled={busy}>
+                            Remove
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+
+              {g.id !== UNSORTED_CATEGORY &&
+                (addingTo === g.id ? (
+                  <div style={styles.itemAddRow}>
+                    <input
+                      autoFocus
+                      style={styles.itemAddInput}
+                      placeholder="e.g. 18G"
+                      value={newItem}
+                      maxLength={80}
+                      onChange={(e) => setNewItem(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addItem(g.id);
+                        if (e.key === "Escape") setAddingTo(null);
+                      }}
+                    />
                     <button
-                      style={styles.itemTap}
-                      onClick={() => recount(r)}
-                      disabled={busy}
-                      title="Enter what is on the shelf"
+                      style={styles.primaryBtnSm}
+                      onClick={() => addItem(g.id)}
+                      disabled={!newItem.trim() || busy}
                     >
-                      <span style={styles.itemName}>{r.name}</span>
-                      <span style={styles.itemBarTrack}>
-                        <span
-                          style={{
-                            ...styles.itemBarFill,
-                            width: `${r.pct === null ? 0 : Math.max(3, r.pct)}%`,
-                            background: band.color,
-                          }}
-                        />
-                      </span>
-                      <span style={{ ...styles.itemPct, color: band.color }}>
-                        {r.pct === null ? "—" : `${r.pct}%`}
-                      </span>
-                    </button>
-                    <button
-                      style={styles.itemMore}
-                      onClick={() => setManageId(managing ? null : r.id)}
-                    >
-                      ⋯
+                      Add
                     </button>
                   </div>
-                  {managing && (
-                    <div style={styles.itemManage}>
-                      <span style={styles.itemManageNote}>
-                        {r.pct === null
-                          ? "Never counted"
-                          : `${r.have} of ${r.full} left` +
-                            (r.used ? ` · ${r.used} used since the count` : "") +
-                            (r.countedAt ? ` · counted ${gregDateStr(r.countedAt)}` : "")}
-                      </span>
-                      <button style={styles.catTool} onClick={() => renameItem(r)} disabled={busy}>
-                        Rename
-                      </button>
-                      <button style={styles.catTool} onClick={() => removeItem(r)} disabled={busy}>
-                        Remove
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {g.id !== UNSORTED_CATEGORY &&
-              (addingTo === g.id ? (
-                <div style={styles.itemAddRow}>
-                  <input
-                    autoFocus
-                    style={styles.itemAddInput}
-                    placeholder="Item name — e.g. 18G"
-                    value={newItem}
-                    maxLength={80}
-                    onChange={(e) => setNewItem(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") addItem(g.id);
-                      if (e.key === "Escape") setAddingTo(null);
-                    }}
-                  />
-                  <button
-                    style={styles.primaryBtnSm}
-                    onClick={() => addItem(g.id)}
-                    disabled={!newItem.trim() || busy}
-                  >
-                    Add
-                  </button>
-                  <button style={styles.catTool} onClick={() => setAddingTo(null)}>
-                    Done
-                  </button>
-                </div>
-              ) : (
-                <button
-                  style={styles.itemAddBtn}
-                  onClick={() => {
-                    setNewItem("");
-                    setAddingTo(g.id);
-                  }}
-                >
-                  + Add an item to {g.name}
-                </button>
-              ))}
-          </div>
-        ))
+                ) : (
+                  <div style={styles.catCardFoot}>
+                    <button
+                      style={styles.catCardAdd}
+                      onClick={() => {
+                        setNewItem("");
+                        setAddingTo(g.id);
+                      }}
+                    >
+                      + Item
+                    </button>
+                    <button style={styles.catTool} onClick={() => renameCategory(g)} disabled={busy}>
+                      Rename
+                    </button>
+                    <button style={styles.catTool} onClick={() => removeCategory(g)} disabled={busy}>
+                      Remove
+                    </button>
+                  </div>
+                ))}
+            </div>
+          ))}
+        </div>
       )}
 
       <div style={styles.stockAdd}>
@@ -14950,11 +15142,12 @@ function InventoryAdmin({ inventory, moves, setInventory, user, addLog }) {
 //
 // Tap an item, say how many. It comes off the department's shelf carrying the
 // call, the truck and the person with it.
-function CallRestock({ inventory, moves, unit, user, request, setMoves }) {
-  const [open, setOpen] = useState(true);
+function CallRestock({ inventory, moves, unit, user, request, setMoves, onDone, startOpen }) {
+  const [open, setOpen] = useState(!!startOpen);
   const [busy, setBusy] = useState(null);
-  // Which categories are folded shut. Open by default: a crew standing at the
-  // trolley wants to see the list, not go looking for it.
+  const [closing, setClosing] = useState(false);
+  // Which categories are folded shut. Open by default: a crew at the truck
+  // wants to see the list, not go looking for it.
   const [shut, setShut] = useState({});
   const groups = inventoryTree(inventory, moves);
   const mine = usedOnCall(moves, request && request.id);
@@ -14997,14 +15190,35 @@ function CallRestock({ inventory, moves, unit, user, request, setMoves }) {
 
   const anyItems = groups.some((g) => g.rows.length > 0);
 
+  async function finish() {
+    if (
+      !window.confirm(
+        total === 0
+          ? `Mark this call restocked with nothing recorded?\n\nOnly do this if you genuinely used nothing.`
+          : `Mark this call restocked?\n\n${total} item${total === 1 ? "" : "s"} came off the shelf ` +
+            `and the truck has been made up again.`
+      )
+    )
+      return;
+    setClosing(true);
+    try {
+      if (onDone) await onDone();
+    } finally {
+      setClosing(false);
+    }
+  }
+
   return (
     <FoldingSection
-      title="RESTOCK THIS CALL"
+      title={`RESTOCK — ${(request.nature || "call").toUpperCase()}`}
       count={total}
-      countLabel={total ? "items to replace" : "nothing yet"}
+      countLabel={total ? "items used" : "nothing recorded"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
+      <div style={styles.restockWhen}>
+        {callRoute(request)} · finished {clockStr(callEndTs(request, Date.now()))}
+      </div>
       {!anyItems ? (
         <div style={styles.formHint}>Administration has not added any stock items yet.</div>
       ) : (
@@ -15072,10 +15286,16 @@ function CallRestock({ inventory, moves, unit, user, request, setMoves }) {
 
           <div style={styles.todoFoot}>
             {total === 0
-              ? "Nothing ticked yet. If you used nothing, there is nothing to do."
+              ? "Nothing ticked yet. If you used nothing on this call, say so below."
               : `${total} item${total === 1 ? "" : "s"} recorded against this call.`}
           </div>
         </>
+      )}
+
+      {onDone && (
+        <button style={styles.restockDoneBtn} onClick={finish} disabled={closing}>
+          {closing ? "…" : total === 0 ? "Used nothing — mark restocked" : "Truck restocked"}
+        </button>
       )}
     </FoldingSection>
   );
@@ -17680,7 +17900,7 @@ function SeatLine({ label, member, unit, slot, onRelieve, onGrantOt, requests, n
 
 // ---------- team view ----------
 
-function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToBoard, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, locations, setLocations, trackingConsents, setTrackingConsents }) {
+function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToBoard, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -17821,6 +18041,15 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       "status"
     );
   }
+
+  // Calls this truck has finished on this shift with nobody having said the
+  // truck was made up again afterwards.
+  const awaitingRestock = callsAwaitingRestock(
+    requests,
+    myUnit && myUnit.id,
+    uhuWindowStart(Date.now()),
+    restockDone
+  );
 
   const wasOnCall = useRef(null);
   const [calledOff, setCalledOff] = useState(null);
@@ -19160,18 +19389,6 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
 
           <CallStepper req={myRequest} />
 
-          {/* What came off the shelf for this patient, recorded here rather than
-              on the truck page: standing next to the trolley is the only moment
-              anybody can answer it accurately. */}
-          <CallRestock
-            inventory={inventory}
-            moves={inventoryMoves}
-            unit={myUnit}
-            user={user}
-            request={myRequest}
-            setMoves={setInventoryMoves}
-          />
-
           {/* Where the ask for a second ambulance has got to, on the card of the
               team who asked for it — a crew waiting for help should not have to
               radio the desk to find out whether it is coming. */}
@@ -19397,6 +19614,43 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
       {/* History: what this crew has already closed on the shift running now. */}
       {onPage("history") && (
         <div style={{ marginTop: 18 }}>
+          {/* What still has to be put back on the truck. Above the history
+              itself, because it is the only thing on this page anybody has to
+              act on — the rest is a record. */}
+          {awaitingRestock.length > 0 && (
+            <div style={styles.restockQueue}>
+              <div style={styles.restockQueueHead}>
+                <span style={styles.restockQueueTitle}>RESTOCK OUTSTANDING</span>
+                <span style={styles.restockQueueCount}>{awaitingRestock.length}</span>
+              </div>
+              <div style={styles.restockQueueNote}>
+                Tick what you used on each call, then mark the truck restocked. These stay here
+                until you do — signing out does not clear them.
+              </div>
+              {awaitingRestock.map((req, i) => (
+                <CallRestock
+                  key={req.id}
+                  startOpen={i === 0}
+                  inventory={inventory}
+                  moves={inventoryMoves}
+                  unit={myUnit}
+                  user={user}
+                  request={req}
+                  setMoves={setInventoryMoves}
+                  onDone={async () => {
+                    const next = await markRestocked({ request: req, unit: myUnit, user });
+                    if (next) setRestockDone(next);
+                    await addLog(
+                      `${myUnit.name} restocked after ${req.nature || "a call"}` +
+                        `${user && user.name ? ` by ${user.name}` : ""}`,
+                      "status"
+                    );
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
           <CompletedCalls
             requests={stationRequests}
             units={stationUnits}
@@ -25210,66 +25464,116 @@ const styles = {
   // One line per item. The old rows were a name, a full-width bar, a sentence
   // and three buttons — about 90px each, so a shelf of thirty items was a
   // three-thousand-pixel scroll. These are 34.
-  catBlock: {
-    border: "1px solid var(--hair)", borderRadius: 14,
-    background: "var(--inset)", padding: "8px 10px 10px", marginTop: 10,
+  // Categories are cards, laid out like the call cards on the board, so many
+  // of them fit across a screen instead of one per full-width block.
+  catGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))",
+    gap: 10,
+    marginTop: 10,
   },
-  catHead: {
-    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-    padding: "2px 2px 8px",
+  catCard: {
+    background: "var(--raised)",
+    border: "1px solid var(--hair)",
+    boxShadow: "0 6px 18px var(--lift)",
+    borderRadius: 14,
+    padding: "9px 10px 8px",
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
   },
-  catName: { fontSize: 13, fontWeight: 800, letterSpacing: 0.3, color: "var(--ink)" },
-  catCount: { fontSize: 11, color: "var(--ink-4)" },
+  catCardHead: {
+    display: "flex", alignItems: "baseline", gap: 8,
+    paddingBottom: 6, borderBottom: "1px solid var(--hair)", marginBottom: 2,
+  },
+  catCardName: {
+    fontSize: 12.5, fontWeight: 800, letterSpacing: 0.2, color: "var(--ink)",
+    minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  catCardCount: {
+    marginLeft: "auto", fontSize: 10.5, fontWeight: 700, color: "var(--ink-4)",
+    background: "var(--inset)", borderRadius: 999, padding: "0 7px", flex: "none",
+  },
+  catCardEmpty: { fontSize: 11, color: "var(--ink-4)", padding: "6px 2px" },
+
+  // One item. Twenty-four pixels: name, a short bar, the percentage.
+  tinyRow: { display: "flex", alignItems: "center", gap: 2, minWidth: 0 },
+  tinyTap: {
+    flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 7,
+    background: "none", border: "none", color: "var(--ink-2)",
+    padding: "4px 0", cursor: "pointer", textAlign: "left", font: "inherit",
+  },
+  tinyName: {
+    fontSize: 11.5, flex: 1, minWidth: 0,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  tinyBarTrack: {
+    width: 34, height: 3, flex: "none", borderRadius: 999,
+    background: "var(--hair)", overflow: "hidden", display: "block",
+  },
+  tinyBarFill: { display: "block", height: "100%", borderRadius: 999 },
+  tinyPct: {
+    fontSize: 10.5, fontWeight: 800, width: 30, textAlign: "right", flex: "none",
+    fontVariantNumeric: "tabular-nums",
+  },
+  tinyMore: {
+    background: "none", border: "none", color: "var(--ink-4)",
+    fontSize: 13, lineHeight: 1, padding: "3px 3px", cursor: "pointer", flex: "none",
+  },
+  tinyManage: {
+    display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap",
+    padding: "0 0 6px 0",
+  },
+  tinyManageNote: { fontSize: 10, color: "var(--ink-4)", width: "100%" },
+  catCardFoot: {
+    display: "flex", gap: 5, flexWrap: "wrap", marginTop: 7,
+    paddingTop: 7, borderTop: "1px solid var(--veil)",
+  },
+  catCardAdd: {
+    background: "var(--inset-2)", border: "1px solid var(--hair-2)", color: "var(--ink-3)",
+    borderRadius: 999, padding: "2px 10px", fontSize: 10.5, fontWeight: 700,
+    cursor: "pointer", fontFamily: "inherit",
+  },
   catTools: { marginLeft: "auto", display: "flex", gap: 6 },
   catTool: {
     background: "none", border: "1px solid var(--hair-2)", color: "var(--ink-4)",
     borderRadius: 999, padding: "2px 9px", fontSize: 10.5, fontWeight: 700,
     cursor: "pointer", fontFamily: "inherit",
   },
-  itemRow: {
-    display: "flex", alignItems: "center", gap: 4,
-    borderTop: "1px solid var(--veil)",
-  },
-  itemTap: {
-    flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10,
-    background: "none", border: "none", color: "var(--ink)",
-    padding: "7px 2px", cursor: "pointer", textAlign: "left", font: "inherit",
-  },
-  itemName: {
-    fontSize: 13, flex: "0 1 auto", minWidth: 0, maxWidth: "46%",
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-  },
-  itemBarTrack: {
-    flex: 1, height: 5, minWidth: 40, borderRadius: 999,
-    background: "var(--hair)", overflow: "hidden", display: "block",
-  },
-  itemBarFill: { display: "block", height: "100%", borderRadius: 999 },
-  itemPct: {
-    fontSize: 11.5, fontWeight: 800, width: 38, textAlign: "right", flex: "none",
-    fontVariantNumeric: "tabular-nums",
-  },
-  itemMore: {
-    background: "none", border: "none", color: "var(--ink-4)",
-    fontSize: 15, lineHeight: 1, padding: "6px 6px", cursor: "pointer", flex: "none",
-  },
-  itemManage: {
-    display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap",
-    padding: "0 2px 8px 2px",
-  },
-  itemManageNote: { fontSize: 11, color: "var(--ink-4)", flex: 1, minWidth: 120 },
   itemAddRow: { display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" },
   itemAddInput: {
     flex: 1, minWidth: 130, background: "var(--ground)", color: "var(--ink)",
     border: "1px solid var(--hair-2)", borderRadius: 9,
     padding: "7px 10px", fontSize: 13, fontFamily: "inherit", outline: "none",
   },
-  itemAddBtn: {
-    background: "none", border: "1px dashed var(--hair-2)", color: "var(--ink-4)",
-    borderRadius: 9, padding: "6px 10px", fontSize: 11.5, fontWeight: 650,
-    cursor: "pointer", marginTop: 8, fontFamily: "inherit", width: "100%", textAlign: "left",
-  },
 
   // ---- restock, crew side: a tick-list ----
+  // The queue of calls the truck has not been made up after. Amber, because it
+  // is a job outstanding rather than an emergency.
+  restockQueue: {
+    border: "1px solid rgba(255,159,10,.34)",
+    background: "rgba(255,159,10,.06)",
+    borderRadius: 16, padding: "12px 12px 14px", marginBottom: 16,
+  },
+  restockQueueHead: { display: "flex", alignItems: "center", gap: 8 },
+  restockQueueTitle: {
+    fontSize: 11, fontWeight: 800, letterSpacing: 1.2, color: "var(--hold)",
+  },
+  restockQueueCount: {
+    background: "var(--crit)", color: "#fff", borderRadius: 999,
+    padding: "1px 9px", fontSize: 11.5, fontWeight: 800,
+  },
+  restockQueueNote: {
+    fontSize: 11.5, lineHeight: 1.55, color: "var(--ink-4)", marginTop: 6,
+  },
+  restockWhen: {
+    fontSize: 11.5, color: "var(--ink-4)", marginTop: 2, marginBottom: 4,
+  },
+  restockDoneBtn: {
+    width: "100%", marginTop: 14, padding: "12px 16px", borderRadius: 12,
+    background: "var(--ok)", border: "none", color: "var(--ground)",
+    fontSize: 14.5, fontWeight: 800, fontFamily: "inherit", cursor: "pointer",
+  },
   todoCat: { marginTop: 10 },
   todoCatHead: {
     display: "flex", alignItems: "center", gap: 7, width: "100%",
@@ -26937,6 +27241,16 @@ const styles = {
     color: "var(--ink-3)", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit",
     textDecoration: "underline", cursor: "pointer", padding: 4,
   },
+  resumeCard: {
+    background: "rgba(48,209,88,.09)", border: "1px solid rgba(48,209,88,.34)",
+    borderRadius: 14, padding: "13px 15px", margin: "12px 0 4px",
+  },
+  resumeWhat: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 1.1, color: "var(--ok)",
+    textTransform: "uppercase",
+  },
+  resumeWho: { fontSize: 19, fontWeight: 750, color: "var(--ink)", marginTop: 5 },
+  resumeMeta: { fontSize: 12, color: "var(--ink-4)", marginTop: 4 },
   loginNote: {
     display: "flex", alignItems: "flex-start", gap: 9,
     padding: "11px 13px", borderRadius: 11, background: "var(--inset)",
