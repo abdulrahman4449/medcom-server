@@ -995,8 +995,42 @@ function checklistRunFor(runs, unitId, part, shiftKey) {
 function checklistFlags(run, items) {
   if (!run) return [];
   return (items || [])
-    .filter((it) => run.answers && run.answers[it.id] && run.answers[it.id] !== "available")
+    .filter(
+      (it) =>
+        !isWriteItem(it) &&
+        run.answers &&
+        run.answers[it.id] &&
+        run.answers[it.id] !== "available"
+    )
     .map((it) => ({ item: it, answer: run.answers[it.id] }));
+}
+
+// Two kinds of line on a list.
+//
+// Most are a check: available, not complete, not available. Some are a reading
+// the department wants written down rather than judged — a cylinder pressure, a
+// mileage, the seal number on a drugs bag. Answering those with a tick loses the
+// only thing about them worth having.
+//
+// A written line is never a flag. "180 bar" is not a fault, and putting it
+// through the flag path would report every truck as having something wrong with
+// it every morning.
+function isWriteItem(it) {
+  return !!(it && it.kind === "write");
+}
+
+function checklistReadings(run, items) {
+  if (!run) return [];
+  return (items || [])
+    .filter((it) => isWriteItem(it) && run.answers && String(run.answers[it.id] || "").trim())
+    .map((it) => ({ item: it, value: String(run.answers[it.id]).trim() }));
+}
+
+// Answered means something different for each kind, and the file button waits
+// on all of them either way.
+function checkItemAnswered(it, answers) {
+  const v = answers && answers[it.id];
+  return isWriteItem(it) ? String(v || "").trim().length > 0 : !!v;
 }
 
 // ---------- no coverage ----------
@@ -10755,7 +10789,7 @@ function ChecklistCard({ part, items, checklists, onSubmit, onCancel }) {
   const orphans = items.filter((it) => !known.has(it.id));
   if (orphans.length) groups.push({ id: "__rest", name: "Other", items: orphans });
 
-  const answered = items.filter((it) => answers[it.id]).length;
+  const answered = items.filter((it) => checkItemAnswered(it, answers)).length;
   const ready = answered === items.length;
 
   return (
@@ -10781,7 +10815,7 @@ function ChecklistCard({ part, items, checklists, onSubmit, onCancel }) {
 
       <div style={styles.checkList}>
         {groups.map((g) => {
-          const done = g.items.filter((it) => answers[it.id]).length;
+          const done = g.items.filter((it) => checkItemAnswered(it, answers)).length;
           const folded = shut[g.id];
           return (
             <div key={g.id} style={styles.checkGroup}>
@@ -10801,33 +10835,61 @@ function ChecklistCard({ part, items, checklists, onSubmit, onCancel }) {
               </button>
 
               {!folded &&
-                g.items.map((it) => (
-                  <div key={it.id} style={styles.checkRow}>
-                    <span style={styles.checkRowText}>{it.text}</span>
-                    {/* Three squares on the same line as the item. */}
-                    <span style={styles.checkRowBtns}>
-                      {CHECK_ANSWERS.map((a) => {
-                        const on = answers[it.id] === a.key;
-                        return (
-                          <button
-                            key={a.key}
-                            title={a.label}
-                            aria-label={`${it.text}: ${a.label}`}
-                            style={{
-                              ...styles.checkDot,
-                              ...(on
-                                ? { background: a.color, color: "var(--ground)", borderColor: a.color }
-                                : { color: "var(--ink-4)", borderColor: "var(--hair-2)" }),
-                            }}
-                            onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
-                          >
-                            {a.key === "available" ? "✓" : a.key === "incomplete" ? "!" : "✕"}
-                          </button>
-                        );
-                      })}
-                    </span>
-                  </div>
-                ))}
+                g.items.map((it) =>
+                  // A line the crew write into rather than judge: a cylinder
+                  // pressure, a mileage, a seal number. The words go above the
+                  // box because a reading needs the room and there is no
+                  // sensible way to fit a text field beside a long label on a
+                  // phone.
+                  isWriteItem(it) ? (
+                    <div key={it.id} style={styles.checkWriteRow}>
+                      <span style={styles.checkWriteLabel}>
+                        {it.text}
+                        <span style={styles.checkWriteTag}>WRITE IN</span>
+                      </span>
+                      <input
+                        style={
+                          checkItemAnswered(it, answers)
+                            ? styles.checkWriteInputOn
+                            : styles.checkWriteInput
+                        }
+                        value={answers[it.id] || ""}
+                        maxLength={120}
+                        placeholder="Type the reading"
+                        aria-label={it.text}
+                        onChange={(e) =>
+                          setAnswers((v) => ({ ...v, [it.id]: e.target.value }))
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <div key={it.id} style={styles.checkRow}>
+                      <span style={styles.checkRowText}>{it.text}</span>
+                      {/* Three squares on the same line as the item. */}
+                      <span style={styles.checkRowBtns}>
+                        {CHECK_ANSWERS.map((a) => {
+                          const on = answers[it.id] === a.key;
+                          return (
+                            <button
+                              key={a.key}
+                              title={a.label}
+                              aria-label={`${it.text}: ${a.label}`}
+                              style={{
+                                ...styles.checkDot,
+                                ...(on
+                                  ? { background: a.color, color: "var(--ground)", borderColor: a.color }
+                                  : { color: "var(--ink-4)", borderColor: "var(--hair-2)" }),
+                              }}
+                              onClick={() => setAnswers((v) => ({ ...v, [it.id]: a.key }))}
+                            >
+                              {a.key === "available" ? "✓" : a.key === "incomplete" ? "!" : "✕"}
+                            </button>
+                          );
+                        })}
+                      </span>
+                    </div>
+                  )
+                )}
             </div>
           );
         })}
@@ -18710,8 +18772,11 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
     if (!myUnit || !myPart) return;
     const now = Date.now();
     const flagged = myChecklistItems.filter(
-      (it) => answers[it.id] && answers[it.id] !== "available"
+      (it) => !isWriteItem(it) && answers[it.id] && answers[it.id] !== "available"
     );
+    const readings = myChecklistItems
+      .filter((it) => isWriteItem(it) && String(answers[it.id] || "").trim())
+      .map((it) => `${it.text}: ${String(answers[it.id]).trim()}`);
     const entry = {
       id: uid("chk"),
       unitId: myUnit.id,
@@ -18752,6 +18817,7 @@ function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audi
               )
               .join("; ")
           : " · everything available") +
+        (readings.length ? ` · ${readings.join("; ")}` : "") +
         (note ? ` · note: ${note}` : ""),
       "status"
     );
@@ -20461,6 +20527,8 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
   const [newCat, setNewCat] = useState("");
   const [addingTo, setAddingTo] = useState(null);
   const [newItem, setNewItem] = useState("");
+  // Whether the next item is one the crew tick or one they write into.
+  const [newKind, setNewKind] = useState("check");
   const items = checklistItems(checklists, part);
   const cats = checklistCategories(checklists, part);
   const groups = checklistTree(checklists, part);
@@ -20513,9 +20581,20 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
   async function addItem(categoryId) {
     const text = newItem.trim();
     if (!text) return;
-    await save({ items: [...items, { id: uid("ci"), text, categoryId }] });
+    await save({ items: [...items, { id: uid("ci"), text, categoryId, kind: newKind }] });
     setNewItem("");
-    await addLog(`${user.name || "Admin"} added "${text}" to the ${partName} checklist`, "status");
+    await addLog(
+      `${user.name || "Admin"} added "${text}" to the ${partName} checklist` +
+        (newKind === "write" ? " (written in by the crew)" : ""),
+      "status"
+    );
+  }
+
+  // Changing an item's kind after the fact. Lists already filed keep whatever
+  // they were given — a tick recorded last week stays a tick.
+  async function toggleKind(it) {
+    const to = isWriteItem(it) ? "check" : "write";
+    await save({ items: items.map((x) => (x.id === it.id ? { ...x, kind: to } : x)) });
   }
 
   async function renameItem(it) {
@@ -20616,6 +20695,18 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
                   <div key={it.id} style={styles.tinyRow}>
                     <button style={styles.tinyTap} onClick={() => renameItem(it)} title="Reword">
                       <span style={styles.tinyName}>{it.text}</span>
+                      {isWriteItem(it) && <span style={styles.kindTag}>WRITE</span>}
+                    </button>
+                    <button
+                      style={styles.tinyMore}
+                      onClick={() => toggleKind(it)}
+                      title={
+                        isWriteItem(it)
+                          ? "The crew write a reading into this — tap to make it a tick instead"
+                          : "The crew tick this — tap to make it something they write into"
+                      }
+                    >
+                      {isWriteItem(it) ? "✎" : "✓"}
                     </button>
                     <button
                       style={styles.tinyMore}
@@ -20660,6 +20751,20 @@ function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units, addLo
                     >
                       Add
                     </button>
+                    <div style={styles.kindPick}>
+                      {[
+                        { key: "check", label: "Crew tick it" },
+                        { key: "write", label: "Crew write in it" },
+                      ].map((k) => (
+                        <button
+                          key={k.key}
+                          style={newKind === k.key ? styles.kindPickOn : styles.kindPickOff}
+                          onClick={() => setNewKind(k.key)}
+                        >
+                          {k.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <div style={styles.catCardFoot}>
@@ -26316,6 +26421,50 @@ const styles = {
   checkKeyItem: { display: "inline-flex", alignItems: "center", gap: 5 },
   checkKeyDot: { width: 8, height: 8, borderRadius: 3, display: "inline-block", flex: "none" },
 
+  // A line the crew type into. The label sits above the box: a reading needs
+  // the width, and there is no honest way to fit a text field beside a long
+  // label at 390px.
+  checkWriteRow: {
+    borderTop: "1px solid var(--veil)", padding: "7px 0 8px",
+    display: "flex", flexDirection: "column", gap: 6,
+  },
+  checkWriteLabel: {
+    fontSize: 13, lineHeight: 1.35, color: "var(--ink-2)",
+    display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap",
+  },
+  checkWriteTag: {
+    fontSize: 8.5, fontWeight: 800, letterSpacing: 0.7, color: "var(--flow)",
+    border: "1px solid var(--flow)", borderRadius: 4, padding: "1px 4px", flex: "none",
+  },
+  checkWriteInput: {
+    width: "100%", boxSizing: "border-box",
+    background: "var(--ground)", color: "var(--ink)",
+    border: "1px solid var(--hair-2)", borderRadius: 9,
+    padding: "9px 11px", fontSize: 14, fontFamily: "inherit", outline: "none",
+  },
+  checkWriteInputOn: {
+    width: "100%", boxSizing: "border-box",
+    background: "var(--ground)", color: "var(--ink)",
+    border: "1px solid var(--ok)", borderRadius: 9,
+    padding: "9px 11px", fontSize: 14, fontFamily: "inherit", outline: "none",
+  },
+  // Admin side: which kind an item is, and which kind the next one will be.
+  kindTag: {
+    fontSize: 8, fontWeight: 800, letterSpacing: 0.6, color: "var(--flow)",
+    border: "1px solid var(--flow)", borderRadius: 4, padding: "0 3px",
+    flex: "none", marginLeft: 6,
+  },
+  kindPick: { display: "flex", gap: 5, width: "100%", marginTop: 6 },
+  kindPickOn: {
+    flex: 1, background: "var(--inset-2)", border: "1px solid var(--hair-3)",
+    color: "var(--ink)", borderRadius: 999, padding: "4px 8px",
+    fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+  },
+  kindPickOff: {
+    flex: 1, background: "none", border: "1px solid var(--hair)",
+    color: "var(--ink-4)", borderRadius: 999, padding: "4px 8px",
+    fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+  },
   checkGroup: { marginBottom: 4 },
   checkGroupHead: {
     display: "flex", alignItems: "center", gap: 7, width: "100%",
