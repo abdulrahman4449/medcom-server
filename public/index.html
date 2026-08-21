@@ -6557,41 +6557,166 @@ async function exportSubmission(sub, liveRequests, liveCoverage) {
 // the app can do is stop the loss being a surprise. /api/health already knows
 // the answer; this asks it once and says so, at the top of the screen, until
 // somebody fixes it.
+// One key worth asking about on its own.
+//
+// Set below the ceiling a single key can actually reach, not above it: the
+// server accepts a request body of 25 MB, and every key is written whole, so
+// nothing can ever grow past that in one piece. An alert set at 40 MB would
+// have been an alert that could never fire — what happens instead at 25 MB is
+// that the write is refused, the app reads the refusal as being offline, and
+// the change queues on the device forever.
+//
+// So this warns at 15, and the policy shelf refuses new files past 20 with a
+// sentence somebody can act on rather than a silent failure.
+const BIG_KEY_BYTES = 15 * 1024 * 1024;
+// What the shelf may hold, kept under the server's 25 MB so a save is never
+// refused after the fact.
+const POLICY_SHELF_LIMIT = 20 * 1024 * 1024;
+
+function bytesStr(n) {
+  const b = Number(n) || 0;
+  if (b >= 1e9) return `${(b / 1e9).toFixed(2)} GB`;
+  if (b >= 1e6) return `${(b / 1e6).toFixed(1)} MB`;
+  if (b >= 1e3) return `${Math.round(b / 1e3)} KB`;
+  return `${b} B`;
+}
+
+// The names the board stores things under are not words anybody should have to
+// read off a warning.
+const KEY_NAMES = {
+  "ems:submissions": "Filed shift logs",
+  "ems:archives": "Kept operational days",
+  "ems:log": "Event log",
+  "ems:requests": "Live calls",
+  "ems:policies": "Policy files",
+  "ems:checklistRuns": "Filed checklists",
+  "ems:inventoryMoves": "Stock movements",
+  "ems:coverage": "No-coverage periods",
+  "ems:scheduled": "Forward book",
+  "ems:messages": "Messages",
+  "ems:units": "Teams",
+  "ems:accounts": "Accounts",
+};
+
+function keyName(k) {
+  return KEY_NAMES[k] || k;
+}
+
+// ---------- is this board actually being kept, and is there room? ----------
+//
+// Two different questions with one answer between them, so they share a fetch.
+//
+// The first is whether the database survives a deploy at all — see server.js.
+// The second is whether the disk it sits on is filling up. Every store in this
+// app has a cap, so it settles at a ceiling rather than growing forever; the one
+// thing with no cap is the policy shelf, which is scanned PDFs and is therefore
+// the thing that will actually fill a disk if anything does.
+//
+// The percentage is read off the filesystem rather than added up from the rows:
+// SQLite's file is bigger than the sum of its values, the write-ahead log sits
+// beside it, and other things share a hosted volume. Only the disk knows.
 function StorageBanner({ role }) {
   const [state, setState] = useState(null);
+  const warned = useRef(false);
 
   useEffect(() => {
     let alive = true;
-    (async () => {
+    const check = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/health`);
         if (!res.ok) return;
         const body = await res.json();
-        if (alive && body && body.database) setState(body.database);
+        if (!alive || !body) return;
+        setState(body);
+
+        // A notification, once, when it first crosses the mark. Not on every
+        // poll: a warning that arrives every ten minutes is one nobody reads,
+        // and this is a "sort it out this week" problem, not an alarm.
+        const d = body.disk;
+        if (
+          !warned.current &&
+          d &&
+          d.measured &&
+          d.warning &&
+          (role === "admin" || role === "dispatcher")
+        ) {
+          warned.current = true;
+          try {
+            if (alertsSupported() && Notification.permission === "granted") {
+              new Notification(`${APP_NAME} — storage ${d.usedPct}% full`, {
+                body:
+                  `${bytesStr(d.freeBytes)} left on the disk. ` +
+                  `Nothing is lost yet, but the board stops being able to save when it fills.`,
+                tag: "pulseops-disk",
+                renotify: false,
+              });
+            }
+          } catch (e) {}
+        }
       } catch (e) {
         // Unreachable is the connection banner's job, not this one's.
       }
-    })();
+    };
+    check();
+    // Ten minutes. A disk does not fill between two blinks, and this is a
+    // separate request from the board's own polling.
+    const t = setInterval(check, 10 * 60 * 1000);
     return () => {
       alive = false;
+      clearInterval(t);
     };
-  }, []);
+  }, [role]);
 
-  // Only the people who can do something about it, and only when the answer is
-  // bad. A crew mid-call does not need this.
-  if (!state || state.survivesRedeploy) return null;
+  if (!state) return null;
   if (role !== "admin" && role !== "dispatcher") return null;
 
-  return (
-    <div style={styles.storageBanner}>
-      <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
-      <strong>This server is not keeping the board.</strong> The database is on{" "}
-      {state.chosenFrom || "temporary storage"} ({state.path}), which is rebuilt
-      on every deploy — the statistics, the filed logs and the archive will be
-      erased the next time the app is updated. Attach a persistent disk in the
-      hosting dashboard and point DB_PATH at a file on it.
-    </div>
-  );
+  const db = state.database || {};
+  const disk = state.disk || {};
+  const big = ((state.board || {}).largest || []).filter((k) => (k.bytes || 0) >= BIG_KEY_BYTES);
+
+  // Not being kept at all is the worse problem and gets said first.
+  if (!db.survivesRedeploy) {
+    return (
+      <div style={styles.storageBanner}>
+        <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+        <strong>This server is not keeping the board.</strong> The database is on{" "}
+        {db.chosenFrom || "temporary storage"} ({db.path}), which is rebuilt on every deploy — the
+        statistics, the filed logs and the archive will be erased the next time the app is updated.
+        Attach a persistent disk in the hosting dashboard and point DB_PATH at a file on it.
+      </div>
+    );
+  }
+
+  if (disk.measured && disk.warning) {
+    return (
+      <div style={styles.storageBanner}>
+        <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+        <strong>Storage {disk.usedPct}% full.</strong> {bytesStr(disk.freeBytes)} left of{" "}
+        {bytesStr(disk.totalBytes)}. Nothing is lost, and nothing stops working yet — but the board
+        cannot save once the disk is full.
+        {big.length > 0 && (
+          <span>
+            {" "}
+            Biggest: {big.map((k) => `${keyName(k.key)} (${bytesStr(k.bytes)})`).join(", ")}.
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  // Disk is fine, but one store has grown out of proportion to the rest.
+  if (big.length > 0) {
+    return (
+      <div style={styles.bigKeyBanner}>
+        <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
+        <strong>One store is unusually large.</strong>{" "}
+        {big.map((k) => `${keyName(k.key)} — ${bytesStr(k.bytes)}`).join(", ")}. Everything else on
+        this board is capped and settles by itself; this one is worth a look.
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function ConnectionBanner() {
@@ -7462,6 +7587,28 @@ function App() {
     setPolicyBusy(true);
     try {
       const doc = await readPolicyFile(file);
+      // Refuse here rather than let the server refuse it.
+      //
+      // The shelf is written whole on every change, and the server will not
+      // accept a body past 25 MB. Sent anyway, the write is rejected, the app
+      // reads the rejection as being offline, and the file sits queued on that
+      // one device for good — which looks exactly like it worked. Better to say
+      // no now, and say why.
+      const shelfNow = policies.reduce(
+        (n, x) => n + (x.bytes || (x.data ? x.data.length * 0.75 : 0)),
+        0
+      );
+      const after = shelfNow + (doc.bytes || 0);
+      if (after > POLICY_SHELF_LIMIT) {
+        alert(
+          `The policy shelf would be ${bytesStr(after)} with this file on it, and the limit is ` +
+            `${bytesStr(POLICY_SHELF_LIMIT)}.\n\n` +
+            `The shelf is saved as one piece, so past this the save is refused and the file is ` +
+            `silently lost. Remove a policy that is out of date, or scan this one at a lower ` +
+            `resolution, and try again.`
+        );
+        return;
+      }
       doc.title = name.slice(0, 120);
       const stamp = actorStamp(userRef.current);
       doc.addedBy = (stamp && stamp.name) || "";
@@ -14778,6 +14925,12 @@ function policyIsImage(pol) {
 // What everybody except administration sees: the shelf, read-only.
 function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
   const list = policyList(policies);
+  // What the shelf costs. Held as data URLs, so roughly a third bigger on the
+  // wire than the file was on disk.
+  const shelfBytes = list.reduce(
+    (n, p) => n + (p.bytes || (p.data ? p.data.length * 0.75 : 0)),
+    0
+  );
   const [openId, setOpenId] = useState(null);
   // Name first, then the file. The name is what the shelf is read by, and a
   // scanner's filename is not a name — "SCAN_0043" tells a dispatcher at 3am
@@ -14792,6 +14945,20 @@ function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
           <div style={styles.policyTitle}>What the desk is expected to do</div>
         </div>
       </div>
+
+      {/* The one store in the app with no cap on it.
+          Everything else — the filed logs, the archive, the event log, the
+          checklists — keeps a fixed window and settles at a ceiling. Scanned
+          PDFs do not, so this is the thing that will actually fill a disk if
+          anything does, and it says how much room it is taking. */}
+      {canManage && list.length > 0 && (
+        <div style={shelfBytes >= 60e6 ? styles.shelfWarn : styles.shelfNote}>
+          {list.length} file{list.length === 1 ? "" : "s"} · {bytesStr(shelfBytes)} on the shelf
+          {shelfBytes >= 60e6
+            ? " — this is the only part of the board that grows without limit. Remove what is out of date, or scan at a lower resolution."
+            : ". Nothing else on the board grows without limit; this does, so keep an eye on it."}
+        </div>
+      )}
 
       {canManage && (
         <div style={styles.policyAddRow}>
@@ -14841,6 +15008,9 @@ function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
                   <span style={styles.policyItemName}>
                     <span style={styles.policyKind}>{policyIsImage(pol) ? "IMAGE" : "PDF"}</span>
                     {pol.title}
+                    {pol.bytes ? (
+                      <span style={styles.policySize}>{bytesStr(pol.bytes)}</span>
+                    ) : null}
                   </span>
                   <span style={styles.policyChevron}>{isOpen ? "−" : "+"}</span>
                 </button>
@@ -26179,6 +26349,17 @@ const styles = {
     display: "flex", alignItems: "flex-start", justifyContent: "space-between",
     gap: 12, flexWrap: "wrap", marginBottom: 16,
   },
+  policySize: {
+    fontSize: 10, fontWeight: 700, color: "var(--ink-4)", flex: "none", marginLeft: 2,
+  },
+  shelfNote: {
+    fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)", marginBottom: 10,
+  },
+  shelfWarn: {
+    fontSize: 12, lineHeight: 1.55, color: "var(--ink)", marginBottom: 10,
+    background: "rgba(255,159,10,.12)", border: "1px solid rgba(255,159,10,.45)",
+    borderRadius: 11, padding: "9px 12px",
+  },
   policyAddRow: {
     display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
     background: "var(--inset)", border: "1px solid var(--hair)",
@@ -27482,6 +27663,18 @@ const styles = {
     display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
     background: "rgba(48,209,88,.08)", border: "1px solid rgba(48,209,88,.34)",
     borderRadius: 14, padding: "12px 14px", marginTop: 10,
+  },
+  // Amber rather than red: a store that has grown is a thing to look at, not a
+  // thing that has broken.
+  bigKeyBanner: {
+    margin: "0 12px 8px",
+    background: "rgba(255,159,10,.12)",
+    border: "1px solid rgba(255,159,10,.45)",
+    color: "var(--ink)",
+    borderRadius: 12,
+    padding: "10px 14px",
+    fontSize: 12.5,
+    lineHeight: 1.5,
   },
   storageBanner: {
     margin: "0 12px 8px",

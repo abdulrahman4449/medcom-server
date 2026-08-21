@@ -122,20 +122,75 @@ app.post("/api/board", (req, res) => {
 // reading deploy logs. Reports where the board is stored, whether that survives
 // a redeploy, and what is currently in it. Key names and sizes only; no values,
 // so this shows nothing /api/board would not already hand over.
+// How full the disk the database sits on actually is.
+//
+// Read from the filesystem rather than guessed at from the size of the rows:
+// SQLite's file is larger than the sum of its values, the write-ahead log sits
+// beside it, and on a hosted box other things share the volume. The only honest
+// number is the one the disk itself reports.
+//
+// Best effort. statfs is not available everywhere, and a board that cannot
+// measure its disk should say it cannot rather than invent a percentage.
+const DISK_WARN_PCT = Number(process.env.DISK_WARN_PCT || 75);
+
+function diskUsage() {
+  try {
+    const st = fs.statfsSync(path.dirname(DB_PATH));
+    const total = st.blocks * st.bsize;
+    // bavail, not bfree: some blocks are reserved for root and are not space
+    // this process can ever use, so counting them would flatter the figure.
+    const free = st.bavail * st.bsize;
+    if (!total) return { measured: false };
+    const used = total - free;
+    return {
+      measured: true,
+      totalBytes: total,
+      freeBytes: free,
+      usedBytes: used,
+      usedPct: Math.round((used / total) * 1000) / 10,
+      warnAtPct: DISK_WARN_PCT,
+      warning: (used / total) * 100 >= DISK_WARN_PCT,
+    };
+  } catch (e) {
+    return { measured: false, reason: String((e && e.message) || e) };
+  }
+}
+
+// How big the database file itself is, WAL and all.
+function dbFileBytes() {
+  let n = 0;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      n += fs.statSync(DB_PATH + suffix).size;
+    } catch (e) {}
+  }
+  return n;
+}
+
 app.get("/api/health", (req, res) => {
   const keys = db
     .prepare("SELECT key, length(value) AS bytes, updated_at FROM board ORDER BY key")
     .all();
+  const totalBytes = keys.reduce((n, k) => n + (k.bytes || 0), 0);
   res.json({
     ok: true,
     database: {
       path: DB_PATH,
       chosenFrom: DB_SOURCE,
       survivesRedeploy: DB_IS_PERSISTENT,
+      fileBytes: dbFileBytes(),
     },
+    disk: diskUsage(),
     board: {
       keys: keys.length,
-      totalBytes: keys.reduce((n, k) => n + (k.bytes || 0), 0),
+      totalBytes,
+      // The biggest few, named. This is what somebody wants the moment the
+      // total starts looking wrong, and it saves reading the whole list.
+      largest: keys
+        .slice()
+        .sort((a, b) => (b.bytes || 0) - (a.bytes || 0))
+        .slice(0, 5)
+        .map((k) => ({ key: k.key, bytes: k.bytes })),
       entries: keys,
     },
   });
