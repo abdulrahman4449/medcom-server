@@ -234,13 +234,23 @@ app.use(express.json({ limit: "25mb" }));
 
 // CORS: the native iOS/Android app calls this from a different origin
 // (capacitor://localhost on iOS, http://localhost on Android) than the web
-// version does. There's no server-side identity check here — the app's
-// login screen is the only gate, same as the Netlify version — so allowing
-// any origin doesn't weaken anything that was actually protected.
+// version does, so the browser asks permission before each request and will
+// block anything this does not name.
+//
+// Authorization has to be on that list. Every board request now carries a
+// bearer token, and while it was missing the browser refused the request
+// before it left the phone - so both native apps could reach nothing at all
+// and reported it, quite reasonably, as having no signal. The web build was
+// unaffected: same origin, no permission check.
+//
+// DELETE likewise, for removing an account, and x-backup-token for the backup
+// download. Max-Age so the permission check is not repeated before every
+// single call on the three-second poll.
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-backup-token");
+  res.setHeader("Access-Control-Max-Age", "86400");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
