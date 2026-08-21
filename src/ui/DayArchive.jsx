@@ -389,7 +389,6 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         // Teams aren't fixed: the medic is chosen at every sign-in, so an
         // account is never tied to one.
         team: null,
-        passwordHash: null,
         createdAt: Date.now(),
       },
     ];
@@ -412,7 +411,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     }
     const next = [
       ...accts,
-      { id: adminId.trim(), name: adminName.trim(), role: "admin", team: null, passwordHash: null, createdAt: Date.now() },
+      { id: adminId.trim(), name: adminName.trim(), role: "admin", team: null, createdAt: Date.now() },
     ];
     await saveAccounts(next);
     await addLog(`Admin added a new admin ID for ${adminName.trim()}`, "status");
@@ -433,7 +432,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     }
     const next = [
       ...accts,
-      { id: dispId.trim(), name: dispName.trim(), role: "dispatcher", team: null, passwordHash: null, createdAt: Date.now() },
+      { id: dispId.trim(), name: dispName.trim(), role: "dispatcher", team: null, createdAt: Date.now() },
     ];
     await saveAccounts(next);
     await addLog(`Admin added a dispatcher ID for ${dispName.trim()}`, "status");
@@ -704,7 +703,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={styles.accountRowName}>{a.name}</span>
                   <span style={styles.accountRowMeta}>{a.id}</span>
                   <span style={seat ? styles.accountActiveTag : styles.accountPendingTag}>
-                    {seat ? `Online — ${seat}` : a.passwordHash ? "Offline" : "Pending first login"}
+                    {seat ? `Online — ${seat}` : a.hasPassword ? "Offline" : "Pending first login"}
                   </span>
                   <RemoveBtn account={a} />
                 </div>
@@ -748,8 +747,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                 <div key={a.id} style={styles.accountRow}>
                   <span style={styles.accountRowName}>{a.name}</span>
                   <span style={styles.accountRowMeta}>{a.id}</span>
-                  <span style={seat || a.passwordHash ? styles.accountActiveTag : styles.accountPendingTag}>
-                    {seat ? `On a team — ${seat}` : a.passwordHash ? "Active" : "Pending first login"}
+                  <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
+                    {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
                   <RemoveBtn account={a} />
                 </div>
@@ -792,8 +791,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                 <div key={a.id} style={styles.accountRow}>
                   <span style={styles.accountRowName}>{a.name}</span>
                   <span style={styles.accountRowMeta}>{a.id}</span>
-                  <span style={seat || a.passwordHash ? styles.accountActiveTag : styles.accountPendingTag}>
-                    {seat ? `On a team — ${seat}` : a.passwordHash ? "Active" : "Pending first login"}
+                  <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
+                    {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
                   <RemoveBtn account={a} />
                 </div>

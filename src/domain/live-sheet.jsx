@@ -89,20 +89,22 @@ export const DEFAULT_UNITS = [
 // The two built-in accounts. Each logs in with just its ID the first time,
 // then chooses a password. Anyone else (more admins, dispatchers, or crew) is
 // created by an admin from inside the Admin view.
+// Kept only so the two built-in IDs are written down somewhere the app can
+// read them. The roster itself is seeded and held by the server now - nothing
+// here creates an account, and no password has ever lived on the device.
 export const DEFAULT_ACCOUNTS = [
-  { id: "F1525518", name: "Admin", role: "admin", team: null, slot: null, passwordHash: null, createdAt: Date.now() },
-  { id: "D1000001", name: "Dispatcher", role: "dispatcher", team: null, slot: null, passwordHash: null, createdAt: Date.now() },
+  { id: "F1525518", name: "Admin", role: "admin", team: null, slot: null, createdAt: Date.now() },
+  { id: "D1000001", name: "Dispatcher", role: "dispatcher", team: null, slot: null, createdAt: Date.now() },
 ];
 
-// Lightweight client-side password hashing (SHA-256 via the browser's own
-// crypto API — no server involved). This keeps casual/unauthorized people
-// out through the app's own UI, but it is NOT enterprise-grade auth: there's
-// no salt, and anyone with direct Firestore access could still read the
-// hashes. Fine for gating who can act as dispatch/admin day-to-day; if this
-// ever needs to be airtight for compliance purposes, it should move to a
-// real backend with server-side verification instead.
-export async function hashPassword(pw) {
-  const enc = new TextEncoder().encode(pw);
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+// Passwords are not handled on the device at all any more.
+//
+// This used to hash them here, with unsalted SHA-256, and compare the result
+// against a list the app had just downloaded from the board - which meant the
+// hashes were readable by anything that could read the board, and the check
+// itself happened somewhere the person being checked controls. Both are now
+// the server's job: see src/lib/auth.jsx and the accounts table in server.js.
+//
+// Nothing here replaces it deliberately. A helper that hashes a password on
+// the device is the thing that made the old design look safe, so there is not
+// one to reach for.

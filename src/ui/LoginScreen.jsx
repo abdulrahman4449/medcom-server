@@ -1,8 +1,9 @@
+import { choosePassword, lookupAccount, saveAccount, signIn, verifyPassword } from "../lib/auth.jsx";
 import { BrandLockup, DEPT_LOGO, HOSPITAL_LOGO, ORG_NAME, SHOW_LOGOS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
 import { reliefSituationFor } from "../domain/crew-relief.jsx";
 import { ON_CALL_STATUSES } from "../domain/in-service.jsx";
-import { DEFAULT_STATION, STATIONS, hashPassword, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
+import { DEFAULT_STATION, STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
 import { clockStr, msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { crewShiftSummary, overtimeMs, scheduledShiftKey, seatLabel, shiftAssignment, shiftMeta, shiftPhrase } from "../domain/shift-helpers.jsx";
 import { HANDOVER_GRACE_MS } from "../domain/shifts.jsx";
@@ -83,9 +84,13 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     }
     let alive = true;
     const t = setTimeout(async () => {
-      const accts = await readKey("ems:accounts", []);
+      let hit = null;
+      try {
+        hit = (await lookupAccount(q)).account;
+      } catch (e) {
+        hit = null;
+      }
       if (!alive) return;
-      const hit = (accts || []).find((a) => a && a.id.toLowerCase() === q) || null;
       setPartnerAccount(hit);
       setPartnerError(hit ? "" : "That ID isn't recognised.");
     }, 400);
@@ -104,9 +109,10 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       return;
     }
     (async () => {
-      const hash = await hashPassword(partnerPw);
+      // Checked on the server like any other password. The token this device
+      // already holds is kept - the partner is taking a seat, not the device.
+      const good = partnerAccount.hasPassword && (await verifyPassword(partnerAccount.id, partnerPw));
       if (!alive) return;
-      const good = !!partnerAccount.passwordHash && hash === partnerAccount.passwordHash;
       setPartnerOk(good);
       setPartnerError(good || partnerPw.length < 4 ? "" : "That password doesn't match that ID.");
     })();
@@ -180,11 +186,20 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     if (!idInput.trim()) return;
     setBusy(true);
     setError("");
-    const accts = await readKey("ems:accounts", []);
-    const found = accts.find((a) => a.id.toLowerCase() === idInput.trim().toLowerCase());
-    if (!found) {
+    // The roster is not on this device any more. The server says whether the ID
+    // exists and whether a password has been chosen for it; the password itself
+    // is only ever checked there.
+    let found = null;
+    try {
+      const looked = await lookupAccount(idInput.trim());
+      found = looked.account;
+    } catch (e) {
       setBusy(false);
-      setError("ID not recognised. Contact your administrator.");
+      setError(
+        e.status === 404
+          ? "ID not recognised. Contact your administrator."
+          : e.message || "Could not reach the server."
+      );
       return;
     }
     const expected = ROLE_CHOICES[role];
@@ -199,7 +214,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     // screen asks them to choose one. Whatever they typed in the password box
     // is discarded rather than silently becoming their password — a field
     // filled in before anyone said it would be kept is not a choice.
-    if (!found.passwordHash) {
+    if (!found.hasPassword) {
       setPw("");
       setPw2("");
       setBusy(false);
@@ -207,13 +222,18 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       return;
     }
 
-    const hash = await hashPassword(pw);
-    setBusy(false);
-    if (hash !== found.passwordHash) {
-      setError("That password doesn't match that ID.");
+    try {
+      // Checked on the server, which is the only place that can check it.
+      // Signing in is what issues this device its token.
+      found = await signIn(idInput.trim(), pw);
+      setFoundAccount(found);
+    } catch (e) {
+      setBusy(false);
+      setError(e.message || "That password doesn't match that ID.");
       setPw("");
       return;
     }
+    setBusy(false);
     setPw("");
     await routeAfterPassword(found);
   }
@@ -228,8 +248,12 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     setBusy(true);
     setError("");
     try {
-      const accts = (await readKey("ems:accounts", [])) || [];
-      const found = accts.find((a) => a && a.id.toLowerCase() === typed.toLowerCase());
+      let found = null;
+      try {
+        found = (await lookupAccount(typed)).account;
+      } catch (e) {
+        found = null;
+      }
       // Deliberately says the ID is not recognised rather than staying vague.
       // This is an internal board where IDs are issued by the department, not a
       // public site where confirming an account exists tells an attacker
@@ -273,11 +297,16 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       return;
     }
     setBusy(true);
-    const hash = await hashPassword(pw);
-    const accts = await readKey("ems:accounts", []);
-    const next = accts.map((a) => (a.id === foundAccount.id ? { ...a, passwordHash: hash } : a));
-    await writeKey("ems:accounts", next);
-    const updatedAccount = { ...foundAccount, passwordHash: hash };
+    let updatedAccount;
+    try {
+      // The server stores it, salted, and signs this device in as part of the
+      // same call - there is no moment where a password exists on the device.
+      updatedAccount = await choosePassword(foundAccount.id, pw);
+    } catch (e) {
+      setBusy(false);
+      setError(e.message || "Could not set that password.");
+      return;
+    }
     setFoundAccount(updatedAccount);
     setBusy(false);
     await routeAfterPassword(updatedAccount);
@@ -538,11 +567,17 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     // change is cleared as its holder signs on, so the admin roster stops
     // showing a truck the person may not have worked for weeks.
     if (account.role === "crew" && account.team) {
-      const accts = await readKey("ems:accounts", []);
-      await writeKey(
-        "ems:accounts",
-        accts.map((a) => (a.id === account.id ? { ...a, team: null } : a))
-      );
+      // The roster lives on the server now and only an administrator may
+      // change it, so this clears the stale truck through the accounts
+      // endpoint rather than by rewriting a board key.
+      try {
+        await saveAccount({ ...account, team: null });
+      } catch (e) {
+        // A crew member is not an administrator, so this is refused for
+        // everyone but an admin signing on to a truck. It is cosmetic - the
+        // roster showing a truck they may not have worked for weeks - and must
+        // never stop somebody taking their seat.
+      }
     }
 
     const unitName = unit ? unit.name : "";
@@ -1035,7 +1070,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     />
                   )}
                   {partnerError && <div style={styles.loginError}>{partnerError}</div>}
-                  {partnerAccount && !partnerAccount.passwordHash && (
+                  {partnerAccount && !partnerAccount.hasPassword && (
                     <div style={styles.formHint}>
                       {partnerName} has not set a password yet. They need to sign in once on any
                       device first.

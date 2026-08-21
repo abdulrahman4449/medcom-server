@@ -6,6 +6,7 @@
 // this runs anywhere Node runs.
 
 const path = require("path");
+const crypto = require("crypto");
 const fs = require("fs");
 const express = require("express");
 const Database = require("better-sqlite3");
@@ -74,6 +75,153 @@ db.exec(`
   )
 `);
 
+// ---------- who is allowed in ----------
+//
+// There was no authentication at all. Anyone who knew the address could read
+// the whole board - every call, every patient MRN, every account - and write to
+// it. The login screen checked the password on the phone, against a list the
+// phone had just downloaded, which is a lock on the door of a house with no
+// walls.
+//
+// Accounts now live in their own table rather than in the board, so the list
+// and its password hashes are never something a client can fetch. A password
+// is checked here, a signed token is issued, and every board request has to
+// carry one.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'crew',
+    team TEXT,
+    slot TEXT,
+    station TEXT,
+    pw_salt TEXT,
+    pw_hash TEXT,
+    -- The old unsalted SHA-256, kept only so an existing password still works
+    -- once. It is replaced with a proper hash the first time they sign in.
+    legacy_hash TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`);
+
+// The key tokens are signed with. Taken from the environment when an operator
+// has set one; otherwise generated once and kept, so tokens survive a restart
+// without anybody having to configure anything. It lives in its own table, not
+// in the board, so it is not one API call away.
+function authSecret() {
+  if (process.env.AUTH_SECRET) return process.env.AUTH_SECRET;
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'auth_secret'").get();
+  if (row) return row.value;
+  const made = crypto.randomBytes(32).toString("hex");
+  db.prepare("INSERT INTO settings (key, value) VALUES ('auth_secret', ?)").run(made);
+  return made;
+}
+
+// scrypt: deliberately slow, and salted per account. The old hashes were plain
+// SHA-256 with no salt, which a commodity graphics card runs through in bulk.
+function hashPassword(password, salt) {
+  return crypto.scryptSync(String(password), salt, 32).toString("hex");
+}
+function setPassword(id, password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  db.prepare("UPDATE accounts SET pw_salt = ?, pw_hash = ?, legacy_hash = NULL WHERE id = ?")
+    .run(salt, hashPassword(password, salt), id);
+}
+function checkPassword(account, password) {
+  if (account.pw_hash && account.pw_salt) {
+    const given = Buffer.from(hashPassword(password, account.pw_salt), "hex");
+    const held = Buffer.from(account.pw_hash, "hex");
+    return given.length === held.length && crypto.timingSafeEqual(given, held);
+  }
+  if (account.legacy_hash) {
+    // The app's old client-side hash, so nobody is locked out by the change.
+    const given = crypto.createHash("sha256").update(String(password)).digest("hex");
+    if (given === account.legacy_hash) {
+      setPassword(account.id, password); // upgraded in place, once
+      return true;
+    }
+  }
+  return false;
+}
+
+const TOKEN_TTL_MS = 16 * 60 * 60 * 1000; // longer than the longest shift
+const b64 = (buf) => Buffer.from(buf).toString("base64url");
+
+function issueToken(account) {
+  const payload = b64(JSON.stringify({
+    id: account.id, role: account.role, exp: Date.now() + TOKEN_TTL_MS,
+  }));
+  const sig = b64(crypto.createHmac("sha256", authSecret()).update(payload).digest());
+  return `${payload}.${sig}`;
+}
+
+function readToken(token) {
+  try {
+    const [payload, sig] = String(token || "").split(".");
+    if (!payload || !sig) return null;
+    const want = b64(crypto.createHmac("sha256", authSecret()).update(payload).digest());
+    const a = Buffer.from(sig); const b = Buffer.from(want);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!claims || !claims.id || !claims.exp || claims.exp < Date.now()) return null;
+    return claims;
+  } catch (e) {
+    return null;
+  }
+}
+
+function bearer(req) {
+  const h = req.get("authorization") || "";
+  return h.startsWith("Bearer ") ? h.slice(7) : "";
+}
+
+function requireAuth(req, res, next) {
+  const claims = readToken(bearer(req));
+  if (!claims) return res.status(401).json({ error: "Sign in again." });
+  // A token outlives the account it names if somebody was removed mid-shift.
+  const live = db.prepare("SELECT id, role FROM accounts WHERE id = ?").get(claims.id);
+  if (!live) return res.status(401).json({ error: "That account no longer exists." });
+  req.user = { id: live.id, role: live.role };
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Administrators only." });
+    next();
+  });
+}
+
+// Guessing costs time. Ten wrong answers for one employee ID and that ID stops
+// answering for fifteen minutes, whoever is asking.
+const LOGIN_TRIES = new Map();
+const LOGIN_MAX = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+function loginBlocked(id) {
+  const rec = LOGIN_TRIES.get(id);
+  if (!rec) return false;
+  if (Date.now() - rec.first > LOGIN_WINDOW_MS) { LOGIN_TRIES.delete(id); return false; }
+  return rec.count >= LOGIN_MAX;
+}
+function loginFailed(id) {
+  const rec = LOGIN_TRIES.get(id);
+  if (!rec || Date.now() - rec.first > LOGIN_WINDOW_MS) LOGIN_TRIES.set(id, { first: Date.now(), count: 1 });
+  else rec.count++;
+}
+
+// Board keys only an administrator may write. These are the department's
+// definitions rather than the day's work: change them and every crew's screen
+// changes with them.
+const ADMIN_ONLY_KEYS = new Set([
+  "ems:policies", "ems:checklists", "ems:inventory",
+]);
+// Never served or written through the board API, whatever a token says.
+const FORBIDDEN_KEYS = new Set(["ems:accounts", "ems:accountsSeeded"]);
+
 const app = express();
 // The board is sent whole on every write, and a busy day's log alone runs past
 // 100 KB — which is express's default body limit. Past that the server answered
@@ -97,19 +245,27 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/board", (req, res) => {
+app.get("/api/board", requireAuth, (req, res) => {
   const key = req.query.key;
   if (!key || typeof key !== "string") {
     return res.status(400).json({ error: "Missing key" });
   }
+  // The app reads a 403 as "nothing here for you" rather than as being
+  // offline, so a key it must not have does not make a working board look
+  // disconnected.
+  if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
   const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
   res.json({ value: row ? JSON.parse(row.value) : null });
 });
 
-app.post("/api/board", (req, res) => {
+app.post("/api/board", requireAuth, (req, res) => {
   const { key, value } = req.body || {};
   if (typeof key !== "string") {
     return res.status(400).json({ error: "Missing key" });
+  }
+  if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
+  if (ADMIN_ONLY_KEYS.has(key) && req.user.role !== "admin") {
+    return res.status(403).json({ error: "Only an administrator can change that." });
   }
   db.prepare(
     `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -321,6 +477,181 @@ app.get("/api/backups/:name", (req, res) => {
   const file = path.join(BACKUP_DIR, name);
   if (!fs.existsSync(file)) return res.status(404).json({ error: "No such backup." });
   res.download(file, name);
+});
+
+// The roster has to exist before anyone can sign in.
+//
+// An existing deployment keeps its accounts in the board under "ems:accounts",
+// which is exactly the problem - it is readable by anything that can read the
+// board. They are moved into the table on the first start after this change
+// and the board key is deleted, so credential material stops being one API
+// call away. Old SHA-256 hashes come across as legacy_hash and are replaced
+// with a salted one the first time each person signs in.
+function seedAccounts() {
+  const count = db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n;
+  if (count > 0) return;
+
+  const row = db.prepare("SELECT value FROM board WHERE key = 'ems:accounts'").get();
+  const existing = row ? JSON.parse(row.value) || [] : [];
+  const insert = db.prepare(
+    `INSERT INTO accounts (id, name, role, team, slot, station, legacy_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`
+  );
+
+  if (existing.length) {
+    const move = db.transaction((list) => {
+      for (const a of list) {
+        if (!a || !a.id) continue;
+        insert.run(String(a.id).toUpperCase(), a.name || "",
+          ["admin", "dispatcher", "crew"].includes(a.role) ? a.role : "crew",
+          a.team || null, a.slot || null, a.station || null, a.passwordHash || null);
+      }
+      db.prepare("DELETE FROM board WHERE key IN ('ems:accounts','ems:accountsSeeded')").run();
+    });
+    move(existing);
+    console.log(`Accounts: moved ${existing.length} out of the board into their own table.`);
+    return;
+  }
+
+  // A board with nothing on it yet. The same two the app used to seed itself
+  // with, neither carrying a password - the first person to sign in as each
+  // chooses one.
+  insert.run("F1525518", "Admin", "admin", null, null, null, null);
+  insert.run("D1000001", "Dispatcher", "dispatcher", null, null, null, null);
+  console.log("Accounts: seeded the default administrator and dispatcher.");
+}
+seedAccounts();
+
+// ---------- signing in ----------
+
+const publicAccount = (a) => a && ({
+  id: a.id, name: a.name, role: a.role, team: a.team, slot: a.slot, station: a.station,
+  // Whether they have chosen one - never the hash itself.
+  hasPassword: !!(a.pw_hash || a.legacy_hash),
+});
+
+function findAccount(id) {
+  return db.prepare("SELECT * FROM accounts WHERE id = ?").get(String(id || "").trim().toUpperCase());
+}
+
+// Does this employee ID exist, and have they set a password yet? Answered
+// before the password is asked for, because the app's sign-in has always been
+// two steps and a first-time user has to be offered "choose a password".
+app.post("/api/auth/lookup", (req, res) => {
+  const acct = findAccount((req.body || {}).id);
+  if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
+  res.json({ ok: true, account: publicAccount(acct) });
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const { id, password } = req.body || {};
+  const key = String(id || "").trim().toUpperCase();
+  if (loginBlocked(key)) {
+    return res.status(429).json({ error: "Too many attempts. Try again in fifteen minutes." });
+  }
+  const acct = findAccount(key);
+  // The same answer either way, so this cannot be used to find out which
+  // employee IDs exist.
+  if (!acct || !checkPassword(acct, password)) {
+    loginFailed(key);
+    return res.status(401).json({ error: "That employee ID and password do not match." });
+  }
+  LOGIN_TRIES.delete(key);
+  const fresh = findAccount(key);
+  res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
+});
+
+// First sign-in, and only then. Setting a password over an account that
+// already has one is a reset, and a reset goes through an administrator - so a
+// stolen employee ID cannot be turned into a working account.
+app.post("/api/auth/set-password", (req, res) => {
+  const { id, password } = req.body || {};
+  const acct = findAccount(id);
+  if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
+  if (acct.pw_hash || acct.legacy_hash) {
+    return res.status(409).json({ error: "That account already has a password. Ask an administrator to clear it." });
+  }
+  if (!password || String(password).length < 4) {
+    return res.status(400).json({ error: "Choose a password of at least four characters." });
+  }
+  setPassword(acct.id, password);
+  const fresh = findAccount(acct.id);
+  res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
+});
+
+// The forgotten-password request, which by its nature is made by somebody who
+// cannot sign in. It only ever records a request for an administrator to look
+// at; it changes nothing.
+app.post("/api/auth/forgot", (req, res) => {
+  const { id, name } = req.body || {};
+  const key = String(id || "").trim().toUpperCase();
+  if (!key) return res.status(400).json({ error: "Give your employee ID." });
+  if (loginBlocked(key)) return res.status(429).json({ error: "Too many attempts. Try again later." });
+  loginFailed(key);
+  const acct = findAccount(key);
+  // Answered the same whether or not the account exists.
+  if (acct) {
+    const row = db.prepare("SELECT value FROM board WHERE key = 'ems:passwordResets'").get();
+    const list = row ? JSON.parse(row.value) || [] : [];
+    const already = list.some((r) => r && r.accountId === acct.id && r.status === "open");
+    if (!already) {
+      list.unshift({
+        id: `pwr_${Date.now().toString(36)}`,
+        accountId: acct.id,
+        name: acct.name || String(name || ""),
+        role: acct.role,
+        at: Date.now(),
+        status: "open",
+      });
+      db.prepare(
+        `INSERT INTO board (key, value, updated_at) VALUES ('ems:passwordResets', ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      ).run(JSON.stringify(list.slice(0, 200)));
+    }
+  }
+  res.json({ ok: true });
+});
+
+// ---------- the roster, as administration keeps it ----------
+
+app.get("/api/accounts", requireAdmin, (req, res) => {
+  const rows = db.prepare("SELECT * FROM accounts ORDER BY role, id").all();
+  res.json({ ok: true, accounts: rows.map(publicAccount) });
+});
+
+app.post("/api/accounts", requireAdmin, (req, res) => {
+  const { id, name, role, team, slot, station } = req.body || {};
+  const key = String(id || "").trim().toUpperCase();
+  if (!key) return res.status(400).json({ error: "An employee ID is required." });
+  if (!["admin", "dispatcher", "crew"].includes(role)) {
+    return res.status(400).json({ error: "Unknown role." });
+  }
+  db.prepare(
+    `INSERT INTO accounts (id, name, role, team, slot, station)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, role = excluded.role,
+       team = excluded.team, slot = excluded.slot, station = excluded.station`
+  ).run(key, String(name || ""), role, team || null, slot || null, station || null);
+  res.json({ ok: true, account: publicAccount(findAccount(key)) });
+});
+
+app.delete("/api/accounts/:id", requireAdmin, (req, res) => {
+  const key = String(req.params.id || "").trim().toUpperCase();
+  if (key === req.user.id) {
+    return res.status(400).json({ error: "You cannot remove your own account." });
+  }
+  db.prepare("DELETE FROM accounts WHERE id = ?").run(key);
+  res.json({ ok: true });
+});
+
+// Clearing a password is how a forgotten one is dealt with: the account keeps
+// its history and the person chooses a new password at the next sign-in.
+// Nobody, including an administrator, can set a password on somebody's behalf.
+app.post("/api/accounts/:id/clear-password", requireAdmin, (req, res) => {
+  const key = String(req.params.id || "").trim().toUpperCase();
+  if (!findAccount(key)) return res.status(404).json({ error: "No such account." });
+  db.prepare("UPDATE accounts SET pw_salt = NULL, pw_hash = NULL, legacy_hash = NULL WHERE id = ?").run(key);
+  res.json({ ok: true });
 });
 
 app.get("/api/health", (req, res) => {

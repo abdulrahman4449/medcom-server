@@ -1,3 +1,4 @@
+import { clearAccountPassword } from "../lib/auth.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
 
@@ -52,11 +53,17 @@ export async function requestPasswordReset(account) {
 // Clearing it. The account stays; only the password goes, and the next sign-in
 // walks them through choosing a new one.
 export async function clearPasswordFor(accountId) {
-  const accts = (await readKey("ems:accounts", [])) || [];
-  const next = accts.map((a) =>
-    a && a.id === accountId ? { ...a, passwordHash: null } : a
-  );
-  return await writeKey("ems:accounts", next);
+  // The server owns passwords now. Clearing is the only thing an administrator
+  // can do to one - nobody, including them, can set a password on somebody
+  // else's behalf, so a cleared account is one the person themselves has to
+  // choose a new password for at the next sign-in.
+  try {
+    await clearAccountPassword(accountId);
+    return true;
+  } catch (e) {
+    window.alert(e.message || "Could not clear that password.");
+    return false;
+  }
 }
 
 export async function decideReset(row, status, by) {

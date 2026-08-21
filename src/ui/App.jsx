@@ -1,3 +1,4 @@
+import { clearToken, getToken, listAccounts, onAuthLost, removeAccount, saveAccount } from "../lib/auth.jsx";
 import { BrandLockup, COLD_POLL_MS, HOUSEKEEPING_MS, LOG_CAP, POLL_MS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
 import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
@@ -309,7 +310,12 @@ export function App() {
     userRef.current = next;
     setUser(next);
     if (next) writeSession({ v: SESSION_VERSION, user: next, overtimeWindow: null });
-    else clearSession();
+    else {
+      // Signing out has to take the token with it. Leaving it behind would
+      // leave a signed-out tablet holding a working key to the whole board.
+      clearSession();
+      clearToken();
+    }
   }, []);
 
   // Browsers only let a page make noise, buzz or ask about notifications off
@@ -396,17 +402,22 @@ export function App() {
   }, [ready]);
 
   const loadAll = useCallback(async () => {
+    // Nothing to poll for until this device is signed in. Before that the
+    // board answers 401 to everything, which is correct - the door is shut -
+    // and asking anyway just fills the console at the sign-in screen.
+    if (!getToken()) {
+      setReady(true);
+      return;
+    }
     // Anything this device is still holding from a spell without signal goes up
     // first, before the board is read back. Sending it first means the read
     // below already contains it, instead of the server's older copy briefly
     // landing on screen and undoing a crew's stamps in front of them.
     await pushPendingWrites();
 
-    const [u, r, acc, seeded, sch] = await Promise.all([
+    const [u, r, sch] = await Promise.all([
       readKeyRaw("ems:units"),
       readKeyRaw("ems:requests"),
-      readKeyRaw("ems:accounts"),
-      readKey("ems:accountsSeeded", false),
       readKeyRaw("ems:scheduled"),
     ]);
 
@@ -418,7 +429,7 @@ export function App() {
     // Requests are read the same way for the same reason: the repair pass
     // below decides a unit's call is over by not finding it in this list, so a
     // failed read must never reach it as "there are no calls".
-    if (u === READ_FAILED || acc === READ_FAILED || r === READ_FAILED) return;
+    if (u === READ_FAILED || r === READ_FAILED) return;
 
     // A read that started before a write landed is stale by definition. Applying
     // it would undo the change on screen a moment after the crew made it, which
@@ -550,31 +561,6 @@ export function App() {
       await writeKey("ems:units", unitsToUse);
     }
 
-    let accountsToUse = acc;
-    if (!accountsToUse || accountsToUse.length === 0) {
-      accountsToUse = DEFAULT_ACCOUNTS;
-      await writeKey("ems:accounts", accountsToUse);
-      await writeKey("ems:accountsSeeded", true);
-    } else if (!seeded) {
-      // One-time migration for boards created before dispatchers had their own
-      // accounts: seed the built-in dispatcher ID so dispatch isn't locked out
-      // until an admin gets around to creating one.
-      //
-      // This MUST stay a one-time migration. It used to run on every poll
-      // whenever no dispatcher account existed, which meant an admin who
-      // removed the last dispatcher had that removal silently undone a few
-      // seconds later. The flag below is written even when nothing needed
-      // seeding, so the check never fires again on this board.
-      const seed = DEFAULT_ACCOUNTS.filter(
-        (d) => d.role === "dispatcher" && !accountsToUse.some((a) => a.id.toLowerCase() === d.id.toLowerCase())
-      );
-      if (seed.length > 0 && !accountsToUse.some((a) => a.role === "dispatcher")) {
-        accountsToUse = [...accountsToUse, ...seed];
-        await writeKey("ems:accounts", accountsToUse);
-      }
-      await writeKey("ems:accountsSeeded", true);
-    }
-
     setUnits(unitsToUse);
     setRequests(requestsToUse);
     // A failed read here leaves the schedule as it was rather than emptying it:
@@ -610,9 +596,45 @@ export function App() {
     }
     const cons = await readKeyRaw(TRACKING_CONSENT_KEY);
     if (cons !== READ_FAILED) setTrackingConsents(cons || {});
-    setAccounts(accountsToUse);
     setReady(true);
   }, []);
+
+  // The roster is no longer on the board and is no longer seeded from here. It
+  // lives in its own table on the server, which seeds it on first start, and
+  // only an administrator may read or change it - so a crew member's device
+  // never asks for it and never holds it.
+  //
+  // Deliberately its own effect rather than a line inside loadAll: loadAll is a
+  // useCallback with no dependencies, so anything it reads from state is frozen
+  // at the first render, and `user` is null then. It would have loaded the
+  // roster for nobody, forever.
+  useEffect(() => {
+    if (!user || user.role !== "admin") {
+      setAccounts([]);
+      return;
+    }
+    let alive = true;
+    const pull = async () => {
+      const roster = await listAccounts();
+      if (alive) setAccounts(roster);
+    };
+    pull();
+    // It changes when an administrator changes it, which is rare, so it rides
+    // the slow poll rather than the three-second one.
+    const t = setInterval(pull, COLD_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [user]);
+
+  // Signed out by the server - the token expired, or the account was removed
+  // while the tablet was asleep. Better to be put back at the sign-in screen
+  // than to sit in front of a board that quietly stopped saving.
+  useEffect(() => onAuthLost(() => {
+    clearSession();
+    setUser(null);
+  }), []);
 
   // The slow half. Nothing in here changes more than a few times a day, and
   // between them these are nine tenths of the bytes on the wire.
@@ -621,6 +643,13 @@ export function App() {
   // and only the Policies tab has any use for it. It is read when that tab is
   // opened and at no other time.
   const loadCold = useCallback(async () => {
+    // Nothing to poll for until this device is signed in. Before that the
+    // board answers 401 to everything, which is correct - the door is shut -
+    // and asking anyway just fills the console at the sign-in screen.
+    if (!getToken()) {
+      setReady(true);
+      return;
+    }
     const arch = await readKeyRaw(ARCHIVE_KEY);
     if (arch !== READ_FAILED) setArchives(arch || []);
     const subs = await readKeyRaw(SUBMISSION_KEY);
@@ -1085,10 +1114,25 @@ export function App() {
     await writeList("ems:units", next, prev);
   }
 
+  // Adding, changing and removing people, through the administrator-only
+  // endpoint rather than by rewriting a board key. Whatever the server ends up
+  // holding is what the screen shows, so a refusal cannot leave the roster on
+  // screen disagreeing with the roster that exists.
   async function saveAccounts(next) {
     const prev = accounts;
-    setAccounts(next);
-    await writeList("ems:accounts", next, prev);
+    const byId = new Map((next || []).map((a) => [a.id, a]));
+    try {
+      for (const account of next || []) {
+        const before = prev.find((a) => a.id === account.id);
+        if (!before || JSON.stringify(before) !== JSON.stringify(account)) await saveAccount(account);
+      }
+      for (const account of prev || []) {
+        if (!byId.has(account.id)) await removeAccount(account.id);
+      }
+    } catch (e) {
+      window.alert(e.message || "The server would not accept that change to the roster.");
+    }
+    setAccounts(await listAccounts());
   }
 
   async function saveRequests(next) {

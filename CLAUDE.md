@@ -145,7 +145,21 @@ patch", that document is the target — do not start a fresh exploration.
   `db.backup()` in `server.js`, on start-up and every 24 hours, to `BACKUP_DIR`
   and — if set — `BACKUP_DIR_2` as well. Downloading one hands over every
   patient MRN on the board, so the route does not exist unless `BACKUP_TOKEN`
-  is set. Note that `/api/board` itself has no authentication at all.
+  is set.
+- **Nothing reaches `/api/board` without a token, and passwords are never
+  handled on the device.** Accounts live in their own `accounts` table, not on
+  the board — `ems:accounts` is refused outright by the board API. Sign-in is
+  `POST /api/auth/login`, which checks a salted scrypt hash and issues an
+  HMAC-signed token the app sends with every request. `src/lib/auth.jsx` holds
+  it; `noteAuthLost()` signs the device out on a 401, but only if it had a
+  token — before sign-in the board answers 401 to everything, and treating that
+  as a sign-out fires on a loop at the sign-in screen. `loadAll`/`loadCold`
+  wait for a token before polling at all. An old unsalted SHA-256 hash is
+  accepted once and replaced with a salted one on that sign-in.
+- **Only an administrator may write the department's definitions.**
+  `ADMIN_ONLY_KEYS` in `server.js` — policies, checklists, inventory. Everyone
+  signed in may write the day's work. Roles are checked on the server; a
+  screen that hides a button is not a permission.
 - **`SHOW_LOGOS` and `ORG_NAME`** near the top of the app switch the crests
   and the organisation's name back on. Both are deliberately off/empty.
 

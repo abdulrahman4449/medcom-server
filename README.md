@@ -143,6 +143,50 @@ happening again from the next deploy onward.
 
 ---
 
+## Signing in
+
+Accounts live on the server, in their own table. The app never downloads the
+roster, never sees a password hash, and never checks a password itself — it
+sends the employee ID and password up, and gets back a signed token that it
+attaches to everything afterwards. Without a valid token the board answers
+401 to every request.
+
+The first person to use each of the two built-in IDs chooses its password:
+
+| ID | Role |
+|----|------|
+| `F1525518` | Administrator |
+| `D1000001` | Dispatcher |
+
+Everyone else is added by an administrator on the Teams page, and chooses their
+own password the first time they sign in.
+
+**Forgotten passwords.** The person presses "Forgot your password?" and the
+request appears on the admin's Teams page. The administrator *clears* the
+password; the person then chooses a new one at their next sign-in. Nobody,
+including an administrator, can set a password on somebody else's behalf.
+
+**Ten wrong answers** for one employee ID and that ID stops answering for
+fifteen minutes.
+
+### Two settings worth knowing
+
+- `AUTH_SECRET` — the key tokens are signed with. If you don't set one the
+  server generates it on first start and keeps it, which is fine. Setting it
+  yourself means tokens survive moving the app to a different server.
+  **Changing it signs everybody out**, which is also how you sign everybody out
+  on purpose.
+- Sessions last 16 hours — longer than the longest shift, so nobody is asked to
+  sign in again mid-shift.
+
+### Who can change what
+
+Everyone signed in can do the day's work: raise calls, stamp times, file
+checklists, restock. Only an administrator can change the department's
+standing definitions — the policies, the checklist items, and the inventory
+list — and only an administrator can see or change the roster. That is enforced
+on the server, not by hiding buttons.
+
 ## Backups
 
 A persistent disk stops a deploy erasing the board. It does not stop the disk

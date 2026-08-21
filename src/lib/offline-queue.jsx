@@ -1,3 +1,4 @@
+import { authHeaders, noteAuthLost } from "./auth.jsx";
 import { LOG_CAP } from "../brand/artwork.jsx";
 import { API_BASE, READ_FAILED } from "./board-api.jsx";
 
@@ -145,7 +146,17 @@ export function mergePending(key, serverList) {
 
 export async function readKeyRaw(key) {
   try {
-    const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
+    const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, {
+      headers: authHeaders(),
+    });
+    // A token that has expired, or an account that has been removed. Not a
+    // lost signal: holding the records and laying them over the server's copy
+    // would show a board that looks right and is saving nothing.
+    if (res.status === 401) {
+      noteAuthLost();
+      setConnectionOk(true);
+      return null;
+    }
     // Refused, not unreachable. The account list in particular is no longer
     // served through the board — it is credential material and now sits behind
     // its own administrator-only endpoint. A refusal means "nothing here for
@@ -174,7 +185,17 @@ export async function readKeyRaw(key) {
 
 export async function readKey(key, fallback) {
   try {
-    const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
+    const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, {
+      headers: authHeaders(),
+    });
+    // A token that has expired, or an account that has been removed. Not a
+    // lost signal: holding the records and laying them over the server's copy
+    // would show a board that looks right and is saving nothing.
+    if (res.status === 401) {
+      noteAuthLost();
+      setConnectionOk(true);
+      return fallback;
+    }
     // Refused, not unreachable. The account list in particular is no longer
     // served through the board — it is credential material and now sits behind
     // its own administrator-only endpoint. A refusal means "nothing here for
@@ -252,9 +273,14 @@ export async function writeKey(key, value) {
     try {
       const res = await fetch(`${API_BASE}/api/board`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ key, value }),
       });
+      if (res.status === 401) {
+        // Signed out from under us. Queueing this would be pretending.
+        noteAuthLost();
+        throw Object.assign(new Error(`writeKey ${key}: signed out`), { httpStatus: 401 });
+      }
       if (!res.ok) {
         // A rejection is not a lost signal, and must not be dressed up as one.
         // 413 in particular means the board outgrew the server's body limit:
@@ -302,7 +328,9 @@ export async function pushPendingWrites() {
     const ids = Object.keys(pendingWrites[key] || {});
     if (!ids.length) continue;
     try {
-      const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`);
+      const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, {
+      headers: authHeaders(),
+    });
       if (!res.ok) throw new Error(`replay read ${key} failed: ${res.status}`);
       const { value } = await res.json();
       const merged = mergePending(key, Array.isArray(value) ? value : []);
