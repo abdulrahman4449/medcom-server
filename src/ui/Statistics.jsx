@@ -1,8 +1,8 @@
 import { ORG_STAMP } from "../brand/artwork.jsx";
 import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
 import { callRoute } from "../domain/call-locations.jsx";
-import { CHECKLIST_KEY, CHECKLIST_PARTS, UNSORTED_CHECK, checklistCategories, checklistFlags, checklistItems, checklistRunFor, checklistTree, emptyChecklists, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
-import { CHECKLIST_GOOD, PCR_GOOD, RESPONSE_GOOD, RESPONSE_TARGET_MS, UHU_HEADROOM, isInternalEmergency, responseCompliance, responseMsFor } from "../domain/compliance.jsx";
+import { CHECKLIST_KEY, CHECKLIST_PARTS, UNSORTED_CHECK, checklistCategories, checklistDoneByPerson, checklistFlags, checklistItems, checklistRunFor, checklistTree, emptyChecklists, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
+import { CHECKLIST_GOOD, PCR_GOOD, RESPONSE_GOOD, RESPONSE_TARGET_MS, UHU_HEADROOM, UHU_TARGET, isInternalEmergency, responseCompliance, responseMsFor } from "../domain/compliance.jsx";
 import { REQ_STATUS } from "../domain/constants.jsx";
 import { submissionGaps } from "../domain/coverage.jsx";
 import { medicCrewIndex, stayWindow } from "../domain/crew-stamps.jsx";
@@ -238,6 +238,20 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
           : 0,
     }))
     .sort((a, b) => b.uhu - a.uhu);
+}
+
+// The department's own UHU: every crew member's time on calls over every shift
+// they worked, as one figure. Weighted, not an average of percentages - one
+// person who worked a single shift must not count as much as somebody who
+// worked twenty.
+//
+// Built from the staff rows rather than from the vehicles, because the target
+// is a target for the department's people. Dispatchers are not in these rows
+// and are not counted; their measure is still to be defined.
+export function departmentUhu(staff) {
+  const busy = (staff || []).reduce((n, p) => n + (p.onCallMs || 0), 0);
+  const available = (staff || []).reduce((n, p) => n + (p.shiftsWorked || 0) * SHIFT_MS, 0);
+  return available > 0 ? Math.min(100, (busy / available) * 100) : 0;
 }
 
 // Where the month's patients were collected from, per station.
@@ -522,17 +536,46 @@ export function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units
     })),
   }));
 
-  const totalExpected = staffed.length * CHECKLIST_PARTS.length;
-  const totalDone = todayRuns.reduce((n, g) => n + g.done.filter((d) => d.run).length, 0);
+  // Counted per person, not per truck. One member of staff owes one checklist
+  // for their shift; a second list, on a truck they moved onto later, is
+  // optional and must not make the department look short of one. Trucks are
+  // still listed below - that is where a flagged item lives - but the figure
+  // at the top is the one the department is measured on.
+  const onDuty = [];
+  (units || []).forEach((u) => {
+    ["alpha", "bravo"].forEach((slot) => {
+      const member = u[slot];
+      if (member && member.accountId) onDuty.push({ unit: u, slot, member });
+    });
+  });
+  const totalExpected = onDuty.length;
+  const owing = onDuty.filter(
+    (p) => !checklistDoneByPerson(checklistRuns, p.member.accountId, today)
+  );
+  const totalDone = totalExpected - owing.length;
 
   return (
     <FoldingSection
       title="VEHICLE CHECKLISTS"
       count={totalExpected ? Math.round((totalDone / totalExpected) * 100) : 0}
-      countLabel={`% done today · ${totalDone} of ${totalExpected}`}
+      countLabel={`% of crew on duty · ${totalDone} of ${totalExpected}`}
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
+      {/* The names, not just the number. A percentage tells an administrator
+          the department is short of three checklists; this tells them which
+          three people to ask. */}
+      {owing.length > 0 && (
+        <div style={styles.checkOwingRow}>
+          <strong style={{ color: "var(--hold)" }}>
+            {owing.length} still to file:
+          </strong>{" "}
+          {owing
+            .map((p) => `${p.member.name || p.member.accountId} (${p.unit.name})`)
+            .join(" · ")}
+        </div>
+      )}
+
       <div style={styles.archTabs}>
         {CHECKLIST_PARTS.map((pt) => (
           <button
@@ -1159,6 +1202,11 @@ export function IndicatorBand({ requests, units, log, checklistRuns, range, setR
   // are built from — lists filed against shifts actually worked — so the band
   // and the per-person table can never disagree.
   const people = staffStatsFor(log, requests, units, win, now, checklistRuns);
+  // The department's UHU comes from those same people. The fleet figure sits
+  // beside it as context: a wide gap between the two is trucks standing with
+  // nobody in them.
+  const staff = people;
+  const deptUhu = departmentUhu(people);
   const shiftsWorked = people.reduce((n, p) => n + (p.shiftsWorked || 0), 0);
   const listsFiled = people.reduce((n, p) => n + (p.checklistsFiled || 0), 0);
   const checklistPct = shiftsWorked > 0 ? Math.min(100, (listsFiled / shiftsWorked) * 100) : null;
@@ -1195,14 +1243,22 @@ export function IndicatorBand({ requests, units, log, checklistRuns, range, setR
           unmeasured={resp.unmeasured}
         />
         <Gauge
-          label="Fleet UHU"
-          pct={uhu}
+          label="Department UHU"
+          // Measured across the people, which is what the department set its
+          // target against — not across the vehicles, which was counting hours
+          // a truck sat on the forecourt with nobody in it.
+          pct={deptUhu}
           lowerIsBetter
-          // Not a pass mark. Utilisation is a workload reading, and high is not
-          // good — a fleet above about half its hours on calls is a fleet with
-          // no slack left, so the dial is set where "comfortable" ends.
-          good={UHU_HEADROOM}
-          caption={units && units.length ? `${units.length} vehicles, time on call` : "no vehicles"}
+          // The department's own target: 45%. It is a workload reading, so the
+          // dial darkens above the target rather than below it — a service
+          // running past its target has no slack left for the call it has not
+          // had yet.
+          good={UHU_TARGET}
+          caption={
+            staff && staff.length
+              ? `${staff.length} crew · target ${UHU_TARGET}% · fleet ${uhu.toFixed(0)}%`
+              : "no crew on duty this period"
+          }
         />
         {/* Was labelled "PCR compliance", and was not.
             It counted calls where somebody had tapped a name into the PCR

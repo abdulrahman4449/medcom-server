@@ -1,4 +1,4 @@
-import { liveRequestFor, statusMeta } from "../domain/in-service.jsx";
+import { effectiveStatusMeta, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { stationOf } from "../domain/live-sheet.jsx";
 import { LOCATION_INTERVAL_MS, LOCATION_STALE_MS, clearPosition, mayTrack, positionAgeMs, writePosition } from "../domain/truck-locations.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
@@ -106,7 +106,7 @@ export function FleetMap({ units, locations, requests, station }) {
       });
       const popup =
         `<strong>${escHtml(u.name)}</strong><br/>` +
-        `${escHtml(statusMeta(u.status).label)}<br/>` +
+        `${escHtml(effectiveStatusMeta(u, requests).label)}<br/>` +
         (req ? `${escHtml(req.nature)}<br/>` : "") +
         `Updated ${age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}` +
         (fix.accuracy ? `<br/>Accurate to about ${Math.round(fix.accuracy)} m` : "") +
@@ -189,8 +189,8 @@ export function FleetMap({ units, locations, requests, station }) {
             return (
               <div key={u.id} style={styles.mapRow}>
                 <span style={styles.mapRowName}>{u.name}</span>
-                <span style={{ ...styles.mapRowStatus, color: statusMeta(u.status).color }}>
-                  {statusMeta(u.status).label}
+                <span style={{ ...styles.mapRowStatus, color: effectiveStatusMeta(u, requests).color }}>
+                  {effectiveStatusMeta(u, requests).label}
                 </span>
                 <span style={stale ? styles.mapRowAgeStale : styles.mapRowAge}>
                   {age < 60000 ? "just now" : `${Math.round(age / 60000)} min ago`}
@@ -208,8 +208,8 @@ export function FleetMap({ units, locations, requests, station }) {
         {outWithoutFix.map((u) => (
           <div key={u.id} style={styles.mapRow}>
             <span style={styles.mapRowName}>{u.name}</span>
-            <span style={{ ...styles.mapRowStatus, color: statusMeta(u.status).color }}>
-              {statusMeta(u.status).label}
+            <span style={{ ...styles.mapRowStatus, color: effectiveStatusMeta(u, requests).color }}>
+              {effectiveStatusMeta(u, requests).label}
             </span>
             <span style={styles.mapRowNoFix}>no position — tablet asleep, or not shared</span>
           </div>

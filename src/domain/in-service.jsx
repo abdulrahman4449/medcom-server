@@ -72,7 +72,9 @@ export function assignableUnits(units, requests) {
   return (units || [])
     .filter((u) => !isOnCall(u, requests))
     .sort((a, b) => {
-      const rank = (u) => (u.status === "available" ? 0 : isStaffed(u) ? 1 : 2);
+      // Derived, not stored: these units are already known not to be on a call,
+      // so a unit with nobody signed on must not sort as if it were ready.
+      const rank = (u) => (effectiveStatus(u, null) === "available" ? 0 : isStaffed(u) ? 1 : 2);
       return rank(a) - rank(b) || String(a.name).localeCompare(String(b.name));
     });
 }
@@ -81,12 +83,47 @@ export function assignableUnits(units, requests) {
 // board, sitting out of service" apart from "nobody has signed on".
 export function assignableNote(unit) {
   if (!isStaffed(unit)) return "no crew signed on";
-  if (unit.status === "available") return !unit.alpha || !unit.bravo ? "one crew" : null;
-  return statusMeta(unit.status).label.toLowerCase();
+  // Only ever asked about units that are not on a call, so a leftover on-call
+  // status on one of them is stale and reads as free.
+  const status = effectiveStatus(unit, null);
+  if (status === "available") return !unit.alpha || !unit.bravo ? "one crew" : null;
+  return statusMeta(status).label.toLowerCase();
 }
 
 // The status a unit that isn't on a call should be sitting at: in service when
 // someone is signed on, out of service when the seats are empty.
 export function idleStatusFor(unit) {
   return isStaffed(unit) ? "available" : "oos";
+}
+
+// What a unit's status actually is, as opposed to what is stored on it.
+//
+// `unit.status` is a written field, and writes go missing: a crew whose last
+// device lost signal as they signed off, a seat cleared by an administrator, a
+// shift that ended while the tablet was asleep. The board counted that stale
+// "available" as a truck ready to go, so the desk was shown an available team
+// when every crew had gone home - the one number on that strip nobody can
+// afford to have wrong.
+//
+// Everything shown to a human goes through here. Availability is derived the
+// same way dispatch and the coverage watch already derive it: from whether
+// anyone is signed on and whether the unit is tied to a call that is still
+// running. A deliberate out-of-service on a staffed truck is a decision, not a
+// stale value, so it is left alone.
+export function effectiveStatus(unit, requests) {
+  if (!unit) return "oos";
+  const stored = statusKey(unit.status);
+  if (isOnCall(unit, requests)) {
+    // Committed to a live call. Keep the step the crew stamped; a unit pointed
+    // at a call while carrying an idle status is mid-assignment, not idle.
+    return ON_CALL_STATUSES.includes(stored) ? stored : "dispatched";
+  }
+  // No live call, so any on-call status left on the unit is leftover.
+  if (ON_CALL_STATUSES.includes(stored)) return isStaffed(unit) ? "available" : "oos";
+  if (!isStaffed(unit)) return "oos";
+  return stored;
+}
+
+export function effectiveStatusMeta(unit, requests) {
+  return statusMeta(effectiveStatus(unit, requests));
 }

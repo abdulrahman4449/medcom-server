@@ -19,6 +19,17 @@ export const PCR_GOOD = 95;
 export const CHECKLIST_GOOD = 90;
 export const UHU_HEADROOM = 50;
 
+// What the department set itself: 45 per cent of a shift spent on calls,
+// measured across every member of crew rather than across the vehicles. A
+// truck's utilisation counts the hours the truck existed; a department is
+// staffed by people, and people are what it rosters, pays and runs out of.
+//
+// Dispatchers are deliberately not in this figure. Their work is not measured
+// by time on a call and counting them at nought would drag the department's
+// number down while describing nobody - they need a measure of their own, and
+// it has not been defined yet.
+export const UHU_TARGET = 45;
+
 export function isInternalEmergency(req) {
   return (req && req.callCategory) === "EMERGENCY (INTERNAL)";
 }

@@ -472,8 +472,14 @@ export async function exportArchivedDay(archive, liveRequests) {
     const stationCoverage = (archive.coverage || []).filter(
       (c) => c && c.station === st.key
     );
+    // archive.dayStart, not `at`. Without it the builder falls back to the
+    // operational day of the moment the file is made, so a day downloaded from
+    // the archive a week later was titled with today's date and had its day and
+    // night shifts worked out against today's 07:00 - the calls in it fall
+    // under the wrong date, which is the one thing this sheet cannot do.
     const aoa = buildDispatchLogAOA(
-      stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key, stationCoverage
+      stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key, stationCoverage,
+      archive.dayStart
     );
     const nightRows = aoa.nightRows || [];
     // A line at the top of each sheet saying what this book is and whether it

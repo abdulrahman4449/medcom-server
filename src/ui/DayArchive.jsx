@@ -18,6 +18,7 @@ import { readKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { FoldingSection, ROLE_LABELS } from "./AdminView.jsx";
+import { BackupPanel } from "./BackupPanel.jsx";
 import { AssistanceTasks, CallRoute, FleetRow, InfoNote, PendingCallCard } from "./AssistanceTasks.jsx";
 import { UnitRosterCard } from "./ChatDock.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
@@ -577,6 +578,9 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
             scheduled={scheduled}
           />
           <SavedLogs submissions={submissions} requests={requests} coverage={coverage} />
+          {/* Sits with the archive because it is the same question: what of
+              this survives, and where is it kept. */}
+          <BackupPanel role={user.role} />
           <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
         </>
       )}

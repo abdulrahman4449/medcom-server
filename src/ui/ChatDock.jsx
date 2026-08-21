@@ -3,7 +3,7 @@ import { CALL_CLOSE_REASONS, CALL_CLOSE_REASON_MAX } from "../domain/close-reaso
 import { PRIORITY, PRIORITY_CHOICES, REQUIREMENTS, REQ_STATUS, applyCallEditsTo, priorityKeyOf, reqLabels, verifyCallEditOn } from "../domain/constants.jsx";
 import { COVERAGE_KEY, coverageUnits, openCoverageGap, startCoverageGap, stationHasCoverage } from "../domain/coverage.jsx";
 import { queuedReliefFor, reliefSituationFor } from "../domain/crew-relief.jsx";
-import { assignableNote, assignableUnits, idleStatusFor, isOnCall, isStaffed, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
+import { assignableNote, assignableUnits, effectiveStatusMeta, idleStatusFor, isOnCall, isStaffed, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
 import { MESSAGE_MAX, buzz, clockStr, markThreadSeen, notifyMessage, postMessage, shortDurationStr, threadFor, unreadIn } from "../domain/messages.jsx";
 import { opDayLabel, opDayStart } from "../domain/op-day.jsx";
@@ -1390,7 +1390,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
               {stationUnits.map((u) => {
                 const onCall = isOnCall(u, requests);
                 const note = onCall
-                  ? `on a call — ${statusMeta(u.status).label.toLowerCase()}`
+                  ? `on a call — ${effectiveStatusMeta(u, requests).label.toLowerCase()}`
                   : assignableNote(u);
                 return (
                   <option key={u.id} value={u.id} disabled={onCall}>
@@ -1812,7 +1812,7 @@ export function UnitRosterCard({ unit, onRelieve, onGrantOt, requests, onRename,
           beneath it. The bar is what carries across a room and what still works
           for somebody who cannot separate the greens from the reds; the word is
           what makes it unambiguous close up. Neither alone was enough. */}
-      <div style={{ ...styles.unitCardBar, background: statusMeta(unit.status).color }} />
+      <div style={{ ...styles.unitCardBar, background: effectiveStatusMeta(unit, requests).color }} />
       <div style={styles.unitCardBody}>
         <div style={styles.unitCardTop}>
           <span style={styles.unitCardName}>{unit.name}</span>
@@ -1822,10 +1822,10 @@ export function UnitRosterCard({ unit, onRelieve, onGrantOt, requests, onRename,
         </div>
         <div style={styles.unitCardStatusRow}>
           <span
-            style={{ ...styles.unitCardDot, background: statusMeta(unit.status).color }}
+            style={{ ...styles.unitCardDot, background: effectiveStatusMeta(unit, requests).color }}
           />
-          <span style={{ ...styles.unitCardStatusText, color: statusMeta(unit.status).color }}>
-            {statusMeta(unit.status).label}
+          <span style={{ ...styles.unitCardStatusText, color: effectiveStatusMeta(unit, requests).color }}>
+            {effectiveStatusMeta(unit, requests).label}
           </span>
         </div>
         {!isStaffed(unit) && <span style={styles.unitCardNoCrew}>NO CREW SIGNED ON</span>}

@@ -50,6 +50,13 @@ const files = [];
 
 let failures = 0;
 const declared = new Map(); // name -> module, for the summary line
+// What each module exports, and what each module asks other modules for. An
+// import statement creates a binding whether or not the other file actually
+// exports that name, so "every name resolves" is not enough on its own: a
+// component imported from the wrong module passes that check and fails the
+// build. Collected here and cross-checked once every file has been read.
+const exportsOf = new Map();
+const importsOf = [];
 
 for (const file of files) {
   const rel = path.relative(root, file);
@@ -99,6 +106,27 @@ for (const file of files) {
     }
   }
 
+  // 2b. what this module exports, and what it asks of others
+  const exported = new Set();
+  for (const node of ast.program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+    if (node.declaration) {
+      for (const n of Object.keys(t.getBindingIdentifiers(node.declaration))) exported.add(n);
+    }
+    for (const sp of node.specifiers || []) exported.add(sp.exported.name || sp.exported.value);
+  }
+  exportsOf.set(rel, exported);
+  for (const node of ast.program.body) {
+    if (node.type !== "ImportDeclaration") continue;
+    const from = node.source.value;
+    if (!from.startsWith(".")) continue;
+    const target = path.relative(root, path.resolve(path.dirname(file), from));
+    for (const sp of node.specifiers || []) {
+      if (sp.type !== "ImportSpecifier") continue;
+      importsOf.push({ file: rel, name: sp.imported.name, target, line: node.loc.start.line });
+    }
+  }
+
   // 3b. duplicate keys inside the one styles object, where the later silently wins
   traverse(ast, {
     VariableDeclarator(p) {
@@ -114,7 +142,17 @@ for (const file of files) {
   });
 }
 
+// Every named import must actually be exported by the file it names.
+for (const imp of importsOf) {
+  const has = exportsOf.get(imp.target);
+  if (!has) { console.log(`${imp.file}:${imp.line} imports from ${imp.target}, which is not a module here`); failures++; continue; }
+  if (!has.has(imp.name)) {
+    console.log(`${imp.file}:${imp.line} imports "${imp.name}" from ${imp.target}, which does not export it`);
+    failures++;
+  }
+}
+
 console.log(failures
   ? `\nFAILED - ${failures} problem${failures === 1 ? "" : "s"} across ${files.length} modules`
-  : `OK - ${files.length} modules parse, resolve and declare cleanly`);
+  : `OK - ${files.length} modules parse, resolve, import and declare cleanly`);
 process.exit(failures ? 1 : 0);

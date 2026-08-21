@@ -1,7 +1,7 @@
 import { callCloseReason, callWasCancelled } from "../domain/close-reasons.jsx";
 import { responseCompliance } from "../domain/compliance.jsx";
 import { REQ_STATUS, STATUS, TIME_STEPS } from "../domain/constants.jsx";
-import { ON_CALL_STATUSES, statusKey } from "../domain/in-service.jsx";
+import { ON_CALL_STATUSES, effectiveStatus } from "../domain/in-service.jsx";
 import { stationOf } from "../domain/live-sheet.jsx";
 import { clockStr, msDurationStr } from "../domain/messages.jsx";
 import { NO_TRANSPORT, REFUSAL_TIME_KEY, REFUSAL_TIME_LABEL } from "../domain/outcomes.jsx";
@@ -37,9 +37,12 @@ import { styles } from "../styles.jsx";
 // reading rather than working.
 export function StatusBoard({ units, requests, station }) {
   const now = Date.now();
+  // Counted from what each unit's status actually is, not from the field stored
+  // on it. A crew that signed off without the write landing left "available"
+  // behind, and this strip reported a truck ready to go when nobody was on it.
   const counts = Object.keys(STATUS).reduce((acc, k) => ({ ...acc, [k]: 0 }), {});
   (units || []).forEach((u) => {
-    const k = statusKey(u.status);
+    const k = effectiveStatus(u, requests);
     counts[k] = (counts[k] || 0) + 1;
   });
 

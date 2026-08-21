@@ -119,6 +119,33 @@ patch", that document is the target — do not start a fresh exploration.
   Render the service name is the hostname, and that hostname is compiled
   into the native app as `LIVE_SITE`. Renaming it breaks every installed
   phone. The app is PulseOps; the address it lives at is not.
+- **A unit's `status` field is written, and writes go missing.** Anything shown
+  to a human goes through `effectiveStatus(unit, requests)`, which derives it
+  from whether anyone is signed on and whether the unit is on a live call. The
+  board once counted a stale `"available"` left behind by a crew whose sign-off
+  never landed, and told the desk a truck was ready when everyone had gone
+  home. Coverage and dispatch already derived it; the display layer did not.
+- **The checklist belongs to the person, once per shift — not to the truck.**
+  `personChecklistRun` / `checklistIsMandatory`. Keying it to the vehicle asked
+  somebody who changed trucks mid-shift to do it twice, and counted a truck as
+  done because the previous crew had filed. The first list of a person's shift
+  is the mandatory one and the one the statistics count; a second, on a truck
+  they moved onto later, is offered and not required.
+- **The department's UHU target is `UHU_TARGET` (45%), measured across people.**
+  `departmentUhu` weights by shifts worked rather than averaging percentages.
+  Dispatchers are deliberately absent: `staffStatsFor` only counts log entries
+  with `role: "team"`, so a dispatcher can never appear at 0% and drag the
+  department's figure down. They need a measure of their own; it is not defined
+  yet.
+- **`buildDispatchLogAOA` must be given the day it is describing.** Without the
+  `dayStart` argument it falls back to the operational day of the moment the
+  file is made, so a day pulled out of the archive a week later was titled with
+  today's date and had its shifts worked out against today's 07:00.
+- **Backups are the server's job, and a live SQLite file cannot be copied.**
+  `db.backup()` in `server.js`, on start-up and every 24 hours, to `BACKUP_DIR`
+  and — if set — `BACKUP_DIR_2` as well. Downloading one hands over every
+  patient MRN on the board, so the route does not exist unless `BACKUP_TOKEN`
+  is set. Note that `/api/board` itself has no authentication at all.
 - **`SHOW_LOGOS` and `ORG_NAME`** near the top of the app switch the crests
   and the organisation's name back on. Both are deliberately off/empty.
 

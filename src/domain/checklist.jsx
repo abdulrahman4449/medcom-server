@@ -90,6 +90,40 @@ export function checklistRunFor(runs, unitId, part, shiftKey) {
   ) || null;
 }
 
+// The checklist belongs to the person, once per shift - not to the truck.
+//
+// A medic works one shift and owes one checklist for it. Keying it to the
+// vehicle meant somebody who moved trucks mid-shift was asked all over again,
+// while a truck that changed crew was counted as done because the last lot had
+// already filed. Neither is what the department measures: it measures whether
+// each member of staff on duty checked their kit.
+//
+// So: the first list of a person's shift is the mandatory one, and it is the
+// one the statistics count. If they then sign onto another medic, that truck's
+// list is offered but not required - they have already done theirs.
+export function personChecklistRun(runs, accountId, shiftKey) {
+  if (!accountId) return null;
+  return (runs || []).find(
+    (r) => r && r.byAccountId === accountId && (r.shiftKey || r.dayKey) === shiftKey
+  ) || null;
+}
+
+// Has this person already discharged the obligation for this shift?
+export function checklistDoneByPerson(runs, accountId, shiftKey) {
+  return !!personChecklistRun(runs, accountId, shiftKey);
+}
+
+// Whether the list in front of this crew member is the one they must file.
+// Mandatory until they have filed one somewhere this shift; optional after,
+// including the one on a truck they have only just moved onto.
+export function checklistIsMandatory(runs, accountId, shiftKey, unitId, part) {
+  const mine = personChecklistRun(runs, accountId, shiftKey);
+  if (!mine) return true;
+  // The one they already filed is still "the" mandatory list, so opening it
+  // again on the same truck does not suddenly read as optional.
+  return mine.unitId === unitId && mine.part === part;
+}
+
 // Anything a crew flagged. This is the reason the whole thing exists: a list
 // where everything was fine tells nobody anything, and the exceptions are what
 // somebody has to act on.

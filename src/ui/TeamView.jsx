@@ -1,10 +1,10 @@
 import { closeoutBlockers, closeoutMissingText } from "../domain/call-completeness.jsx";
 import { callRoute } from "../domain/call-locations.jsx";
-import { CHECKLIST_RUNS_CAP, CHECKLIST_RUNS_KEY, CHECK_ANSWERS, checklistPartForSeat, checklistRunFor, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
+import { CHECKLIST_RUNS_CAP, CHECKLIST_RUNS_KEY, CHECK_ANSWERS, checklistIsMandatory, checklistPartForSeat, checklistRunFor, isWriteItem, personChecklistRun, shiftKeyFor } from "../domain/checklist.jsx";
 import { callCloseReason } from "../domain/close-reasons.jsx";
 import { PRIORITY, REQ_STATUS, TIME_STEPS, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf, proposeCallEditsTo, reqLabels } from "../domain/constants.jsx";
 import { escalationViewer, lastAdminReply } from "../domain/escalations.jsx";
-import { idleStatusFor, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
+import { effectiveStatusMeta, idleStatusFor, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
 import { BASE_TITLE, buzz, clearCallAlert, clockStr, msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { opDayKey, opDayStart } from "../domain/op-day.jsx";
@@ -747,6 +747,14 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
   const todayKey = shiftKeyFor(user.shiftStart || Date.now());
   const myChecklistRun =
     myUnit && myPart ? checklistRunFor(checklistRuns, myUnit.id, myPart.key, todayKey) : null;
+  // One checklist per person per shift is the obligation. If they have already
+  // filed theirs — on this truck or on one they were sitting in earlier — the
+  // list on this truck is offered rather than demanded.
+  const myShiftRun = personChecklistRun(checklistRuns, user.accountId, todayKey);
+  const checklistMandatory =
+    myUnit && myPart
+      ? checklistIsMandatory(checklistRuns, user.accountId, todayKey, myUnit.id, myPart.key)
+      : false;
 
   async function fileChecklist({ answers, note }) {
     if (!myUnit || !myPart) return;
@@ -1128,8 +1136,8 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
       <div style={styles.sectionHeader}>YOUR UNIT — {myUnit.name}</div>
       <div style={styles.myUnitCard}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Circle size={10} fill={statusMeta(myUnit.status).color} color={statusMeta(myUnit.status).color} />
-          <span style={{ fontSize: 17, fontWeight: 700, color: statusMeta(myUnit.status).color }}>{statusMeta(myUnit.status).label}</span>
+          <Circle size={10} fill={effectiveStatusMeta(myUnit, requests).color} color={effectiveStatusMeta(myUnit, requests).color} />
+          <span style={{ fontSize: 17, fontWeight: 700, color: effectiveStatusMeta(myUnit, requests).color }}>{effectiveStatusMeta(myUnit, requests).label}</span>
         </div>
         {/* Waiting on the desk to acknowledge a call the crew opened. The clock
             is already running and the patient is already theirs — this only
@@ -1373,9 +1381,17 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
             <span style={styles.checkDoneTag} title={`Filed by ${myChecklistRun.byName} at ${clockStr(myChecklistRun.at)}`}>
               ✓ Daily checklist
             </span>
-          ) : (
+          ) : checklistMandatory ? (
             <button style={styles.checkOpenBtn} onClick={() => setChecklistOpen(true)}>
               📋 Complete your daily checklist
+            </button>
+          ) : (
+            <button
+              style={styles.checkOptionalBtn}
+              onClick={() => setChecklistOpen(true)}
+              title={`You filed your checklist for this shift on ${myShiftRun.unitName} at ${clockStr(myShiftRun.at)}`}
+            >
+              📋 Checklist for this truck — optional
             </button>
           )
         )}

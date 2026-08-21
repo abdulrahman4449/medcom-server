@@ -2847,6 +2847,44 @@ export const styles = {
     borderRadius: 999, padding: "8px 14px", fontSize: 13, fontWeight: 700,
     cursor: "pointer", whiteSpace: "nowrap",
   },
+  // An optional list reads as an offer, not a demand: quieter than the
+  // mandatory one, so a crew can tell at a glance which one they owe.
+  // ---------- backups ----------
+  backupGrid: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: 10, margin: "4px 0 12px",
+  },
+  backupCell: {
+    display: "flex", flexDirection: "column", gap: 3,
+    background: "var(--panel-2)", border: "1px solid var(--hair-2)",
+    borderRadius: 12, padding: "11px 13px",
+  },
+  backupLabel: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 1, color: "var(--ink-4)",
+    textTransform: "uppercase",
+  },
+  backupValue: { fontSize: 19, fontWeight: 800, color: "var(--ink)", lineHeight: 1.2 },
+  backupNote: {
+    fontSize: 12, lineHeight: 1.55, color: "var(--ink-4)", wordBreak: "break-word",
+    margin: "4px 0 0",
+  },
+  backupActions: {
+    display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, margin: "10px 0 0",
+  },
+  backupDownload: {
+    display: "flex", flexDirection: "column", gap: 2,
+    borderTop: "1px solid var(--hair-2)", margin: "14px 0 0", padding: "12px 0 0",
+  },
+  checkOwingRow: {
+    fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-3)",
+    background: "rgba(240,180,60,.07)", border: "1px solid rgba(240,180,60,.28)",
+    borderRadius: 10, padding: "8px 11px", margin: "0 0 10px",
+  },
+  checkOptionalBtn: {
+    background: "none", border: "1px dashed var(--hair-2)", color: "var(--ink-4)",
+    borderRadius: 999, padding: "8px 14px", fontSize: 12.5, fontWeight: 600,
+    cursor: "pointer", whiteSpace: "nowrap",
+  },
   checkDoneTag: {
     display: "inline-flex", alignItems: "center", gap: 5,
     fontSize: 12.5, fontWeight: 700, color: "var(--ok)",

@@ -167,6 +167,162 @@ function dbFileBytes() {
   return n;
 }
 
+// ---------- backups ----------
+//
+// Until now the whole board was one file on one disk. That survives a redeploy,
+// which is the problem we fixed before, but it does not survive the disk
+// failing, somebody deleting a member of staff by mistake, or a bad write. A
+// backup is time travel, not just spare hardware - the failures a copy actually
+// saves you from are usually the human ones.
+//
+// A live SQLite file cannot be backed up by copying it. It is mid-write, and
+// with WAL on, the .db file alone is not even the whole database - you get a
+// copy that looks fine until the day you need it. better-sqlite3 exposes
+// SQLite's own online backup, which takes a consistent snapshot while the app
+// keeps serving, and that is what runs here.
+const BACKUP_EVERY_MS = 24 * 60 * 60 * 1000;
+const BACKUP_KEEP_DAILY = Number(process.env.BACKUP_KEEP_DAILY || 30);
+const BACKUP_KEEP_WEEKLY = Number(process.env.BACKUP_KEEP_WEEKLY || 12);
+
+// Where copies go. BACKUP_DIR sits beside the database on the persistent disk.
+// BACKUP_DIR_2 is the second, separate destination - on a server you own, that
+// is the mount path of an external drive left connected; the same snapshot is
+// written to both, so losing either disk still leaves a copy.
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(DB_PATH), "backups");
+const BACKUP_DIR_2 = process.env.BACKUP_DIR_2 || "";
+
+// Downloading a backup means downloading every patient record on the board, so
+// it is refused unless an operator has deliberately set a token. No token, no
+// download route at all - a file this sensitive must not be one URL away.
+const BACKUP_TOKEN = process.env.BACKUP_TOKEN || "";
+
+function backupName(at) {
+  const d = new Date(at);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `board-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}` +
+         `-${p2(d.getHours())}${p2(d.getMinutes())}.db`;
+}
+
+function listBackups(dir) {
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((f) => f.startsWith("board-") && f.endsWith(".db"))
+      .map((f) => {
+        const st = fs.statSync(path.join(dir, f));
+        return { name: f, bytes: st.size, at: st.mtime.toISOString() };
+      })
+      .sort((a, b) => (a.at < b.at ? 1 : -1));
+  } catch (e) {
+    return [];
+  }
+}
+
+// Keep every backup for BACKUP_KEEP_DAILY days, then one per week for
+// BACKUP_KEEP_WEEKLY weeks. Deleting the rest keeps a year of history in a
+// couple of hundred MB rather than letting copies fill the disk we just added
+// a warning for.
+function pruneBackups(dir) {
+  const now = Date.now();
+  const dailyCut = now - BACKUP_KEEP_DAILY * 24 * 60 * 60 * 1000;
+  const weeklyCut = now - BACKUP_KEEP_WEEKLY * 7 * 24 * 60 * 60 * 1000;
+  const weekSeen = new Set();
+  for (const b of listBackups(dir)) {
+    const t = new Date(b.at).getTime();
+    if (t >= dailyCut) continue;
+    const week = Math.floor(t / (7 * 24 * 60 * 60 * 1000));
+    if (t >= weeklyCut && !weekSeen.has(week)) { weekSeen.add(week); continue; }
+    try { fs.unlinkSync(path.join(dir, b.name)); } catch (e) { /* already gone */ }
+  }
+}
+
+let lastBackup = null;
+
+async function runBackup(reason) {
+  const at = Date.now();
+  const name = backupName(at);
+  const written = [];
+  const failed = [];
+  // The first destination is written by SQLite itself; the second is a copy of
+  // that finished file, which is safe because by then it is no longer live.
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    await db.backup(path.join(BACKUP_DIR, name));
+    written.push(BACKUP_DIR);
+    pruneBackups(BACKUP_DIR);
+  } catch (e) {
+    failed.push({ dir: BACKUP_DIR, error: String(e.message || e) });
+  }
+  if (BACKUP_DIR_2 && written.length) {
+    try {
+      fs.mkdirSync(BACKUP_DIR_2, { recursive: true });
+      fs.copyFileSync(path.join(BACKUP_DIR, name), path.join(BACKUP_DIR_2, name));
+      written.push(BACKUP_DIR_2);
+      pruneBackups(BACKUP_DIR_2);
+    } catch (e) {
+      // A second drive that has been unplugged must not stop the first copy
+      // being made, but it must be visible - that is the whole point of it.
+      failed.push({ dir: BACKUP_DIR_2, error: String(e.message || e) });
+    }
+  }
+  let bytes = 0;
+  try { bytes = fs.statSync(path.join(BACKUP_DIR, name)).size; } catch (e) { /* first copy failed */ }
+  lastBackup = { name, at: new Date(at).toISOString(), reason, bytes, written, failed };
+  console.log(
+    `Backup ${failed.length && !written.length ? "FAILED" : "written"}: ${name}` +
+    ` -> ${written.join(", ") || "nowhere"}` +
+    (failed.length ? ` · failed: ${failed.map((f) => `${f.dir} (${f.error})`).join("; ")}` : "")
+  );
+  return lastBackup;
+}
+
+function backupState() {
+  const second = BACKUP_DIR_2
+    ? { dir: BACKUP_DIR_2, configured: true, count: listBackups(BACKUP_DIR_2).length,
+        reachable: isWritableDir(BACKUP_DIR_2) }
+    : { configured: false };
+  const copies = listBackups(BACKUP_DIR);
+  return {
+    // A backup that quietly stopped a month ago is worse than none, so the age
+    // is reported rather than just the fact that backups are switched on.
+    last: lastBackup,
+    ageMs: lastBackup ? Date.now() - new Date(lastBackup.at).getTime() : null,
+    stale: lastBackup ? Date.now() - new Date(lastBackup.at).getTime() > 2 * BACKUP_EVERY_MS : true,
+    primary: { dir: BACKUP_DIR, count: copies.length,
+               newest: copies[0] || null, totalBytes: copies.reduce((n, b) => n + b.bytes, 0) },
+    second,
+    downloadEnabled: !!BACKUP_TOKEN,
+    keepDaily: BACKUP_KEEP_DAILY,
+    keepWeekly: BACKUP_KEEP_WEEKLY,
+  };
+}
+
+app.get("/api/backups", (req, res) => {
+  res.json({ ok: true, ...backupState(), copies: listBackups(BACKUP_DIR) });
+});
+
+app.post("/api/backups", async (req, res) => {
+  const state = await runBackup("on demand");
+  res.json({ ok: !!state.written.length, ...state });
+});
+
+// Deliberately token-gated, and absent entirely when no token is set. This
+// route hands over every patient record the department holds.
+app.get("/api/backups/:name", (req, res) => {
+  if (!BACKUP_TOKEN) {
+    return res.status(404).json({ error: "Backup download is not enabled on this server." });
+  }
+  const given = req.get("x-backup-token") || req.query.token || "";
+  if (given !== BACKUP_TOKEN) return res.status(403).json({ error: "Wrong or missing backup token." });
+  // Name comes from the URL, so it is taken apart and rebuilt rather than
+  // trusted - "../../etc/passwd" is a path, not a backup.
+  const name = path.basename(String(req.params.name));
+  if (!/^board-\d{8}-\d{4}\.db$/.test(name)) return res.status(400).json({ error: "Not a backup name." });
+  const file = path.join(BACKUP_DIR, name);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: "No such backup." });
+  res.download(file, name);
+});
+
 app.get("/api/health", (req, res) => {
   const keys = db
     .prepare("SELECT key, length(value) AS bytes, updated_at FROM board ORDER BY key")
@@ -181,6 +337,7 @@ app.get("/api/health", (req, res) => {
       fileBytes: dbFileBytes(),
     },
     disk: diskUsage(),
+    backups: backupState(),
     board: {
       keys: keys.length,
       totalBytes,
@@ -223,6 +380,18 @@ app.get("/download", (req, res) => {
 app.listen(PORT, () => {
   console.log(`PulseOps server listening on port ${PORT}`);
   console.log(`Database file: ${DB_PATH}`);
+  console.log(`Backups: ${BACKUP_DIR}${BACKUP_DIR_2 ? ` and ${BACKUP_DIR_2}` : ""}` +
+    `${BACKUP_TOKEN ? "" : " · download disabled (no BACKUP_TOKEN set)"}`);
+  // One on boot, so a server that is restarted daily still has yesterday, and
+  // so a fresh deployment is never sitting there with no copy at all. Then
+  // every 24 hours for as long as it stays up.
+  runBackup("startup").catch((e) => console.error("Backup on startup failed:", e));
+  const timer = setInterval(
+    () => runBackup("scheduled").catch((e) => console.error("Scheduled backup failed:", e)),
+    BACKUP_EVERY_MS
+  );
+  // Never hold the process open for the sake of the backup timer.
+  if (timer.unref) timer.unref();
   console.log(`Chosen from: ${DB_SOURCE}`);
 
   // The failure this guards against is a silent one: the board works perfectly

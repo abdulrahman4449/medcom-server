@@ -143,6 +143,74 @@ happening again from the next deploy onward.
 
 ---
 
+## Backups
+
+A persistent disk stops a deploy erasing the board. It does not stop the disk
+failing, and it does not stop somebody deleting a member of staff by mistake.
+Those need a copy you can go back to.
+
+The server takes one automatically: on start-up and then every 24 hours, using
+SQLite's own online backup so the copy is consistent while the app keeps
+serving. Copying `board.db` by hand does **not** work — the database is
+mid-write and, with WAL on, that file is not even all of it.
+
+Every copy is kept for 30 days, then one a week for 12 weeks. About 100 MB for
+a year of history.
+
+**Where they go.** `BACKUP_DIR` (defaults to a `backups` folder beside the
+database). Set `BACKUP_DIR_2` and the same snapshot is written to a second
+place as well — on a server you own, that is where an external drive is
+mounted, and the two copies are then on two different disks.
+
+**Seeing that it is working.** Admin → Archive → BACKUPS. It shows how old the
+newest copy is, how many there are, and whether the second destination is
+reachable. If backups stop, it says so in red — a backup that quietly stopped
+a month ago is worse than none, because nobody is worried about it.
+
+### Taking a copy off the server
+
+A backup file contains every patient MRN on the board, so the download route
+does not exist until you deliberately switch it on:
+
+1. In Render → Environment, add `BACKUP_TOKEN` and set it to a long random
+   string.
+2. Admin → Archive → BACKUPS now offers **Download newest**. Paste the token
+   once; that browser remembers it.
+
+Keep the file where the department keeps confidential records — not a personal
+folder, not a consumer cloud drive.
+
+### An offline copy on an external drive
+
+If the server is yours, set `BACKUP_DIR_2` to the drive's mount path and you
+are done — two copies, two disks, nothing else to run.
+
+A hosted server (Render) has no socket to plug a drive into. Pull to the drive
+from the office computer instead:
+
+```
+node scripts/pull-backup.mjs --to /media/backup-drive/pulseops \
+    --server https://medcom-dispatch.onrender.com \
+    --token YOUR_BACKUP_TOKEN --every 24
+```
+
+Leave it running with the drive attached and it fetches a copy every 24 hours.
+It refuses to write if the drive is not mounted, and checks that what came back
+is really a database before keeping it.
+
+### Restoring — read this before you need it
+
+A backup nobody has ever restored is a hope, not a backup. Practise it once:
+
+1. Stop the service (Render → Suspend, or stop the process).
+2. Put the backup where the database lives, named `board.db`, and delete any
+   `board.db-wal` and `board.db-shm` sitting beside it.
+3. Start the service.
+4. Open the app and check a shift you remember.
+
+That is the whole procedure. It has been tested: a call deleted from a running
+board came back, MRN and all, from a copy on the second drive.
+
 ## Using this with the native iOS/Android app
 
 The native app project I gave you earlier (`medcom-native-app.zip`) needs

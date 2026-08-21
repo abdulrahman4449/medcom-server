@@ -2,7 +2,7 @@ import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { CHECK_ANSWERS, checkItemAnswered, checklistTree, isWriteItem } from "../domain/checklist.jsx";
 import { isInternalEmergency } from "../domain/compliance.jsx";
 import { EDITABLE_FIELDS, PRIORITY, REQ_STATUS, callEdits, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf } from "../domain/constants.jsx";
-import { assignableNote, assignableUnits, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
+import { assignableNote, assignableUnits, effectiveStatusMeta, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { buzz, clockStr, shortDurationStr } from "../domain/messages.jsx";
 import { isReturnLeg, wantsReturn } from "../domain/return-journeys.jsx";
 import { assistOf, assistPending, assistTeams, pendingAssistCalls } from "../domain/second-ambulance.jsx";
@@ -417,7 +417,10 @@ export function FleetRow({ unit, req, onOpen, now }) {
         <span style={styles.unitCardStatusRow}>
           <span style={{ ...styles.unitCardDot, background: colour }} />
           <span style={{ ...styles.unitCardStatusText, color: colour }}>
-            {req ? (CALL_STAGES[stage] || CALL_STAGES[0]).label.toUpperCase() : statusMeta(unit.status).label}
+            {/* `req` is this unit's live call, so when there is none the unit is
+                by definition not on one - passing no request list says exactly
+                that, and keeps a stale "available" off the row. */}
+            {req ? (CALL_STAGES[stage] || CALL_STAGES[0]).label.toUpperCase() : effectiveStatusMeta(unit, null).label}
           </span>
         </span>
 
