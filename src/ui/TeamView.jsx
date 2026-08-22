@@ -16,7 +16,7 @@ import { activeAssistUnitIds, assistOf, assistPending, assistTeamFor, assistTeam
 import { applyCallCoding } from "../domain/sheet-vocabulary.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
-import { soundCallAlert, soundReminderTone, soundStandDown } from "../lib/dates.jsx";
+import { soundCallAlert, soundReminderTone, soundStandDownTone, speakStandDown } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Ambulance, Ban, CalendarClock, CheckCircle2, ChevronRight, Circle, Clock, FileSignature, HandRaised, PencilLine, PhoneIncoming, Radio, Users } from "../lib/icons.jsx";
 import { notifyAssignedCall } from "../lib/notify.jsx";
@@ -212,8 +212,10 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
     // to a crew twice over - which reads as two cancelled calls.
     if (standDownFor.current === gone.id) return;
     standDownFor.current = gone.id;
-    // Not the dispatch tone. See soundStandDown.
-    soundStandDown(audioCtxRef);
+    // The buzz here; the sound belongs to the banner's own effect below, which
+    // runs the moment calledOff is set. Announcing it in both places spoke the
+    // sentence twice over from two different starting points, and the second
+    // one cut the first one off.
     buzz([400, 150, 400, 150, 400]);
     setCalledOff({
       nature: gone.nature || "the call",
@@ -241,14 +243,25 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
     // a stand-down is the one message where being annoying is the point, and it
     // stops the instant somebody presses Understood.
     const sound = () => {
-      soundStandDown(audioCtxRef);
-      setTimeout(() => soundStandDown(audioCtxRef), 450);
-      setTimeout(() => soundStandDown(audioCtxRef), 900);
+      soundStandDownTone(audioCtxRef);
+      setTimeout(() => soundStandDownTone(audioCtxRef), 450);
+      setTimeout(() => soundStandDownTone(audioCtxRef), 900);
       buzz([500, 150, 500, 150, 500]);
     };
+    // Said once - which is two utterances, because speakStandDown says it
+    // twice - and then never again. What repeats is the tone and the buzz.
+    speakStandDown();
     sound();
     const t = setInterval(sound, 4000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      // Nothing half-spoken outlives the banner.
+      try {
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+      } catch (e) {
+        // no voice on this device
+      }
+    };
   }, [calledOff]);
 
   // A reply that arrives silently is a reply nobody reads.

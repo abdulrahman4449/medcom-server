@@ -108,12 +108,43 @@ public class PulseOpsAlarmPlugin: CAPPlugin {
         }
     }
 
+    /// A two-tone alarm as a WAV, built in memory so the app never depends on a
+    /// file being remembered. Alternating high and low with a gap between, the
+    /// shape of every emergency tone there has ever been, and loud: this is the
+    /// sound that has to carry over a running engine.
+    private static func alarmWav() -> Data {
+        let rate = 22050
+        // high, silence, low, silence - one cycle, then looped by the player.
+        let steps: [(Double, Double)] = [(880, 0.32), (0, 0.10), (660, 0.32), (0, 0.26)]
+        var samples: [Int16] = []
+        for (freq, seconds) in steps {
+            let n = Int(Double(rate) * seconds)
+            for i in 0..<n {
+                if freq == 0 {
+                    samples.append(0)
+                    continue
+                }
+                let t = Double(i) / Double(rate)
+                // A short fade at each end, or the square edge of a tone
+                // starting at full amplitude arrives as a click.
+                let fade = min(1.0, min(Double(i), Double(n - i)) / (Double(rate) * 0.01))
+                let v = sin(2.0 * Double.pi * freq * t) * 0.85 * fade
+                samples.append(Int16(max(-1.0, min(1.0, v)) * 32767.0))
+            }
+        }
+        return wav(samples: samples, rate: rate)
+    }
+
     /// One second of silence as a WAV, 8 kHz mono. Small enough to keep in
     /// memory and looped forever.
     private static func silentWav(seconds: Double = 1.0) -> Data {
         let rate = 8000
-        let samples = Int(Double(rate) * seconds)
-        let bytes = samples * 2
+        return wav(samples: [Int16](repeating: 0, count: Int(Double(rate) * seconds)), rate: rate)
+    }
+
+    /// 16-bit mono PCM in a WAV wrapper, which AVAudioPlayer reads from Data.
+    private static func wav(samples: [Int16], rate: Int) -> Data {
+        let bytes = samples.count * 2
         var d = Data()
         func str(_ s: String) { d.append(s.data(using: .ascii)!) }
         func u32(_ v: UInt32) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 4)) }
@@ -122,7 +153,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin {
         str("fmt "); u32(16); u16(1); u16(1)
         u32(UInt32(rate)); u32(UInt32(rate * 2)); u16(2); u16(16)
         str("data"); u32(UInt32(bytes))
-        d.append(Data(count: bytes))
+        for s in samples { var x = s.littleEndian; d.append(Data(bytes: &x, count: 2)) }
         return d
     }
 
@@ -130,12 +161,23 @@ public class PulseOpsAlarmPlugin: CAPPlugin {
         DispatchQueue.main.async {
             self.stopPlayer()
             self.configureSession()
-            guard let url = Bundle.main.url(forResource: "dispatch_alert", withExtension: "mp3") else {
-                call.reject("dispatch_alert.mp3 is not in the app bundle")
-                return
-            }
+            // The bundled tone if there is one, and a tone built here if there
+            // is not.
+            //
+            // Depending on a file being in the bundle made "did somebody
+            // remember to add the mp3" into "does this ambulance get told about
+            // its calls", and the failure was silent in the worst way: the
+            // plugin refused, the web layer fell back to its own tone, and that
+            // tone cannot play until the page has been tapped. On a phone
+            // opened fresh to a waiting call there had been no tap, so the crew
+            // got nothing at all. An alarm must not have a missing-file case.
             do {
-                let p = try AVAudioPlayer(contentsOf: url)
+                let p: AVAudioPlayer
+                if let url = Bundle.main.url(forResource: "dispatch_alert", withExtension: "mp3") {
+                    p = try AVAudioPlayer(contentsOf: url)
+                } else {
+                    p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.alarmWav())
+                }
                 // Repeat until the crew acknowledges; the web layer calls stop().
                 p.numberOfLoops = -1
                 p.volume = 1.0

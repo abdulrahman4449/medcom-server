@@ -6,6 +6,7 @@ import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.VibrationEffect;
@@ -77,17 +78,22 @@ public class PulseOpsAlarmPlugin extends Plugin {
             int resId = getContext().getResources().getIdentifier("dispatch_alert", "raw",
                 getContext().getPackageName());
             if (resId != 0) {
-                player = MediaPlayer.create(getContext(), resId);
-                if (player != null) {
-                    player.setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build());
-                    // Repeat until the crew acknowledges. The web layer calls
-                    // stop() when the banner is dismissed.
-                    player.setLooping(true);
-                    player.start();
-                    sounding = true;
+                sounding = startPlayer(MediaPlayer.create(getContext(), resId));
+            }
+            // No tone in this build? Use the phone's own alarm sound rather
+            // than nothing.
+            //
+            // Falling back to the web layer's tone is not good enough here: a
+            // browser tone cannot play until the page has been tapped, and a
+            // phone opened fresh to a waiting call has not been tapped. The
+            // device's alarm ringtone always exists, is what the owner has
+            // already chosen to be woken by, and plays on the alarm stream like
+            // everything else here.
+            if (!sounding) {
+                Uri alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+                if (alarm == null) alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                if (alarm != null) {
+                    sounding = startPlayer(MediaPlayer.create(getContext(), alarm));
                 }
             }
 
@@ -105,10 +111,32 @@ public class PulseOpsAlarmPlugin extends Plugin {
             if (sounding) {
                 call.resolve();
             } else {
-                call.reject("No res/raw/dispatch_alert.mp3 in this build - the app will use its own tone.");
+                call.reject("Nothing could be played on the alarm stream - the app will use its own tone.");
             }
         } catch (Exception e) {
             call.reject("Could not raise the alarm: " + e.getMessage());
+        }
+    }
+
+    /** Attaches the alarm-stream attributes and starts looping. Null-safe:
+        MediaPlayer.create returns null rather than throwing when it cannot open
+        the source, which is exactly the case this has to survive. */
+    private boolean startPlayer(MediaPlayer mp) {
+        if (mp == null) return false;
+        try {
+            mp.setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build());
+            // Repeat until the crew acknowledges. The web layer calls stop()
+            // when the banner is dismissed.
+            mp.setLooping(true);
+            mp.start();
+            player = mp;
+            return true;
+        } catch (Exception e) {
+            try { mp.release(); } catch (Exception ignored) {}
+            return false;
         }
     }
 

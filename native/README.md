@@ -37,11 +37,14 @@ everything falls back to the existing Web Audio tone and behaves exactly as
 before. Nothing breaks by not installing this; it just stays beatable by a
 mute switch.
 
-The fallback also covers a plugin that is installed but **fails**, which in
-practice means a build with no `dispatch_alert.mp3` in it. Both platforms report
-that as a failure now and the app plays its own tone instead. Getting this wrong
-used to produce the worst outcome available: an installed plugin, no tone file,
-and a tablet that made no sound at all on a dispatch.
+**The tone file is optional.** Both plugins used to give up without
+`dispatch_alert.mp3` and hand back to the web layer's tone — which cannot play
+until the page has been tapped, so a phone opened fresh to a call already
+waiting made no sound at all. That is the worst outcome available and it hung on
+whether somebody remembered to drag a file into Xcode. Now iOS builds its own
+two-tone alarm in memory and Android falls back to the phone's own alarm
+ringtone. Supply the mp3 if you want your own sound; do not supply it and the
+alarm still sounds, on the alarm path, at full volume.
 
 ## Installing — Android
 

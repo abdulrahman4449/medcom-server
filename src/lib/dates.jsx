@@ -243,8 +243,22 @@ export function playStandDownTone(ctx) {
   } catch (e) {}
 }
 
-export function soundStandDown(audioCtxRef) {
+// The tone on its own, for the repeat.
+//
+// Keep this separate from the words. `speakStandDown` starts by cancelling
+// whatever the voice is currently saying - it has to, or a second stand-down
+// would queue behind the first and arrive late. That is correct when it is
+// called once and wrong when it is called on a loop: the repeat cancelled the
+// sentence mid-word every 450 milliseconds, so the crew heard "The call is
+// cancelled. The call is cancelled." and then "the call - the call - the call"
+// for as long as the banner was up. The words are said once, at the start,
+// twice over as they always were; only the tone repeats.
+export function soundStandDownTone(audioCtxRef) {
   playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playStandDownTone(ctx));
+}
+
+export function soundStandDown(audioCtxRef) {
+  soundStandDownTone(audioCtxRef);
   speakStandDown();
 }
 

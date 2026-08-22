@@ -178,6 +178,19 @@ patch", that document is the target — do not start a fresh exploration.
   notice permanent on exactly the devices it was least use to. A shell carrying
   the alarm plugin does not go through browser audio in the first place and is
   never nagged.
+- **The stand-down speaks; the repeat must not.** `speakStandDown` opens with
+  `speechSynthesis.cancel()` — it has to, or a second stand-down queues behind
+  the first. That is right when it is called once and wrong on a loop: a repeat
+  every 450 ms cut the sentence mid-word and the crew heard "the call — the
+  call — the call" until they pressed Understood. `soundStandDownTone` is the
+  tone alone and is the only thing that repeats. The words are said once, twice
+  over, at the start.
+- **An alarm must not have a missing-file case.** Both plugins looked up
+  `dispatch_alert.mp3` and gave up without it, falling back to the web tone —
+  which cannot play before the page has been tapped, so a phone opened fresh to
+  a waiting call made no sound at all. iOS now synthesises its own two-tone WAV
+  in memory, Android falls back to the device's alarm ringtone. The bundled mp3
+  is still preferred and still optional.
 - **"The tone does not work in the background" is not a sound problem.** iOS
   suspends a backgrounded app, JavaScript stops, the poll stops, and the call
   never arrives — there is nothing for an alarm to sound about. `setNativeStandby`
