@@ -2502,7 +2502,12 @@ export const styles = {
     color: "var(--ink-2)", borderRadius: 999,
     padding: "12px 18px", fontSize: 13.5, fontWeight: 700,
     cursor: "pointer", boxShadow: "0 12px 30px var(--lift-2)",
-    maxWidth: "52vw", overflow: "hidden",
+    // No overflow:hidden here. The unread badge is positioned outside the
+    // pill's own box on purpose, and clipping the pill clipped the badge with
+    // it - a red crescent bitten out of the corner with the number invisible,
+    // which is the one thing on it worth reading. The label does its own
+    // truncating, so nothing needs the pill to clip.
+    maxWidth: "52vw",
   },
   chatLauncherHot: {
     position: "fixed",
@@ -2515,7 +2520,7 @@ export const styles = {
     color: "#FFFFFF", borderRadius: 999,
     padding: "12px 18px", fontSize: 13.5, fontWeight: 750,
     cursor: "pointer", boxShadow: "0 12px 30px rgba(10,47,94,.5)",
-    maxWidth: "52vw", overflow: "hidden",
+    maxWidth: "52vw",
   },
   chatLauncherOn: {
     position: "fixed",
@@ -2530,7 +2535,10 @@ export const styles = {
     cursor: "pointer", boxShadow: "0 12px 30px var(--lift-2)",
   },
   chatLauncherLabel: {
-    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+    // minWidth:0 is what lets a flex child actually shrink far enough for its
+    // own ellipsis to engage; without it the label refuses to shrink and pushes
+    // the pill past its maxWidth instead.
+    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0,
   },
   // Above the pill, not inside it.
   chatLauncherBadge: {
