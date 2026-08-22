@@ -27,7 +27,7 @@ import { pruneArchivedWork } from "../lib/board-size.jsx";
 import { ensureAudioCtx, nowTime, setNativeStandby } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Radio } from "../lib/icons.jsx";
-import { alertsSupported, registerAlertWorker, requestAlertPermission } from "../lib/notify.jsx";
+import { alertsSupported, registerAlertWorker, requestAlertPermission, requestNativeNotifications } from "../lib/notify.jsx";
 import { connectionListeners, connectionOk, lastWriteError, loadPendingWrites, pushPendingWrites, readKey, readKeyRaw, totalPendingCount, writeInFlight, writeKey, writeList } from "../lib/offline-queue.jsx";
 import { useCallback, useEffect, useRef, useState } from "../lib/react.jsx";
 import { SESSION_VERSION, clearSession, patchSession, readSession, writeSession } from "../lib/session.jsx";
@@ -347,6 +347,10 @@ export function App() {
     // quarter-hour reminder on a booking, which is no use if it only shows on a
     // tab nobody is looking at.
     if (userRef.current) requestAlertPermission();
+    // The shell's own permission, which is a different one entirely: the
+    // browser API does not exist on a native build, so without this an iPhone
+    // shows no banner for an incoming call at all.
+    requestNativeNotifications();
   }, []);
 
   useEffect(() => {
@@ -364,6 +368,12 @@ export function App() {
 
   useEffect(() => {
     registerAlertWorker();
+    // Asked on mount as well as at sign-in. A tablet that came back from a
+    // refresh with its session restored never goes through the sign-in screen,
+    // so asking only there left exactly the long-running devices this matters
+    // most on without permission. iOS does not require a gesture for this one,
+    // and it only ever prompts once however many times it is called.
+    requestNativeNotifications();
   }, []);
 
   // Whatever this device was still holding when it was last closed. Without
@@ -1090,6 +1100,7 @@ export function App() {
   function handleLogin(u) {
     setSession(u);
     if (u) requestAlertPermission();
+    if (u) requestNativeNotifications();
     armAlerts();
   }
 

@@ -199,6 +199,18 @@ patch", that document is the target — do not start a fresh exploration.
   battery, and it does **not** survive a force-quit or a restart; only a push
   notification does, and on iOS getting past the silent switch means a Critical
   Alert entitlement from Apple. Say that rather than implying it is covered.
+- **The shells have no `Notification` API, so every web notification path is
+  dead on a phone.** `notifyAssignedCall` returned on its first line and an
+  iPhone showed no banner for a call at all. `nativeNotify` goes through the
+  alarm plugin instead — iOS via `UNUserNotificationCenter`, Android on the
+  `USAGE_ALARM` channel. Local, not push: it needs the app running. Permission
+  is asked at sign-in *and* on mount, because a restored session never passes
+  through the sign-in screen.
+- **`BUILD_STAMP` is on the crew screen under the speaker check.** A whole round
+  of testing once went into a fault that was already fixed, because the phone
+  was still running the previous build and nothing on screen said so. The same
+  line reports whether the alarm is going through the system path or page audio,
+  and what state that audio is in — ask for it before diagnosing "no tone".
 - **An interrupted AudioContext never comes back on its own.** "Suspended" is
   not the only way page audio stops. When anything else in the app activates an
   audio session — which is what going on duty does, to stop iOS suspending the

@@ -15,6 +15,59 @@ export function alertsSupported() {
   return typeof window !== "undefined" && "Notification" in window;
 }
 
+// The shells have no Notification API, so everything above this line is dead
+// code on a phone.
+//
+// That is why an iPhone never showed a banner for an incoming call: the very
+// first line of notifyAssignedCall asks whether notifications are supported,
+// the answer on a native shell is no, and it returned. The crew got a
+// full-screen alarm if they happened to be looking at the app and nothing
+// whatsoever if they were not.
+//
+// The alarm plugin can raise one through the operating system instead. This is
+// a local notification, not a push: it needs the app to be running, which while
+// somebody is on duty it now is. It is looked up through window rather than
+// imported so that this module stays free of the alarm module, which imports
+// this one.
+function alarmPlugin() {
+  try {
+    const cap = typeof window !== "undefined" && window.Capacitor;
+    return (cap && cap.Plugins && cap.Plugins.PulseOpsAlarm) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function nativeAlertsSupported() {
+  const p = alarmPlugin();
+  return !!(p && typeof p.notify === "function");
+}
+
+// Asked for at sign-in, which is a real tap. iOS only ever asks once; after
+// that this resolves with whatever the person answered the first time.
+export function requestNativeNotifications() {
+  try {
+    const p = alarmPlugin();
+    if (!p || typeof p.requestNotifications !== "function") return;
+    const asked = p.requestNotifications();
+    if (asked && typeof asked.catch === "function") asked.catch(() => {});
+  } catch (e) {
+    // an older shell without the method
+  }
+}
+
+export function nativeNotify(title, body) {
+  try {
+    const p = alarmPlugin();
+    if (!p || typeof p.notify !== "function") return false;
+    const shown = p.notify({ title: String(title || ""), body: String(body || "") });
+    if (shown && typeof shown.catch === "function") shown.catch(() => {});
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 export const CALL_ALERT_TAG = "ems-incoming-call";
 // One tag per booking, so a stack of reminders for different bookings is
 // possible and none of them ever displaces the incoming-call notification.
@@ -69,9 +122,17 @@ export function requestAlertPermission() {
 
 export function notifyAssignedCall(request, unitName) {
   try {
-    if (!alertsSupported() || Notification.permission !== "granted") return null;
     const priority = PRIORITY[priorityKeyOf(request)] ? PRIORITY[priorityKeyOf(request)].label : "CALL";
     const title = `${priority} — ${unitName || "your team"}`;
+    // On a shell, through the operating system. This is the only banner an
+    // iPhone gets, and it carries its own sound and vibration from iOS rather
+    // than from the page - so it still arrives when the page's own audio has
+    // been interrupted, which is the case that has been losing tones.
+    if (!alertsSupported()) {
+      nativeNotify(title, `${request.nature}\n${callRoute(request)}`);
+      return null;
+    }
+    if (Notification.permission !== "granted") return null;
     const options = {
       body: `${request.nature}\n${callRoute(request)}`,
       // A crew only ever has one call at a time, so a fixed tag means a repeat

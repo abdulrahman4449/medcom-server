@@ -1,8 +1,11 @@
 package com.pulseops.app;
 
+import android.app.Notification;
 import android.app.NotificationChannel;
+import android.app.PendingIntent;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.content.Intent;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
@@ -12,10 +15,14 @@ import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 /**
  * The alarm path.
@@ -33,10 +40,17 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  * Register in MainActivity:  registerPlugin(PulseOpsAlarmPlugin.class);
  * Put the tone at:           android/app/src/main/res/raw/dispatch_alert.mp3
  */
-@CapacitorPlugin(name = "PulseOpsAlarm")
+@CapacitorPlugin(
+    name = "PulseOpsAlarm",
+    permissions = {
+        @Permission(alias = "notifications", strings = { "android.permission.POST_NOTIFICATIONS" })
+    }
+)
 public class PulseOpsAlarmPlugin extends Plugin {
 
     private static final String CHANNEL_ID = "pulseops_dispatch";
+    // One id for the call banner, so a repeat replaces it rather than stacking.
+    private static final int CALL_NOTIFICATION_ID = 4101;
     private MediaPlayer player;
 
     @Override
@@ -137,6 +151,73 @@ public class PulseOpsAlarmPlugin extends Plugin {
         } catch (Exception e) {
             try { mp.release(); } catch (Exception ignored) {}
             return false;
+        }
+    }
+
+    /**
+     * A banner from the operating system.
+     *
+     * The WebView has no Notification API either, so the app's notification
+     * path was dead here for the same reason it was dead on iOS: a crew not
+     * looking at the screen was told nothing. This posts on the alarm channel
+     * created above, so it carries USAGE_ALARM and sounds through a silenced
+     * phone the way the tone does.
+     *
+     * Local, not push. It needs the app to be running.
+     */
+    @PluginMethod
+    public void requestNotifications(PluginCall call) {
+        // Android 13 and later ask for this at runtime; before that the
+        // manifest entry is the whole permission and there is nothing to ask.
+        // Android 13 and later ask at runtime. Before that the manifest entry
+        // is the whole permission and there is nothing to prompt for.
+        if (Build.VERSION.SDK_INT >= 33
+                && getPermissionState("notifications") != PermissionState.GRANTED) {
+            requestPermissionForAlias("notifications", call, "notificationsResult");
+            return;
+        }
+        JSObject out = new JSObject();
+        out.put("granted", true);
+        call.resolve(out);
+    }
+
+    @PermissionCallback
+    private void notificationsResult(PluginCall call) {
+        JSObject out = new JSObject();
+        out.put("granted", getPermissionState("notifications") == PermissionState.GRANTED);
+        call.resolve(out);
+    }
+
+    @PluginMethod
+    public void notify(PluginCall call) {
+        try {
+            String title = call.getString("title", "Incoming call");
+            String body = call.getString("body", "");
+            NotificationManager nm =
+                (NotificationManager) getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) {
+                call.reject("No notification manager on this device.");
+                return;
+            }
+            Intent open = getContext().getPackageManager()
+                .getLaunchIntentForPackage(getContext().getPackageName());
+            PendingIntent tap = open == null ? null : PendingIntent.getActivity(
+                getContext(), 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+            Notification.Builder b = new Notification.Builder(getContext(), CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(new Notification.BigTextStyle().bigText(body))
+                .setSmallIcon(getContext().getApplicationInfo().icon)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setAutoCancel(true);
+            if (tap != null) b.setContentIntent(tap);
+            // One id, so a repeat replaces the banner instead of stacking.
+            nm.notify(CALL_NOTIFICATION_ID, b.build());
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Could not post the notification: " + e.getMessage());
         }
     }
 

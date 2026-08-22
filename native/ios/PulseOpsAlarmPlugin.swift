@@ -1,6 +1,7 @@
 import Foundation
 import Capacitor
 import AVFoundation
+import UserNotifications
 
 /**
  * The alarm path on iOS.
@@ -187,6 +188,55 @@ public class PulseOpsAlarmPlugin: CAPPlugin {
                 call.resolve()
             } catch {
                 call.reject("Could not raise the alarm: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /**
+     * A banner from the operating system, for the case the web layer cannot
+     * cover.
+     *
+     * There is no Notification API in a WKWebView, so every notification path
+     * the app has was dead on iOS: a crew who was not looking at the screen got
+     * nothing at all when a call was assigned. This is a *local* notification -
+     * it needs the app to be running, which while somebody is signed on it now
+     * is - and it carries iOS's own sound and vibration rather than the page's,
+     * so it still arrives when the page's audio has been interrupted.
+     *
+     * What it is not: a push. A force-quit app cannot be reached by this or by
+     * anything else short of APNs, which needs a paid developer account.
+     */
+    @objc func requestNotifications(_ call: CAPPluginCall) {
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound, .badge]
+        ) { granted, _ in
+            call.resolve(["granted": granted])
+        }
+    }
+
+    @objc func notify(_ call: CAPPluginCall) {
+        let content = UNMutableNotificationContent()
+        content.title = call.getString("title") ?? "Incoming call"
+        content.body = call.getString("body") ?? ""
+        content.sound = .default
+        // Time Sensitive gets past a Focus. It is honoured only when the build
+        // carries the entitlement for it and ignored otherwise, which is why it
+        // is set unconditionally and nothing depends on it.
+        if #available(iOS 15.0, *) {
+            content.interruptionLevel = .timeSensitive
+        }
+        // One identifier, so a repeat replaces the banner rather than stacking a
+        // pile of them up. A crew has one call at a time.
+        let request = UNNotificationRequest(
+            identifier: "pulseops-call",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                call.reject("Could not post the notification: \(error.localizedDescription)")
+            } else {
+                call.resolve()
             }
         }
     }

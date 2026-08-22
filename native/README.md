@@ -132,6 +132,38 @@ APNs push, and to get past the ring/silent switch specifically it must be a
 entitlement requested from Apple by form. Ordinary iOS pushes respect the
 silent switch however loud you set the sound.
 
+## Notifications — the banner an iPhone never got
+
+Neither shell has a Web `Notification` API. Not "it needs permission" — the
+object does not exist. So `notifyAssignedCall` returned on its first line on
+every phone, and a crew who was not looking at the screen when a call landed was
+told nothing at all. The full-screen alarm only exists inside the app.
+
+Both plugins now raise one through the operating system instead:
+
+- **iOS** — `UNUserNotificationCenter`, with iOS's own sound and vibration. It
+  is marked Time Sensitive, which gets past a Focus **if** the build carries
+  that entitlement and is ignored otherwise, so nothing depends on it.
+- **Android** — posted on the existing `USAGE_ALARM` channel, so it sounds
+  through a silenced phone the way the tone does.
+
+Permission is asked at sign-in and again when a restored session loads — a
+tablet that comes back from a refresh never sees the sign-in screen, and asking
+only there left exactly the long-running devices this matters most on without
+it. Both platforms only ever prompt once.
+
+**Android 13 and later** also need this in `AndroidManifest.xml`, or the banner
+is posted and never shown:
+
+```xml
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
+
+**This is a local notification, not a push.** It needs the app to be running —
+which, while somebody is on duty, standby now keeps it doing. A force-quit app
+cannot be reached by this or by anything else short of APNs and a paid Apple
+developer account.
+
 ## Location — what the shells need
 
 The map's tracking is ordinary `navigator.geolocation` in the web layer, and it

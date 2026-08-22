@@ -2635,6 +2635,13 @@ export const styles = {
     display: "flex", gap: 8, padding: "10px 12px 12px",
     borderTop: "1px solid var(--hair)", alignItems: "flex-end",
   },
+  soundDiag: {
+    marginTop: 6,
+    fontSize: 10.5,
+    color: "var(--ink-4)",
+    letterSpacing: ".02em",
+    fontVariantNumeric: "tabular-nums",
+  },
   chatInput: {
     flex: 1, background: "var(--inset)", border: "1px solid var(--hair-2)",
     borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 16,

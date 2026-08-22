@@ -23,7 +23,7 @@ import { notifyAssignedCall } from "../lib/notify.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
-import { AlarmOverlay, AlertToneCheck, CallAlertNotice } from "./AlarmOverlay.jsx";
+import { AlarmOverlay, AlertToneCheck, CallAlertNotice, SoundDiagnostics } from "./AlarmOverlay.jsx";
 import { CallEditForm, CallRoute, ChecklistCard, EditHistory, InfoNote, ReceiverBanner, RefusalForm } from "./AssistanceTasks.jsx";
 import { CallRestock } from "./CallRestock.jsx";
 import { ChatDock, useMessageAlerts } from "./ChatDock.jsx";
@@ -1155,6 +1155,7 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
       {/* A crew signing on can check the tablet's speaker against all three
           tones before they are relying on one of them. */}
       <AlertToneCheck audioCtxRef={audioCtxRef} label="Speaker check" style={{ marginTop: 10 }} />
+      <SoundDiagnostics audioCtxRef={audioCtxRef} />
 
       {onPage("teams") && (
         <>

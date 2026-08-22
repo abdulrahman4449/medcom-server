@@ -91,7 +91,11 @@ html = html.replace("<!--VENDOR-JS-->", () => vendorBlock);
 // (from `x && y`), and in a replacement *string* `$&` is a special token
 // meaning "the matched text" - it silently rewrote part of the app to
 // `<!--APP-->&`. A function replacement does no $-substitution at all.
-const tag = '<script>\n' + js.replace(/<\/script>/gi, "<\\/script>") + '\n</script>';
+// Stamped at pack time so a device can be asked which build it is running.
+const stamp = new Date().toISOString().slice(0, 16).replace("T", " ") + "Z";
+const tag =
+  "<script>window.__BUILD__=" + JSON.stringify(stamp) + ";</script>\n" +
+  '<script>\n' + js.replace(/<\/script>/gi, "<\\/script>") + '\n</script>';
 const out = html.replace("<!--APP-->", () => tag);
 fs.writeFileSync(outFile, out);
 

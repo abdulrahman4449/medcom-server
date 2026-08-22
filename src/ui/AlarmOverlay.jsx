@@ -1,3 +1,4 @@
+import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
 import { ensureAudioCtx, nativeAlarm, soundCallAlert } from "../lib/dates.jsx";
@@ -65,6 +66,26 @@ export function AlertToneCheck({ audioCtxRef, priority, label, style }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// What this device is actually going to make a noise with, said out loud.
+//
+// Three rounds of testing went into "no tone" without anybody being able to see
+// which of the three possible paths was being taken, or which build was even
+// installed. A crew cannot read a console and neither can a supervisor on a
+// phone, so the answers are on the screen: the build, whether the operating
+// system's alarm path is available, and what state the page's own audio is in.
+// Small and grey — it is for the person diagnosing, not for the crew.
+export function SoundDiagnostics({ audioCtxRef }) {
+  const plugin = !!nativeAlarm();
+  const ctx = audioCtxRef ? audioCtxRef.current : null;
+  const state = ctx ? ctx.state : "none yet";
+  return (
+    <div style={styles.soundDiag}>
+      build {BUILD_STAMP} · alarm via {plugin ? "the system alarm path" : "page audio"} · page audio{" "}
+      {state}
     </div>
   );
 }
