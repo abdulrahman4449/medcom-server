@@ -36,6 +36,12 @@ everything falls back to the existing Web Audio tone and behaves exactly as
 before. Nothing breaks by not installing this; it just stays beatable by a
 mute switch.
 
+The fallback also covers a plugin that is installed but **fails**, which in
+practice means a build with no `dispatch_alert.mp3` in it. Both platforms report
+that as a failure now and the app plays its own tone instead. Getting this wrong
+used to produce the worst outcome available: an installed plugin, no tone file,
+and a tablet that made no sound at all on a dispatch.
+
 ## Installing — Android
 
 1. Copy `android/PulseOpsAlarmPlugin.java` into

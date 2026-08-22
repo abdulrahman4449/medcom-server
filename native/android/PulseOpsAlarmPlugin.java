@@ -65,18 +65,30 @@ public class PulseOpsAlarmPlugin extends Plugin {
     public void alert(PluginCall call) {
         try {
             stopPlayer();
-            player = MediaPlayer.create(getContext(),
-                getContext().getResources().getIdentifier("dispatch_alert", "raw",
-                    getContext().getPackageName()));
-            if (player != null) {
-                player.setAudioAttributes(new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build());
-                // Repeat until the crew acknowledges. The web layer calls
-                // stop() when the banner is dismissed.
-                player.setLooping(true);
-                player.start();
+            // A build without res/raw/dispatch_alert.mp3 is the commonest way
+            // this goes wrong, and it used to go wrong silently: the lookup
+            // returned 0, MediaPlayer handed back null, and the plugin still
+            // answered "done" - so the web layer, believing the alarm was
+            // sounding on the alarm stream, played nothing of its own. A truck
+            // got a buzz and no tone. Now a missing tone is reported as a
+            // failure, the vibration still happens, and the web layer falls
+            // back to its own tone: beatable by a mute switch, but not silence.
+            boolean sounding = false;
+            int resId = getContext().getResources().getIdentifier("dispatch_alert", "raw",
+                getContext().getPackageName());
+            if (resId != 0) {
+                player = MediaPlayer.create(getContext(), resId);
+                if (player != null) {
+                    player.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build());
+                    // Repeat until the crew acknowledges. The web layer calls
+                    // stop() when the banner is dismissed.
+                    player.setLooping(true);
+                    player.start();
+                    sounding = true;
+                }
             }
 
             // Vibration alongside the tone: a truck with its siren running is
@@ -90,7 +102,11 @@ public class PulseOpsAlarmPlugin extends Plugin {
                     v.vibrate(pattern, 0);
                 }
             }
-            call.resolve();
+            if (sounding) {
+                call.resolve();
+            } else {
+                call.reject("No res/raw/dispatch_alert.mp3 in this build - the app will use its own tone.");
+            }
         } catch (Exception e) {
             call.reject("Could not raise the alarm: " + e.getMessage());
         }

@@ -371,21 +371,33 @@ export function stopNativeAlarm() {
 
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
   if (!unmissable && soundSilenced()) return;
+  const webTone = () =>
+    playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
   // A dispatch on the native shell goes out on the alarm stream, which is the
   // only thing that gets past a muted phone. Everything else, and every device
   // without the shell, uses the Web Audio path.
   if (unmissable) {
     const plugin = nativeAlarm();
     if (plugin) {
+      // The plugin can be installed and still fail — the commonest way being a
+      // shell built without dispatch_alert.mp3 in the bundle, which both
+      // platforms answer by rejecting the call. That rejection is a promise,
+      // not a throw, so a try/catch never saw it: the alarm went to the plugin,
+      // the plugin refused, and the tablet sat there in silence with nothing
+      // falling back. Now anything but success drops through to the Web Audio
+      // tone, which is beatable by a mute switch but is not nothing.
+      let handed = false;
       try {
-        plugin.alert({ priority: String(priority || "routine") });
-        return;
+        const answered = plugin.alert({ priority: String(priority || "routine") });
+        handed = true;
+        if (answered && typeof answered.catch === "function") answered.catch(() => webTone());
       } catch (e) {
-        // fall through to the tone rather than going silent
+        handed = false;
       }
+      if (handed) return;
     }
   }
-  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
+  webTone();
 }
 
 export function soundReminderTone(audioCtxRef, force) {
