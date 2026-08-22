@@ -160,6 +160,34 @@ patch", that document is the target — do not start a fresh exploration.
   `ADMIN_ONLY_KEYS` in `server.js` — policies, checklists, inventory. Everyone
   signed in may write the day's work. Roles are checked on the server; a
   screen that hides a button is not a permission.
+- **Consent in the app is not permission from the phone.** The tracking consent
+  sheet asks the device for a position inside the tap on "Allow"
+  (`primeDeviceLocation`), because that tap is the only user gesture there is —
+  `watchPosition` from inside the tracking effect is not one, and on a native
+  shell it produced no OS dialog and no error, just a truck that never appeared.
+  The shells also need `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` on
+  Android and `NSLocationWhenInUseUsageDescription` on iOS; still never
+  `ACCESS_BACKGROUND_LOCATION`. See `native/README.md`.
+- **A browser suspends audio on every load, and that is not worth a notice.**
+  `alertsArmedBefore()` remembers that this device has armed once, so
+  `CallAlertNotice` only nags about the thing that genuinely needs a deliberate
+  tap — notification permission. Saying "not fully armed" after every refresh
+  taught crews to ignore the one line that matters.
+- **The crew's message dock belongs outside every page test.** It sits at the
+  end of `TeamView`, not inside `onPage("teams")` — a crew reading their call
+  had no way to answer the desk and no sign that the desk had said anything.
+  The unread count and the tone come with it (`useMessageAlerts`), and the pill
+  always reads "Dispatch" on a crew tablet: naming the trucks that are talking
+  is the desk's behaviour, and on a crew screen it put the crew's own truck name
+  on the pill.
+- **An administrator can take the dispatch desk, and it is a real dispatcher
+  session.** The sign-in role choice offers it to admins only; it goes through
+  the same shift and station steps and the same `finishDispatcherLogin`, so the
+  log records a dispatch sign-on under their own name. The alternative people
+  were using was signing in on somebody else's ID.
+- **Wiping the board is `docs/RESET-THE-BOARD.md`, not a button.** The `-wal`
+  file has to go with the `.db` or the last few minutes come back. Accounts live
+  in their own table, so the board can be cleared without touching them.
 - **`SHOW_LOGOS` and `ORG_NAME`** near the top of the app switch the crests
   and the organisation's name back on. Both are deliberately off/empty.
 

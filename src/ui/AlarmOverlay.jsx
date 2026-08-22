@@ -4,7 +4,7 @@ import { ensureAudioCtx, soundCallAlert } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useState } from "../lib/react.jsx";
-import { setSoundLevel, soundLevelMeta, useSoundLevel } from "../lib/sound.jsx";
+import { alertsArmedBefore, setSoundLevel, soundLevelMeta, useSoundLevel } from "../lib/sound.jsx";
 import { styles } from "../styles.jsx";
 
 // ---------- alarm overlay ----------
@@ -82,7 +82,14 @@ export function CallAlertNotice({ audioCtxRef }) {
   const supported = alertsSupported();
   const permission = supported ? Notification.permission : "unsupported";
   const ctx = audioCtxRef ? audioCtxRef.current : null;
-  const browserBlocked = !ctx || ctx.state !== "running";
+  // Suspended audio on a device that has armed before is not worth a notice.
+  // A browser suspends audio on every load and the first tap anywhere on the
+  // page arms it again silently, so saying "not fully armed" after each
+  // refresh was asking the crew to press a button they had already pressed and
+  // teaching them to ignore the one line that matters. What genuinely needs a
+  // deliberate tap is the notification permission, and that is still said.
+  const audioAsleep = !ctx || ctx.state !== "running";
+  const browserBlocked = audioAsleep && !(alertsArmedBefore() && permission === "granted");
 
   // Silenced on purpose is its own notice, and it outranks the others: the crew
   // did this, they can undo it in one tap, and the board should not be lecturing

@@ -863,6 +863,31 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     </div>
                     <ChevronRight size={18} color="var(--ink-3)" />
                   </button>
+                  {/* An administrator covering the desk is a dispatcher for
+                      that shift, not an administrator with a dispatch tab:
+                      they pick a shift and a station like anybody else taking
+                      the desk, their sign-on goes on the log sheet as
+                      dispatch, and their hours run against that shift. Without
+                      this the only way to cover a desk was to sign in on
+                      somebody else's ID, which put the wrong name on the
+                      night's log. */}
+                  {foundAccount.role === "admin" && (
+                    <button
+                      style={styles.roleBtn}
+                      onClick={() => {
+                        setPendingRole("dispatcher");
+                        setStage("chooseShift");
+                      }}
+                    >
+                      <div style={{ textAlign: "left" }}>
+                        <div style={styles.roleBtnTitle}>Take the Dispatch Desk</div>
+                        <div style={styles.roleBtnSub}>
+                          Work this shift as a dispatcher, under your own name
+                        </div>
+                      </div>
+                      <ChevronRight size={18} color="var(--ink-3)" />
+                    </button>
+                  )}
                 </div>
                 <div style={styles.loginActions}>
                   <button style={styles.ghostBtn} onClick={resetAccountFlow}>Back</button>

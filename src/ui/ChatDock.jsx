@@ -214,12 +214,16 @@ export function ChatDock({ user, units, messages, station, myUnitId, audioCtxRef
   // Closed, the pill says who is waiting. Open, it says how to shut it. The
   // count sits above the pill rather than inside it so it is still legible at
   // arm's length on a desk tablet.
+  // A crew has one thread and it is the desk's. Naming the trucks that are
+  // talking is right for the desk, which has several; on a crew tablet it put
+  // the crew's own truck name on the pill, as though MEDIC 1 were messaging
+  // itself. They always say "Dispatch".
   const label = open
     ? "Close"
-    : speaking.length
-    ? speaking.map((u) => u.name).join(" · ")
     : isCrew
     ? "Dispatch"
+    : speaking.length
+    ? speaking.map((u) => u.name).join(" · ")
     : "Messages";
 
   return (

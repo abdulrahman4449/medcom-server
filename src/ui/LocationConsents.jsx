@@ -1,7 +1,7 @@
 import { TRACKING_CONSENT_KEY } from "../domain/truck-locations.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
 import { writeKey } from "../lib/offline-queue.jsx";
-import { useState } from "../lib/react.jsx";
+import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { FoldingSection } from "./AdminView.jsx";
 import { InfoNote } from "./AssistanceTasks.jsx";
@@ -26,8 +26,24 @@ import { clearPasswordFor, decideReset, pendingResets } from "./PasswordResets.j
 // password goes, and the next sign-in walks them through choosing a new one.
 export function PasswordResets({ resets, setResets, user, addLog }) {
   const pending = pendingResets(resets);
-  const [open, setOpen] = useState(true);
+  // Open when somebody is locked out, folded away when nobody is.
+  //
+  // It used to open always, which put the whole history of cleared passwords on
+  // the page permanently — a list nobody needs at a glance sitting above the
+  // things they do. Now the section carries it: nothing waiting, nothing on
+  // screen; open it and the requests and what was recently handled are both
+  // inside.
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(null);
+  // The list arrives on the slow poll, so "open it if there is anything in it"
+  // cannot be decided on the first render — at that point there is nothing.
+  // Opening on the transition instead means a request that lands while an
+  // administrator is looking at the page opens the section under them.
+  const seenPending = useRef(0);
+  useEffect(() => {
+    if (pending.length > seenPending.current) setOpen(true);
+    seenPending.current = pending.length;
+  }, [pending.length]);
   const recent = (Array.isArray(resets) ? resets : [])
     .filter((r) => r && r.status !== "pending")
     .sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0))

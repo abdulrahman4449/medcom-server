@@ -187,6 +187,8 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
 
   const wasOnCall = useRef(null);
   const [calledOff, setCalledOff] = useState(null);
+  // Which call has already been announced as stood down on this device.
+  const standDownFor = useRef(null);
   useEffect(() => {
     if (!myUnit) {
       wasOnCall.current = null;
@@ -205,6 +207,11 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
     // do not need to be told about it. This is only for a call ended out from
     // under them.
     if (gone.times && gone.times.backInService) return;
+    // Once per call, whatever route gets here. The effect re-runs on every
+    // poll, and anything that let it fire twice announced the same stand-down
+    // to a crew twice over - which reads as two cancelled calls.
+    if (standDownFor.current === gone.id) return;
+    standDownFor.current = gone.id;
     // Not the dispatch tone. See soundStandDown.
     soundStandDown(audioCtxRef);
     buzz([400, 150, 400, 150, 400]);
@@ -229,10 +236,18 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
   // banner. Nothing else silences it: not switching pages, not the volume chip.
   useEffect(() => {
     if (!calledOff) return;
-    const t = setInterval(() => {
+    // A single chime every six seconds was not enough behind a running siren.
+    // Three tones in quick succession, every four seconds, with a longer buzz -
+    // a stand-down is the one message where being annoying is the point, and it
+    // stops the instant somebody presses Understood.
+    const sound = () => {
       soundStandDown(audioCtxRef);
-      buzz([400, 150, 400]);
-    }, 6000);
+      setTimeout(() => soundStandDown(audioCtxRef), 450);
+      setTimeout(() => soundStandDown(audioCtxRef), 900);
+      buzz([500, 150, 500, 150, 500]);
+    };
+    sound();
+    const t = setInterval(sound, 4000);
     return () => clearInterval(t);
   }, [calledOff]);
 
@@ -1171,19 +1186,6 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
           onDecide={decideTracking}
         />
 
-        {/* One thread, straight into it — a crew has only ever one desk to
-            talk to, so there is nothing to pick from. */}
-        <ChatDock
-          floating
-          user={user}
-          units={units}
-          messages={messages}
-          station={myUnit ? stationOf(myUnit) : null}
-          myUnitId={myUnit ? myUnit.id : null}
-          audioCtxRef={audioCtxRef}
-          onSent={setMessages}
-        />
-
         {myUnit.oosRequest &&
           myUnit.oosRequest.status === "refused" &&
           !dismissedOos && (
@@ -1840,6 +1842,26 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
           />
         </div>
       )}
+
+      {/* One thread, straight into it — a crew has only ever one desk to talk
+          to, so there is nothing to pick from.
+
+          Outside every page test on purpose. It used to sit inside the crew's
+          own page, so a crew reading their call or their history had no way to
+          answer the desk and no sign that the desk had said anything — the
+          count was on a screen they were not looking at. The desk's dock has
+          always floated over every page; this is the same dock with the same
+          rules. */}
+      <ChatDock
+        floating
+        user={user}
+        units={units}
+        messages={messages}
+        station={myUnit ? stationOf(myUnit) : null}
+        myUnitId={myUnit ? myUnit.id : null}
+        audioCtxRef={audioCtxRef}
+        onSent={setMessages}
+      />
     </div>
   );
 }

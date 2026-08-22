@@ -24,6 +24,31 @@ import { useEffect, useState } from "./react.jsx";
 // is quiet on purpose must never look the same.
 export const SOUND_KEY = "ems:sound";
 
+// Whether this device has ever had its alert audio running.
+//
+// A browser suspends audio until somebody taps the page, and a reload starts
+// that over - so after every refresh the board declared itself "not fully
+// armed" and asked the crew to press a button they had already pressed. The
+// first tap re-arms it silently anyway (see armAlerts), so the notice has no
+// business appearing in that gap on a device that has done this before.
+export const ARMED_KEY = "ems:alertsArmed";
+
+export function markAlertsArmed() {
+  try {
+    window.localStorage.setItem(ARMED_KEY, "1");
+  } catch (e) {
+    // private browsing: the notice will simply appear once per session
+  }
+}
+
+export function alertsArmedBefore() {
+  try {
+    return window.localStorage.getItem(ARMED_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
 export const SOUND_LEVELS = [
   { key: "full", label: "FULL", short: "FULL", gain: 1, note: "as loud as this board gets" },
   { key: "medium", label: "MEDIUM", short: "MED", gain: 0.55, note: "half volume" },

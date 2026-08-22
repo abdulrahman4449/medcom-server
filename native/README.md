@@ -82,6 +82,44 @@ mute switch.
    ```
 4. Rebuild and reinstall.
 
+## Location — what the shells need
+
+The map's tracking is ordinary `navigator.geolocation` in the web layer, and it
+already asks the crew for consent inside the app. That is not the same
+permission as the phone's. Without the two entries below the operating system
+is never asked, so it never prompts, and the crew see an app that took their
+"yes" and then showed the desk nothing.
+
+**Android** — in `AndroidManifest.xml`, inside `<manifest>`:
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+```
+
+Capacitor's own bridge handles the WebView's geolocation prompt and asks for the
+runtime permission when the page requests a position — but only if the two lines
+above are declared. **Do not add `ACCESS_BACKGROUND_LOCATION`**: tracking is
+foreground-only by design, and that permission triggers Google's Location
+Permissions declaration review.
+
+**iOS** — in `Info.plist`:
+
+```xml
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Your truck's position is shared with the dispatch desk while you are on a call, and only while this app is open.</string>
+```
+
+WKWebView will not ask for location without this string, and Apple rejects a
+build that uses location without one. Do **not** add
+`NSLocationAlwaysAndWhenInUseUsageDescription` — the app never wants location in
+the background.
+
+The app asks the phone at the moment the crew taps **Allow while on a call** on
+the consent sheet, so the OS dialog appears next to the explanation rather than
+in the middle of a call. If the phone refuses, the crew are told there and then
+and pointed at the right Settings screen.
+
 ## Checking it worked
 
 Put the phone on **silent**, turn the volume **all the way down**, and have the

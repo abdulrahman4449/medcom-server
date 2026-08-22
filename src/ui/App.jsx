@@ -1,3 +1,4 @@
+import { markAlertsArmed } from "../lib/sound.jsx";
 import { clearToken, getToken, listAccounts, onAuthLost, removeAccount, saveAccount } from "../lib/auth.jsx";
 import { BrandLockup, COLD_POLL_MS, HOUSEKEEPING_MS, LOG_CAP, POLL_MS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
@@ -326,6 +327,10 @@ export function App() {
     try {
       const ctx = ensureAudioCtx(audioCtxRef);
       if (ctx && ctx.state === "suspended") ctx.resume();
+      // Remembered, so a reload does not ask the crew to arm alerts they
+      // armed days ago. The first tap on the restored page does it again
+      // without anybody being told.
+      if (ctx) markAlertsArmed();
     } catch (e) {
       // audio not available; ignore
     }
