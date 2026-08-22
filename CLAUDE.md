@@ -199,6 +199,19 @@ patch", that document is the target — do not start a fresh exploration.
   battery, and it does **not** survive a force-quit or a restart; only a push
   notification does, and on iOS getting past the silent switch means a Critical
   Alert entitlement from Apple. Say that rather than implying it is covered.
+- **An interrupted AudioContext never comes back on its own.** "Suspended" is
+  not the only way page audio stops. When anything else in the app activates an
+  audio session — which is what going on duty does, to stop iOS suspending the
+  shell — WebKit puts the page's context into `"interrupted"`, and `resume()`
+  then resolves without making it runnable. Every web-made sound goes silent,
+  including the speaker check, on a phone that is not muted. `playWhenAwake`
+  takes the ref rather than the context so it can throw a dead one away and
+  build another. A context is cheap; a silent tablet is not.
+- **Any text field under 16px zooms the whole board on iOS.** Focusing one makes
+  iOS enlarge the page and leave it there, with the layout hanging off the side
+  and no way back. Every `<input>`, `<textarea>` and `<select>` style is 16px
+  for that reason alone — `scripts/check.mjs` does not catch this, so check the
+  size when adding a field. The viewport meta also pins `maximum-scale=1`.
 - **Coming back to the app must read the board, not wait for the timer.** The
   poll is three seconds and a phone waking from a locked screen adds its own
   pause, so a crew who opened the app because they felt the buzz looked at a

@@ -254,7 +254,7 @@ export function playStandDownTone(ctx) {
 // for as long as the banner was up. The words are said once, at the start,
 // twice over as they always were; only the tone repeats.
 export function soundStandDownTone(audioCtxRef) {
-  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playStandDownTone(ctx));
+  playWhenAwake(audioCtxRef, (ctx) => playStandDownTone(ctx));
 }
 
 export function soundStandDown(audioCtxRef) {
@@ -313,19 +313,82 @@ export function ensureAudioCtx(audioCtxRef) {
 // Resume, then play. resume() is a promise, and notes written into a clock that
 // was still frozen when they were laid down get dropped — which is how a call
 // arriving on a backgrounded tab used to lose its first alert entirely.
-export function playWhenAwake(ctx, play) {
+// Play, and if the context is dead, build a new one and play on that.
+//
+// "Suspended" is not the only way a context stops working, and on the native
+// shells it is not even the common one. When anything else in the app activates
+// an audio session - which is exactly what going on duty now does, to keep iOS
+// from suspending the app - WebKit puts the page's AudioContext into
+// "interrupted", and an interrupted context never comes back on its own.
+// resume() on it resolves without making it runnable. The symptom is a tablet
+// where nothing web-made will play at all: no reminder, no reply chime, and no
+// speaker check - a crew pressing the check button and hearing silence on a
+// phone that is not even muted.
+//
+// So anything that is not running is resumed, and anything still not running
+// after that is thrown away and replaced. A context is cheap; a silent tablet
+// is not.
+export function playWhenAwake(audioCtxRef, play) {
+  const ref =
+    audioCtxRef && typeof audioCtxRef === "object" && "current" in audioCtxRef ? audioCtxRef : null;
+  const ctx = ref ? ensureAudioCtx(ref) : audioCtxRef;
   if (!ctx) return;
-  try {
-    if (ctx.state === "suspended") {
-      const resumed = ctx.resume();
-      if (resumed && typeof resumed.then === "function") {
-        resumed.then(() => play(ctx)).catch(() => {});
+
+  const attempt = (c) => {
+    try {
+      play(c);
+    } catch (e) {
+      // one bad tone must not take the next one with it
+    }
+  };
+
+  // Only ever called after a resume has failed to produce a running context,
+  // and it never calls back into playWhenAwake, so there is no loop here.
+  const rebuild = () => {
+    if (!ref) return;
+    try {
+      if (ref.current && ref.current.state !== "closed") ref.current.close();
+    } catch (e) {
+      // already gone
+    }
+    ref.current = null;
+    const fresh = ensureAudioCtx(ref);
+    if (!fresh) return;
+    if (fresh.state === "running") {
+      attempt(fresh);
+      return;
+    }
+    try {
+      const again = fresh.resume && fresh.resume();
+      if (again && typeof again.then === "function") {
+        again.then(() => attempt(fresh)).catch(() => {});
         return;
       }
+    } catch (e) {
+      return;
     }
-    play(ctx);
+    attempt(fresh);
+  };
+
+  try {
+    if (ctx.state === "running") {
+      attempt(ctx);
+      return;
+    }
+    const resumed = ctx.resume && ctx.resume();
+    if (resumed && typeof resumed.then === "function") {
+      resumed
+        .then(() => {
+          if (ctx.state === "running") attempt(ctx);
+          else rebuild();
+        })
+        .catch(() => rebuild());
+      return;
+    }
+    if (ctx.state === "running") attempt(ctx);
+    else rebuild();
   } catch (e) {
-    // audio not available; ignore
+    rebuild();
   }
 }
 
@@ -415,7 +478,7 @@ export function setNativeStandby(on) {
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
   if (!unmissable && soundSilenced()) return;
   const webTone = () =>
-    playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playAlertTone(ctx, priority, !!unmissable));
+    playWhenAwake(audioCtxRef, (ctx) => playAlertTone(ctx, priority, !!unmissable));
   // A dispatch on the native shell goes out on the alarm stream, which is the
   // only thing that gets past a muted phone. Everything else, and every device
   // without the shell, uses the Web Audio path.
@@ -445,5 +508,5 @@ export function soundCallAlert(audioCtxRef, priority, unmissable) {
 
 export function soundReminderTone(audioCtxRef, force) {
   if (!force && soundSilenced()) return;
-  playWhenAwake(ensureAudioCtx(audioCtxRef), (ctx) => playSoftReminderTone(ctx, force));
+  playWhenAwake(audioCtxRef, (ctx) => playSoftReminderTone(ctx, force));
 }

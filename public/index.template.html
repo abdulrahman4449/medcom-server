@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- maximum-scale and user-scalable are what stop the board being zoomed.
+     iOS enlarges the whole page whenever a text box smaller than 16px is
+     focused, and then leaves it there: tapping the message box zoomed the
+     dispatch board in and gave no way back out, with the edges of the layout
+     off the side of the screen. The fields below are all 16px now, which stops
+     it at the source; this is the belt to that pair of braces, and it costs
+     nothing here - a dispatch board is a fixed control surface, not a document
+     anybody needs to pinch into. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>PulseOps — Where Every Second Matters</title>
 <meta name="description" content="PulseOps — the ambulance dispatch board for Emergency Medical Services." />
 <meta name="apple-mobile-web-app-title" content="PulseOps" />

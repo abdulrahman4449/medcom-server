@@ -417,7 +417,7 @@ export const styles = {
     color: "var(--ink)",
     padding: "9px 10px",
     fontFamily: display,
-    fontSize: 15,
+    fontSize: 16,
   },
 
   checklistRow: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 },
@@ -1617,7 +1617,7 @@ export const styles = {
     color: "var(--ink)",
     padding: "8px 10px",
     fontFamily: display,
-    fontSize: 14.5,
+    fontSize: 16,
     lineHeight: 1.5,
     resize: "vertical",
   },
@@ -2069,7 +2069,7 @@ export const styles = {
   consentRefuse: { display: "flex", flexDirection: "column", gap: 9 },
   consentReason: {
     background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 11,
-    color: "var(--ink)", padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit",
+    color: "var(--ink)", padding: "10px 12px", fontSize: 16, fontFamily: "inherit",
     resize: "vertical", lineHeight: 1.45,
   },
   consentNote: { fontSize: 11.5, lineHeight: 1.5, color: "var(--ink-4)" },
@@ -2104,7 +2104,7 @@ export const styles = {
   },
   otDate: {
     background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 10,
-    color: "var(--ink)", padding: "8px 10px", fontSize: 13, fontFamily: "inherit",
+    color: "var(--ink)", padding: "8px 10px", fontSize: 16, fontFamily: "inherit",
   },
   otTotals: {
     display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
@@ -2178,7 +2178,7 @@ export const styles = {
 
   invNameInput: {
     flex: 1, minWidth: 180, background: "var(--inset)", border: "1px solid var(--hair-2)",
-    borderRadius: 10, color: "var(--ink)", padding: "10px 12px", fontSize: 13.5,
+    borderRadius: 10, color: "var(--ink)", padding: "10px 12px", fontSize: 16,
     fontFamily: "inherit",
   },
 
@@ -2210,7 +2210,7 @@ export const styles = {
   policyNameInput: {
     flex: 1, minWidth: 180, background: "var(--ground)", color: "var(--ink)",
     border: "1px solid var(--hair-2)", borderRadius: 10,
-    padding: "9px 12px", fontSize: 14, fontFamily: "inherit", outline: "none",
+    padding: "9px 12px", fontSize: 16, fontFamily: "inherit", outline: "none",
   },
   policyAdd: {
     background: "var(--inset-2)", border: "1px solid var(--hair-3)", color: "var(--ink)",
@@ -2335,7 +2335,7 @@ export const styles = {
   itemAddInput: {
     flex: 1, minWidth: 130, background: "var(--ground)", color: "var(--ink)",
     border: "1px solid var(--hair-2)", borderRadius: 9,
-    padding: "7px 10px", fontSize: 13, fontFamily: "inherit", outline: "none",
+    padding: "7px 10px", fontSize: 16, fontFamily: "inherit", outline: "none",
   },
 
   // ---- restock, crew side: a tick-list ----
@@ -2637,7 +2637,7 @@ export const styles = {
   },
   chatInput: {
     flex: 1, background: "var(--inset)", border: "1px solid var(--hair-2)",
-    borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 13.5,
+    borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 16,
     fontFamily: "inherit", resize: "none", lineHeight: 1.4,
   },
   chatSend: {
@@ -3784,7 +3784,7 @@ export const styles = {
     color: "var(--ink)",
     padding: "8px 0",
     fontFamily: display,
-    fontSize: 14.5,
+    fontSize: 16,
   },
   // ---- the history's Gregorian day filter ----
   dayPickerWrap: { position: "relative" },
@@ -3926,7 +3926,7 @@ export const styles = {
     borderRadius: 8,
     padding: "6px 8px",
     fontFamily: display,
-    fontSize: 14,
+    fontSize: 16,
   },
   assignedTag: { fontSize: 13.5, color: "var(--flow)", fontWeight: 600 },
 
