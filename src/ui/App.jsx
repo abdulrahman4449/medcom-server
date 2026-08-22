@@ -1018,6 +1018,61 @@ export function App() {
     };
   }, [loadAll, loadCold]);
 
+  // Coming back to the app is a moment to read the board, not to wait for the
+  // next tick of a timer.
+  //
+  // The poll is every three seconds, and a phone waking from a locked screen
+  // adds its own pause on top of that before the first request goes out - so a
+  // crew who opened the app because they felt the buzz stood looking at a board
+  // with no call on it for a few seconds. The call was already raised; this
+  // device had simply not asked yet. Asking the moment the screen comes back
+  // closes that gap.
+  //
+  // Three routes to the same event because no single one covers every case:
+  // visibilitychange is the web's, focus catches a window brought forward
+  // without a visibility change, and the shell's own appStateChange is the only
+  // one that fires reliably on a native resume. Firing twice is a wasted read,
+  // which costs nothing; not firing is a crew staring at an empty screen.
+  useEffect(() => {
+    const wake = () => {
+      try {
+        if (typeof document !== "undefined" && document.hidden) return;
+      } catch (e) {
+        // no document visibility here; read anyway
+      }
+      loadAll();
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("focus", wake);
+    let handle = null;
+    try {
+      const app = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+      if (app && typeof app.addListener === "function") {
+        const added = app.addListener("appStateChange", (state) => {
+          if (state && state.isActive) loadAll();
+        });
+        if (added && typeof added.then === "function") {
+          added.then((h) => {
+            handle = h;
+          });
+        } else {
+          handle = added;
+        }
+      }
+    } catch (e) {
+      // no shell, or no App plugin in it
+    }
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("focus", wake);
+      try {
+        if (handle && typeof handle.remove === "function") handle.remove();
+      } catch (e) {
+        // already gone
+      }
+    };
+  }, [loadAll]);
+
   // Opening a page is the moment its contents have to be right. The slow half
   // is refreshed on every tab change, so an administrator who taps Archive
   // never reads a copy that is up to half a minute old — and the shelf of

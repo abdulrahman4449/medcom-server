@@ -186,6 +186,12 @@ patch", that document is the target — do not start a fresh exploration.
   battery, and it does **not** survive a force-quit or a restart; only a push
   notification does, and on iOS getting past the silent switch means a Critical
   Alert entitlement from Apple. Say that rather than implying it is covered.
+- **Coming back to the app must read the board, not wait for the timer.** The
+  poll is three seconds and a phone waking from a locked screen adds its own
+  pause, so a crew who opened the app because they felt the buzz looked at a
+  board with no call on it. `visibilitychange`, `focus` and the shell's
+  `appStateChange` all trigger a read, because no one of them fires in every
+  case; a duplicate read costs nothing.
 - **The crew's message dock belongs outside every page test.** It sits at the
   end of `TeamView`, not inside `onPage("teams")` — a crew reading their call
   had no way to answer the desk and no sign that the desk had said anything.
