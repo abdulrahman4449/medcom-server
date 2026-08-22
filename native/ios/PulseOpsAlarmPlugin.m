@@ -6,4 +6,5 @@
 CAP_PLUGIN(PulseOpsAlarmPlugin, "PulseOpsAlarm",
   CAP_PLUGIN_METHOD(alert, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(stop, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(standby, CAPPluginReturnPromise);
 )

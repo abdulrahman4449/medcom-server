@@ -24,7 +24,7 @@ import { actorStamp } from "../export/name-stamps.jsx";
 import { exportAndShareLog } from "../export/workbook.jsx";
 import { API_BASE, READ_FAILED } from "../lib/board-api.jsx";
 import { pruneArchivedWork } from "../lib/board-size.jsx";
-import { ensureAudioCtx, nowTime } from "../lib/dates.jsx";
+import { ensureAudioCtx, nowTime, setNativeStandby } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Radio } from "../lib/icons.jsx";
 import { alertsSupported, registerAlertWorker, requestAlertPermission } from "../lib/notify.jsx";
@@ -352,6 +352,15 @@ export function App() {
   useEffect(() => {
     userRef.current = user;
   }, [user]);
+
+  // On duty means awake. See setNativeStandby: an iOS app that is not playing
+  // audio gets suspended, and a suspended app has stopped polling, so a call
+  // raised while the phone is in a pocket never reaches it and there is nothing
+  // for the alarm to sound about. Signed out, the shell is let go again.
+  useEffect(() => {
+    setNativeStandby(!!user);
+    return () => setNativeStandby(false);
+  }, [!!user]);
 
   useEffect(() => {
     registerAlertWorker();

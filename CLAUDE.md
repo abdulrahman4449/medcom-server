@@ -172,7 +172,20 @@ patch", that document is the target — do not start a fresh exploration.
   `alertsArmedBefore()` remembers that this device has armed once, so
   `CallAlertNotice` only nags about the thing that genuinely needs a deliberate
   tap — notification permission. Saying "not fully armed" after every refresh
-  taught crews to ignore the one line that matters.
+  taught crews to ignore the one line that matters. The native shells have **no
+  `Notification` API at all**, so `permission` there is `"unsupported"` and any
+  test written as `permission === "granted"` can never pass — which made the
+  notice permanent on exactly the devices it was least use to. A shell carrying
+  the alarm plugin does not go through browser audio in the first place and is
+  never nagged.
+- **"The tone does not work in the background" is not a sound problem.** iOS
+  suspends a backgrounded app, JavaScript stops, the poll stops, and the call
+  never arrives — there is nothing for an alarm to sound about. `setNativeStandby`
+  asks the shell to hold an audio session open with silence while somebody is
+  signed on, because iOS does not suspend an app that is playing. It costs
+  battery, and it does **not** survive a force-quit or a restart; only a push
+  notification does, and on iOS getting past the silent switch means a Critical
+  Alert entitlement from Apple. Say that rather than implying it is covered.
 - **The crew's message dock belongs outside every page test.** It sits at the
   end of `TeamView`, not inside `onPage("teams")` — a crew reading their call
   had no way to answer the desk and no sign that the desk had said anything.

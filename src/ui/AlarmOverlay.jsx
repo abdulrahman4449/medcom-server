@@ -1,6 +1,6 @@
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { ensureAudioCtx, soundCallAlert } from "../lib/dates.jsx";
+import { ensureAudioCtx, nativeAlarm, soundCallAlert } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useState } from "../lib/react.jsx";
@@ -89,7 +89,14 @@ export function CallAlertNotice({ audioCtxRef }) {
   // teaching them to ignore the one line that matters. What genuinely needs a
   // deliberate tap is the notification permission, and that is still said.
   const audioAsleep = !ctx || ctx.state !== "running";
-  const browserBlocked = audioAsleep && !(alertsArmedBefore() && permission === "granted");
+  // "Armed before" has to count on its own where there is no notification
+  // permission to ask for. The native shells have no Notification API at all,
+  // so `permission` there is "unsupported" and a test written as
+  // `permission === "granted"` could never pass - which made this notice
+  // permanent on exactly the devices that need it least, returning after every
+  // refresh no matter how many times the crew pressed the button.
+  const armed = alertsArmedBefore() && (permission === "granted" || !supported);
+  const browserBlocked = audioAsleep && !armed;
 
   // Silenced on purpose is its own notice, and it outranks the others: the crew
   // did this, they can undo it in one tap, and the board should not be lecturing
@@ -116,6 +123,13 @@ export function CallAlertNotice({ audioCtxRef }) {
       </div>
     );
   }
+
+  // A shell with the native alarm plugin does not go through the browser's
+  // audio at all: the tone plays on the operating system's alarm path, which is
+  // awake whether or not this page has been tapped. Nagging about a suspended
+  // AudioContext there is asking the crew to fix something that is not in the
+  // way of anything.
+  if (nativeAlarm()) return null;
 
   if (!browserBlocked && (permission === "granted" || !supported)) return null;
 

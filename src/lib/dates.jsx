@@ -369,6 +369,35 @@ export function stopNativeAlarm() {
   }
 }
 
+// Keeping the shell awake while somebody is on duty.
+//
+// This is the whole answer to "the tone does not work in the background", and
+// it is worth being exact about why. When iOS suspends an app, its JavaScript
+// stops: the three-second poll stops, the call never arrives, and there is
+// nothing to play a tone about. The alarm plugin cannot help, because nothing
+// is running to call it.
+//
+// An app that is playing audio is not suspended. So while a crew is signed on,
+// the shell holds an audio session open with silence playing through it - no
+// sound, no ducking, just enough for the operating system to keep the process
+// alive. The poll keeps running, a call still arrives, and the alarm plays at
+// full volume on the alarm path.
+//
+// It is switched off at sign-out, because a phone that nobody is on duty with
+// has no reason to be kept awake.
+export function setNativeStandby(on) {
+  try {
+    const plugin = nativeAlarm();
+    if (!plugin || typeof plugin.standby !== "function") return;
+    const answered = plugin.standby({ on: !!on });
+    // An older shell that does not have this method rejects rather than
+    // throwing; the app carries on exactly as it did before it existed.
+    if (answered && typeof answered.catch === "function") answered.catch(() => {});
+  } catch (e) {
+    // no shell, or a shell older than this call
+  }
+}
+
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
   if (!unmissable && soundSilenced()) return;
   const webTone = () =>

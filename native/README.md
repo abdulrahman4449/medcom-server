@@ -28,6 +28,7 @@ native shell. Say that to the crews rather than implying it is covered.
 | Beats the volume slider | yes — alarm volume is separate | yes |
 | Beats Do Not Disturb | yes (`setBypassDnd`) | **no** — Apple does not allow it |
 | Repeats until acknowledged | yes | yes |
+| Keeps the app awake in the background | no — see below | yes (`standby`) |
 | Vibrates | yes | handled by the system |
 
 The web app finds the plugin by name. When it is there, a dispatch goes through
@@ -87,6 +88,46 @@ and a tablet that made no sound at all on a dispatch.
    <array><string>audio</string></array>
    ```
 4. Rebuild and reinstall.
+
+## Staying awake — why the tone "does not work in the background"
+
+The usual diagnosis is wrong. The sound is not being blocked; the app is not
+running. iOS suspends a backgrounded app, and a suspended app has stopped
+executing JavaScript — so the three-second poll stops, the dispatch never
+arrives, and there is nothing for the alarm to sound about. No alarm plugin can
+fix that from the outside, because nothing is running to call it.
+
+What iOS does not suspend is an app that is playing audio. So while a crew is
+signed on, the plugin holds an audio session open with **silence** looping
+through it — nothing audible, nothing ducked, just enough that the operating
+system keeps the process alive. The poll keeps running and a dispatch still
+lands, at which point the alarm plays at full volume on the alarm path.
+
+The app calls `standby({on:true})` at sign-in and `standby({on:false})` at
+sign-out. A shell without the method simply carries on as before.
+
+**What this costs, stated plainly:**
+
+- It uses battery. A crew tablet wants to be on charge.
+- It does **not** survive the app being force-quit from the app switcher, or
+  the phone restarting. Nothing short of a push notification does.
+- It needs `UIBackgroundModes: audio` in `Info.plist`. Without it iOS ends the
+  session the moment the app leaves the screen and you are back where you
+  started.
+
+**Android** does not have this method. Its background story is different —
+the WebView's timers are throttled and then frozen by Doze, and the honest fix
+there is a foreground service or a high-priority FCM push, not a silent audio
+loop. Until one of those exists, treat an Android phone with the app in the
+background as a phone that can miss a call.
+
+**Neither of these reaches a phone where the app is closed.** That needs a push
+notification sent from the server: on Android a high-priority FCM message onto
+the existing `USAGE_ALARM` channel, which does sound through silent; on iOS an
+APNs push, and to get past the ring/silent switch specifically it must be a
+**Critical Alert**, which needs a paid Apple Developer account and an
+entitlement requested from Apple by form. Ordinary iOS pushes respect the
+silent switch however loud you set the sound.
 
 ## Location — what the shells need
 
