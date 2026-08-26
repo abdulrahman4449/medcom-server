@@ -76,6 +76,23 @@ alarm still sounds, on the alarm path, at full volume.
    declaration review, which this app's whole location design exists to avoid.
 5. Rebuild the AAB and reinstall.
 
+## Capacitor 6 and later: the registration that is easy to miss
+
+`PulseOpsAlarmPlugin.swift` conforms to **`CAPBridgedPlugin`** as well as
+`CAPPlugin`, and it must. Up to Capacitor 5 the `CAP_PLUGIN` macro in the `.m`
+file was what registered a plugin. From Capacitor 6 that route is gone: a class
+conforming only to `CAPPlugin` compiles, ships, and is never loaded, so
+`window.Capacitor.Plugins.PulseOpsAlarm` does not exist and every call into it
+silently does nothing.
+
+There is no build error and no crash — just an app with no alarm path, no
+banner, and a fallback to page audio that iOS may already have interrupted.
+
+Any method added to the plugin has to be listed in `pluginMethods` as well as
+written. One without the other is a method the web layer can never call.
+
+Check which version you are on with `npx cap --version`.
+
 ## Installing — iOS
 
 1. Copy both `ios/PulseOpsAlarmPlugin.swift` and

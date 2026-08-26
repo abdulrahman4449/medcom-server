@@ -475,6 +475,16 @@ export function setNativeStandby(on) {
   }
 }
 
+// What the last dispatch alarm actually did, for the diagnostics line.
+//
+// A plugin that is not registered and a plugin that refuses look identical from
+// the crew's side - silence - and both were happening. Recording the outcome
+// turns "no tone" into a sentence somebody can read off the screen and send on.
+let lastAlarmOutcome = "none yet";
+export function alarmOutcome() {
+  return lastAlarmOutcome;
+}
+
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
   if (!unmissable && soundSilenced()) return;
   const webTone = () =>
@@ -496,13 +506,21 @@ export function soundCallAlert(audioCtxRef, priority, unmissable) {
       try {
         const answered = plugin.alert({ priority: String(priority || "routine") });
         handed = true;
-        if (answered && typeof answered.catch === "function") answered.catch(() => webTone());
+        lastAlarmOutcome = "system alarm";
+        if (answered && typeof answered.catch === "function") {
+          answered.catch((err) => {
+            lastAlarmOutcome = `system alarm refused (${(err && err.message) || "no reason given"})`;
+            webTone();
+          });
+        }
       } catch (e) {
         handed = false;
+        lastAlarmOutcome = `system alarm threw (${(e && e.message) || "no reason given"})`;
       }
       if (handed) return;
     }
   }
+  if (unmissable && !nativeAlarm()) lastAlarmOutcome = "page audio (no plugin on this device)";
   webTone();
 }
 

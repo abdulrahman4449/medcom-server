@@ -1,7 +1,7 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { ensureAudioCtx, nativeAlarm, soundCallAlert } from "../lib/dates.jsx";
+import { alarmOutcome, ensureAudioCtx, nativeAlarm, soundCallAlert } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useState } from "../lib/react.jsx";
@@ -84,8 +84,8 @@ export function SoundDiagnostics({ audioCtxRef }) {
   const state = ctx ? ctx.state : "none yet";
   return (
     <div style={styles.soundDiag}>
-      build {BUILD_STAMP} · alarm via {plugin ? "the system alarm path" : "page audio"} · page audio{" "}
-      {state}
+      build {BUILD_STAMP} · plugin {plugin ? "loaded" : "NOT LOADED"} · page audio {state} · last
+      alarm: {alarmOutcome()}
     </div>
   );
 }

@@ -19,8 +19,36 @@ import UserNotifications
  * Register in AppDelegate or wherever plugins are registered.
  * Put the tone at: ios/App/App/dispatch_alert.mp3 (added to the target).
  */
+// CAPBridgedPlugin, not just CAPPlugin.
+//
+// This is the whole reason the plugin was never there. Up to Capacitor 5 the
+// CAP_PLUGIN macro in the .m file was what registered a plugin; from Capacitor
+// 6 that route is gone and registration comes from this protocol - the
+// identifier, the JavaScript name, and an explicit list of the methods the web
+// layer is allowed to call. Without it the class compiles, ships, and is never
+// loaded: window.Capacitor.Plugins.PulseOpsAlarm simply does not exist.
+//
+// Every symptom followed from that one line. No banner for a call, because the
+// notification went to a plugin that was not there. No tone through the alarm
+// path, because the alarm went to the same place - and the fallback is page
+// audio, which iOS had already interrupted. The .m file below is kept for
+// older Capacitor versions and is harmless here.
+//
+// Any new method has to be added to pluginMethods as well as written. One
+// without the other is a method the app can never call.
 @objc(PulseOpsAlarmPlugin)
-public class PulseOpsAlarmPlugin: CAPPlugin {
+public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
+
+    public let identifier = "PulseOpsAlarmPlugin"
+    public let jsName = "PulseOpsAlarm"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "alert", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "standby", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestNotifications", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "notify", returnType: CAPPluginReturnPromise),
+    ]
+
 
     private var player: AVAudioPlayer?
 

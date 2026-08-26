@@ -199,6 +199,14 @@ patch", that document is the target — do not start a fresh exploration.
   battery, and it does **not** survive a force-quit or a restart; only a push
   notification does, and on iOS getting past the silent switch means a Critical
   Alert entitlement from Apple. Say that rather than implying it is covered.
+- **A Capacitor 6+ plugin registers through `CAPBridgedPlugin`, not the `.m`
+  file.** Up to Capacitor 5 the ObjC `CAP_PLUGIN` macro was what registered a
+  plugin; from 6 it is gone, and a class that conforms only to `CAPPlugin`
+  compiles, ships and is never loaded — `window.Capacitor.Plugins.PulseOpsAlarm`
+  simply is not there. That one missing conformance is why the iPhone had no
+  banner, no alarm-path tone, and fell back to page audio iOS had already
+  interrupted. Every new method must be added to `pluginMethods` as well as
+  written; one without the other is a method the app can never call.
 - **The shells have no `Notification` API, so every web notification path is
   dead on a phone.** `notifyAssignedCall` returned on its first line and an
   iPhone showed no banner for a call at all. `nativeNotify` goes through the
