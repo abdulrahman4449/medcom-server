@@ -138,8 +138,15 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 p.numberOfLoops = -1
                 p.volume = 0
                 p.prepareToPlay()
-                p.play()
+                let started = p.play()
                 self.standbyPlayer = p
+                NSLog(
+                    "PulseOpsAlarm: standby on, play()=%@ isPlaying=%@ category=%@ options=%lu",
+                    started ? "accepted" : "REFUSED",
+                    p.isPlaying ? "yes" : "NO",
+                    AVAudioSession.sharedInstance().category.rawValue,
+                    AVAudioSession.sharedInstance().categoryOptions.rawValue
+                )
                 call.resolve(["standby": true])
             } catch {
                 call.reject("Could not hold the app awake: \(error.localizedDescription)")
@@ -198,6 +205,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func alert(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            NSLog("PulseOpsAlarm: alert() called")
             self.stopPlayer()
             self.configureSession()
             // The bundled tone if there is one, and a tone built here if there
@@ -221,8 +229,24 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 p.numberOfLoops = -1
                 p.volume = 1.0
                 p.prepareToPlay()
-                p.play()
+                let started = p.play()
                 self.player = p
+                // Everything that decides whether a crew hears this, in one
+                // line: whether the tone came from the bundle or was built
+                // here, whether play() was accepted, whether the player really
+                // is playing, and what the audio session is set to. "No tone"
+                // is not one fault, it is five, and this says which.
+                let session = AVAudioSession.sharedInstance()
+                NSLog(
+                    "PulseOpsAlarm: source=%@ play()=%@ isPlaying=%@ volume=%.2f category=%@ outputVolume=%.2f",
+                    Bundle.main.url(forResource: "dispatch_alert", withExtension: "mp3") != nil
+                        ? "bundled mp3" : "built in memory",
+                    started ? "accepted" : "REFUSED",
+                    p.isPlaying ? "yes" : "NO",
+                    p.volume,
+                    session.category.rawValue,
+                    session.outputVolume
+                )
                 call.resolve()
             } catch {
                 call.reject("Could not raise the alarm: \(error.localizedDescription)")
@@ -248,6 +272,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound, .badge]
         ) { granted, _ in
+            NSLog("PulseOpsAlarm: notification permission granted=%@", granted ? "yes" : "NO")
             call.resolve(["granted": granted])
         }
     }
@@ -271,6 +296,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request) { error in
+            NSLog("PulseOpsAlarm: notify() posted, error=%@", error?.localizedDescription ?? "none")
             if let error = error {
                 call.reject("Could not post the notification: \(error.localizedDescription)")
             } else {

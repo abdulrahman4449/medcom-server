@@ -185,6 +185,45 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
     restockDone
   );
 
+  // Bumped whenever this screen comes back to the front, so the alarm can tell
+  // "still running" from "running since before the phone was put away".
+  const [wokeAt, setWokeAt] = useState(0);
+  const alarmWokeAt = useRef(0);
+  useEffect(() => {
+    const wake = () => {
+      try {
+        if (typeof document !== "undefined" && document.hidden) return;
+      } catch (e) {
+        // no visibility API; treat it as awake
+      }
+      setWokeAt(Date.now());
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("focus", wake);
+    let handle = null;
+    try {
+      const app = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+      if (app && typeof app.addListener === "function") {
+        const added = app.addListener("appStateChange", (state) => {
+          if (state && state.isActive) setWokeAt(Date.now());
+        });
+        if (added && typeof added.then === "function") added.then((h) => (handle = h));
+        else handle = added;
+      }
+    } catch (e) {
+      // no shell
+    }
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("focus", wake);
+      try {
+        if (handle && typeof handle.remove === "function") handle.remove();
+      } catch (e) {
+        // already gone
+      }
+    };
+  }, []);
+
   const wasOnCall = useRef(null);
   const [calledOff, setCalledOff] = useState(null);
   // Which call has already been announced as stood down on this device.
@@ -449,7 +488,19 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
         notifiedRequestId.current = myRequest.id;
         notifyAssignedCall(myRequest, myUnit ? myUnit.name : "");
       }
-      if (alarmIntervalRef.current && alarmingRequestId.current === myRequest.id) return; // already running for this call
+      // Already running for this call — unless the app has just come back to
+      // the front since it started. A phone that was suspended had its timers
+      // frozen with it, and iOS interrupts the page's audio while the app is
+      // away, so the loop that "is still running" on paper may not have made a
+      // sound since before the screen locked. Coming back re-arms it: stop and
+      // start again, which sounds immediately.
+      if (
+        alarmIntervalRef.current &&
+        alarmingRequestId.current === myRequest.id &&
+        alarmWokeAt.current === wokeAt
+      )
+        return;
+      alarmWokeAt.current = wokeAt;
       stopAlarmLoop();
       alarmingRequestId.current = myRequest.id;
       const sound = () => {
@@ -487,7 +538,7 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
       // keep running across re-renders; only cleared on unmount or when the alarm condition clears
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myRequest && myRequest.id, myRequest && myRequest.status, myRequest && myRequest.acknowledged, alarmActive]);
+  }, [myRequest && myRequest.id, myRequest && myRequest.status, myRequest && myRequest.acknowledged, alarmActive, wokeAt]);
 
   useEffect(() => {
     return () => {
