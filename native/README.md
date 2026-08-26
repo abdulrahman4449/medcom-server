@@ -88,6 +88,27 @@ silently does nothing.
 There is no build error and no crash — just an app with no alarm path, no
 banner, and a fallback to page audio that iOS may already have interrupted.
 
+**A plugin in the app target must be registered by hand.** Capacitor discovers
+plugins that arrive as packages — anything with its own `Package.swift` or
+podspec announces itself. A class sitting in the app target does not, so the
+`CAPBridgedPlugin` conformance alone is not enough: nothing ever instantiates
+it, `load()` never runs, and `window.Capacitor.Plugins.PulseOpsAlarm` does not
+exist. This is the exact counterpart of `registerPlugin(...)` in Android's
+`MainActivity`, and it is what `MainViewController.swift` is for:
+
+```swift
+class MainViewController: CAPBridgeViewController {
+    override open func capacitorDidLoad() {
+        bridge?.registerPluginInstance(PulseOpsAlarmPlugin())
+    }
+}
+```
+
+**The file does nothing on its own.** `Main.storyboard` has to point at it:
+open the storyboard, select the view controller, and in the Identity inspector
+(⌥⌘4) set **Class** to `MainViewController`. Without that the storyboard keeps
+creating a plain `CAPBridgeViewController` and this code never runs.
+
 **There is no `.m` file any more, and there must not be one.** The two
 mechanisms do not sit side by side: the macro registers the same plugin a second
 way, and Capacitor's own migration to 6 says to delete the file. If an old
@@ -113,9 +134,10 @@ podspec does not carry one of its own, it reads it from there.
 
 ## Installing — iOS
 
-1. Copy `ios/PulseOpsAlarmPlugin.swift` into `ios/App/App/` and add it to the
-   App target in Xcode. There is no `.m` file; if an old one is still in the
-   project, delete it.
+1. Copy `ios/PulseOpsAlarmPlugin.swift` **and `ios/MainViewController.swift`**
+   into `ios/App/App/` and add both to the App target in Xcode. There is no
+   `.m` file; if an old one is still in the project, delete it. Then set the
+   storyboard's view controller class to `MainViewController` — see above.
 2. Add your tone as `dispatch_alert.mp3`, also added to the target
    ("Copy Bundle Resources").
 3. In `Info.plist`, add background audio so a tone that starts as the screen
