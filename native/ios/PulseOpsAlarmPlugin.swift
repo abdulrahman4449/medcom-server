@@ -136,7 +136,12 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 // anybody noticing, and this must not be able to fail quietly.
                 let p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.silentWav())
                 p.numberOfLoops = -1
-                p.volume = 0
+                // Full volume on silent samples, not volume 0 on audible ones.
+                // The content is silence either way and nothing is heard, but a
+                // player turned down to nothing is a plausible thing for iOS to
+                // treat as "not really playing" and suspend the app anyway —
+                // which is the whole thing standby exists to prevent.
+                p.volume = 1.0
                 p.prepareToPlay()
                 let started = p.play()
                 self.standbyPlayer = p
@@ -154,14 +159,36 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// A two-tone alarm as a WAV, built in memory so the app never depends on a
-    /// file being remembered. Alternating high and low with a gap between, the
-    /// shape of every emergency tone there has ever been, and loud: this is the
-    /// sound that has to carry over a running engine.
-    private static func alarmWav() -> Data {
+    /// The three call tones, built in memory so the app never depends on a file
+    /// being remembered — and one per priority, because which of the three a
+    /// crew hears is information, not decoration.
+    ///
+    /// A single shared alarm was a regression the moment the synthesised
+    /// fallback started being used for real: CCT, ALS and BLS all arrived
+    /// sounding identical, and none of them sounded like the tone the crews had
+    /// already learned. These are the same figures as the Web Audio tones in
+    /// dates.jsx, note for note, so the app sounds the same whichever path it
+    /// takes.
+    ///
+    /// A gap follows each so the whole thing can loop without running together.
+    private static func alarmWav(priority: String) -> Data {
         let rate = 22050
-        // high, silence, low, silence - one cycle, then looped by the player.
-        let steps: [(Double, Double)] = [(880, 0.32), (0, 0.10), (660, 0.32), (0, 0.26)]
+        // (frequency, seconds) — 0 Hz is silence.
+        let steps: [(Double, Double)]
+        switch priority {
+        case "cct", "critical":
+            // Fast alternating wail. The one that has to cut through a room.
+            steps = [
+                (950, 0.15), (650, 0.15), (950, 0.15),
+                (650, 0.15), (950, 0.15), (650, 0.15), (0, 0.45),
+            ]
+        case "als", "urgent":
+            // Two rising beeps, with a gap so they read as two.
+            steps = [(700, 0.34), (0, 0.08), (1000, 0.34), (0, 0.5)]
+        default:
+            // The routine chime.
+            steps = [(784, 0.30), (0, 0.02), (1046, 0.35), (0, 0.6)]
+        }
         var samples: [Int16] = []
         for (freq, seconds) in steps {
             let n = Int(Double(rate) * seconds)
@@ -171,9 +198,10 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                     continue
                 }
                 let t = Double(i) / Double(rate)
-                // A short fade at each end, or the square edge of a tone
-                // starting at full amplitude arrives as a click.
-                let fade = min(1.0, min(Double(i), Double(n - i)) / (Double(rate) * 0.01))
+                // A short fade at each end, or a tone starting at full
+                // amplitude arrives as a click — and this repeats until it is
+                // acknowledged, so a click every second becomes the sound.
+                let fade = min(1.0, min(Double(i), Double(n - i)) / (Double(rate) * 0.008))
                 let v = sin(2.0 * Double.pi * freq * t) * 0.85 * fade
                 samples.append(Int16(max(-1.0, min(1.0, v)) * 32767.0))
             }
@@ -223,7 +251,8 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 if let url = Bundle.main.url(forResource: "dispatch_alert", withExtension: "mp3") {
                     p = try AVAudioPlayer(contentsOf: url)
                 } else {
-                    p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.alarmWav())
+                    p = try AVAudioPlayer(
+                        data: PulseOpsAlarmPlugin.alarmWav(priority: call.getString("priority") ?? "routine"))
                 }
                 // Repeat until the crew acknowledges; the web layer calls stop().
                 p.numberOfLoops = -1
