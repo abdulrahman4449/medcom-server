@@ -104,10 +104,24 @@ class MainViewController: CAPBridgeViewController {
 }
 ```
 
-**The file does nothing on its own.** `Main.storyboard` has to point at it:
-open the storyboard, select the view controller, and in the Identity inspector
-(⌥⌘4) set **Class** to `MainViewController`. Without that the storyboard keeps
-creating a plain `CAPBridgeViewController` and this code never runs.
+**The file does nothing on its own — something has to actually use the class.**
+Where that is depends on how your Capacitor version builds the first screen, and
+it is worth checking rather than assuming:
+
+```
+grep -rn "CAPBridgeViewController" ios/App/App/*.swift
+```
+
+- **`SceneDelegate.swift` contains `window?.rootViewController =
+  CAPBridgeViewController()`** — the screen is built in code and
+  `Main.storyboard` is never used. Change that one line to
+  `MainViewController()`. This is the case on Capacitor 8.
+- **No such line** — the screen comes from the storyboard. Open
+  `Main.storyboard`, select the view controller, and in the Identity inspector
+  (⌥⌘4) set **Class** to `MainViewController`.
+
+Getting this wrong is silent in both directions: the class exists, the app runs,
+and the plugin is simply never registered.
 
 **There is no `.m` file any more, and there must not be one.** The two
 mechanisms do not sit side by side: the macro registers the same plugin a second

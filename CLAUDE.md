@@ -213,8 +213,11 @@ patch", that document is the target — do not start a fresh exploration.
   packages, so a class in the app target has to be registered by hand from
   `capacitorDidLoad` in a `CAPBridgeViewController` subclass — the iOS
   counterpart of Android's `registerPlugin(...)`. See
-  `native/ios/MainViewController.swift`, which does nothing unless
-  `Main.storyboard` names it as the view controller's class.
+  `native/ios/MainViewController.swift`, which does nothing until something
+  actually constructs it. On Capacitor 8 that is `SceneDelegate.swift`, which
+  builds the screen in code — `Main.storyboard` is never used, so setting a
+  class on it changes nothing. Check with
+  `grep -rn CAPBridgeViewController ios/App/App/*.swift` rather than assuming.
 - **The shells have no `Notification` API, so every web notification path is
   dead on a phone.** `notifyAssignedCall` returned on its first line and an
   iPhone showed no banner for a call at all. `nativeNotify` goes through the
