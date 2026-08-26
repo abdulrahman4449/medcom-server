@@ -34,6 +34,11 @@ import UserNotifications
 // audio, which iOS had already interrupted. The .m file below is kept for
 // older Capacitor versions and is harmless here.
 //
+// There is deliberately no .m file any more. Keeping the old CAP_PLUGIN macro
+// beside this conformance registers the same plugin twice by two different
+// mechanisms, and Capacitor's own migration for 6 says to delete it. If an
+// PulseOpsAlarmPlugin.m is still in the Xcode project, remove it.
+//
 // Any new method has to be added to pluginMethods as well as written. One
 // without the other is a method the app can never call.
 @objc(PulseOpsAlarmPlugin)
@@ -53,6 +58,11 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     private var player: AVAudioPlayer?
 
     public override func load() {
+        // Printed so "is the plugin actually loaded?" is answerable from the
+        // Xcode console, which is the one place that can answer it before the
+        // web layer gets a say. If this line never appears, the class is not
+        // being registered and nothing else in this file can run.
+        NSLog("PulseOpsAlarm: plugin loaded and registered as %@", jsName)
         // Deliberately not activating a session at launch. Doing that put the
         // app's audio ahead of everything else's from the moment it opened, so
         // simply having PulseOps installed quietened whatever the phone was

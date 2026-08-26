@@ -88,16 +88,34 @@ silently does nothing.
 There is no build error and no crash — just an app with no alarm path, no
 banner, and a fallback to page audio that iOS may already have interrupted.
 
+**There is no `.m` file any more, and there must not be one.** The two
+mechanisms do not sit side by side: the macro registers the same plugin a second
+way, and Capacitor's own migration to 6 says to delete the file. If an old
+`PulseOpsAlarmPlugin.m` is still in the Xcode project, remove it — right-click
+it in the navigator, Delete, **Move to Trash**.
+
 Any method added to the plugin has to be listed in `pluginMethods` as well as
 written. One without the other is a method the web layer can never call.
 
-Check which version you are on with `npx cap --version`.
+**Is it actually loaded?** On launch the plugin prints to the Xcode console:
+
+```
+PulseOpsAlarm: plugin loaded and registered as PulseOpsAlarm
+```
+
+If that line is absent, the class is not being registered and nothing else in
+the file can run — check that both it is in **Build Phases → Compile Sources**
+and that no `.m` file remains. If the line is present but the app still reports
+the plugin missing, the mismatch is in `jsName`.
+
+Your Capacitor version is in `node_modules/@capacitor/core/package.json` — the
+podspec does not carry one of its own, it reads it from there.
 
 ## Installing — iOS
 
-1. Copy both `ios/PulseOpsAlarmPlugin.swift` and
-   `ios/PulseOpsAlarmPlugin.m` into `ios/App/App/`, and add them to the App
-   target in Xcode.
+1. Copy `ios/PulseOpsAlarmPlugin.swift` into `ios/App/App/` and add it to the
+   App target in Xcode. There is no `.m` file; if an old one is still in the
+   project, delete it.
 2. Add your tone as `dispatch_alert.mp3`, also added to the target
    ("Copy Bundle Resources").
 3. In `Info.plist`, add background audio so a tone that starts as the screen

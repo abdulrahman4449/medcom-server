@@ -206,7 +206,9 @@ patch", that document is the target — do not start a fresh exploration.
   simply is not there. That one missing conformance is why the iPhone had no
   banner, no alarm-path tone, and fell back to page audio iOS had already
   interrupted. Every new method must be added to `pluginMethods` as well as
-  written; one without the other is a method the app can never call.
+  written; one without the other is a method the app can never call. There is no
+  `.m` file any more and there must not be one — the macro registers the same
+  plugin a second way alongside the conformance.
 - **The shells have no `Notification` API, so every web notification path is
   dead on a phone.** `notifyAssignedCall` returned on its first line and an
   iPhone showed no banner for a call at all. `nativeNotify` goes through the
