@@ -192,7 +192,7 @@ export function FiledChecklists({ checklistRuns, checklists }) {
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      <div style={styles.historyNote}>
+      <div style={styles.sectionNote}>
         Every vehicle check a crew has filed, kept as the department's record.{" "}
         {flaggedTotal > 0
           ? `${flaggedTotal} of them reported something.`

@@ -259,6 +259,10 @@ export const styles = {
     minWidth: 0,
   },
   bannerAction: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7 },
+  // A sentence explaining a section, under its banner. Quieter than the body it
+  // introduces; `historyNote` is 15px and was shouting over the list it was
+  // meant to caption.
+  sectionNote: { fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55, margin: "2px 0 8px" },
   // A button that lives inside a banner. `ghostBtnSm` is 40px tall and sized
   // for a thumb on a card; dropped into an 11px-padded strip it made the banner
   // taller than the thing it was heading.

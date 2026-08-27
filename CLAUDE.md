@@ -299,6 +299,51 @@ patch", that document is the target — do not start a fresh exploration.
   with the flag cleared and the refusal in the crew's face again. From their
   side the button did nothing. It is remembered on the device now, keyed by the
   answer's timestamp so a new refusal is still a new notice.
+- **Signing out is a write, and the seat must not be released before it lands.**
+  Releasing the seat makes the "somebody has taken your seat" effect fire, and
+  that calls `setSession(null)`, which takes the token with it — in the middle
+  of `handleLogout`. Every line after that point went to the board with no
+  Authorization header and came back 401: the shift's `kind: "off"` entry, and
+  with it the hours, the overtime claim and that stay's UHU. The screen looked
+  right and nothing was recorded. `signingOutRef` holds the effect off while
+  `recordSignOut` runs. It only ever bit crews — a dispatcher's sign-out
+  touches no seat — which is to say it only bit the people the department is
+  measured on.
+- **A sign-off entry carries `unitId` and `station`, or it is not a claim.**
+  Without them `overtimeClaimId` keys the stay to `"?"`, the claim files under
+  the default station, and `heldByCallAt` has no unit to look for — so "were
+  they on a call?" was always no. Whether a call held them is decided at
+  sign-off and **stamped on the entry**; deriving it later from a live board
+  that no longer carries the call gives the wrong answer every time.
+- **Overtime is sent, not merely observed.** A stay a call held them through
+  goes to administration on its own; anything else is the person's to send
+  (`ems:overtimeSent`, written by them) or to leave. `ems:overtime` — the
+  decisions — is `ADMIN_ONLY_KEYS`: anyone signed in could otherwise approve
+  their own hours by posting to the board.
+- **Delegated authority is a server fact, re-checked every request.** An
+  administrator lends a named role to a named person for a number of days
+  (`delegated_role`/`delegated_until` on `accounts`); the sign-in screen offers
+  it beside their own job, `POST /api/auth/act` re-issues the token with `act`,
+  and `requireAuth` re-reads the account every time — so taking it back stops
+  at their next action, not when their token expires. Never trust `act` on its
+  own.
+- **The mark that says "this fleet is the department's" belongs to the board.**
+  It was in `localStorage`, which marks the tablet: a truck an administrator had
+  removed came back the first time anybody signed in on a new phone. It is
+  `ems:fleetSeeded` on the board now, read only when a top-up would otherwise
+  happen — and a failed read is never taken as "never seeded".
+- **One section banner, `SectionBanner` in `AdminView.jsx`.** A heading used to
+  be one of three things depending on the screen. Buttons belonging to a
+  section go *inside* its banner (`styles.bannerBtn`, sized for a banner, not
+  the 40px `ghostBtnSm`). Do not reintroduce `styles.sectionHeader` as a 20px
+  display heading: on a phone it wrapped across its own button, and per
+  `design/README.md` nothing but NO COVERAGE may shout.
+- **A repeating booking is a patient, not an arrangement.** Schedule →
+  Repeating groups by MRN (`groupRepeatsByPatient`), because one patient can
+  hold two standing arrangements and drawn separately they read as two people.
+  MRNs are joined across spaces and hyphens — `MRN-1234` and `mrn 1234` are one
+  person, and joining on the raw string answered "have we had them before?"
+  with "no".
 - **Wiping the board is `docs/RESET-THE-BOARD.md`, not a button.** The `-wal`
   file has to go with the `.db` or the last few minutes come back. Accounts live
   in their own table, so the board can be cleared without touching them.

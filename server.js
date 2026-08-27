@@ -747,10 +747,17 @@ app.post("/api/accounts/:id/delegate", requireAdmin, (req, res) => {
     return res.status(400).json({ error: "Give a number of days between 1 and 90." });
   }
   const until = Date.now() + Math.round(n) * 86400000;
+  // The name, not the employee ID. The person being asked "do you want to work
+  // as a dispatcher tonight?" is being told who said they could, and "F1525518"
+  // is not an answer to that — it is a number off a badge they may never have
+  // seen. The roster is administrator-only, so the sign-in screen cannot look
+  // it up for itself; it is recorded here, once, where it is known.
+  const granter = findAccount(req.user.id);
+  const grantedBy = (granter && granter.name) || req.user.id;
   db.prepare(
     `UPDATE accounts SET delegated_role = ?, delegated_until = ?, delegated_by = ?,
      delegated_at = ? WHERE id = ?`
-  ).run(role, until, req.user.id, Date.now(), key);
+  ).run(role, until, grantedBy, Date.now(), key);
   res.json({ ok: true, account: publicAccount(findAccount(key)) });
 });
 

@@ -46,6 +46,11 @@ import { schedDue, whenStr } from "./booking-cancel.jsx";
 import { GlobalFont } from "./font.jsx";
 import { BIG_KEY_BYTES, POLICY_SHELF_LIMIT, bytesStr, keyName } from "./storage-banner.jsx";
 
+// The board-wide mark that says the default fleet has already been laid down
+// and the trucks on this board are the department's own from here.
+const FLEET_SEEDED_KEY = "ems:fleetSeeded";
+
+
 // ---------- is this board actually being kept, and is there room? ----------
 //
 // Two different questions with one answer between them, so they share a fetch.
@@ -270,6 +275,8 @@ export function App() {
   const [checklistRuns, setChecklistRuns] = useState([]);
   const [overtimeSent, setOvertimeSent] = useState({});
   const refreshAccountsRef = useRef(null);
+  // True while a deliberate sign-out is being recorded. See `handleLogout`.
+  const signingOutRef = useRef(false);
   const [messages, setMessages] = useState([]);
   const [inventory, setInventory] = useState(null);
   const [inventoryMoves, setInventoryMoves] = useState([]);
@@ -490,17 +497,40 @@ export function App() {
       // a truck they renamed reappears under its old name as a second vehicle —
       // which is exactly what was happening. Once a board has been topped up it
       // is marked, and the fleet is theirs from then on.
-      const seeded = (() => {
-        try {
-          return localStorage.getItem("ems:fleetSeeded") === "1";
-        } catch (e) {
-          return false;
-        }
-      })();
+      // The mark that says "this board's fleet is the department's now" has to
+      // live on the BOARD, not on the device.
+      //
+      // It was in localStorage. That marks the tablet, not the fleet — so a
+      // truck an administrator had removed came back the first time anybody
+      // signed in on a new phone, and came back again on the next new phone,
+      // and the administrator's deletion looked like it had simply failed. A
+      // board-wide decision needs a board-wide mark.
+      //
+      // localStorage is kept as the fast path: once this device has seen the
+      // mark it never asks again, so the extra read costs nothing on the
+      // three-second poll. The board is only consulted when a top-up would
+      // otherwise happen, which after the first sign-in on a board is never.
+      let seeded = false;
+      try {
+        seeded = localStorage.getItem("ems:fleetSeeded") === "1";
+      } catch (e) {
+        seeded = false;
+      }
       const existingKeys = new Set(unitsToUse.map((x) => `${stationOf(x)}::${x.name}`));
-      const missing = seeded
+      let missing = seeded
         ? []
         : DEFAULT_UNITS.filter((d) => !existingKeys.has(`${stationOf(d)}::${d.name}`));
+      if (!seeded && missing.length > 0) {
+        const mark = await readKeyRaw(FLEET_SEEDED_KEY);
+        // A read that failed is not a board saying "never seeded". Adding five
+        // trucks because the server was briefly unreachable is the worst
+        // possible answer, so nothing is added until the board actually says.
+        if (mark === READ_FAILED || mark) {
+          missing = [];
+          seeded = true;
+        }
+      }
+      if (!seeded) await writeKey(FLEET_SEEDED_KEY, { at: Date.now() });
       try {
         localStorage.setItem("ems:fleetSeeded", "1");
       } catch (e) {}
@@ -1626,7 +1656,20 @@ export function App() {
   // completely unstaffed and it isn't on a call right now, the unit
   // automatically drops back to "Out of Service".
   async function handleLogout() {
+    // Held up while this runs, so releasing the seat below does not read as
+    // somebody else taking it and tear the session — and the token — down
+    // before the shift has been written to the log.
+    if (signingOutRef.current) return;
+    signingOutRef.current = true;
+    try {
+      await recordSignOut();
+    } finally {
+      signingOutRef.current = false;
+    }
+    setSession(null);
+  }
 
+  async function recordSignOut() {
     const now = Date.now();
     // Set inside the team branch below and answered once the seat has actually
     // been released. Asked before that, a crew member who cancelled the dialog
@@ -1852,8 +1895,6 @@ export function App() {
         });
       }
     }
-
-    setSession(null);
   }
 
   // Swapping shift without leaving the board. The usual reason is a team that
@@ -1973,6 +2014,18 @@ export function App() {
   // bouncing the person who has just signed in.
   useEffect(() => {
     if (!ready || !user || user.role !== "team" || !user.unitId || !user.slot) return;
+    // A sign-out of their own is not somebody taking the seat off them.
+    //
+    // Signing out releases the seat, which made this effect fire in the middle
+    // of `handleLogout` — and `setSession(null)` takes the token with it. From
+    // that moment every remaining line of the sign-out was sent to the board
+    // with no Authorization header and answered 401: the shift's `kind: "off"`
+    // entry, and with it the hours, the overtime claim and the crew's UHU for
+    // that stay. The screen looked exactly right and the record was never
+    // written. It only ever affected crews — a dispatcher's sign-out touches no
+    // seat — which is to say it only affected the people whose hours the
+    // department is actually measured on.
+    if (signingOutRef.current) return;
     if (Date.now() - (user.signedOnAt || 0) < POLL_MS * 4) return;
     const unit = units.find((u) => u.id === user.unitId);
     if (!unit) return;
