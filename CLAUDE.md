@@ -183,6 +183,19 @@ patch", that document is the target — do not start a fresh exploration.
   and every code after it is handed out from Teams. Clearing a password issues
   the replacement code in the same call, because clearing without one leaves the
   person unable to set a new password and with nothing to say why.
+- **Nothing in the app can deliver a sign-in code to the person it belongs to.**
+  They have not signed in, so they have no seat and nowhere for a message to
+  land, and there is no email or SMS anywhere in this app. The last step is
+  always a human passing it on — which is why "I don't receive a code" was a
+  real report and not a bug in the code path. `claimCodeMessage` writes the
+  whole hand-over message, not just the code, and `Copy the message` puts it on
+  the clipboard for Teams; the password-reset path goes through the same banner
+  rather than a `window.alert`, which nothing can be copied out of on a phone.
+  The roster row carries `CODE OUT · nD` so an administrator can tell "I have
+  not done this yet" from "I did, they lost it". `codeIssued`/`codeExpires` are
+  on the `/api/accounts` listing and deliberately **not** on `publicAccount` —
+  `/api/auth/lookup` answers to anybody, and there they would name every account
+  sitting unclaimed with a live code on it.
 - **Only an administrator may write the department's definitions.**
   `ADMIN_ONLY_KEYS` in `server.js` — policies, checklists, inventory. Everyone
   signed in may write the day's work. Roles are checked on the server; a
