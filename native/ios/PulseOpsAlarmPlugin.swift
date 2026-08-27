@@ -74,19 +74,55 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func configureSession(ducking: Bool = true) {
         do {
-            // Ducking is right for the alarm - it quietens a podcast or a call
-            // on speaker so the dispatch is the thing the crew hears. It is
-            // wrong for standby, which is silence: a phone that ducked
-            // everything else for a whole shift would be unusable, so standby
-            // mixes instead.
+            // Ducking for the alarm, and nothing at all for standby.
+            //
+            // Standby used to ask for .mixWithOthers, on the reasoning that a
+            // phone which ducked everything else for a whole shift would be
+            // unusable. That reasoning was right and the option was fatal: with
+            // .mixWithOthers the app is secondary audio, and iOS does not give
+            // secondary audio background execution. It suspended the app
+            // anyway, which stopped the poll, so no call ever arrived to sound
+            // an alarm about — the exact fault standby exists to prevent,
+            // caused by standby's own settings. The console said options=1.
+            //
+            // Plain .playback makes this the primary audio session, which is
+            // what earns the background time. The cost is real and worth saying
+            // out loud: going on duty interrupts music or a podcast playing on
+            // that device. On a crew tablet that is the right trade. On
+            // somebody's personal phone it is intrusive.
             try AVAudioSession.sharedInstance().setCategory(
                 .playback,
                 mode: .default,
-                options: ducking ? [.duckOthers] : [.mixWithOthers]
+                options: ducking ? [.duckOthers] : []
             )
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             NSLog("PulseOpsAlarm: could not configure the audio session: \(error)")
+        }
+    }
+
+    /// Anything else that takes the audio session — a phone call, navigation
+    /// speaking, Siri — interrupts our silence, and when it ends iOS does not
+    /// restart it for us. Without this, one incoming call in the middle of a
+    /// shift would end standby for good and the app would be suspendable again
+    /// from then on, silently.
+    private func watchForInterruptions() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            guard
+                let self = self,
+                let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                let type = AVAudioSession.InterruptionType(rawValue: raw)
+            else { return }
+            if type == .ended && self.standbyWanted {
+                NSLog("PulseOpsAlarm: audio interruption ended, restarting standby")
+                self.startStandby()
+            } else if type == .began {
+                NSLog("PulseOpsAlarm: audio interrupted by something else")
+            }
         }
     }
 
@@ -114,6 +150,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         let on = call.getBool("on") ?? false
         DispatchQueue.main.async {
             if !on {
+                self.standbyWanted = false
                 self.standbyPlayer?.stop()
                 self.standbyPlayer = nil
                 // The session is only released if nothing else is using it -
@@ -125,10 +162,21 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.resolve(["standby": false])
                 return
             }
+            self.standbyWanted = true
+            self.watchForInterruptions()
             if self.standbyPlayer?.isPlaying == true {
                 call.resolve(["standby": true])
                 return
             }
+            self.startStandby()
+            call.resolve(["standby": self.standbyPlayer?.isPlaying == true])
+        }
+    }
+
+    private var standbyWanted = false
+
+    private func startStandby() {
+        DispatchQueue.main.async {
             self.configureSession(ducking: false)
             do {
                 // Built here rather than shipped as a file: a silent asset is
@@ -152,9 +200,8 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                     AVAudioSession.sharedInstance().category.rawValue,
                     AVAudioSession.sharedInstance().categoryOptions.rawValue
                 )
-                call.resolve(["standby": true])
             } catch {
-                call.reject("Could not hold the app awake: \(error.localizedDescription)")
+                NSLog("PulseOpsAlarm: could not hold the app awake: %@", error.localizedDescription)
             }
         }
     }
