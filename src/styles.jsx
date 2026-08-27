@@ -231,18 +231,65 @@ export const styles = {
     justifyContent: "center",
   },
 
-  sectionHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "20px 0 10px" },
-  // Section headings in the organisation's own idiom: a gold marker, the label
-  // beside it, plenty of air above. It is the pattern staff already scan for.
-  // A heading, not a rule with a gold tab on it. The bar and the letter-spacing
-  // were doing the work a size and a weight should do.
+  // ---- the section banner ----
+  //
+  // One treatment, everywhere. See `SectionBanner`. The old 20px display
+  // heading is gone: on a phone "SCHEDULED REQUESTS (4)" wrapped onto a second
+  // line and ran into the button beside it, and it shouted at the same volume
+  // as the call cards underneath — which, per design/README.md, is a volume
+  // nothing but NO COVERAGE is allowed to use.
+  banner: {
+    display: "flex",
+    alignItems: "center",
+    gap: 9,
+    background: "var(--raised)",
+    border: "1px solid var(--hair)",
+    borderRadius: 16,
+    boxShadow: "0 6px 18px var(--lift)",
+    padding: "11px 13px",
+    margin: "18px 0 10px",
+  },
+  bannerIcon: { display: "inline-flex", alignItems: "center", color: "var(--ink-4)", flex: "none" },
+  bannerTitle: {
+    fontFamily: display,
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 0.7,
+    color: "var(--ink-2)",
+    minWidth: 0,
+  },
+  bannerAction: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7 },
+  // A button that lives inside a banner. `ghostBtnSm` is 40px tall and sized
+  // for a thumb on a card; dropped into an 11px-padded strip it made the banner
+  // taller than the thing it was heading.
+  bannerBtn: {
+    background: "var(--veil)",
+    border: "1px solid var(--hair-2)",
+    color: "var(--ink-2)",
+    borderRadius: 999,
+    padding: "5px 11px",
+    minHeight: 28,
+    cursor: "pointer",
+    fontFamily: display,
+    fontSize: 12,
+    fontWeight: 600,
+    letterSpacing: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    whiteSpace: "nowrap",
+  },
+  // Kept as an alias so a heading that has not been converted still looks like
+  // the rest of the app rather than like the version before it.
+  sectionHeaderRow: { display: "flex", alignItems: "center", gap: 9, margin: "18px 0 10px" },
   sectionHeader: {
     fontFamily: display,
-    fontSize: 20,
-    fontWeight: 650,
-    letterSpacing: -0.42,
-    color: "var(--ink)",
-    margin: "26px 0 10px",
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 0.7,
+    color: "var(--ink-2)",
+    margin: "18px 0 10px",
   },
 
   statusBoard: { padding: "6px 2px 2px" },
@@ -698,7 +745,7 @@ export const styles = {
     padding: "8px 12px",
     borderBottom: "1px solid var(--hair)",
   },
-  logTabs: { display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid var(--hair)" },
+  logTabs: { display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid var(--hair)", flexWrap: "wrap", alignItems: "center" },
   shiftDetailRow: { display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", marginTop: 6 },
   shiftEventTag: {
     border: "1px solid",
@@ -799,7 +846,32 @@ export const styles = {
     border: "1px solid var(--move)", color: "var(--move)",
     borderRadius: 999, padding: "1px 8px", fontSize: 11.5, fontWeight: 700,
   },
-  repeatNext: { fontSize: 12, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
+  repeatNext: { marginLeft: "auto", fontSize: 12, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
+  // A patient's standing week, drawn as seven letters with the days they run on
+  // lit. Written out as "MON WED FRI" it had to be read; drawn, it is a shape,
+  // and ten patients can be compared down the column without reading any of it.
+  repeatWeek: { display: "flex", alignItems: "center", gap: 4, marginTop: 9 },
+  repeatDayOn: {
+    width: 21, height: 21, borderRadius: 7, display: "inline-flex",
+    alignItems: "center", justifyContent: "center",
+    fontSize: 11, fontWeight: 800, letterSpacing: 0,
+    background: "var(--move)", color: "#0B0E12", border: "1px solid var(--move)",
+  },
+  repeatDayOff: {
+    width: 21, height: 21, borderRadius: 7, display: "inline-flex",
+    alignItems: "center", justifyContent: "center",
+    fontSize: 11, fontWeight: 700, letterSpacing: 0,
+    background: "transparent", color: "var(--ink-4)", border: "1px solid var(--hair)",
+  },
+  repeatArrRow: {
+    display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap",
+    marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--hair)",
+    fontSize: 12, color: "var(--ink-3)",
+  },
+  repeatArrDays: { fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "var(--move)" },
+  repeatArrTime: { fontFamily: mono, fontSize: 13, color: "var(--ink)", fontVariantNumeric: "tabular-nums" },
+  repeatArrWho: { color: "var(--ink-4)" },
+  repeatArrNext: { marginLeft: "auto", color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
 
   foldedRow: {
     display: "flex", alignItems: "baseline", gap: 10, width: "100%",
@@ -1739,7 +1811,10 @@ export const styles = {
     alignItems: "center",
     background: "var(--raised)",
     border: "1px solid var(--hair)",
-    borderRadius: 9,
+    // 16, not 9: the card contract in design/README.md, which a banner sitting
+    // among cards has to keep or it reads as belonging to an older build.
+    borderRadius: 16,
+    boxShadow: "0 6px 18px var(--lift)",
     padding: "11px 13px",
     color: "var(--ink-2)",
     fontSize: 12,
@@ -1749,7 +1824,120 @@ export const styles = {
     textAlign: "left",
   },
   foldCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: "var(--ink-4)", letterSpacing: 0.3 },
+
+  // ---- the filed checklists, kept as the department's record ----
+  chkFilterRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "10px 0 4px" },
+  chkSearchWrap: {
+    display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 200,
+    background: "var(--inset)", border: "1px solid var(--hair)", borderRadius: 10,
+    padding: "0 10px", color: "var(--ink-4)",
+  },
+  chkSearch: {
+    flex: 1, background: "none", border: "none", outline: "none",
+    color: "var(--ink)", fontSize: 16, padding: "9px 0", minWidth: 0,
+  },
+  chkRunCard: {
+    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 16,
+    boxShadow: "0 6px 18px var(--lift)", marginTop: 6, overflow: "hidden",
+  },
+  chkRunHead: {
+    display: "flex", alignItems: "center", gap: 10, width: "100%",
+    background: "none", border: "none", padding: "10px 13px",
+    cursor: "pointer", textAlign: "left", color: "var(--ink)", flexWrap: "wrap",
+  },
+  chkRunTime: { fontFamily: mono, fontSize: 13, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
+  chkRunUnit: { fontWeight: 700, fontSize: 13.5 },
+  chkRunPart: { fontSize: 12, color: "var(--ink-4)" },
+  chkRunWho: { fontSize: 12.5, color: "var(--ink-3)" },
+  chkRunFlagged: {
+    marginLeft: "auto", fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6,
+    color: "var(--hold)", border: "1px solid var(--hold)", borderRadius: 5, padding: "1px 6px",
+  },
+  chkRunClean: { marginLeft: "auto", fontSize: 11.5, color: "var(--ink-4)" },
+  chkRunBody: { padding: "0 13px 12px", borderTop: "1px solid var(--hair)" },
+  chkRunMeta: { fontSize: 12, color: "var(--ink-4)", margin: "9px 0 4px", lineHeight: 1.5 },
+  chkFlagRow: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 },
+  chkFlagDot: { width: 7, height: 7, borderRadius: 999, flex: "none" },
+  chkFlagText: { color: "var(--ink-2)", flex: 1, minWidth: 0 },
+  chkFlagAnswer: { fontSize: 11, fontWeight: 800, letterSpacing: 0.4 },
+  chkReadings: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 },
+  chkReading: {
+    fontSize: 12, color: "var(--ink-3)", background: "var(--inset)",
+    border: "1px solid var(--hair)", borderRadius: 8, padding: "4px 8px",
+  },
+  chkRunNote: { fontSize: 12.5, color: "var(--ink-3)", marginTop: 9, fontStyle: "italic" },
+
+  // ---- the patient record ----
+  recCard: {
+    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 16,
+    boxShadow: "0 6px 18px var(--lift)", marginTop: 6, overflow: "hidden",
+  },
+  recHead: {
+    display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, width: "100%",
+    background: "none", border: "none", padding: "11px 13px",
+    cursor: "pointer", textAlign: "left", color: "var(--ink)",
+  },
+  recHeadTop: { display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" },
+  recMrn: { fontFamily: mono, fontSize: 13.5, fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" },
+  recCount: { fontSize: 12, color: "var(--ink-2)" },
+  recRoute: { fontSize: 12, color: "var(--ink-4)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  recOpen: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, color: "var(--hold)",
+    border: "1px solid var(--hold)", borderRadius: 5, padding: "1px 6px",
+  },
+  recLast: { marginLeft: "auto", fontSize: 11.5, color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+  recBody: { padding: "0 13px 12px", borderTop: "1px solid var(--hair)" },
+  recSummary: {
+    display: "flex", gap: 12, flexWrap: "wrap", margin: "9px 0",
+    fontSize: 12.5, color: "var(--ink-3)",
+  },
+  recJourney: {
+    display: "flex", flexDirection: "column", gap: 2,
+    padding: "7px 0", borderTop: "1px solid var(--hair)", fontSize: 12.5, color: "var(--ink-3)",
+  },
+  recJourneyTop: { display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" },
+  recJourneyWhen: { fontFamily: mono, fontSize: 12, color: "var(--ink-4)", fontVariantNumeric: "tabular-nums" },
+  recJourneyKind: { fontSize: 9.5, fontWeight: 800, letterSpacing: 0.6 },
+  recJourneyWhat: { color: "var(--ink-2)", fontWeight: 600 },
+  recJourneyRoute: { fontSize: 12, color: "var(--ink-4)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  recJourneyUnit: { fontSize: 11.5, color: "var(--ink-4)" },
+  recJourneyStatus: { marginLeft: "auto", fontSize: 10.5, letterSpacing: 0.4, color: "var(--ink-4)", textTransform: "uppercase" },
   foldBody: { paddingTop: 10 },
+
+  // A block inside a folded panel. Quieter than the panel's own header on
+  // purpose — two banners of the same weight, one inside the other, read as two
+  // sections rather than as a section and its part.
+  otBlock: { marginTop: 12 },
+  otBlockHead: {
+    width: "100%", display: "flex", alignItems: "center", gap: 7,
+    background: "none", border: "none", borderTop: "1px solid var(--hair)",
+    padding: "10px 2px 0", cursor: "pointer", textAlign: "left",
+    color: "var(--ink-3)", fontSize: 11, fontWeight: 800, letterSpacing: 0.7,
+  },
+  otBlockCaret: { display: "inline-block", transition: "transform .15s ease", color: "var(--ink-4)", fontSize: 14, lineHeight: 1 },
+  otBlockCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 700, color: "var(--ink-4)" },
+  otSentTag: { fontSize: 11, color: "var(--ink-4)" },
+  // Borrowed standing, on the roster row it belongs to.
+  delegatedTag: {
+    fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, color: "var(--move)",
+    border: "1px solid var(--move)", borderRadius: 5, padding: "2px 7px",
+  },
+  delegateForm: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" },
+  delegateDays: {
+    width: 68, background: "var(--inset)", border: "1px solid var(--hair)",
+    borderRadius: 9, padding: "8px 9px", color: "var(--ink)", fontSize: 16,
+  },
+  // The crew's own line about their overtime, on the shift card.
+  otCrewWrap: { marginTop: 10, borderTop: "1px solid var(--hair)" },
+  otCrewHead: {
+    width: "100%", display: "flex", alignItems: "center", gap: 7,
+    background: "none", border: "none", padding: "9px 0 0", cursor: "pointer",
+    textAlign: "left", color: "var(--ink-3)", fontSize: 11, fontWeight: 800, letterSpacing: 0.7,
+  },
+  otCrewBody: {
+    display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 9,
+    padding: "8px 0 2px", fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5,
+  },
 
   handoverTag: {
     marginTop: 8,
@@ -3626,7 +3814,7 @@ export const styles = {
     padding: "1px 4px",
   },
 
-  stationCount: { marginLeft: 8, fontSize: 12.5, fontWeight: 600, color: "var(--ink-4)", letterSpacing: 0.3 },
+  stationCount: { marginLeft: "auto", fontSize: 11.5, fontWeight: 600, color: "var(--ink-4)", letterSpacing: 0.3, whiteSpace: "nowrap" },
   addUnitRow: { display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" },
 
   grantOtBtn: {
@@ -4345,6 +4533,25 @@ export const styles = {
   },
   loginHeaderText: { fontFamily: display, fontWeight: 700, fontSize: 18, letterSpacing: 0.5 },
   loginSub: { color: "var(--ink-3)", fontSize: 14, marginTop: 6 },
+  // A borrowed role, marked as one. It sits in the same row of choices as the
+  // person's own, and it must not read like one of them — an administrator's
+  // authority worn for a night is a thing somebody should notice they are
+  // putting on.
+  delegatedBtn: {
+    background: "var(--panel)",
+    border: "1px solid var(--move)",
+    borderRadius: 18,
+    padding: "20px",
+    minHeight: 78,
+    color: "var(--ink)",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    cursor: "pointer",
+    fontFamily: display,
+    textAlign: "left",
+    boxShadow: "0 6px 18px var(--lift)",
+  },
   roleBtn: {
     background: "var(--panel)",
     border: "0.5px solid var(--veil)",
@@ -4479,26 +4686,32 @@ export const styles = {
     justifyContent: "center",
     gap: 6,
   },
+  // A tab, not a button. Three of these plus an action filled the row on a
+  // phone and "Dispatched & cancelled" broke over three lines, which made the
+  // filter row taller than the cards it was filtering. Pills, sized to their
+  // own words, wrapping if they must.
   tabBtn: {
-    flex: 1,
+    flex: "0 1 auto",
     background: "transparent",
     border: "1px solid var(--hair-2)",
     color: "var(--ink-3)",
-    borderRadius: 8,
-    padding: "7px 10px",
+    borderRadius: 999,
+    padding: "7px 12px",
     cursor: "pointer",
     fontFamily: display,
-    fontSize: 13.5,
+    fontSize: 12.5,
+    whiteSpace: "nowrap",
   },
   tabBtnActive: {
-    flex: 1,
+    flex: "0 1 auto",
     background: "var(--hair)",
     border: "1px solid var(--flow)",
     color: "var(--ink)",
-    borderRadius: 8,
-    padding: "7px 10px",
+    borderRadius: 999,
+    padding: "7px 12px",
     cursor: "pointer",
     fontFamily: display,
-    fontSize: 13.5,
+    fontSize: 12.5,
+    whiteSpace: "nowrap",
   },
 };

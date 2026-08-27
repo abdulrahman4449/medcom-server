@@ -1,4 +1,4 @@
-import { choosePassword, lookupAccount, saveAccount, signIn, verifyPassword } from "../lib/auth.jsx";
+import { actAsRole, choosePassword, lookupAccount, saveAccount, signIn, verifyPassword } from "../lib/auth.jsx";
 import { BrandLockup, DEPT_LOGO, HOSPITAL_LOGO, ORG_NAME, SHOW_LOGOS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
 import { reliefSituationFor } from "../domain/crew-relief.jsx";
@@ -9,6 +9,7 @@ import { crewShiftSummary, overtimeMs, scheduledShiftKey, seatLabel, shiftAssign
 import { HANDOVER_GRACE_MS } from "../domain/shifts.jsx";
 import { actorStamp } from "../export/name-stamps.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
+import { gregDateStr } from "../lib/dates.jsx";
 import { CheckCircle2, ChevronRight, Users } from "../lib/icons.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -63,6 +64,9 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // (a seat on a unit). Set before the shift step, because that's what decides
   // whether a seat still has to be picked afterward.
   const [pendingRole, setPendingRole] = useState(null);
+  // Whether this sign-on is being made on borrowed authority. Carried onto the
+  // shift log so a night worked on a delegation reads as one.
+  const [actingDelegated, setActingDelegated] = useState(false);
   const [shiftKey, setShiftKey] = useState(null);
   // Which of the two stations this session is working. Everything the
   // session then sees — calls, bookings, the log — is that station's.
@@ -132,6 +136,54 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // picking their shift, then the medic they're working, then a seat on it.
   const canJoinTeam = (accountRole) => accountRole === "admin" || accountRole === "dispatcher";
 
+  // Authority an administrator lent them, if it is still live. The server
+  // decides that — this is only what it said when the password was checked, and
+  // every request afterwards is re-checked against the account.
+  const delegation = foundAccount && foundAccount.delegation ? foundAccount.delegation : null;
+  const delegatedRole = delegation ? delegation.role : null;
+  const roleWord = (r) =>
+    r === "admin" ? "Administrator" : r === "dispatcher" ? "Dispatcher" : "Team Member";
+
+  // Stepping into a delegated role.
+  //
+  // The token is re-issued for that role BEFORE the session says so. The other
+  // way round put an administrator's screen in front of somebody whose every
+  // request the board was still answering as crew — every button on it visible
+  // and every one of them refused.
+  async function actAsDelegated() {
+    if (!foundAccount || !delegatedRole) return;
+    setBusy(true);
+    setError("");
+    try {
+      await actAsRole(delegatedRole);
+    } catch (e) {
+      setBusy(false);
+      setError((e && e.message) || "That could not be done. Try again.");
+      return;
+    }
+    const session = {
+      role: delegatedRole === "crew" ? "team" : delegatedRole,
+      name: foundAccount.name || foundAccount.id,
+      accountId: foundAccount.id,
+      delegated: delegatedRole,
+    };
+    await addLog(
+      `${foundAccount.name || foundAccount.id} signed in on authority delegated by ` +
+        `${delegation.by || "an administrator"} — working as ${roleWord(delegatedRole).toLowerCase()}`,
+      "status",
+      null,
+      actorStamp(session)
+    );
+    setBusy(false);
+    setActingDelegated(true);
+    if (delegatedRole === "admin") {
+      onLogin({ role: "admin", name: session.name, accountId: session.accountId, delegated: "admin" });
+      return;
+    }
+    setPendingRole(delegatedRole === "dispatcher" ? "dispatcher" : "team");
+    setStage("chooseShift");
+  }
+
   async function routeAfterPassword(account) {
     // Already on a seat? Then they are signing in again, not signing on. Offer
     // to carry on being who they already are before anything else.
@@ -142,7 +194,10 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       setStage("resume");
       return;
     }
-    if (canJoinTeam(account.role)) {
+    // The choice is offered to anybody who has more than one role to choose
+    // between — which now includes a crew member an administrator has lent
+    // authority to, and did not before.
+    if (canJoinTeam(account.role) || (account.delegation && account.delegation.role)) {
       setStage("roleChoice");
       return;
     }
@@ -370,15 +425,23 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     const now = Date.now();
     const assignment = shiftAssignment(key, now);
     const late = overtimeMs(assignment, now);
+    // Working the desk on somebody else's authority is a fact about the shift,
+    // so it goes on the shift log rather than only on the screen it was chosen
+    // from. A month later, "who was on the desk that night" has to answer
+    // truthfully, and "a crew member, on the administrator's authority" is a
+    // different answer from "a dispatcher".
+    const borrowed = actingDelegated && account.role !== "dispatcher";
     const session = {
       role: "dispatcher",
       name: account.name || account.id,
       accountId: account.id,
       station: station || DEFAULT_STATION,
+      ...(borrowed ? { delegated: "dispatcher" } : {}),
       ...assignment,
     };
     await addLog(
       `Dispatch — ${account.name || account.id} signed on at ${stationLabel(session.station)} for ${shiftPhrase(assignment)}` +
+        (borrowed ? " · on delegated authority" : "") +
         (late > 0 ? ` · already ${msDurationStr(late)} past that shift's end` : ""),
       "shift",
       {
@@ -391,6 +454,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
         shiftStart: assignment.shiftStart,
         shiftEnd: assignment.shiftEnd,
         overtimeMs: late,
+        delegated: borrowed || undefined,
       },
       // This device has no session yet, so the stamp comes from the person who
       // has just signed on rather than from whoever was here before them.
@@ -863,23 +927,31 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
               <>
                 <div style={styles.loginSub}>Welcome back, {foundAccount.name || foundAccount.id}.</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                  <button style={styles.roleBtn} onClick={continueAsSelf}>
-                    <div style={{ textAlign: "left" }}>
-                      <div style={styles.roleBtnTitle}>
-                        Continue as {foundAccount.role === "admin" ? "Admin" : "Dispatcher"}
+                  {canJoinTeam(foundAccount.role) && (
+                    <button style={styles.roleBtn} onClick={continueAsSelf}>
+                      <div style={{ textAlign: "left" }}>
+                        <div style={styles.roleBtnTitle}>
+                          Continue as {foundAccount.role === "admin" ? "Admin" : "Dispatcher"}
+                        </div>
                       </div>
-                    </div>
-                    <ChevronRight size={18} color="var(--ink-3)" />
-                  </button>
+                      <ChevronRight size={18} color="var(--ink-3)" />
+                    </button>
+                  )}
+                  {/* A crew member with a delegation reaches this screen too,
+                      and their own way in is their team — not "continue as
+                      dispatcher", which they are not. */}
                   <button
                     style={styles.roleBtn}
                     onClick={() => {
+                      setActingDelegated(false);
                       setPendingRole("team");
                       setStage("chooseShift");
                     }}
                   >
                     <div style={{ textAlign: "left" }}>
-                      <div style={styles.roleBtnTitle}>Join a Team</div>
+                      <div style={styles.roleBtnTitle}>
+                        {canJoinTeam(foundAccount.role) ? "Join a Team" : "Continue as Team Member"}
+                      </div>
                     </div>
                     <ChevronRight size={18} color="var(--ink-3)" />
                   </button>
@@ -903,6 +975,23 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                         <div style={styles.roleBtnTitle}>Take the Dispatch Desk</div>
                         <div style={styles.roleBtnSub}>
                           Work this shift as a dispatcher, under your own name
+                        </div>
+                      </div>
+                      <ChevronRight size={18} color="var(--ink-3)" />
+                    </button>
+                  )}
+                  {/* Authority somebody lent them. Named, dated, and under
+                      their own name — which is the whole point: the alternative
+                      people were using was signing in on the administrator's
+                      own ID, which put the wrong name on every line of the
+                      night's log. */}
+                  {delegatedRole && (
+                    <button style={styles.delegatedBtn} disabled={busy} onClick={actAsDelegated}>
+                      <div style={{ textAlign: "left" }}>
+                        <div style={styles.roleBtnTitle}>Work as {roleWord(delegatedRole)}</div>
+                        <div style={styles.roleBtnSub}>
+                          Delegated by {delegation.by || "an administrator"} · until{" "}
+                          {gregDateStr(delegation.until)}
                         </div>
                       </div>
                       <ChevronRight size={18} color="var(--ink-3)" />

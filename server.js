@@ -135,7 +135,13 @@ function hashPassword(password, salt) {
 }
 // Boards created before claim codes existed do not have the columns. Added
 // here rather than in the CREATE above, which only runs on an empty database.
-for (const col of ["claim_salt TEXT", "claim_hash TEXT", "claim_expires INTEGER"]) {
+for (const col of [
+  "claim_salt TEXT", "claim_hash TEXT", "claim_expires INTEGER",
+  // Delegated authority: an administrator lending part of their own standing to
+  // somebody who does not have it. Kept on the account rather than on the board
+  // because it is a permission, and permissions are checked here.
+  "delegated_role TEXT", "delegated_until INTEGER", "delegated_by TEXT", "delegated_at INTEGER",
+]) {
   try {
     db.prepare(`ALTER TABLE accounts ADD COLUMN ${col}`).run();
   } catch (e) {
@@ -200,9 +206,14 @@ function checkPassword(account, password) {
 const TOKEN_TTL_MS = 16 * 60 * 60 * 1000; // longer than the longest shift
 const b64 = (buf) => Buffer.from(buf).toString("base64url");
 
-function issueToken(account) {
+function issueToken(account, actingRole) {
   const payload = b64(JSON.stringify({
-    id: account.id, role: account.role, exp: Date.now() + TOKEN_TTL_MS,
+    id: account.id,
+    role: account.role,
+    // Which of the roles they hold they are working as. Recorded, never
+    // trusted: `requireAuth` checks it against the live account every time.
+    act: actingRole || account.role,
+    exp: Date.now() + TOKEN_TTL_MS,
   }));
   const sig = b64(crypto.createHmac("sha256", authSecret()).update(payload).digest());
   return `${payload}.${sig}`;
@@ -232,9 +243,14 @@ function requireAuth(req, res, next) {
   const claims = readToken(bearer(req));
   if (!claims) return res.status(401).json({ error: "Sign in again." });
   // A token outlives the account it names if somebody was removed mid-shift.
-  const live = db.prepare("SELECT id, role FROM accounts WHERE id = ?").get(claims.id);
+  const live = db.prepare("SELECT * FROM accounts WHERE id = ?").get(claims.id);
   if (!live) return res.status(401).json({ error: "That account no longer exists." });
-  req.user = { id: live.id, role: live.role };
+  // The role on the token is a request, not a fact. It counts only while the
+  // account still allows it — so revoking a delegation, or letting it run out,
+  // takes effect on the very next request rather than when the token expires.
+  const allowed = allowedRoles(live);
+  const acting = claims.act && allowed.includes(claims.act) ? claims.act : live.role;
+  req.user = { id: live.id, role: acting, ownRole: live.role, roles: allowed };
   next();
 }
 
@@ -267,6 +283,12 @@ function loginFailed(id) {
 // changes with them.
 const ADMIN_ONLY_KEYS = new Set([
   "ems:policies", "ems:checklists", "ems:inventory",
+  // Overtime decisions are administration's. Anyone signed in could write this
+  // key, which meant anyone signed in could approve their own hours by posting
+  // to the board — a screen that hides a button is not a permission. What a
+  // crew member may write is ems:overtimeSent: that they are asking for a
+  // decision, never what the decision was.
+  "ems:overtime",
 ]);
 // Never served or written through the board API, whatever a token says.
 const FORBIDDEN_KEYS = new Set(["ems:accounts", "ems:accountsSeeded"]);
@@ -597,10 +619,47 @@ seedAccounts();
 
 // ---------- signing in ----------
 
+// ---------- delegated authority ----------
+//
+// An administrator cannot be on the board at four in the morning, and the
+// alternative people reach for is signing in on somebody else's ID — which puts
+// the wrong name on every line of the night's log. So authority can be lent:
+// a named person, for a named number of days, working under their own name with
+// the standing they were given.
+//
+// It is checked here and only here. A screen that hides a button is not a
+// permission, and a token that says "admin" is worth nothing on its own — every
+// request re-reads the account and re-checks that the delegation is still live.
+const ROLES = ["admin", "dispatcher", "crew"];
+
+function liveDelegation(a) {
+  if (!a || !a.delegated_role) return null;
+  if (!ROLES.includes(a.delegated_role)) return null;
+  // An expiry is required. A delegation that never runs out is a promotion
+  // nobody recorded, and the one thing worse than too little authority on a
+  // night shift is authority that outlived the reason for it.
+  if (!a.delegated_until || Date.now() > a.delegated_until) return null;
+  return {
+    role: a.delegated_role,
+    until: a.delegated_until,
+    by: a.delegated_by || "",
+    at: a.delegated_at || null,
+  };
+}
+
+// Every role this person may act as, their own first.
+function allowedRoles(a) {
+  const own = a && a.role;
+  const d = liveDelegation(a);
+  return d && d.role !== own ? [own, d.role] : [own];
+}
+
 const publicAccount = (a) => a && ({
   id: a.id, name: a.name, role: a.role, team: a.team, slot: a.slot, station: a.station,
   // Whether they have chosen one - never the hash itself.
   hasPassword: !!(a.pw_hash || a.legacy_hash),
+  delegation: liveDelegation(a),
+  roles: allowedRoles(a),
 });
 
 function findAccount(id) {
@@ -632,6 +691,67 @@ app.post("/api/auth/login", (req, res) => {
   LOGIN_TRIES.delete(key);
   const fresh = findAccount(key);
   res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
+});
+
+// Stepping into a delegated role.
+//
+// The token is issued when the password is checked, which is before anybody has
+// been asked which hat they are wearing — so choosing one re-issues it. The
+// role asked for is checked against the account here; a device cannot simply
+// declare itself an administrator, and a delegation that has been revoked or
+// has run out is refused at this point as well as on every request after it.
+app.post("/api/auth/act", requireAuth, (req, res) => {
+  const want = String((req.body || {}).role || "").trim();
+  const live = findAccount(req.user.id);
+  if (!live) return res.status(401).json({ error: "That account no longer exists." });
+  const allowed = allowedRoles(live);
+  if (!allowed.includes(want)) {
+    return res.status(403).json({ error: "You do not hold that role." });
+  }
+  res.json({
+    ok: true,
+    token: issueToken(live, want),
+    acting: want,
+    account: publicAccount(live),
+  });
+});
+
+// Lending authority, and taking it back. Administrators only — the one thing
+// nobody may do is grant themselves more than they have.
+app.post("/api/accounts/:id/delegate", requireAdmin, (req, res) => {
+  const key = String(req.params.id || "").trim().toUpperCase();
+  const acct = findAccount(key);
+  if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
+  const { role, days } = req.body || {};
+
+  // Taking it back.
+  if (!role) {
+    db.prepare(
+      `UPDATE accounts SET delegated_role = NULL, delegated_until = NULL,
+       delegated_by = NULL, delegated_at = NULL WHERE id = ?`
+    ).run(key);
+    return res.json({ ok: true, account: publicAccount(findAccount(key)) });
+  }
+
+  if (!ROLES.includes(role)) return res.status(400).json({ error: "Unknown role." });
+  if (role === acct.role) {
+    return res.status(400).json({ error: "They already hold that role." });
+  }
+  // Delegating to yourself is not delegation, and it is the one route by which
+  // an administrator could quietly rewrite their own standing.
+  if (key === req.user.id) {
+    return res.status(400).json({ error: "You cannot delegate to yourself." });
+  }
+  const n = Number(days);
+  if (!Number.isFinite(n) || n < 1 || n > 90) {
+    return res.status(400).json({ error: "Give a number of days between 1 and 90." });
+  }
+  const until = Date.now() + Math.round(n) * 86400000;
+  db.prepare(
+    `UPDATE accounts SET delegated_role = ?, delegated_until = ?, delegated_by = ?,
+     delegated_at = ? WHERE id = ?`
+  ).run(role, until, req.user.id, Date.now(), key);
+  res.json({ ok: true, account: publicAccount(findAccount(key)) });
 });
 
 // First sign-in, and only then. Setting a password over an account that

@@ -2,7 +2,7 @@ import { callRoute } from "../domain/call-locations.jsx";
 import { PRIORITY, PRIORITY_CHOICES, REQUIREMENTS, REQ_STATUS, priorityKeyOf } from "../domain/constants.jsx";
 import { DEFAULT_STATION, stationLabel } from "../domain/live-sheet.jsx";
 import { buzz, clockStr, shortDurationStr } from "../domain/messages.jsx";
-import { DAY_SHORT, RETURN_MODES, isOutLeg, isRecurring, isReturnLeg, repeatLabel, wantsReturn } from "../domain/return-journeys.jsx";
+import { DAY_SHORT, RETURN_MODES, groupRepeatsByPatient, isOutLeg, isRecurring, isReturnLeg, nextRepeatAt, repeatDays, repeatLabel, repeatPatientKey, wantsReturn } from "../domain/return-journeys.jsx";
 import { callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
 import { crewShiftSummary, hhmm, scheduledShiftKey, shiftMeta, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { SHIFT_MS } from "../domain/shifts.jsx";
@@ -14,6 +14,7 @@ import { readKey } from "../lib/offline-queue.jsx";
 import { useCallback, useEffect, useRef, useState } from "../lib/react.jsx";
 import { setSoundLevel, soundLevelMeta, useSoundLevel } from "../lib/sound.jsx";
 import { styles } from "../styles.jsx";
+import { SectionBanner } from "./AdminView.jsx";
 import { AlertToneCheck } from "./AlarmOverlay.jsx";
 import { CallRoute, InfoNote } from "./AssistanceTasks.jsx";
 import { WhenPicker, bookingsNear, bookingsOnDay } from "./ScheduledRequests.jsx";
@@ -387,9 +388,17 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
   // they go out on, today first, with anything waiting on a phone call held
   // above the calendar because it could be any of those days. Dispatched and
   // cancelled ones stay as a flat list — that tab is history, not a plan.
+  // The standing arrangements read as one card per patient — see
+  // `groupRepeatsByPatient`. The full booking card is still what the controls
+  // live on, so the generic list below carries exactly the one arrangement the
+  // desk has opened, and nothing when none is open.
+  const repeatGroups = tab === "repeating" ? groupRepeatsByPatient(repeating, now) : [];
+  // Counted for the tab whichever tab is showing, so the number does not appear
+  // only once somebody has already pressed it.
+  const repeatCount = new Set(repeating.map(repeatPatientKey)).size;
   const dayGroups =
     tab === "repeating"
-      ? [{ key: "repeating", heading: "", entries: repeating }]
+      ? [{ key: "repeating", heading: "", entries: repeating.filter((s) => s.id === openCard) }]
       : tab === "upcoming"
       ? [
           ...(awaiting.length > 0
@@ -686,15 +695,17 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
 
   return (
     <div>
-      <div style={styles.sectionHeaderRow}>
-        <div style={{ ...styles.sectionHeader, margin: 0 }}>
-          <CalendarClock size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> SCHEDULED REQUESTS
-          {upcoming.length > 0 ? ` (${upcoming.length})` : ""}
-        </div>
-        <button style={styles.ghostBtnSm} onClick={() => setOpen((o) => !o)}>
-          {open ? "Hide schedule" : "Open schedule"} <ChevronDown size={12} />
-        </button>
-      </div>
+      <SectionBanner
+        title="SCHEDULED REQUESTS"
+        icon={<CalendarClock size={13} />}
+        count={upcoming.length}
+        countLabel={upcoming.length === 1 ? "booked" : "booked"}
+        action={
+          <button style={styles.bannerBtn} onClick={() => setOpen((o) => !o)}>
+            {open ? "Hide" : "Open"} <ChevronDown size={12} />
+          </button>
+        }
+      />
 
       <div style={styles.historyNote}>
         {upcoming.length === 0
@@ -722,12 +733,14 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
               style={tab === "repeating" ? styles.tabBtnActive : styles.tabBtn}
               onClick={() => setTab("repeating")}
             >
-              Repeating{repeating.length > 0 ? ` (${repeating.length})` : ""}
+              {/* Patients, not arrangements — one card each, so the number on
+                  the tab has to count the same thing the tab shows. */}
+              Repeating{repeatCount > 0 ? ` (${repeatCount})` : ""}
             </button>
             <button style={tab === "past" ? styles.tabBtnActive : styles.tabBtn} onClick={() => setTab("past")}>
-              Dispatched &amp; cancelled{past.length > 0 ? ` (${past.length})` : ""}
+              Past{past.length > 0 ? ` (${past.length})` : ""}
             </button>
-            <button style={styles.primaryBtnSm} onClick={() => setShowForm((s) => !s)}>
+            <button style={{ ...styles.primaryBtnSm, marginLeft: "auto" }} onClick={() => setShowForm((s) => !s)}>
               <Plus size={14} /> Book ahead
             </button>
           </div>
@@ -1024,6 +1037,77 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                 : tab === "repeating"
                 ? "No standing arrangements. A booking becomes one when days of the week are ticked on it."
                 : "No bookings have gone out or been cancelled yet."}
+            </div>
+          )}
+
+          {/* One card per patient, with every day they run on. The days are
+              drawn as a week rather than written out as a list of names: a desk
+              scanning ten of these is looking for a shape, not reading. */}
+          {tab === "repeating" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+              {repeatGroups.map((g) => {
+                const lead = g.lead;
+                const priorityMeta = PRIORITY[priorityKeyOf(lead)];
+                return (
+                  <div
+                    key={g.key}
+                    style={{ ...styles.schedCard, borderLeftColor: priorityMeta.color, marginBottom: 0 }}
+                  >
+                    <div style={styles.callCardTop}>
+                      <div style={styles.schedCardNature}>{lead.nature}</div>
+                      <span style={{ ...styles.pill, background: priorityMeta.color }}>
+                        {priorityMeta.label}
+                      </span>
+                    </div>
+
+                    <div style={styles.schedCardMeta}>
+                      <CallRoute req={lead} />
+                      <CallTypeTag req={lead} />
+                    </div>
+                    {lead.mrn && <div style={styles.mrnRow}>MRN: {lead.mrn}</div>}
+
+                    <div style={styles.repeatWeek}>
+                      {DAY_SHORT.map((d, i) => (
+                        <span key={d} style={g.days.includes(i) ? styles.repeatDayOn : styles.repeatDayOff}>
+                          {d[0]}
+                        </span>
+                      ))}
+                      <span style={styles.repeatNext}>
+                        {g.nextAt ? `Next ${whenStr(g.nextAt)}` : "Nothing due in the next week"}
+                      </span>
+                    </div>
+
+                    {/* Each arrangement under the patient: the days it runs and
+                        the time it goes at. One patient can have two. */}
+                    {g.entries.map((entry) => {
+                      const unit = units.find((u) => u.id === entry.assignedUnitId);
+                      const at = nextRepeatAt(entry, now);
+                      return (
+                        <div key={entry.id} style={styles.repeatArrRow}>
+                          <span style={styles.repeatArrDays}>
+                            {repeatDays(entry).length === 7 ? "EVERY DAY" : repeatLabel(entry)}
+                          </span>
+                          <span style={styles.repeatArrTime}>
+                            {entry.scheduledFor ? hhmm(entry.scheduledFor) : "no time"}
+                          </span>
+                          <span style={styles.repeatArrWho}>{unit ? unit.name : "No team yet"}</span>
+                          <span style={styles.repeatArrNext}>{at ? untilStr(at, now) : ""}</span>
+                          <button
+                            style={styles.ghostBtnSm}
+                            onClick={() => {
+                              setOpenCard(openCard === entry.id ? null : entry.id);
+                              closeCancel();
+                              setEditingId(null);
+                            }}
+                          >
+                            {openCard === entry.id ? "Done" : "Manage"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </div>
           )}
 

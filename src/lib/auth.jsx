@@ -97,6 +97,24 @@ export async function choosePassword(id, password, code) {
   return data.account;
 }
 
+// Stepping into a role an administrator lent them.
+//
+// The token is issued when the password is checked, before anybody has been
+// asked which hat they are wearing, so choosing one re-issues it. The server
+// re-checks the delegation both here and on every request afterwards — this
+// call cannot grant anything the account does not already hold.
+export async function actAsRole(role) {
+  const data = await post("/api/auth/act", { role });
+  setToken(data.token);
+  return data.account;
+}
+
+// Lending part of an administrator's standing to somebody who does not have it,
+// for a set number of days. `role: null` takes it back.
+export function delegateAuthority(id, role, days) {
+  return post(`/api/accounts/${encodeURIComponent(id)}/delegate`, { role, days });
+}
+
 // An administrator hands one out. The plain code comes back once, here, and is
 // never retrievable again — only its hash is kept, exactly like a password.
 export function issueClaimCode(id) {

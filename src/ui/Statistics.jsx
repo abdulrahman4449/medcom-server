@@ -26,7 +26,7 @@ import { AlertTriangle, Share2 } from "../lib/icons.jsx";
 import { writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
-import { FoldingSection } from "./AdminView.jsx";
+import { FoldingSection, SectionBanner } from "./AdminView.jsx";
 import { InfoNote } from "./AssistanceTasks.jsx";
 import { EscalationInbox } from "./Escalations.jsx";
 
@@ -735,7 +735,7 @@ export function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units
         </div>
       </div>
 
-      <div style={styles.sectionHeader}>TODAY</div>
+      <SectionBanner title="TODAY" />
       {staffed.length === 0 ? (
         <div style={styles.emptyState}>No crews signed on.</div>
       ) : (
@@ -1519,7 +1519,7 @@ export function Statistics({ log, requests, units, checklistRuns, range, setRang
         </button>
       </div>
 
-      <div style={styles.sectionHeader}>BY EMPLOYEE</div>
+      <SectionBanner title="BY EMPLOYEE" />
 
       <input
         style={{ ...styles.input, marginTop: 10 }}
@@ -1587,7 +1587,7 @@ export function Statistics({ log, requests, units, checklistRuns, range, setRang
         </div>
       )}
 
-      <div style={styles.sectionHeader}>PATIENT INITIAL LOCATION — {win.label.toUpperCase()}</div>
+      <SectionBanner title={`PATIENT INITIAL LOCATION — ${win.label.toUpperCase()}`} />
       {origins.rows.length === 0 ? (
         <div style={styles.emptyState}>Nothing recorded against a location yet.</div>
       ) : (

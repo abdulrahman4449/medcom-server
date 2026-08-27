@@ -26,6 +26,8 @@ export * from ${JSON.stringify(ROOT + "src/domain/return-journeys.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/messages.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/uhu-person.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/crew-stamps.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/overtime.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/patient-records.jsx")};
 `;
 
 const dir = mkdtempSync(join(tmpdir(), "pulseops-test-"));

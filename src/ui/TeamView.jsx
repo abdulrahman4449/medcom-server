@@ -14,6 +14,7 @@ import { pcrAuthorChoices, pcrAuthorOf, pcrAuthorText } from "../domain/pcr-auth
 import { callsAwaitingRestock, markRestocked } from "../domain/restock.jsx";
 import { activeAssistUnitIds, assistOf, assistPending, assistTeamFor, assistTeams, isNoTransport } from "../domain/second-ambulance.jsx";
 import { applyCallCoding } from "../domain/sheet-vocabulary.jsx";
+import { overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
 import { soundCallAlert, soundReminderTone, soundStandDownTone, speakStandDown } from "../lib/dates.jsx";
@@ -23,6 +24,7 @@ import { notifyAssignedCall } from "../lib/notify.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
+import { SectionBanner } from "./AdminView.jsx";
 import { AlarmOverlay, AlertToneCheck, CallAlertNotice, SoundDiagnostics } from "./AlarmOverlay.jsx";
 import { CallEditForm, CallRoute, ChecklistCard, EditHistory, InfoNote, ReceiverBanner, RefusalForm } from "./AssistanceTasks.jsx";
 import { CallRestock } from "./CallRestock.jsx";
@@ -34,7 +36,7 @@ import { AssistStatusLine, CallCodingBlock, CallStepper, CallTypeTag, LoadedKmTa
 
 // ---------- team view ----------
 
-export function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents }) {
+export function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -889,6 +891,21 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
       answers,
       note: note || "",
       flaggedCount: flagged.length,
+      // The words, not only the ids.
+      //
+      // A filed run stores answers keyed by item id, and the words those ids
+      // stand for live in the checklist administration screen — which changes.
+      // An item reworded or taken off the list six months later left every run
+      // that flagged it reading "(item no longer on the list)", which is the
+      // opposite of a reference. The exceptions and the readings are what
+      // anybody goes back for, and they are small enough to keep verbatim on
+      // the run itself; the all-available answers stay as ids, because "twenty
+      // nine things were fine" needs no words to say it.
+      flagged: flagged.map((it) => ({ id: it.id, text: it.text, answer: answers[it.id] })),
+      readings: myChecklistItems
+        .filter((it) => isWriteItem(it) && String(answers[it.id] || "").trim())
+        .map((it) => ({ id: it.id, text: it.text, value: String(answers[it.id]).trim() })),
+      itemCount: myChecklistItems.length,
     };
     const fresh = (await readKey(CHECKLIST_RUNS_KEY, checklistRuns)) || [];
     // Already filed by somebody else in the seconds it took to answer.
@@ -1239,10 +1256,17 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
 
       {onPage("teams") && (
         <>
-      <div style={styles.sectionHeader}>YOUR SHIFT</div>
-      <CrewShiftCard user={user} unit={myUnit} onCall={!!myRequest} />
+      <SectionBanner title="YOUR SHIFT" />
+      <CrewShiftCard
+        user={user}
+        unit={myUnit}
+        onCall={!!myRequest}
+        overtimeSent={overtimeSent}
+        setOvertimeSent={setOvertimeSent}
+        addLog={addLog}
+      />
 
-      <div style={styles.sectionHeader}>YOUR UNIT — {myUnit.name}</div>
+      <SectionBanner title={`YOUR UNIT — ${myUnit.name}`} />
       <div style={styles.myUnitCard}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Circle size={10} fill={effectiveStatusMeta(myUnit, requests).color} color={effectiveStatusMeta(myUnit, requests).color} />
@@ -1424,7 +1448,7 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
         </div>
       )}
 
-      <div style={styles.sectionHeader}>ASSIGNED AMBULANCE</div>
+      <SectionBanner title="ASSIGNED AMBULANCE" />
       {/* Asked once a shift, of whoever is sitting in Alpha.
           A number carried over from last week goes onto this week's calls
           without anybody noticing, and it is the column the maintenance and
@@ -1507,10 +1531,10 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
         />
       )}
 
-      <div style={styles.sectionHeader}>
-        <PhoneIncoming size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{" "}
-        {assisting ? "ASSISTING ON CALL" : "ASSIGNED CALL"}
-      </div>
+      <SectionBanner
+        title={assisting ? "ASSISTING ON CALL" : "ASSIGNED CALL"}
+        icon={<PhoneIncoming size={13} />}
+      />
         </>
       )}
 
@@ -1965,8 +1989,13 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
 // they've been on overtime, with the other seat's shift alongside so a crew
 // that is halfway through a handover can see it. Nothing here stops them
 // working; a call that runs past 19:00 (or 07:00) just keeps running.
-export function CrewShiftCard({ user, unit, onCall }) {
+export function CrewShiftCard({ user, unit, onCall, overtimeSent, setOvertimeSent, addLog }) {
   const meta = shiftMeta(user.shift);
+  // What the crew are told about their own overtime, and — when it is theirs to
+  // claim — the one button that sends it. Folded away by default: it is three
+  // sentences about pay on a screen whose job is the next call.
+  const [otOpen, setOtOpen] = useState(false);
+  const [otBusy, setOtBusy] = useState(false);
   const now = Date.now();
   const ot = overtimeMs(user, now);
   const left = shiftRemainingMs(user, now);
@@ -1974,6 +2003,34 @@ export function CrewShiftCard({ user, unit, onCall }) {
   const otherSlot = user.slot === "alpha" ? "bravo" : "alpha";
   const partner = unit ? unit[otherSlot] : null;
   const partnerMeta = partner ? shiftMeta(partner.shift) : null;
+
+  // The stay this shift will become a claim for, keyed exactly as the log will
+  // key it — see `overtimeClaimId` — so sending it now and signing off later
+  // are the same claim and not two.
+  const claim = {
+    id: overtimeClaimId({
+      accountId: user.accountId,
+      name: user.name,
+      shiftStart: user.shiftStart,
+      unitId: unit ? unit.id : null,
+      seat: user.slot,
+    }),
+    name: user.name,
+    accountId: user.accountId || "",
+    unitName: unit ? unit.name : "",
+    claimedMs: ot,
+  };
+  const alreadySent = !!(overtimeSent && overtimeSent[claim.id]);
+
+  async function send() {
+    if (otBusy) return;
+    setOtBusy(true);
+    try {
+      await sendOvertimeClaim({ claim, sent: overtimeSent, setSent: setOvertimeSent, user, addLog });
+    } finally {
+      setOtBusy(false);
+    }
+  }
 
   return (
     <div style={{ ...styles.shiftCard, borderLeftColor: ot > 0 ? "var(--crit)" : meta ? meta.color : "var(--hair-2)" }}>
@@ -2007,6 +2064,47 @@ export function CrewShiftCard({ user, unit, onCall }) {
             : "Past the end of your shift. Sign out when you're relieved, or swap shift from the badge in the header."
           : `${seatLabel(user.slot)} seat${partner ? ` · ${otherSlot === "alpha" ? "Alpha" : "Bravo"}: ${partner.name}${partnerMeta ? ` (${partnerMeta.short})` : ""}` : ` · ${otherSlot === "alpha" ? "Alpha" : "Bravo"} seat open`}`}
       </div>
+
+      {/* Whether anybody is going to be asked to approve these hours, and — if
+          that is the crew member's own decision — the button that decides it.
+          Retractable, because it is a paragraph about pay sitting on the screen
+          a crew works a call from. */}
+      {ot > 0 && (
+        <div style={styles.otCrewWrap}>
+          <button style={styles.otCrewHead} onClick={() => setOtOpen((v) => !v)}>
+            <span style={{ ...styles.otBlockCaret, transform: otOpen ? "rotate(90deg)" : "none" }}>›</span>
+            WHAT HAPPENS TO THESE HOURS
+            <span style={styles.otBlockCount}>{alreadySent ? "SENT" : onCall ? "AUTOMATIC" : "YOURS TO SEND"}</span>
+          </button>
+          {otOpen && (
+            <div style={styles.otCrewBody}>
+              {onCall ? (
+                <span>
+                  A call was running when your shift ended, so this goes to administration on its
+                  own when you sign off. There is nothing for you to do.
+                </span>
+              ) : alreadySent ? (
+                <span>
+                  Sent to administration. They will approve it, approve part of it, or decline it
+                  with a reason — and either way it stays on the shift log.
+                </span>
+              ) : (
+                <React.Fragment>
+                  <span>
+                    You were not on a call when your shift ended, so these hours are yours to claim
+                    or to leave. They are on the shift log either way; sending only decides whether
+                    anybody is asked to approve them. You will be offered this again when you sign
+                    off.
+                  </span>
+                  <button style={styles.primaryBtnSm} onClick={send} disabled={otBusy}>
+                    {otBusy ? "Sending…" : `Send ${otHoursStr(ot)} to administration`}
+                  </button>
+                </React.Fragment>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

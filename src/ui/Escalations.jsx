@@ -15,6 +15,7 @@ import { AlertTriangle, Archive, CalendarClock, CheckCircle2, ChevronDown, Chevr
 import { readKey } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
+import { SectionBanner } from "./AdminView.jsx";
 import { CallEditForm, CallRoute, EditHistory, InfoNote, PendingEditReview, ReceiverBanner } from "./AssistanceTasks.jsx";
 import { addMonths, monthGrid, startOfMonth } from "./ScheduledRequests.jsx";
 import { AssistStatusLine, CallCodingBlock, CallTimes, CallTypeTag, CancelledTag, LoadedKmTag, NoTransportTag, PcrAuthorTag } from "./StatusBoard.jsx";
@@ -359,12 +360,12 @@ export function EscalationInbox({ requests, units, viewer, saveRequests, addLog,
       {/* Standing on its own it needs a heading; inside the issues section it
           does not, because the section above it already said what this is. */}
       {!embedded && (
-        <div style={styles.sectionHeaderRow}>
-          <div style={{ ...styles.sectionHeader, margin: 0 }}>
-            <ShieldAlert size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> ESCALATED ISSUES
-            {pendingCount > 0 ? ` (${pendingCount} WAITING)` : ""}
-          </div>
-        </div>
+        <SectionBanner
+          title="ESCALATED ISSUES"
+          icon={<ShieldAlert size={13} />}
+          count={pendingCount > 0 ? pendingCount : undefined}
+          countLabel="waiting"
+        />
       )}
 
       {shownRows.length === 0 ? (
@@ -854,10 +855,9 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
 
   return (
     <div>
-      <div style={styles.sectionHeaderRow}>
-        <div style={{ ...styles.sectionHeader, margin: 0 }}>
-          <Archive size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{" "}
-          {escOnly
+      <SectionBanner
+        title={
+          escOnly
             ? "ESCALATED CALLS"
             : filtering || allHistory
               ? unitId
@@ -867,15 +867,18 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                 ? `${myUnitName || "YOUR MEDIC"} — CLOSED THIS SHIFT`
                 : unitId
                   ? "YOUR CLOSED CALLS"
-                  : "COMPLETED CALLS"}
-          {completed.length > 0 ? ` (${completed.length})` : ""}
-        </div>
-        {(completed.length > 0 || filtering) && (
-          <button style={styles.ghostBtnSm} onClick={() => setOpen((o) => !o)}>
-            {isOpen ? "Hide" : "Show"} {windowed ? "calls" : "history"} <ChevronDown size={12} />
-          </button>
-        )}
-      </div>
+                  : "COMPLETED CALLS"
+        }
+        icon={<Archive size={13} />}
+        count={completed.length > 0 ? completed.length : undefined}
+        action={
+          (completed.length > 0 || filtering) && (
+            <button style={styles.bannerBtn} onClick={() => setOpen((o) => !o)}>
+              {isOpen ? "Hide" : "Show"} <ChevronDown size={12} />
+            </button>
+          )
+        }
+      />
 
       {/* The sheet's outstanding questions, said once at the top rather than
           left to be discovered at the end of the month by somebody reading four

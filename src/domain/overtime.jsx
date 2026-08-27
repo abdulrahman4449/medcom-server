@@ -19,6 +19,63 @@ import { writeKey } from "../lib/offline-queue.jsx";
 // corrects the claim rather than leaving an orphan.
 export const OVERTIME_KEY = "ems:overtime";
 
+// What has actually been put in front of administration.
+//
+// Not every hour past a shift end is a claim somebody wants to make. A crew
+// held on a call at seven o'clock had no choice about it and the department
+// pays either way, so that one goes to administration on its own. A crew who
+// stayed twenty minutes to finish tidying the truck may well not want to claim
+// for it, and a queue full of claims nobody intended to make is a queue an
+// administrator stops reading.
+//
+// So: held by a call is sent automatically, and everything else is the
+// person's own to send. This is the record of what they sent — a map of claim
+// id to who sent it and when, kept apart from the decisions so that a claim
+// being sent can never be mistaken for a claim being approved.
+export const OVERTIME_SENT_KEY = "ems:overtimeSent";
+
+// Did the department keep this person past their shift, or did they stay?
+// The one is sent on its own; the other is offered.
+export function overtimeIsAutomatic(claim) {
+  return !!(claim && (claim.onCall || claim.granted));
+}
+
+// Is this claim in front of administration at all?
+export function overtimeSubmitted(claim, sent) {
+  if (overtimeIsAutomatic(claim)) return true;
+  return !!(sent && claim && sent[claim.id]);
+}
+
+// Recording that somebody sent theirs in. Written by the person it belongs to,
+// which is why it is its own key: the decisions are administration's and a
+// crew tablet has no business writing into them.
+export async function sendOvertimeClaim({ claim, sent, setSent, user, addLog }) {
+  if (!claim) return false;
+  const next = {
+    ...(sent || {}),
+    [claim.id]: {
+      at: Date.now(),
+      by: (user && user.name) || claim.name || "",
+      accountId: (user && user.accountId) || claim.accountId || "",
+      claimedMs: claim.claimedMs || 0,
+    },
+  };
+  const ok = await writeKey(OVERTIME_SENT_KEY, next);
+  if (!ok) {
+    window.alert("That could not be sent — no signal to the server. Nothing has changed; try again.");
+    return false;
+  }
+  if (setSent) setSent(next);
+  if (addLog) {
+    await addLog(
+      `Overtime sent to administration by ${claim.name || (user && user.name) || "crew"}` +
+        `${claim.unitName ? ` (${claim.unitName})` : ""} — ${otHoursStr(claim.claimedMs)}`,
+      "status"
+    );
+  }
+  return true;
+}
+
 // One stay, one claim. The seat is in the key because a person who worked two
 // trucks in one shift did two stays and each is answerable separately.
 export function overtimeClaimId(d) {
@@ -45,8 +102,9 @@ export function heldByCallAt(requests, unitId, at) {
 
 // Every stay in the window that ran past its shift end, with whatever has been
 // decided about it attached.
-export function overtimeClaims(log, requests, from, to, decisions) {
+export function overtimeClaims(log, requests, from, to, decisions, sent) {
   const decided = decisions || {};
+  const submitted = sent || {};
   const out = [];
   (log || []).forEach((e) => {
     if (!e || e.type !== "shift") return;
@@ -55,7 +113,17 @@ export function overtimeClaims(log, requests, from, to, decisions) {
     if (!d.overtimeMs || d.overtimeMs <= 0) return;
     if (!e.ts || e.ts < from || e.ts >= to) return;
     const id = overtimeClaimId(d);
-    const held = heldByCallAt(requests, d.unitId, d.shiftEnd);
+    // Whether a call was holding them is decided at sign-off and stamped on the
+    // log entry there. Deriving it here from `requests` was right on the day and
+    // wrong a fortnight later: the live board only carries recent calls, so an
+    // older claim came back "not on a call" and — now that the answer decides
+    // whether it reaches administration at all — would have quietly stopped
+    // being sent. The stamp is the truth; the derivation is the fallback for
+    // entries written before it existed.
+    const held =
+      d.onCall === undefined ? heldByCallAt(requests, d.unitId, d.shiftEnd) : null;
+    const onCall = d.onCall === undefined ? !!held : !!d.onCall;
+    const onCallNature = d.onCall === undefined ? (held ? held.nature : "") : d.onCallNature || "";
     out.push({
       id,
       ts: e.ts,
@@ -70,10 +138,14 @@ export function overtimeClaims(log, requests, from, to, decisions) {
       shiftEnd: d.shiftEnd || null,
       signedOffAt: e.ts,
       claimedMs: d.overtimeMs,
-      onCall: !!held,
-      onCallNature: held ? held.nature : "",
+      onCall,
+      onCallNature,
       decision: decided[id] || null,
       granted: false,
+      // Automatic if a call held them; otherwise only once they send it.
+      sentAt: onCall ? e.ts : (submitted[id] && submitted[id].at) || null,
+      submitted: onCall || !!submitted[id],
+      automatic: onCall,
     });
   });
 
@@ -102,6 +174,11 @@ export function overtimeClaims(log, requests, from, to, decisions) {
       onCallNature: "",
       decision: dec,
       granted: true,
+      // A granted shift is administration's own decision, so it is never
+      // waiting on the person to send it.
+      sentAt: dec.decidedAt || null,
+      submitted: true,
+      automatic: true,
     });
   });
 

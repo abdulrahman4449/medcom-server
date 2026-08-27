@@ -12,7 +12,7 @@ import { INVENTORY_KEY, INVENTORY_MOVES_KEY } from "../domain/inventory.jsx";
 import { DEFAULT_ACCOUNTS, DEFAULT_STATION, DEFAULT_UNITS, STATIONS, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
 import { MESSAGES_KEY, clockStr, msDurationStr, otHoursStr } from "../domain/messages.jsx";
 import { ARCHIVE_KEY, archiveOpDay, opDayComplete, opDayEnd, opDayLabel, opDayStart, requestsForOpDay, unarchivedOpDays } from "../domain/op-day.jsx";
-import { OVERTIME_KEY } from "../domain/overtime.jsx";
+import { OVERTIME_KEY, OVERTIME_SENT_KEY, heldByCallAt, overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { RESTOCK_KEY, callsAwaitingRestock } from "../domain/restock.jsx";
 import { callsNeedingReturn, isRecurring, isReturnLeg, repeatOccurrencesDue, returnBookingFor, wantsReturn } from "../domain/return-journeys.jsx";
 import { callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
@@ -268,6 +268,8 @@ export function App() {
   // The checklist items administration has set, and every list filed.
   const [checklists, setChecklists] = useState(emptyChecklists());
   const [checklistRuns, setChecklistRuns] = useState([]);
+  const [overtimeSent, setOvertimeSent] = useState({});
+  const refreshAccountsRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [inventory, setInventory] = useState(null);
   const [inventoryMoves, setInventoryMoves] = useState([]);
@@ -643,12 +645,17 @@ export function App() {
       if (alive) setAccounts(roster);
     };
     pull();
+    // Anything that changes the roster out of band — delegating authority,
+    // taking it back — reads it straight back rather than waiting half a minute
+    // for the slow poll to notice.
+    refreshAccountsRef.current = pull;
     // It changes when an administrator changes it, which is rare, so it rides
     // the slow poll rather than the three-second one.
     const t = setInterval(pull, COLD_POLL_MS);
     return () => {
       alive = false;
       clearInterval(t);
+      refreshAccountsRef.current = null;
     };
   }, [user]);
 
@@ -690,6 +697,10 @@ export function App() {
     if (pwr !== READ_FAILED) setPasswordResets(pwr || []);
     const rst = await readKeyRaw(RESTOCK_KEY);
     if (rst !== READ_FAILED) setRestockDone(rst || {});
+    // Who has sent their overtime in. A small map, read on the slow poll
+    // because a claim being sent is not something anybody is watching for.
+    const sent = await readKeyRaw(OVERTIME_SENT_KEY);
+    if (sent !== READ_FAILED) setOvertimeSent(sent || {});
   }, []);
 
   // Read when the shelf is actually being looked at, and never on the poll.
@@ -1617,6 +1628,10 @@ export function App() {
   async function handleLogout() {
 
     const now = Date.now();
+    // Set inside the team branch below and answered once the seat has actually
+    // been released. Asked before that, a crew member who cancelled the dialog
+    // would have been signed out anyway with nothing recorded.
+    let otAsk = null;
     if (user && user.role === "team" && user.unitId && user.slot) {
       const freshUnits = await readKey("ems:units", units);
       const unit = freshUnits.find((u) => u.id === user.unitId);
@@ -1624,6 +1639,30 @@ export function App() {
         const otherSlot = user.slot === "alpha" ? "bravo" : "alpha";
         const stillEmpty = !unit[otherSlot];
         const ot = overtimeMs(user, now);
+        // Whether a call was holding them when the shift ended. Decided here,
+        // where the board still has the call, and stamped on the log entry —
+        // it is what decides whether the overtime goes to administration on
+        // its own or is theirs to send. Worked out weeks later from a live
+        // board that no longer carries the call, the answer is always "no".
+        const heldBy = heldByCallAt(requests, unit.id, user.shiftEnd);
+        if (ot > 0) {
+          otAsk = {
+            heldBy,
+            claim: {
+              id: overtimeClaimId({
+                accountId: user.accountId,
+                name: user.name,
+                shiftStart: user.shiftStart,
+                unitId: unit.id,
+                seat: user.slot,
+              }),
+              name: user.name,
+              accountId: user.accountId || "",
+              unitName: unit.name,
+              claimedMs: ot,
+            },
+          };
+        }
         const outgoing = {
           name: user.name,
           accountId: user.accountId,
@@ -1705,6 +1744,8 @@ export function App() {
               shiftStart: partner.shiftStart || null,
               shiftEnd: partner.shiftEnd || null,
               overtimeMs: pot,
+              onCall: !!heldBy,
+              onCallNature: heldBy ? heldBy.nature : "",
               sharedDevice: true,
             }
           );
@@ -1741,12 +1782,20 @@ export function App() {
             role: "team",
             name: user.name,
             accountId: user.accountId,
+            // The id and the station were missing here, so every claim this
+            // path raised was keyed to "?" and filed under the default
+            // station — and `heldByCallAt` could never find the call that was
+            // holding them, because it had no unit to look for.
+            unitId: unit.id,
             unitName: unit.name,
+            station: stationOf(unit),
             seat: user.slot,
             shift: user.shift || null,
             shiftStart: user.shiftStart || null,
             shiftEnd: user.shiftEnd || null,
             overtimeMs: ot,
+            onCall: !!heldBy,
+            onCallNature: heldBy ? heldBy.nature : "",
           }
         );
       }
@@ -1768,6 +1817,42 @@ export function App() {
         }
       );
     }
+
+    // Overtime, and who it goes to.
+    //
+    // A call that held them past the end of the shift is not a choice anybody
+    // made, and the department pays for it either way, so it goes to
+    // administration on its own and they are simply told. Twenty minutes spent
+    // tidying the truck is theirs — plenty of people would rather not claim for
+    // it, and a queue full of hours nobody meant to claim is a queue an
+    // administrator stops reading. So it is offered, once, here: after this
+    // they are signed out and there is no tablet to offer it on.
+    if (otAsk) {
+      if (otAsk.heldBy) {
+        window.alert(
+          `You are ${otHoursStr(otAsk.claim.claimedMs)} past the end of your shift, and a call was ` +
+            `running when it ended${otAsk.heldBy.nature ? ` — ${otAsk.heldBy.nature}` : ""}.\n\n` +
+            `This has been sent to administration for you. You do not need to do anything.`
+        );
+      } else if (
+        window.confirm(
+          `You are ${otHoursStr(otAsk.claim.claimedMs)} past the end of your shift.\n\n` +
+            `You were not on a call when it ended, so this is yours to claim or leave. ` +
+            `Send it to administration?\n\n` +
+            `It is on the shift log either way — this only decides whether anybody is asked to ` +
+            `approve it.`
+        )
+      ) {
+        await sendOvertimeClaim({
+          claim: otAsk.claim,
+          sent: overtimeSent,
+          setSent: setOvertimeSent,
+          user,
+          addLog,
+        });
+      }
+    }
+
     setSession(null);
   }
 
@@ -2076,11 +2161,14 @@ export function App() {
               messages={messages}
               setMessages={setMessages}
               locations={locations}
+              archives={archives}
             />
           )}
           {!onSharedPage && user.role === "team" && (
             <TeamView
               onGoToPage={(t) => setNavTab(t)}
+              overtimeSent={overtimeSent}
+              setOvertimeSent={setOvertimeSent}
               restockDone={restockDone}
               setRestockDone={setRestockDone}
               messages={messages}
@@ -2118,6 +2206,10 @@ export function App() {
               accounts={accounts}
               saveUnits={saveUnits}
               saveAccounts={saveAccounts}
+              refreshAccounts={() => {
+                const fn = refreshAccountsRef.current;
+                if (fn) return fn();
+              }}
               saveRequests={saveRequests}
               saveScheduled={saveScheduled}
               addLog={addLog}
@@ -2134,6 +2226,8 @@ export function App() {
               setInventoryMoves={setInventoryMoves}
               overtimeDecisions={overtimeDecisions}
               setOvertimeDecisions={setOvertimeDecisions}
+              overtimeSent={overtimeSent}
+              setOvertimeSent={setOvertimeSent}
               locations={locations}
               trackingConsents={trackingConsents}
               setTrackingConsents={setTrackingConsents}

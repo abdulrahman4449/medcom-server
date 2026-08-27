@@ -164,4 +164,111 @@ export function run(D, t) {
       (Array.isArray(stamps) ? stamps.length : 0) >= 2,
       "got " + JSON.stringify(stamps).slice(0, 200));
   }
+
+  // ---------- a repeating booking is one patient, however many arrangements
+  {
+    const t8 = at(2026, 8, 20, 8);
+    const t14 = at(2026, 8, 20, 14);
+    const mwf = { id: "a", mrn: "MRN77", nature: "Dialysis", locationFrom: "Ward 3",
+      locationTo: "Renal", scheduledFor: t8, repeat: { days: [1, 3, 5] } };
+    const sat = { id: "b", mrn: "MRN77", nature: "Dialysis", locationFrom: "Ward 3",
+      locationTo: "Renal", scheduledFor: t14, repeat: { days: [6] } };
+    const other = { id: "c", mrn: "MRN99", nature: "Dialysis", locationFrom: "Ward 3",
+      locationTo: "Renal", scheduledFor: t8, repeat: { days: [2] } };
+    const groups = D.groupRepeatsByPatient([mwf, sat, other], at(2026, 8, 20, 9));
+    t.is("repeats: one card per patient, not per arrangement", groups.length, 2);
+    const mine = groups.find((g) => g.key === "mrn:MRN77");
+    t.is("repeats: the patient's card carries every day they run on",
+      mine.days.join(), "1,3,5,6");
+    t.is("repeats: and both arrangements", mine.entries.length, 2);
+    t.ok("repeats: a different MRN is a different patient",
+      groups.some((g) => g.key === "mrn:MRN99"));
+    // No MRN: the same journey is still the same standing run.
+    const g2 = D.groupRepeatsByPatient(
+      [{ ...mwf, id: "x", mrn: "" }, { ...sat, id: "y", mrn: "" }],
+      at(2026, 8, 20, 9)
+    );
+    t.is("repeats: with no MRN the journey identifies the run", g2.length, 1);
+  }
+
+  // ---------- the next occurrence, for the line that says when they are in
+  {
+    const tmpl = { scheduledFor: at(2026, 8, 20, 8), repeat: { days: [1, 3, 5] } };
+    // Thursday 20 August 2026 is a Thursday; the next Friday is the 21st.
+    t.is("repeats: next occurrence is the next day it runs",
+      D.nextRepeatAt(tmpl, at(2026, 8, 20, 9)), at(2026, 8, 21, 8));
+    t.is("repeats: a booking with no days has no next", D.nextRepeatAt({ scheduledFor: 1 }, 1), null);
+  }
+
+  // ---------- overtime reaches administration only when it should
+  {
+    const off = (onCall) => [{
+      ts: at(2026, 8, 20, 20), type: "shift",
+      detail: { kind: "off", role: "team", name: "A. Ali", accountId: "F1", unitId: "u1",
+        unitName: "MEDIC 1", seat: "alpha", shift: "day", shiftStart: at(2026, 8, 20, 7),
+        shiftEnd: at(2026, 8, 20, 19), overtimeMs: 1 * H, onCall, onCallNature: onCall ? "Chest pain" : "" },
+    }];
+    const from = at(2026, 8, 20, 0), to = at(2026, 8, 21, 0);
+    const held = D.overtimeClaims(off(true), [], from, to, {}, {})[0];
+    t.ok("overtime: a call held them, so it is sent on its own", held.submitted && held.automatic);
+    const stayed = D.overtimeClaims(off(false), [], from, to, {}, {})[0];
+    t.ok("overtime: they stayed, so it waits on them", !stayed.submitted && !stayed.automatic);
+    const sentIn = D.overtimeClaims(off(false), [], from, to, {}, { [stayed.id]: { at: 1 } })[0];
+    t.ok("overtime: once they send it, it is in front of administration", sentIn.submitted);
+    t.ok("overtime: and it is still not automatic", !sentIn.automatic);
+    // The stamp on the log beats deriving it from a board that no longer has
+    // the call — the whole reason it is stamped at sign-off.
+    t.ok("overtime: the stamped answer is used, not the live board",
+      D.overtimeClaims(off(true), [], from, to, {}, {})[0].onCall === true);
+    t.is("overtime: the claim id keys the stay, seat included",
+      D.overtimeClaimId({ accountId: "F1", shiftStart: 5, unitId: "u1", seat: "alpha" }),
+      "F1::5::u1::alpha");
+  }
+
+  // ---------- the patient record joins by MRN and by nothing else
+  {
+    const live = [
+      { id: "r1", mrn: "mrn-77 ", nature: "Dialysis", locationFrom: "Ward 3", locationTo: "Renal",
+        status: "completed", createdAt: at(2026, 8, 26, 9), times: { assigned: at(2026, 8, 26, 9) },
+        requirements: ["oxygen"], station: "main" },
+      { id: "r2", mrn: "MRN77", nature: "Dialysis", locationFrom: "Ward 3", locationTo: "Renal",
+        status: "completed", createdAt: at(2026, 8, 25, 9), times: { assigned: at(2026, 8, 25, 9) },
+        station: "main" },
+      // No MRN: there is nothing to join it by, so it must not appear at all.
+      { id: "r3", nature: "Fall", status: "completed", createdAt: at(2026, 8, 25, 10), times: {} },
+    ];
+    const booked = [
+      { id: "s1", mrn: "MRN77", nature: "Dialysis", locationFrom: "Ward 3", locationTo: "Renal",
+        status: "scheduled", scheduledFor: at(2026, 8, 28, 9) },
+    ];
+    const archived = [{ requests: [
+      // The same call the live board still has: one journey, not two.
+      { id: "r2", mrn: "MRN77", nature: "Dialysis", status: "completed",
+        createdAt: at(2026, 8, 25, 9), times: {} },
+      { id: "r9", mrn: "MRN88", nature: "Transfer", status: "completed",
+        createdAt: at(2026, 8, 1, 9), times: {} },
+    ], scheduled: [] }];
+
+    const recs = D.patientRecords(live, booked, archived);
+    t.is("records: one record per MRN", recs.length, 2);
+    const me = recs.find((r) => r.mrn === "MRN77");
+    t.is("records: the MRN is normalised, so mrn-77 and MRN77 are not two people",
+      me.count, 3);
+    t.ok("records: a call with no MRN is not invented into a record",
+      !recs.some((r) => r.journeys.some((j) => j.id === "r3")));
+    t.is("records: an archived copy of a live call is the same journey",
+      me.journeys.filter((j) => j.id === "r2").length, 1);
+    t.is("records: the booking still to come is counted as open", me.openCount, 1);
+    t.is("records: the usual journey is the one they mostly make",
+      me.usualRoute, "Ward 3 → Renal");
+    t.ok("records: what they have needed is carried across every journey",
+      me.requirements.includes("oxygen"));
+    t.ok("records: the patient with something coming outranks one long finished",
+      recs[0].mrn === "MRN77");
+    // "Last" means the past. A booking on the book is next, not last.
+    t.ok("records: a future booking is next, never last", me.nextAt > Date.now());
+    t.ok("records: last is a date that has already happened", me.lastAt <= Date.now());
+    t.ok("records: a search reaches the ward as well as the number",
+      D.recordMatches(me, "renal") && D.recordMatches(me, "mrn77") && !D.recordMatches(me, "zzz"));
+  }
 }

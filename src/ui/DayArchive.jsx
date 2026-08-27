@@ -17,12 +17,15 @@ import { CalendarClock, HandRaised, Plus, Trash, Users } from "../lib/icons.jsx"
 import { readKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
-import { FoldingSection, ROLE_LABELS } from "./AdminView.jsx";
+import { FoldingSection, ROLE_LABELS, SectionBanner } from "./AdminView.jsx";
 import { BackupPanel } from "./BackupPanel.jsx";
 import { AssistanceTasks, CallRoute, FleetRow, InfoNote, PendingCallCard } from "./AssistanceTasks.jsx";
 import { UnitRosterCard } from "./ChatDock.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
 import { CompletedCalls, EscalationChip, EscalationThread } from "./Escalations.jsx";
+import { DelegatedAuthority } from "./Delegation.jsx";
+import { FiledChecklists } from "./FiledChecklists.jsx";
+import { PatientRecords } from "./PatientRecords.jsx";
 import { InventoryAdmin } from "./InventoryAdmin.jsx";
 import { issueClaimCode } from "../lib/auth.jsx";
 import { PasswordResets, TrackingConsentAdmin } from "./LocationConsents.jsx";
@@ -269,7 +272,7 @@ function ClaimCodeBanner({ issued, onDone }) {
   );
 }
 
-export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
+export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -673,6 +676,18 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
             scheduled={scheduled}
           />
           <SavedLogs submissions={submissions} requests={requests} coverage={coverage} />
+          {/* The checks themselves, kept. The statistics page answers whether
+              today's have been done; this is where somebody goes back to what a
+              truck's check actually said three months ago. */}
+          <FiledChecklists checklistRuns={checklistRuns} checklists={checklists} />
+          {/* The same record the desk reads, on the page an administrator goes
+              back through. One list, two doors. */}
+          <PatientRecords
+            requests={requests}
+            scheduled={scheduled}
+            archives={archives}
+            units={units}
+          />
           {/* Sits with the archive because it is the same question: what of
               this survives, and where is it kept. */}
           <BackupPanel role={user.role} />
@@ -722,6 +737,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         addLog={addLog}
         decisions={overtimeDecisions}
         setDecisions={setOvertimeDecisions}
+        sent={overtimeSent}
+        setSent={setOvertimeSent}
       />
 
       <TrackingConsentAdmin
@@ -763,6 +780,15 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
 
       {onPage("teams") && (
         <>
+      {/* Above the three roster forms, because it is the one thing on this page
+          that changes what somebody can do rather than who exists. */}
+      <DelegatedAuthority
+        accounts={accounts}
+        user={user}
+        addLog={addLog}
+        refreshAccounts={refreshAccounts}
+      />
+
       <FoldingSection
         title="ADD TEAM MEMBER ID"
         count={accounts.filter((a) => a.role === "crew").length}
@@ -925,14 +951,12 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         const liveHere = atStation(requests, st.key).filter((r) => r.status !== "completed");
         return (
           <div key={st.key} style={{ marginTop: 18 }}>
-            <div style={styles.sectionHeader}>
-              <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
-              {st.label.toUpperCase()} — TEAM ROSTER
+            <SectionBanner title={`${st.label.toUpperCase()} — TEAM ROSTER`} icon={<Users size={13} />}>
               <span style={styles.stationCount}>
                 {unitsHere.length} {unitsHere.length === 1 ? "medic" : "medics"} ·{" "}
                 {liveHere.length} live {liveHere.length === 1 ? "call" : "calls"}
               </span>
-            </div>
+            </SectionBanner>
             <div style={styles.unitGrid}>
               {unitsHere.map((u) => (
                 <UnitRosterCard
@@ -988,7 +1012,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         only="active"
       />
 
-      <div style={styles.sectionHeader}>Active calls</div>
+      <SectionBanner title="ACTIVE CALLS" count={active.length} />
 
       {/* An admin watching the board can send the second ambulance too, rather
           than having to find a dispatcher to do it. */}

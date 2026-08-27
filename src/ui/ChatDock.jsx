@@ -19,9 +19,11 @@ import { AlertTriangle, Ambulance, ArrowRight, CalendarClock, CheckCircle2, Cloc
 import { readKey } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
+import { SectionBanner } from "./AdminView.jsx";
 import { AlertToneCheck } from "./AlarmOverlay.jsx";
 import { AssistanceTasks, CallEditForm, CallRoute, EditHistory, FleetRow, InfoNote, PendingCallCard, PendingEditReview, ReceiverBanner } from "./AssistanceTasks.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
+import { PatientRecords } from "./PatientRecords.jsx";
 import { PendingEditsInbox } from "./DispatcherView.jsx";
 import { CompletedCalls } from "./Escalations.jsx";
 import { FleetMap } from "./FleetMap.jsx";
@@ -266,7 +268,7 @@ export function useMessageAlerts(messages, mine, unitIds, audioCtxRef) {
   }, [messages, mine]);
 }
 
-export function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages, locations }) {
+export function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages, locations, archives }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
   const [openCallId, setOpenCallId] = useState(null);
@@ -1205,11 +1207,11 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
       {/* One way to raise a call. The button in the bar is the one that does it
           now; a second control here saying the same thing in different words is
           how a desk ends up unsure which one is real. */}
-      <div style={styles.sectionHeaderRow}>
-        <div style={styles.sectionHeader}>Active calls</div>
-        {showForm && (
+      <SectionBanner
+        title="ACTIVE CALLS"
+        action={showForm && (
           <button
-            style={styles.ghostBtnSm}
+            style={styles.bannerBtn}
             onClick={() => {
               // Nothing has been raised yet, so there is nothing to record —
               // but a desk that has typed a location and a nature should not
@@ -1223,7 +1225,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
             Cancel
           </button>
         )}
-      </div>
+      />
 
       {showForm && (
         <div style={styles.requestForm}>
@@ -1770,9 +1772,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
           they are work waiting to happen, not a fact about the roster. */}
       {onPage("teams") && (
         <>
-          <div style={styles.sectionHeader}>
-            <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> UNITS
-          </div>
+          <SectionBanner title="UNITS" icon={<Users size={13} />} count={stationUnits.length} countLabel={stationUnits.length === 1 ? "medic" : "medics"} />
           <div style={styles.unitGrid}>
             {stationUnits.map((u) => (
               <UnitRosterCard key={u.id} unit={u} />
@@ -1814,6 +1814,18 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
               end: user.shiftEnd || (user.shiftStart || shiftWindowAt(Date.now()).start) + SHIFT_MS,
             }}
             canCorrect
+          />
+
+          {/* Who the department has moved before.
+              A booking phoned through is nine tenths of the time a patient the
+              board has already carried, and until this the desk had no way to
+              find that out. It sits under the schedule because that is where
+              somebody is standing when they take the call. */}
+          <PatientRecords
+            requests={stationRequests}
+            scheduled={stationScheduled}
+            archives={archives}
+            units={stationUnits}
           />
         </>
       )}

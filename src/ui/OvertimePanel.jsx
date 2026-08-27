@@ -9,14 +9,38 @@ import { styles } from "../styles.jsx";
 import { FoldingSection } from "./AdminView.jsx";
 import { exportOvertime } from "./overtime-sheet.jsx";
 
+// A fold inside a fold. The outer FoldingSection is the panel; this is one
+// block within it, and it is deliberately quieter — a row with a caret and a
+// count, not a second banner competing with the first.
+function OtBlock({ title, count, open, onToggle, children }) {
+  return (
+    <div style={styles.otBlock}>
+      <button style={styles.otBlockHead} onClick={onToggle}>
+        <span style={{ ...styles.otBlockCaret, transform: open ? "rotate(90deg)" : "none" }}>›</span>
+        {title}
+        <span style={styles.otBlockCount}>{count}</span>
+      </button>
+      {open && <div style={{ paddingTop: 8 }}>{children}</div>}
+    </div>
+  );
+}
+
 // ---------- overtime, as administration answers it ----------
 //
 // Retractable, and folded by default: this is a weekly job, not something the
 // board is watched for. Open, it answers three things in order — what is
 // waiting on a decision, who is standing past their shift right now, and what
 // the period comes to.
-export function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecisions }) {
+export function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecisions, sent }) {
   const [open, setOpen] = useState(false);
+  // Retractable inside as well as outside. Open, this panel ran to three
+  // screens on a phone — a date range, three totals, everybody standing past
+  // their shift, and every claim in the period — and the thing an
+  // administrator actually came for was four rows down the third block. Each
+  // part folds on its own now, and the two that need answering open first.
+  const [openLive, setOpenLive] = useState(false);
+  const [openUnsent, setOpenUnsent] = useState(false);
+  const [openClaims, setOpenClaims] = useState(true);
   const now = Date.now();
   // A pay period, not a calendar month. Defaults to the last 30 days and is
   // then whatever the administrator types.
@@ -36,8 +60,13 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
   const to = new Date(`${toStr}T00:00:00`).getTime() + 86400000;
   const validRange = Number.isFinite(from) && Number.isFinite(to) && to > from;
 
-  const claims = validRange ? overtimeClaims(log, requests, from, to, decisions) : [];
-  const pending = claims.filter((c) => !c.decision);
+  const claims = validRange ? overtimeClaims(log, requests, from, to, decisions, sent) : [];
+  // Waiting on a decision means waiting on *this* desk. A stay the person has
+  // not sent in is not waiting on anybody here, and counting it as pending put
+  // a number on this panel that no amount of deciding could ever clear.
+  const pending = claims.filter((c) => !c.decision && c.submitted);
+  const unsent = claims.filter((c) => !c.decision && !c.submitted);
+  const unsentMs = unsent.reduce((n, c) => n + (c.claimedMs || 0), 0);
   const label = validRange
     ? `${gregDateStr(from)} → ${gregDateStr(to - 1)}`
     : "Pick a period";
@@ -53,8 +82,10 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
     (acc, c) => {
       const ms = overtimeApprovedMs(c);
       const dec = c.decision;
-      if (ms === null) acc.undecided += c.claimedMs || 0;
-      else if (dec && dec.status === "declined") acc.declined += c.claimedMs || 0;
+      if (ms === null) {
+        // Undecided, and only if it has been put in front of anybody.
+        if (c.submitted) acc.undecided += c.claimedMs || 0;
+      } else if (dec && dec.status === "declined") acc.declined += c.claimedMs || 0;
       else acc.approved += ms;
       return acc;
     },
@@ -219,12 +250,26 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
           </span>
           <span style={styles.otTotalLabel}>DECLINED — NOT COUNTED ABOVE</span>
         </div>
+        {/* The fourth figure, and the one that is nobody's job yet: hours
+            somebody worked and has not asked to be paid for. It is not a total
+            and it is not a refusal, so it is named as what it is. */}
+        <div style={styles.otTotal}>
+          <span style={{ ...styles.otTotalFig, color: unsentMs ? "var(--move)" : "var(--ink-4)" }}>
+            {otHoursStr(unsentMs)}
+          </span>
+          <span style={styles.otTotalLabel}>NOT SENT IN — THEIRS TO CLAIM</span>
+        </div>
       </div>
 
       {/* Standing past their shift right now. */}
       {standing.filter((x) => x.over > 0).length > 0 && (
+        <OtBlock
+          title="PAST THEIR SHIFT RIGHT NOW"
+          count={standing.filter((x) => x.over > 0).length}
+          open={openLive}
+          onToggle={() => setOpenLive((v) => !v)}
+        >
         <div style={styles.otLiveWrap}>
-          <div style={styles.invShortHead}>PAST THEIR SHIFT RIGHT NOW</div>
           {standing
             .filter((x) => x.over > 0)
             .map((x) => (
@@ -247,11 +292,58 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
             button is on each seat on the Teams page.
           </div>
         </div>
+        </OtBlock>
+      )}
+
+      {/* Hours nobody has been asked to decide on.
+          A stay a call held them through is sent on its own; anything else is
+          the person's to send, and until they do it is not a claim. They are
+          shown here rather than hidden, because an administrator who can see
+          somebody stayed two hours and never claimed for it may well want to
+          ask — and the button pulls it into the queue so it can be approved
+          without the person having to send it from a tablet they have already
+          handed back. */}
+      {unsent.length > 0 && (
+        <OtBlock
+          title="NOT SENT IN — THE PERSON'S OWN TO CLAIM"
+          count={unsent.length}
+          open={openUnsent}
+          onToggle={() => setOpenUnsent((v) => !v)}
+        >
+          <div style={styles.otLiveNote}>
+            {otHoursStr(unsentMs)} in total. None of these were held by a call, so the board did
+            not send them: the person is offered the choice when they sign off. Nothing here counts
+            towards the period until somebody acts on it.
+          </div>
+          {unsent.map((c) => (
+            <div key={c.id} style={styles.otLiveRow}>
+              <span style={styles.otLiveName}>{c.name || "Unnamed"}</span>
+              <span style={styles.otLiveUnit}>
+                {c.unitName}
+                {c.seat ? ` · ${seatLabel(c.seat)}` : ""} ·{" "}
+                {c.shiftStart ? gregDateStr(c.shiftStart) : ""}
+              </span>
+              <span style={styles.otLiveMs}>{otHoursStr(c.claimedMs)}</span>
+              <button style={styles.otGrantBtn} onClick={() => decide(c, "approved", c.claimedMs, "Brought in by administration")}>
+                Approve it anyway
+              </button>
+              <button style={styles.ghostBtnSm} onClick={() => decline(c)}>
+                Decline
+              </button>
+            </div>
+          ))}
+        </OtBlock>
       )}
 
       {/* The claims themselves, undecided first. */}
+      <OtBlock
+        title="CLAIMS IN THIS PERIOD"
+        count={pending.length + claims.filter((c) => c.decision).length}
+        open={openClaims}
+        onToggle={() => setOpenClaims((v) => !v)}
+      >
       <div style={styles.otList}>
-        {claims.length === 0 ? (
+        {pending.length + claims.filter((c) => c.decision).length === 0 ? (
           <div style={styles.formHint}>
             No overtime in this period. A stay that ran past its shift end appears here on sign-off.
           </div>
@@ -294,6 +386,13 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
                       {c.onCall ? `held by a call${c.onCallNature ? ` — ${c.onCallNature}` : ""}` : "not on a call"}
                     </span>
                   )}
+                  {/* How it got here: on its own, or because the person sent
+                      it. An administrator deciding should not have to guess. */}
+                  {!c.granted && (
+                    <span style={styles.otSentTag}>
+                      {c.automatic ? "sent automatically" : "sent in by them"}
+                    </span>
+                  )}
                 </div>
                 {c.decision && c.decision.note && (
                   <div style={styles.otCardNote}>“{c.decision.note}”</div>
@@ -324,6 +423,7 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
           })
         )}
       </div>
+      </OtBlock>
     </FoldingSection>
   );
 }
