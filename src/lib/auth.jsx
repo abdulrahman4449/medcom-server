@@ -106,13 +106,16 @@ export async function choosePassword(id, password, code) {
 export async function actAsRole(role) {
   const data = await post("/api/auth/act", { role });
   setToken(data.token);
-  return data.account;
+  // The areas come back with the token, so the app draws the part of the job
+  // they were actually given rather than the whole of it with everything
+  // refused underneath.
+  return { account: data.account, scopes: data.scopes || [] };
 }
 
-// Lending part of an administrator's standing to somebody who does not have it,
-// for a set number of days. `role: null` takes it back.
-export function delegateAuthority(id, role, days) {
-  return post(`/api/accounts/${encodeURIComponent(id)}/delegate`, { role, days });
+// Lending named areas of an administrator's job to somebody who does not have
+// it. It stands until it is taken back — an empty list is taking it back.
+export function delegateAuthority(id, scopes) {
+  return post(`/api/accounts/${encodeURIComponent(id)}/delegate`, { scopes: scopes || [] });
 }
 
 // An administrator hands one out. The plain code comes back once, here, and is

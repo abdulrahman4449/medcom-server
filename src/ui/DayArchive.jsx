@@ -23,6 +23,7 @@ import { AssistanceTasks, CallRoute, FleetRow, InfoNote, PendingCallCard } from 
 import { UnitRosterCard } from "./ChatDock.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
 import { CompletedCalls, EscalationChip, EscalationThread } from "./Escalations.jsx";
+import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { DelegatedAuthority } from "./Delegation.jsx";
 import { FiledChecklists } from "./FiledChecklists.jsx";
 import { PastCallSection } from "./PastCall.jsx";
@@ -714,7 +715,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           per-person figures, and the standing record of issues. All on one
           page, because they are read together when somebody asks how the month
           went. */}
-      {onPage("stock") && (
+      {onPage("stock") && canArea(user, "inventory") && (
         <InventoryAdmin
           inventory={inventory}
           moves={inventoryMoves}
@@ -727,6 +728,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       {onPage("stats") && (
         <>
       {/* Always open, at the head of the page. */}
+      {canArea(user, "stats") && (
       <IndicatorBand
         requests={requests}
         units={units}
@@ -735,10 +737,12 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         range={statRange}
         setRange={setStatRange}
       />
+      )}
 
       {/* Overtime sits above coverage on the statistics page: it is the thing
           with a deadline on it — a pay period closes — and coverage is a thing
           you read. */}
+      {canArea(user, "overtime") && (
       <OvertimePanel
         log={log}
         requests={requests}
@@ -750,17 +754,22 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         sent={overtimeSent}
         setSent={setOvertimeSent}
       />
+      )}
 
-      <TrackingConsentAdmin
-        consents={trackingConsents}
-        user={user}
-        setConsents={setTrackingConsents}
-        addLog={addLog}
-      />
-
-      <CoveragePanel coverage={coverage} units={units} requests={requests} />
+      {canArea(user, "stats") && (
+        <>
+          <TrackingConsentAdmin
+            consents={trackingConsents}
+            user={user}
+            setConsents={setTrackingConsents}
+            addLog={addLog}
+          />
+          <CoveragePanel coverage={coverage} units={units} requests={requests} />
+        </>
+      )}
 
       {/* What is on each list, and what came back today. */}
+      {canArea(user, "checklists") && (
       <ChecklistAdmin
         checklists={checklists}
         setChecklists={setChecklists}
@@ -769,8 +778,10 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         addLog={addLog}
         user={user}
       />
+      )}
 
       {/* Per-person UHU and the month's patient-origin table. */}
+      {canArea(user, "stats") && (
       <Statistics
         log={log}
         requests={requests}
@@ -779,6 +790,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         range={statRange}
         setRange={setStatRange}
       />
+      )}
 
       {/* One place for issues, not two.
           The inbox and the record were the same list twice — what needs
@@ -791,13 +803,17 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       {onPage("teams") && (
         <>
       {/* Above the three roster forms, because it is the one thing on this page
-          that changes what somebody can do rather than who exists. */}
-      <DelegatedAuthority
-        accounts={accounts}
-        user={user}
-        addLog={addLog}
-        refreshAccounts={refreshAccounts}
-      />
+          that changes what somebody can do rather than who exists.
+          Lending authority is never itself lendable: a delegate who could
+          delegate could widen their own reach, which is not delegation. */}
+      {!isDelegatedAdmin(user) && (
+        <DelegatedAuthority
+          accounts={accounts}
+          user={user}
+          addLog={addLog}
+          refreshAccounts={refreshAccounts}
+        />
+      )}
 
       <FoldingSection
         title="ADD TEAM MEMBER ID"

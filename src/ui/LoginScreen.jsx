@@ -1,6 +1,7 @@
 import { actAsRole, choosePassword, lookupAccount, saveAccount, signIn, verifyPassword } from "../lib/auth.jsx";
 import { BrandLockup, DEPT_LOGO, HOSPITAL_LOGO, ORG_NAME, SHOW_LOGOS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
+import { areaSentence } from "../domain/delegation.jsx";
 import { reliefSituationFor } from "../domain/crew-relief.jsx";
 import { ON_CALL_STATUSES } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
@@ -9,7 +10,6 @@ import { crewShiftSummary, overtimeMs, scheduledShiftKey, seatLabel, shiftAssign
 import { HANDOVER_GRACE_MS } from "../domain/shifts.jsx";
 import { actorStamp } from "../export/name-stamps.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
-import { gregDateStr } from "../lib/dates.jsx";
 import { CheckCircle2, ChevronRight, Users } from "../lib/icons.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -139,10 +139,16 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // Authority an administrator lent them, if it is still live. The server
   // decides that — this is only what it said when the password was checked, and
   // every request afterwards is re-checked against the account.
-  const delegation = foundAccount && foundAccount.delegation ? foundAccount.delegation : null;
-  const delegatedRole = delegation ? delegation.role : null;
-  const roleWord = (r) =>
-    r === "admin" ? "Administrator" : r === "dispatcher" ? "Dispatcher" : "Team Member";
+  const delegation =
+    foundAccount && foundAccount.delegation && Array.isArray(foundAccount.delegation.scopes)
+      ? foundAccount.delegation
+      : null;
+  const lentAreas = delegation ? delegation.scopes : [];
+  // The desk is a role — a shift, a station, a sign-on on the log. Every other
+  // area is a part of administration. Somebody can be lent both, and is then
+  // offered both.
+  const lentDesk = lentAreas.includes("dispatch");
+  const lentAdminAreas = lentAreas.filter((k) => k !== "dispatch");
 
   // Stepping into a delegated role.
   //
@@ -150,37 +156,48 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // way round put an administrator's screen in front of somebody whose every
   // request the board was still answering as crew — every button on it visible
   // and every one of them refused.
-  async function actAsDelegated() {
-    if (!foundAccount || !delegatedRole) return;
+  async function actAsDelegated(role) {
+    if (!foundAccount || !delegation) return;
     setBusy(true);
     setError("");
+    let held = [];
     try {
-      await actAsRole(delegatedRole);
+      const out = await actAsRole(role);
+      held = (out && out.scopes) || [];
     } catch (e) {
       setBusy(false);
       setError((e && e.message) || "That could not be done. Try again.");
       return;
     }
+    const areas = role === "admin" ? held : ["dispatch"];
     const session = {
-      role: delegatedRole === "crew" ? "team" : delegatedRole,
+      role,
       name: foundAccount.name || foundAccount.id,
       accountId: foundAccount.id,
-      delegated: delegatedRole,
+      delegated: true,
     };
     await addLog(
       `${foundAccount.name || foundAccount.id} signed in on authority delegated by ` +
-        `${delegation.by || "an administrator"} — working as ${roleWord(delegatedRole).toLowerCase()}`,
+        `${delegation.by || "an administrator"} — working on ${areaSentence(areas).toLowerCase()}`,
       "status",
       null,
       actorStamp(session)
     );
     setBusy(false);
     setActingDelegated(true);
-    if (delegatedRole === "admin") {
-      onLogin({ role: "admin", name: session.name, accountId: session.accountId, delegated: "admin" });
+    if (role === "admin") {
+      onLogin({
+        role: "admin",
+        name: session.name,
+        accountId: session.accountId,
+        delegated: true,
+        // The areas this session may touch. Its presence is what tells the app
+        // this is administration borrowed rather than held — see `canArea`.
+        delegatedScopes: held,
+      });
       return;
     }
-    setPendingRole(delegatedRole === "dispatcher" ? "dispatcher" : "team");
+    setPendingRole("dispatcher");
     setStage("chooseShift");
   }
 
@@ -197,7 +214,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     // The choice is offered to anybody who has more than one role to choose
     // between — which now includes a crew member an administrator has lent
     // authority to, and did not before.
-    if (canJoinTeam(account.role) || (account.delegation && account.delegation.role)) {
+    const lent = account.delegation && account.delegation.scopes;
+    if (canJoinTeam(account.role) || (Array.isArray(lent) && lent.length > 0)) {
       setStage("roleChoice");
       return;
     }
@@ -985,13 +1003,26 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                       people were using was signing in on the administrator's
                       own ID, which put the wrong name on every line of the
                       night's log. */}
-                  {delegatedRole && (
-                    <button style={styles.delegatedBtn} disabled={busy} onClick={actAsDelegated}>
+                  {lentDesk && (
+                    <button style={styles.delegatedBtn} disabled={busy} onClick={() => actAsDelegated("dispatcher")}>
                       <div style={{ textAlign: "left" }}>
-                        <div style={styles.roleBtnTitle}>Work as {roleWord(delegatedRole)}</div>
+                        <div style={styles.roleBtnTitle}>Work the Dispatch Desk</div>
                         <div style={styles.roleBtnSub}>
-                          Delegated by {delegation.by || "an administrator"} · until{" "}
-                          {gregDateStr(delegation.until)}
+                          Delegated by {delegation.by || "an administrator"}
+                        </div>
+                      </div>
+                      <ChevronRight size={18} color="var(--ink-3)" />
+                    </button>
+                  )}
+                  {lentAdminAreas.length > 0 && (
+                    <button style={styles.delegatedBtn} disabled={busy} onClick={() => actAsDelegated("admin")}>
+                      <div style={{ textAlign: "left" }}>
+                        {/* Named for what they can actually do, not "as an
+                            administrator" — they are not one, and the screen
+                            they get is only the part they were lent. */}
+                        <div style={styles.roleBtnTitle}>Work on {areaSentence(lentAdminAreas)}</div>
+                        <div style={styles.roleBtnSub}>
+                          Delegated by {delegation.by || "an administrator"}
                         </div>
                       </div>
                       <ChevronRight size={18} color="var(--ink-3)" />

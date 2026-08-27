@@ -14,6 +14,7 @@ import { MESSAGES_KEY, clockStr, msDurationStr, otHoursStr } from "../domain/mes
 import { ARCHIVE_KEY, archiveOpDay, opDayComplete, opDayEnd, opDayLabel, opDayStart, requestsForOpDay, unarchivedOpDays } from "../domain/op-day.jsx";
 import { OVERTIME_KEY, OVERTIME_SENT_KEY, heldByCallAt, overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { RESTOCK_KEY, callsAwaitingRestock } from "../domain/restock.jsx";
+import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { callsNeedingReturn, isRecurring, isReturnLeg, repeatOccurrencesDue, returnBookingFor, wantsReturn } from "../domain/return-journeys.jsx";
 import { callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
 import { crewShiftWindow, overtimeMs, scheduledShiftKey, seatLabel, shiftAssignment, shiftMeta, shiftPhrase, shiftWindowAt } from "../domain/shift-helpers.jsx";
@@ -264,7 +265,7 @@ export function App() {
     } catch (e) {}
   }, [theme]);
 
-  const [navTab, setNavTab] = useState("board");
+  const [navTabWanted, setNavTab] = useState("board");
   // Bumped when the bar's New call is pressed. The form itself stays where it
   // lives, on the dispatch board; this only tells it to open.
   const [newCallSignal, setNewCallSignal] = useState(0);
@@ -665,7 +666,10 @@ export function App() {
   // at the first render, and `user` is null then. It would have loaded the
   // roster for nobody, forever.
   useEffect(() => {
-    if (!user || user.role !== "admin") {
+    // The roster is the Teams area. Without it the server answers 403, and a
+    // delegate who was lent the overtime was asking for it every thirty
+    // seconds and being refused every time.
+    if (!user || user.role !== "admin" || !canArea(user, "teams")) {
       setAccounts([]);
       return;
     }
@@ -753,6 +757,8 @@ export function App() {
   // the shift without being asked. It looked like the app had pressed its own
   // button, and in effect it had.
   useEffect(() => {
+    // A delegate has no Board, so sending them there shows them an empty
+    // screen and no way off it. They land on the first area they hold.
     setNavTab("board");
     // And the New call signal with it.
     //
@@ -767,14 +773,14 @@ export function App() {
     if (!user) return;
     // "Submit" is an action, not a place: it files the shift and drops straight
     // back to the board rather than leaving the desk on a page showing nothing.
-    if (navTab === "log" && user.role === "dispatcher") {
+    if (navTabWanted === "log" && user.role === "dispatcher") {
       setNavTab("board");
       submitMyShiftLog();
       return;
     }
     // A new page starts at the top, as a page does.
     if (typeof window !== "undefined" && window.scrollTo) window.scrollTo({ top: 0 });
-  }, [navTab, user && user.role]);
+  }, [navTabWanted, user && user.role]);
 
   // Ending a no-coverage period the moment a team is back in service. It is
   // closed by the board rather than by a person, so nobody has to remember —
@@ -1139,8 +1145,8 @@ export function App() {
   useEffect(() => {
     if (!user) return;
     loadCold();
-    if (navTab === "policies") loadPolicies();
-  }, [navTab, user && user.accountId, loadCold, loadPolicies]);
+    if (navTabWanted === "policies") loadPolicies();
+  }, [navTabWanted, user && user.accountId, loadCold, loadPolicies]);
 
   // Signing in counts as a user gesture, which unlocks the AudioContext so the
   // alert tone can keep playing later even without a fresh tap/click, and is
@@ -2170,25 +2176,34 @@ export function App() {
         ]
       : user.role === "admin"
         ? [
-            { key: "board", glyph: "🚑", label: "Board" },
-            { key: "stats", glyph: "📊", label: "Statistics" },
+            // The board is the department's live picture and it carries real
+            // actions — declaring no coverage, standing somebody down. It is a
+            // whole administrator's, not a lent area's.
+            ...(isDelegatedAdmin(user) ? [] : [{ key: "board", glyph: "🚑", label: "Board" }]),
+            ...(canArea(user, "stats") || canArea(user, "overtime")
+              ? [{ key: "stats", glyph: "📊", label: "Statistics" }]
+              : []),
             // Badged when somebody cannot sign in. They are standing at a
             // tablet waiting, and an administrator who never opens this tab
             // would otherwise not find out until they were told in person.
-            {
-              key: "teams",
-              glyph: "👥",
-              label: "Teams",
-              badge: pendingResets(passwordResets).length,
-            },
+            ...(canArea(user, "teams")
+              ? [{
+                  key: "teams",
+                  glyph: "👥",
+                  label: "Teams",
+                  badge: pendingResets(passwordResets).length,
+                }]
+              : []),
             // What is on the trucks. Its own page rather than a panel inside
             // Teams: a supervisor chasing a missing cylinder is doing a
             // different job from one looking at a roster.
-            { key: "stock", glyph: "📦", label: "Inventory" },
+            ...(canArea(user, "inventory") ? [{ key: "stock", glyph: "📦", label: "Inventory" }] : []),
+            // The shelf is readable by everybody in the department; only
+            // changing it is an administrator's job.
             { key: "policies", glyph: "📖", label: "Policies" },
             // Kept, not sent — a different action from the desk's Submit, so a
             // different picture.
-            { key: "log", glyph: "🗄", label: "Archive" },
+            ...(canArea(user, "archive") ? [{ key: "log", glyph: "🗄", label: "Archive" }] : []),
           ]
         : [
             // A crew's own call, their own record, and their own truck.
@@ -2214,6 +2229,16 @@ export function App() {
   // The two shared pages replace whatever the role would otherwise show, rather
   // than appearing above it — a messages page with the whole board underneath
   // it is not a page.
+  // The tab this session can actually open.
+  //
+  // A borrowed administration has no Board, and the tab is reset to "board" on
+  // every sign-in — before anybody knows which areas were lent. Derived here
+  // rather than corrected in an effect, because an effect at this point in the
+  // component would sit below the early returns above and change the number of
+  // hooks between renders.
+  const tabKeys = navTabs.map((t) => t.key);
+  const navTab = tabKeys.includes(navTabWanted) ? navTabWanted : tabKeys[0] || navTabWanted;
+
   const onSharedPage = navTab === "policies";
 
   return (
@@ -2238,7 +2263,7 @@ export function App() {
         {navTab === "policies" && (
           <PolicyLibrary
             policies={policies}
-            canManage={user.role === "admin"}
+            canManage={canArea(user, "policies")}
             onAdd={addPolicy}
             onRemove={removePolicy}
             busy={policyBusy}
@@ -2379,7 +2404,11 @@ export function App() {
                   setNewCallSignal((n) => n + 1);
                 },
               }
-            : user.role === "admin"
+            : // Exporting the day is reading the whole board — every call, every
+              // crew, every patient on it. That is the statistics or the
+              // archive, not an area of the job somebody was lent for the
+              // overtime.
+              user.role === "admin" && (canArea(user, "stats") || canArea(user, "archive"))
               ? {
                   label: "Export",
                   // Today, not everything.

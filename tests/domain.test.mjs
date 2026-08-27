@@ -394,4 +394,71 @@ export function run(D, t) {
     t.ok("past call: the middle steps may be left out", !sparse.error);
     t.is("past call: and only what was given is kept", Object.keys(sparse.times).length, 3);
   }
+
+  // ---------- delegation is one area at a time, and the two lists agree
+  {
+    const server = D.serverDelegation;
+    t.is("delegation: the app and the server name the same areas, in the same order",
+      D.DELEGATION_AREAS.map((a) => a.key).join(),
+      server.DELEGATION_SCOPES.map((a) => a.key).join());
+    t.is("delegation: and agree on which of them are administration",
+      D.ADMIN_AREAS.map((a) => a.key).join(), server.ADMIN_SCOPES.join());
+
+    // Nonsense is dropped rather than stored, so a hand-made request cannot
+    // invent an area the server has never heard of.
+    t.is("delegation: an unknown area is not kept",
+      server.cleanScopes(["overtime", "everything", ""]), ["overtime"]);
+    t.is("delegation: the order is the list's, not the caller's",
+      server.cleanScopes(["policies", "dispatch", "overtime"]),
+      ["dispatch", "overtime", "policies"]);
+    t.is("delegation: a repeat is one area, not two",
+      server.cleanScopes(["overtime", "overtime"]), ["overtime"]);
+
+    // Which board keys each area opens, and — the part that matters — which it
+    // leaves shut.
+    t.ok("delegation: overtime opens the overtime key",
+      server.scopeAllowsKey(["overtime"], "ems:overtime"));
+    t.ok("delegation: and nothing else",
+      !server.scopeAllowsKey(["overtime"], "ems:policies") &&
+      !server.scopeAllowsKey(["overtime"], "ems:checklists") &&
+      !server.scopeAllowsKey(["overtime"], "ems:inventory"));
+    t.ok("delegation: the desk opens no administrator's key at all",
+      !server.scopeAllowsKey(["dispatch"], "ems:overtime") &&
+      !server.scopeAllowsKey(["dispatch"], "ems:policies"));
+    t.ok("delegation: holding nothing opens nothing",
+      !server.scopeAllowsKey([], "ems:overtime"));
+
+    // A real administrator carries no list; a delegate carries one. Getting
+    // this the wrong way round would either lock an administrator out of their
+    // own app or hand a delegate all of it.
+    t.ok("delegation: an administrator in their own right holds every area",
+      D.canArea({ role: "admin" }, "overtime") && D.canArea({ role: "admin" }, "archive"));
+    t.ok("delegation: a delegate holds only what they were named for",
+      D.canArea({ role: "admin", delegatedScopes: ["overtime"] }, "overtime") &&
+      !D.canArea({ role: "admin", delegatedScopes: ["overtime"] }, "archive"));
+    t.ok("delegation: a delegate given nothing holds nothing",
+      !D.canArea({ role: "admin", delegatedScopes: [] }, "overtime"));
+    t.ok("delegation: a crew member holds nothing whatever the list says",
+      !D.canArea({ role: "team", delegatedScopes: ["overtime"] }, "overtime"));
+    t.ok("delegation: borrowed administration knows it is borrowed",
+      D.isDelegatedAdmin({ role: "admin", delegatedScopes: [] }) &&
+      !D.isDelegatedAdmin({ role: "admin" }));
+
+    t.is("delegation: the areas read as a sentence",
+      D.areaSentence(["overtime", "archive"]), "Overtime and Archive & backups");
+    t.is("delegation: and the server says it the same way",
+      server.scopeSentence(["overtime", "archive"]), D.areaSentence(["overtime", "archive"]));
+
+    // Every area on the list must be reachable: one that opens no board key
+    // and guards no route is a tick box that does nothing, which is worse than
+    // not offering it. Checked here because it is the sort of thing a new area
+    // gets wrong on the day it is added.
+    const guarded = new Set(["dispatch", "teams", "archive", "stats"]);
+    t.ok("delegation: every area either opens a key or guards a screen",
+      server.DELEGATION_SCOPES.every(
+        (a) => guarded.has(a.key) || (server.SCOPE_WRITES[a.key] || []).length > 0
+      ));
+    t.ok("delegation: and every area the app draws is one the server knows",
+      D.DELEGATION_AREAS.every((a) => server.cleanScopes([a.key]).length === 1));
+  }
 }

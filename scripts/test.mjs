@@ -31,6 +31,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/overtime.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/patient-records.jsx")};
 export * from ${JSON.stringify(ROOT + "src/ui/booking-cancel.jsx")};
 export * from ${JSON.stringify(ROOT + "src/ui/PastCall.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/delegation.jsx")};
 `;
 
 const dir = mkdtempSync(join(tmpdir(), "pulseops-test-"));
@@ -72,7 +73,13 @@ try {
   // in beside the domain because it is now the thing standing between a device
   // with an old copy of the board and everybody else's work.
   const require_ = createRequire(pathToFileURL(join(ROOT, "package.json")).href);
-  const D = { ...bundled, ...require_(join(ROOT, "lib/merge-records.cjs")) };
+  const D = {
+    ...bundled,
+    ...require_(join(ROOT, "lib/merge-records.cjs")),
+    // Namespaced, because the app has a list of the same areas for its screens
+    // and the point of the test is that the two agree.
+    serverDelegation: require_(join(ROOT, "lib/delegation.cjs")),
+  };
   const { run } = await import(pathToFileURL(join(ROOT, "tests/domain.test.mjs")).href);
 
   let passed = 0;

@@ -320,13 +320,19 @@ patch", that document is the target — do not start a fresh exploration.
   (`ems:overtimeSent`, written by them) or to leave. `ems:overtime` — the
   decisions — is `ADMIN_ONLY_KEYS`: anyone signed in could otherwise approve
   their own hours by posting to the board.
-- **Delegated authority is a server fact, re-checked every request.** An
-  administrator lends a named role to a named person for a number of days
-  (`delegated_role`/`delegated_until` on `accounts`); the sign-in screen offers
-  it beside their own job, `POST /api/auth/act` re-issues the token with `act`,
-  and `requireAuth` re-reads the account every time — so taking it back stops
-  at their next action, not when their token expires. Never trust `act` on its
-  own.
+- **Authority is lent one AREA at a time, and it stands until it is taken
+  back.** Lending the whole job was too much: "cover the overtime while I am
+  away" should not also hand over the accounts, the policy shelf and the power
+  to restore the board. `lib/delegation.cjs` is the list — the server's copy,
+  because the server enforces it; `src/domain/delegation.jsx` is the app's copy
+  for the screens, and `npm test` asserts the two cannot drift. `requireArea`
+  guards a route, `mayWriteKey` guards a board key, `canArea` draws a panel.
+  There is deliberately **no expiry**: an expiry that runs out mid-shift takes
+  authority away at the moment it is being used, and revocation is immediate
+  anyway because `requireAuth` re-reads the account every request. Two things a
+  delegate may never do, both on `requireFullAdmin`: lend it on, and widen their
+  own. Never trust `act` or `scopes` from the token on their own — they are
+  re-derived from the account every time.
 - **The mark that says "this fleet is the department's" belongs to the board.**
   It was in `localStorage`, which marks the tablet: a truck an administrator had
   removed came back the first time anybody signed in on a new phone. It is

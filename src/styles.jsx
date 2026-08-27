@@ -1997,11 +1997,30 @@ export const styles = {
     fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, color: "var(--move)",
     border: "1px solid var(--move)", borderRadius: 5, padding: "2px 7px",
   },
-  delegateForm: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" },
-  delegateDays: {
-    width: 68, background: "var(--inset)", border: "1px solid var(--hair)",
-    borderRadius: 9, padding: "8px 9px", color: "var(--ink)", fontSize: 16,
+  // ---- picking which areas of the job to lend ----
+  areaPicker: {
+    background: "var(--inset)", border: "1px solid var(--hair)", borderRadius: 14,
+    padding: "12px", margin: "6px 0 12px",
   },
+  areaPickerHead: {
+    fontSize: 12.5, fontWeight: 700, color: "var(--ink-2)", marginBottom: 9,
+  },
+  areaRow: {
+    display: "flex", alignItems: "flex-start", gap: 10, width: "100%",
+    background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 10,
+    padding: "9px 11px", marginTop: 5, cursor: "pointer", textAlign: "left",
+    color: "var(--ink-2)", fontFamily: display,
+  },
+  areaRowOn: {
+    display: "flex", alignItems: "flex-start", gap: 10, width: "100%",
+    background: "rgba(167,139,250,.12)", border: "1px solid var(--move)", borderRadius: 10,
+    padding: "9px 11px", marginTop: 5, cursor: "pointer", textAlign: "left",
+    color: "var(--ink)", fontFamily: display,
+  },
+  areaTick: { width: 12, flex: "none", color: "var(--move)", fontWeight: 800, marginTop: 1 },
+  areaWords: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
+  areaLabel: { fontSize: 13.5, fontWeight: 650 },
+  areaSub: { fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.4 },
   // The crew's own line about their overtime, on the shift card.
   otCrewWrap: { marginTop: 10, borderTop: "1px solid var(--hair)" },
   otCrewHead: {

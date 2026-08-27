@@ -141,6 +141,10 @@ for (const col of [
   // somebody who does not have it. Kept on the account rather than on the board
   // because it is a permission, and permissions are checked here.
   "delegated_role TEXT", "delegated_until INTEGER", "delegated_by TEXT", "delegated_at INTEGER",
+  // The areas, one at a time, instead of a whole job. `delegated_role` is kept
+  // so a delegation made by an older build still means something on the first
+  // read after this one — see `liveDelegation`.
+  "delegated_scopes TEXT",
 ]) {
   try {
     db.prepare(`ALTER TABLE accounts ADD COLUMN ${col}`).run();
@@ -250,13 +254,52 @@ function requireAuth(req, res, next) {
   // takes effect on the very next request rather than when the token expires.
   const allowed = allowedRoles(live);
   const acting = claims.act && allowed.includes(claims.act) ? claims.act : live.role;
-  req.user = { id: live.id, role: acting, ownRole: live.role, roles: allowed };
+  const del = liveDelegation(live);
+  req.user = {
+    id: live.id,
+    role: acting,
+    ownRole: live.role,
+    roles: allowed,
+    // A real administrator, as opposed to somebody working an area of the job.
+    // Everything that is not delegatable at all hangs off this.
+    fullAdmin: live.role === "admin",
+    // The areas they hold, and only while they are actually acting on the
+    // administrator's side. A crew member who chose to work their own shift
+    // does not carry an administrator's reach around with them.
+    scopes: acting === "admin" && live.role !== "admin" && del ? del.scopes : [],
+  };
   next();
 }
 
 function requireAdmin(req, res, next) {
   requireAuth(req, res, () => {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Administrators only." });
+    next();
+  });
+}
+
+// One area of the job. A real administrator holds all of them; a delegate holds
+// the ones they were named for and nothing else.
+function requireArea(scope) {
+  return (req, res, next) =>
+    requireAdmin(req, res, () => {
+      if (req.user.fullAdmin || (req.user.scopes || []).includes(scope)) return next();
+      return res.status(403).json({
+        error: "That is not one of the areas you have been given.",
+      });
+    });
+}
+
+// Things a delegate may never do, however much they were lent. Chief among
+// them: lending it on, or widening their own. Authority that can extend itself
+// is not delegated authority, it is a promotion nobody signed off.
+function requireFullAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (!req.user.fullAdmin) {
+      return res.status(403).json({
+        error: "Only an administrator in their own right can do that.",
+      });
+    }
     next();
   });
 }
@@ -292,6 +335,18 @@ const ADMIN_ONLY_KEYS = new Set([
 ]);
 // Never served or written through the board API, whatever a token says.
 const FORBIDDEN_KEYS = new Set(["ems:accounts", "ems:accountsSeeded"]);
+
+// An administrator's own keys, and who may write them.
+//
+// A real administrator writes all of them. Somebody working one area of the job
+// writes only the keys that area is about — the overtime delegate can decide
+// overtime and cannot touch the policy shelf. Everybody signed in writes the
+// day's work, which is every key not on the list.
+function mayWriteKey(user, key) {
+  if (!ADMIN_ONLY_KEYS.has(key)) return true;
+  if (user.fullAdmin) return true;
+  return scopeAllowsKey(user.scopes, key);
+}
 
 const app = express();
 // The board is sent whole on every write, and a busy day's log alone runs past
@@ -345,7 +400,7 @@ app.post("/api/board", requireAuth, (req, res) => {
     return res.status(400).json({ error: "Missing key" });
   }
   if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
-  if (ADMIN_ONLY_KEYS.has(key) && req.user.role !== "admin") {
+  if (!mayWriteKey(req.user, key)) {
     return res.status(403).json({ error: "Only an administrator can change that." });
   }
   db.prepare(
@@ -373,12 +428,13 @@ app.post("/api/board", requireAuth, (req, res) => {
 // that genuinely replace a whole key: pruning the board when it outgrows the
 // server, and the handful of keys that are not records at all.
 const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
+const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
 
 app.post("/api/board/records", requireAuth, (req, res) => {
   const { key } = req.body || {};
   if (typeof key !== "string") return res.status(400).json({ error: "Missing key" });
   if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
-  if (ADMIN_ONLY_KEYS.has(key) && req.user.role !== "admin") {
+  if (!mayWriteKey(req.user, key)) {
     return res.status(403).json({ error: "Only an administrator can change that." });
   }
   const body = req.body || {};
@@ -643,11 +699,11 @@ function backupState() {
 // Administrators only, both of them. The listing names the copies, and those
 // names are what the restore routes are addressed by; the other lets anyone
 // who can reach the server fill its disk with snapshots.
-app.get("/api/backups", requireAdmin, (req, res) => {
+app.get("/api/backups", requireArea("archive"), (req, res) => {
   res.json({ ok: true, ...backupState(), copies: listBackups(BACKUP_DIR) });
 });
 
-app.post("/api/backups", requireAdmin, async (req, res) => {
+app.post("/api/backups", requireArea("archive"), async (req, res) => {
   const state = await runBackup("on demand");
   res.json({ ok: !!state.written.length, ...state });
 });
@@ -714,7 +770,7 @@ function boardShape(dbPath) {
   return out;
 }
 
-app.get("/api/backups/:name/compare", requireAdmin, (req, res) => {
+app.get("/api/backups/:name/compare", requireArea("archive"), (req, res) => {
   const found = backupFileFor(req.params.name);
   if (found.error) return res.status(404).json({ error: found.error });
   let was;
@@ -744,7 +800,7 @@ app.get("/api/backups/:name/compare", requireAdmin, (req, res) => {
   res.json({ ok: true, name: found.name, rows, lost: rows.filter((r) => r.shrank).map((r) => r.key) });
 });
 
-app.post("/api/backups/:name/restore", requireAdmin, async (req, res) => {
+app.post("/api/backups/:name/restore", requireArea("archive"), async (req, res) => {
   const found = backupFileFor(req.params.name);
   if (found.error) return res.status(404).json({ error: found.error });
   const asked = Array.isArray((req.body || {}).keys) ? req.body.keys : [];
@@ -862,26 +918,56 @@ seedAccounts();
 // request re-reads the account and re-checks that the delegation is still live.
 const ROLES = ["admin", "dispatcher", "crew"];
 
+// What this person has been lent, if anything.
+//
+// It stands until an administrator takes it back. There is no clock on it: an
+// expiry that runs out in the middle of a night shift takes somebody's
+// authority away at the moment they are using it, and the department would
+// rather decide when it ends than have a date decide for them. Revocation is
+// immediate — every request re-reads this — so "take it back" is the control,
+// and it is a real one.
 function liveDelegation(a) {
-  if (!a || !a.delegated_role) return null;
-  if (!ROLES.includes(a.delegated_role)) return null;
-  // An expiry is required. A delegation that never runs out is a promotion
-  // nobody recorded, and the one thing worse than too little authority on a
-  // night shift is authority that outlived the reason for it.
-  if (!a.delegated_until || Date.now() > a.delegated_until) return null;
+  if (!a) return null;
+  // A delegation from before areas existed. A whole role was lent; the areas it
+  // stands for are read off it once, here, rather than migrating the column and
+  // risking a half-migrated board.
+  const legacy =
+    a.delegated_role === "admin" ? ADMIN_SCOPES
+      : a.delegated_role === "dispatcher" ? ["dispatch"]
+      : [];
+  let stored = [];
+  try {
+    stored = a.delegated_scopes ? JSON.parse(a.delegated_scopes) : [];
+  } catch (e) {
+    stored = [];
+  }
+  const scopes = cleanScopes(stored.length ? stored : legacy);
+  if (!scopes.length) return null;
+  // An expiry set by an older build is still honoured while it lasts, so
+  // nothing anybody granted quietly becomes permanent because of this change.
+  if (a.delegated_until && Date.now() > a.delegated_until) return null;
   return {
-    role: a.delegated_role,
-    until: a.delegated_until,
+    scopes,
+    until: a.delegated_until || null,
     by: a.delegated_by || "",
     at: a.delegated_at || null,
   };
 }
 
 // Every role this person may act as, their own first.
+//
+// Holding the desk means they can work as a dispatcher. Holding any area of
+// administration means they can work on the administrator's side of the app —
+// but only on the areas they hold, which is what `req.user.scopes` decides.
 function allowedRoles(a) {
   const own = a && a.role;
   const d = liveDelegation(a);
-  return d && d.role !== own ? [own, d.role] : [own];
+  const out = [own];
+  if (d) {
+    if (d.scopes.includes("dispatch") && own !== "dispatcher") out.push("dispatcher");
+    if (d.scopes.some((s) => ADMIN_SCOPES.includes(s)) && own !== "admin") out.push("admin");
+  }
+  return out;
 }
 
 const publicAccount = (a) => a && ({
@@ -938,56 +1024,61 @@ app.post("/api/auth/act", requireAuth, (req, res) => {
   if (!allowed.includes(want)) {
     return res.status(403).json({ error: "You do not hold that role." });
   }
+  const del = liveDelegation(live);
   res.json({
     ok: true,
     token: issueToken(live, want),
     acting: want,
+    // What they may actually touch, so the app can draw only those areas
+    // rather than a full administrator's screen with everything refused.
+    scopes: want === "admin" && live.role !== "admin" && del ? del.scopes : [],
     account: publicAccount(live),
   });
 });
 
 // Lending authority, and taking it back. Administrators only — the one thing
 // nobody may do is grant themselves more than they have.
-app.post("/api/accounts/:id/delegate", requireAdmin, (req, res) => {
+app.post("/api/accounts/:id/delegate", requireFullAdmin, (req, res) => {
   const key = String(req.params.id || "").trim().toUpperCase();
   const acct = findAccount(key);
   if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
-  const { role, days } = req.body || {};
+  const scopes = cleanScopes((req.body || {}).scopes);
 
-  // Taking it back.
-  if (!role) {
+  // Taking it back. Every area at once — an administrator ending a delegation
+  // is ending it, not editing it.
+  if (!scopes.length) {
     db.prepare(
-      `UPDATE accounts SET delegated_role = NULL, delegated_until = NULL,
-       delegated_by = NULL, delegated_at = NULL WHERE id = ?`
+      `UPDATE accounts SET delegated_role = NULL, delegated_scopes = NULL,
+       delegated_until = NULL, delegated_by = NULL, delegated_at = NULL WHERE id = ?`
     ).run(key);
     return res.json({ ok: true, account: publicAccount(findAccount(key)) });
   }
 
-  if (!ROLES.includes(role)) return res.status(400).json({ error: "Unknown role." });
-  if (role === acct.role) {
-    return res.status(400).json({ error: "They already hold that role." });
-  }
   // Delegating to yourself is not delegation, and it is the one route by which
   // an administrator could quietly rewrite their own standing.
   if (key === req.user.id) {
     return res.status(400).json({ error: "You cannot delegate to yourself." });
   }
-  const n = Number(days);
-  if (!Number.isFinite(n) || n < 1 || n > 90) {
-    return res.status(400).json({ error: "Give a number of days between 1 and 90." });
+  if (acct.role === "admin") {
+    return res.status(400).json({ error: "They are already an administrator." });
   }
-  const until = Date.now() + Math.round(n) * 86400000;
+  if (scopes.includes("dispatch") && acct.role === "dispatcher") {
+    return res.status(400).json({ error: "They already work the dispatch desk." });
+  }
   // The name, not the employee ID. The person being asked "do you want to work
-  // as a dispatcher tonight?" is being told who said they could, and "F1525518"
+  // on the overtime tonight?" is being told who said they could, and "F1525518"
   // is not an answer to that — it is a number off a badge they may never have
   // seen. The roster is administrator-only, so the sign-in screen cannot look
   // it up for itself; it is recorded here, once, where it is known.
   const granter = findAccount(req.user.id);
   const grantedBy = (granter && granter.name) || req.user.id;
   db.prepare(
-    `UPDATE accounts SET delegated_role = ?, delegated_until = ?, delegated_by = ?,
-     delegated_at = ? WHERE id = ?`
-  ).run(role, until, grantedBy, Date.now(), key);
+    `UPDATE accounts SET delegated_role = NULL, delegated_scopes = ?,
+     delegated_until = NULL, delegated_by = ?, delegated_at = ? WHERE id = ?`
+  ).run(JSON.stringify(scopes), grantedBy, Date.now(), key);
+  console.log(
+    `Delegation: ${grantedBy} gave ${key} ${scopeSentence(scopes)} — until taken back`
+  );
   res.json({ ok: true, account: publicAccount(findAccount(key)) });
 });
 
@@ -1041,7 +1132,7 @@ app.post("/api/auth/set-password", (req, res) => {
 
 // An administrator hands one out. Shown once, here, and never again — only its
 // hash is kept, exactly like a password.
-app.post("/api/accounts/:id/claim-code", requireAdmin, (req, res) => {
+app.post("/api/accounts/:id/claim-code", requireArea("teams"), (req, res) => {
   const acct = findAccount(req.params.id);
   if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
   if (acct.pw_hash || acct.legacy_hash) {
@@ -1088,12 +1179,12 @@ app.post("/api/auth/forgot", (req, res) => {
 
 // ---------- the roster, as administration keeps it ----------
 
-app.get("/api/accounts", requireAdmin, (req, res) => {
+app.get("/api/accounts", requireArea("teams"), (req, res) => {
   const rows = db.prepare("SELECT * FROM accounts ORDER BY role, id").all();
   res.json({ ok: true, accounts: rows.map(publicAccount) });
 });
 
-app.post("/api/accounts", requireAdmin, (req, res) => {
+app.post("/api/accounts", requireArea("teams"), (req, res) => {
   const { id, name, role, team, slot, station } = req.body || {};
   const key = String(id || "").trim().toUpperCase();
   if (!key) return res.status(400).json({ error: "An employee ID is required." });
@@ -1119,7 +1210,7 @@ app.post("/api/accounts", requireAdmin, (req, res) => {
   });
 });
 
-app.delete("/api/accounts/:id", requireAdmin, (req, res) => {
+app.delete("/api/accounts/:id", requireArea("teams"), (req, res) => {
   const key = String(req.params.id || "").trim().toUpperCase();
   if (key === req.user.id) {
     return res.status(400).json({ error: "You cannot remove your own account." });
@@ -1135,7 +1226,7 @@ app.delete("/api/accounts/:id", requireAdmin, (req, res) => {
 // Clearing without one would leave the person unable to set a new password and
 // unable to say why - the account would simply refuse them, which is precisely
 // the lockout this route exists to end.
-app.post("/api/accounts/:id/clear-password", requireAdmin, (req, res) => {
+app.post("/api/accounts/:id/clear-password", requireArea("teams"), (req, res) => {
   const key = String(req.params.id || "").trim().toUpperCase();
   if (!findAccount(key)) return res.status(404).json({ error: "No such account." });
   db.prepare("UPDATE accounts SET pw_salt = NULL, pw_hash = NULL, legacy_hash = NULL WHERE id = ?").run(key);
