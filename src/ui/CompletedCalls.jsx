@@ -307,6 +307,16 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
   const [repeatOn, setRepeatOn] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Which booking has its controls open.
+  //
+  // Every card used to carry the whole set — a team picker, a sentence
+  // explaining what happens if no team is set, a reschedule button and a cancel
+  // button — which came to 167 pixels of controls under 92 pixels of
+  // information, on every booking. A day with eight transfers on it could not
+  // be read on a phone without scrolling through the same four controls eight
+  // times. The card now says what the booking is and who is on it; the controls
+  // are one tap away on the one being worked.
+  const [openCard, setOpenCard] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editWhen, setEditWhen] = useState(null);
   const [editError, setEditError] = useState("");
@@ -362,13 +372,25 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
   const timed = upcoming.filter((s) => !schedAwaitCall(s));
   const dueSoon = timed.filter((s) => (s.scheduledFor || 0) - now <= SCHED_DUE_SOON_MS);
   const unassigned = upcoming.filter((s) => !s.assignedUnitId);
-  const shown = tab === "upcoming" ? upcoming : past;
+  // The standing arrangements: bookings that repeat on named days.
+  //
+  // These are the dialysis runs and the weekly clinics — a template, not an
+  // appointment. They were only visible as the copies they threw off into the
+  // forward book, so the desk could see next Tuesday's occurrence but had
+  // nowhere to see that the arrangement itself exists, nor stop it. They get
+  // their own list, showing the days they run and when the next one is due.
+  const repeating = list
+    .filter((s) => s && isRecurring(s) && s.status !== "cancelled")
+    .sort((a, b) => (a.scheduledFor || 0) - (b.scheduledFor || 0));
+  const shown = tab === "upcoming" ? upcoming : tab === "repeating" ? repeating : past;
   // The upcoming list is read as a calendar: bookings under the Gregorian day
   // they go out on, today first, with anything waiting on a phone call held
   // above the calendar because it could be any of those days. Dispatched and
   // cancelled ones stay as a flat list — that tab is history, not a plan.
   const dayGroups =
-    tab === "upcoming"
+    tab === "repeating"
+      ? [{ key: "repeating", heading: "", entries: repeating }]
+      : tab === "upcoming"
       ? [
           ...(awaiting.length > 0
             ? [{ key: "awaiting", heading: "Waiting on their call · no time yet", entries: awaiting }]
@@ -696,6 +718,12 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
             <button style={tab === "upcoming" ? styles.tabBtnActive : styles.tabBtn} onClick={() => setTab("upcoming")}>
               Upcoming{upcoming.length > 0 ? ` (${upcoming.length})` : ""}
             </button>
+            <button
+              style={tab === "repeating" ? styles.tabBtnActive : styles.tabBtn}
+              onClick={() => setTab("repeating")}
+            >
+              Repeating{repeating.length > 0 ? ` (${repeating.length})` : ""}
+            </button>
             <button style={tab === "past" ? styles.tabBtnActive : styles.tabBtn} onClick={() => setTab("past")}>
               Dispatched &amp; cancelled{past.length > 0 ? ` (${past.length})` : ""}
             </button>
@@ -993,6 +1021,8 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
             <div style={styles.emptyState}>
               {tab === "upcoming"
                 ? "Nothing booked ahead yet."
+                : tab === "repeating"
+                ? "No standing arrangements. A booking becomes one when days of the week are ticked on it."
                 : "No bookings have gone out or been cancelled yet."}
             </div>
           )}
@@ -1031,7 +1061,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                 <div
                   key={entry.id}
                   style={{
-                    ...styles.callCard,
+                    ...styles.schedCard,
                     borderLeftColor: entry.status === "cancelled" ? "var(--crit)" : priorityMeta.color,
                     ...(soon ? styles.callCardDueSoon : null),
                     // A booking that was called off should not read the same as
@@ -1041,7 +1071,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                   }}
                 >
                   <div style={styles.callCardTop}>
-                    <div style={styles.callCardNature}>{entry.nature}</div>
+                    <div style={styles.schedCardNature}>{entry.nature}</div>
                     <span style={{ ...styles.pill, background: priorityMeta.color }}>{priorityMeta.label}</span>
                   </div>
 
@@ -1059,7 +1089,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     </div>
                   )}
 
-                  <div style={styles.callCardMeta}>
+                  <div style={styles.schedCardMeta}>
                     {waiting ? (
                       <span style={styles.awaitCallTag}>
                         <PhoneIncoming size={11} />{" "}
@@ -1128,7 +1158,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     </div>
                   )}
 
-                  <div style={styles.callCardMeta}>
+                  <div style={styles.schedCardMeta}>
                     <CallRoute req={entry} />
                     <CallTypeTag req={entry} />
                     <LoadedKmTag req={entry} />
@@ -1163,8 +1193,26 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     </div>
                   )}
 
-                  <div style={styles.callCardActions}>
-                    {schedOpen(entry, now) ? (
+                  {schedOpen(entry, now) && openCard !== entry.id && (
+                    <div style={styles.schedCardActions}>
+                      <span style={unit ? styles.assignedTag : styles.pendingAckTag}>
+                        {unit ? unit.name : "No team yet"}
+                      </span>
+                      <button
+                        style={styles.ghostBtnSm}
+                        onClick={() => {
+                          setOpenCard(entry.id);
+                          closeCancel();
+                          setEditingId(null);
+                        }}
+                      >
+                        Manage
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={styles.schedCardActions}>
+                    {schedOpen(entry, now) && openCard === entry.id ? (
                       <React.Fragment>
                         {/* The ward has phoned: this is the button that turns a
                             booking with no time into a live call, there and then.
@@ -1191,13 +1239,9 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                           ))}
                         </select>
                         {unit ? (
-                          <span style={styles.assignedTag}>
-                            {unit.name} — alerted when it goes out
-                          </span>
+                          <span style={styles.assignedTag}>{unit.name} — alerted when it goes out</span>
                         ) : (
-                          <span style={styles.pendingAckTag}>
-                            No team yet — it will be raised for the desk to assign if nobody is set by then
-                          </span>
+                          <span style={styles.pendingAckTag}>Raised for the desk if nobody is set</span>
                         )}
                         {editingId !== entry.id && cancellingId !== entry.id && (
                           <button
@@ -1217,9 +1261,14 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                             <Trash size={12} /> Cancel booking
                           </button>
                         )}
+                        {cancellingId !== entry.id && editingId !== entry.id && (
+                          <button style={styles.ghostBtnSm} onClick={() => setOpenCard(null)}>
+                            Done
+                          </button>
+                        )}
                       </React.Fragment>
                     ) : (
-                      unit && <span style={styles.assignedTag}>{unit.name}</span>
+                      !schedOpen(entry, now) && unit && <span style={styles.assignedTag}>{unit.name}</span>
                     )}
                   </div>
 

@@ -69,10 +69,18 @@ export function repeatLabel(x) {
 // already does exactly this and is what the history filter compares against, so
 // this uses that rather than keeping a second idea of what a day is.
 
-// The occurrences a repeating booking should have in the window ahead. Only two
-// days: the forward book is something a desk reads, and forty copies of the
-// dialysis run stretching into next month is not a book, it is a wall.
-export const REPEAT_HORIZON_DAYS = 2;
+// How far ahead a repeating booking throws off real occurrences: today only.
+//
+// It was two days, on the reasoning that a desk wants some warning. In practice
+// that put tomorrow's and the next day's dialysis runs on the board beside the
+// calls actually being worked, and a dispatcher reading the board could not
+// tell at a glance which of them were today's. The arrangement itself is
+// visible in Schedule → Repeating, which is where somebody goes to see what is
+// coming; the board carries what is happening now.
+//
+// Zero means the loop below runs for today alone, and the `at <= now` guard
+// already drops one whose time has passed.
+export const REPEAT_HORIZON_DAYS = 0;
 
 export function repeatOccurrencesDue(template, now) {
   const days = repeatDays(template);

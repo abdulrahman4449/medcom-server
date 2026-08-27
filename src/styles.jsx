@@ -732,6 +732,37 @@ export const styles = {
     boxShadow: "0 14px 34px var(--lift)",
   },
   callCardFolded: { padding: "0", background: "none", boxShadow: "none" },
+  // The booked-ahead card, at the weight of a pending call tile.
+  //
+  // Bookings were drawn with the full call-card treatment — 18px of padding, a
+  // 20px radius and a deep shadow — which is right for the one call a crew is
+  // running and wrong for a list of twenty transfers next Tuesday. At that
+  // size a day's bookings do not fit on a phone and the desk scrolls to read
+  // its own diary. Same information, a third of the height.
+  schedCard: {
+    background: "var(--raised)",
+    border: "1px solid var(--hair)",
+    borderLeft: "4px solid",
+    borderRadius: 16,
+    padding: "11px 13px 12px",
+    marginBottom: 8,
+    boxShadow: "0 6px 18px var(--lift)",
+  },
+  schedCardNature: { fontFamily: display, fontWeight: 760, fontSize: 15, letterSpacing: -0.2 },
+  schedCardMeta: {
+    display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap",
+    marginTop: 6, fontSize: 12, color: "var(--ink-3)",
+  },
+  schedCardActions: { display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" },
+  // The repeating list: a standing arrangement, not an appointment. Its own
+  // colour so it cannot be mistaken for something happening today.
+  repeatDays: {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    border: "1px solid var(--move)", color: "var(--move)",
+    borderRadius: 999, padding: "1px 8px", fontSize: 11.5, fontWeight: 700,
+  },
+  repeatNext: { fontSize: 12, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" },
+
   foldedRow: {
     display: "flex", alignItems: "baseline", gap: 10, width: "100%",
     background: "none", border: "none", padding: "11px 14px",

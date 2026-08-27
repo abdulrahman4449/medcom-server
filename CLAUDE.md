@@ -87,6 +87,17 @@ patch", that document is the target — do not start a fresh exploration.
   scanned PDFs is megabytes, so it is read only when that tab is opened.
   `GET /api/health` lists every key with its size; check there before
   putting anything new on the fast path.
+- **A booked-ahead card is a diary entry, not a call card.** Bookings were drawn
+  with the full call-card treatment and carried every control inline — a team
+  picker, a reschedule button, a cancel button — 167px of controls under 92px of
+  information, on every one. A day with eight transfers could not be read on a
+  phone. The card says what the booking is and who is on it; `openCard` puts the
+  controls one tap away on the one being worked.
+- **A repeating booking is an arrangement, and the board carries today.**
+  `REPEAT_HORIZON_DAYS` is 0 — occurrences reach the dispatcher board on the day
+  they run, not two days early beside the calls being worked. The arrangement
+  itself lives in Schedule → Repeating, which is where somebody goes to see what
+  is coming or to stop it.
 - **Restocking belongs to History, not to the live call.** A crew cannot do
   the paperwork of replacing a cannula while the patient is still in the
   truck. A finished call joins `callsAwaitingRestock`, the History tab
