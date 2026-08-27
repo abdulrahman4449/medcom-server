@@ -71,11 +71,46 @@ function boardOf(dbPath) {
   return out;
 }
 
+// Forgiving on purpose. These names are long, they differ by two digits, and
+// they are being retyped off a list on a screen — "board-20260826-0108.d" for
+// "board-20260827-0108.db" is the normal way to get this wrong, and answering
+// it with nothing but "no such file" sends somebody back to squint at the list
+// again. A name that matches exactly one backup is that backup.
 function resolveBackup(name) {
   if (!name) die("Which backup? Run `node scripts/restore.mjs list` first.");
+  if (name === "latest") {
+    const list = backups();
+    if (!list.length) die(`No backups in ${BACKUP_DIR}.`);
+    console.log(`Using ${list[0].name} (${list[0].at.toISOString()})\n`);
+    return path.join(BACKUP_DIR, list[0].name);
+  }
   const full = path.isAbsolute(name) ? name : path.join(BACKUP_DIR, name);
-  if (!fs.existsSync(full)) die(`No such backup: ${full}`);
-  return full;
+  if (fs.existsSync(full)) return full;
+
+  // Anything that starts with what was typed, ignoring a missing or mistyped
+  // extension.
+  const stem = path.basename(name).replace(/\.d.*$/, "");
+  const near = backups().filter((b) => b.name.startsWith(stem));
+  if (near.length === 1) {
+    console.log(`Using ${near[0].name}\n`);
+    return path.join(BACKUP_DIR, near[0].name);
+  }
+  if (near.length > 1) {
+    console.error(`\n"${name}" matches ${near.length} backups. Did you mean one of these?\n`);
+    for (const b of near.slice(0, 8)) console.error(`  ${b.name}   ${b.at.toISOString()}`);
+    process.exit(1);
+  }
+
+  // Nothing starts with it. Offer the ones that look closest — same day, or
+  // just the newest few — rather than leaving them to scroll.
+  const day = stem.slice(0, 14);
+  const sameDay = backups().filter((b) => b.name.slice(0, 14) === day);
+  const suggest = sameDay.length ? sameDay : backups().slice(0, 8);
+  console.error(`\nNo backup called "${name}" in ${BACKUP_DIR}.`);
+  console.error(suggest === sameDay ? "\nBackups from that day:\n" : "\nThe newest backups are:\n");
+  for (const b of suggest.slice(0, 8)) console.error(`  ${b.name}   ${b.at.toISOString()}`);
+  console.error("");
+  process.exit(1);
 }
 
 if (cmd === "list") {
