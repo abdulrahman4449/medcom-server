@@ -25,6 +25,7 @@ import { ScheduledRequests } from "./CompletedCalls.jsx";
 import { CompletedCalls, EscalationChip, EscalationThread } from "./Escalations.jsx";
 import { DelegatedAuthority } from "./Delegation.jsx";
 import { FiledChecklists } from "./FiledChecklists.jsx";
+import { PastCallSection } from "./PastCall.jsx";
 import { PatientRecords } from "./PatientRecords.jsx";
 import { InventoryAdmin } from "./InventoryAdmin.jsx";
 import { issueClaimCode } from "../lib/auth.jsx";
@@ -680,6 +681,15 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
               today's have been done; this is where somebody goes back to what a
               truck's check actually said three months ago. */}
           <FiledChecklists checklistRuns={checklistRuns} checklists={checklists} />
+          {/* An administrator can write up an outage too — often they are the
+              one holding the paper log afterwards. */}
+          <PastCallSection
+            user={user}
+            units={units}
+            saveRequests={saveRequests}
+            addLog={addLog}
+          />
+
           {/* The same record the desk reads, on the page an administrator goes
               back through. One list, two doors. */}
           <PatientRecords
@@ -1153,7 +1163,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                     which station a call belongs to. */}
                 <span style={styles.logStationTag}>{stationShort(stationOf(req))}</span>
               </div>
-              <CallTimes times={req.times} />
+              <CallTimes times={req.times} req={req} />
               <AssistStatusLine req={req} units={units} />
               {escFor === req.id && (
                 <EscalationThread

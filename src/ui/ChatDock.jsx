@@ -23,6 +23,7 @@ import { SectionBanner } from "./AdminView.jsx";
 import { AlertToneCheck } from "./AlarmOverlay.jsx";
 import { AssistanceTasks, CallEditForm, CallRoute, EditHistory, FleetRow, InfoNote, PendingCallCard, PendingEditReview, ReceiverBanner } from "./AssistanceTasks.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
+import { PastCallSection } from "./PastCall.jsx";
 import { PatientRecords } from "./PatientRecords.jsx";
 import { PendingEditsInbox } from "./DispatcherView.jsx";
 import { CompletedCalls } from "./Escalations.jsx";
@@ -1631,7 +1632,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
                 </div>
               )}
 
-              <CallTimes times={req.times} />
+              <CallTimes times={req.times} req={req} />
               <AssistStatusLine req={req} units={units} />
 
               {/* Coding, opened on the call being worked rather than laid out on
@@ -1814,6 +1815,16 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
               end: user.shiftEnd || (user.shiftStart || shiftWindowAt(Date.now()).start) + SHIFT_MS,
             }}
             canCorrect
+          />
+
+          {/* Calls that ran while the board was not there. It belongs on this
+              page because this is where the shift's closed calls are read, and
+              a desk writing one up is filling a hole in exactly that list. */}
+          <PastCallSection
+            user={user}
+            units={stationUnits}
+            saveRequests={saveRequests}
+            addLog={addLog}
           />
 
           {/* Who the department has moved before.

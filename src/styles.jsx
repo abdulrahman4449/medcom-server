@@ -264,6 +264,25 @@ export const styles = {
   // meant to caption.
   sectionNote: { fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55, margin: "2px 0 8px" },
 
+  // ---- writing up a call that already ran ----
+  //
+  // Six times in a grid rather than a column: typed together they are read
+  // together, and a desk copying them off a paper log is checking the shape of
+  // the call as much as the numbers.
+  pastTimes: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(148px, 1fr))",
+    gap: 8, marginBottom: 10,
+  },
+  pastTimeField: { display: "flex", flexDirection: "column", gap: 4 },
+  pastTimeLabel: { fontSize: 11.5, color: "var(--ink-3)", letterSpacing: 0.2 },
+  pastTimeNeeded: { color: "var(--hold)", fontWeight: 700 },
+  // The mark a reconstructed record carries, wherever it is shown.
+  byHandTag: {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.7, color: "var(--move)",
+    border: "1px solid var(--move)", borderRadius: 5, padding: "1px 6px",
+  },
+
   // ---- putting something back from a copy ----
   //
   // A table of rows somebody ticks. Deliberately plain: this is the one screen

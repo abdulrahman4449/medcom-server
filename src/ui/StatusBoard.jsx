@@ -1,3 +1,4 @@
+import { gregDateTimeStr } from "../lib/dates.jsx";
 import { callCloseReason, callWasCancelled } from "../domain/close-reasons.jsx";
 import { responseCompliance } from "../domain/compliance.jsx";
 import { REQ_STATUS, STATUS, TIME_STEPS } from "../domain/constants.jsx";
@@ -240,11 +241,34 @@ export function CallProgress({ req }) {
   );
 }
 
-export function CallTimes({ times }) {
+// A call whose times were typed in afterwards, rather than stamped from the
+// truck. Wherever the times are shown, this is shown with them: a record
+// reconstructed from a paper log an hour later is a different kind of fact from
+// one a crew pressed at the moment it happened, and a sheet that presents the
+// two identically is a sheet that quietly overstates itself.
+export function ByHandTag({ req }) {
+  const h = req && req.enteredAfterTheFact;
+  if (!h) return null;
+  return (
+    <span
+      style={styles.byHandTag}
+      title={
+        `Entered by ${h.by || "the desk"}` +
+        (h.at ? ` on ${gregDateTimeStr(h.at)}` : "") +
+        (h.reason ? ` — ${h.reason}` : "")
+      }
+    >
+      ✎ ENTERED BY HAND
+    </span>
+  );
+}
+
+export function CallTimes({ times, req }) {
   const chips = callTimeChips(times);
   if (chips.length === 0) return null;
   return (
     <div style={styles.timesRow}>
+      {req && req.enteredAfterTheFact && <ByHandTag req={req} />}
       {chips.map((c) => (
         <div key={c.key} style={c.color ? { ...styles.timeChip, borderColor: c.color } : styles.timeChip}>
           <span style={c.color ? { ...styles.timeChipLabel, color: c.color } : styles.timeChipLabel}>{c.label}</span>

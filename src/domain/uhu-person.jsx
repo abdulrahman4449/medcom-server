@@ -538,6 +538,12 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     // where they are. Filter it and the sheet answers how much of the work is
     // return legs, and how long patients wait to be collected.
     "JOURNEY",
+    // A call the desk wrote up after the fact, because the board was not
+    // available while it ran. It has to say so on the sheet: reconstructed from
+    // a paper log an hour later is a different kind of record from stamped from
+    // the truck, and a month-end read that cannot tell them apart is a read
+    // that quietly overstates how much of the sheet was recorded live.
+    "ENTERED BY HAND",
   ];
 
   // ---------- the filed shift log is the master ----------
@@ -650,6 +656,10 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       r.closedBy || "",
       r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
       journeyLabel(r),
+      r.enteredAfterTheFact
+        ? `${r.enteredAfterTheFact.by || "Desk"}` +
+          (r.enteredAfterTheFact.reason ? ` — ${r.enteredAfterTheFact.reason}` : "")
+        : "",
     ];
     return COLUMN_ORDER.map((i) => cells[i]);
   };

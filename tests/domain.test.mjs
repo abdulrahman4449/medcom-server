@@ -359,4 +359,39 @@ export function run(D, t) {
     // million records in memory.
     t.ok("merge: the cap is bounded", D.RECORD_CAP_MAX <= 100000);
   }
+
+  // ---------- a call written up after the board came back
+  {
+    const T = (ymd, entered) => D.pastCallTimes(ymd, entered);
+
+    const good = T("2026-08-20", {
+      assigned: "14:00", enroute: "14:05", arrival: "14:20",
+      departure: "14:40", arrivalDestination: "15:05", backInService: "15:30",
+    });
+    t.ok("past call: a straightforward one is accepted", !good.error);
+    t.is("past call: the times are read as that day, locally",
+      good.times.assigned, at(2026, 8, 20, 14));
+    t.is("past call: and it files under the day it ran, not the day it was typed",
+      D.opDayKey(D.opDayStart(good.times.assigned)), "2026-08-20");
+
+    // A transfer that leaves at twenty to midnight and clears after it is an
+    // ordinary night, not a typing mistake.
+    const midnight = T("2026-08-20", { assigned: "23:40", backInService: "00:20" });
+    t.ok("past call: one that runs past midnight is accepted", !midnight.error);
+    t.ok("past call: and the later time is read as the next day",
+      midnight.times.backInService === at(2026, 8, 21, 0, 20));
+    t.ok("past call: it says it rolled the day", midnight.rolled === true);
+    t.is("past call: a night call still files under the day it opened",
+      D.opDayKey(D.opDayStart(midnight.times.assigned)), "2026-08-20");
+
+    t.ok("past call: the start is needed", !!T("2026-08-20", { backInService: "15:30" }).error);
+    t.ok("past call: so is the end", !!T("2026-08-20", { assigned: "14:00" }).error);
+    t.ok("past call: a call that finishes in the future is refused",
+      !!T(D.localYmd(Date.now() + 3 * 86400000), { assigned: "09:00", backInService: "10:00" }).error);
+
+    // The middle four are optional — a paper log often has only two of them.
+    const sparse = T("2026-08-20", { assigned: "14:00", arrival: "14:20", backInService: "15:30" });
+    t.ok("past call: the middle steps may be left out", !sparse.error);
+    t.is("past call: and only what was given is kept", Object.keys(sparse.times).length, 3);
+  }
 }

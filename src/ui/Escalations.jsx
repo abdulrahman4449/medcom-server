@@ -1048,6 +1048,12 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                       <span style={styles.foldedNature}>{req.nature}</span>
                       <span style={styles.foldedRoute}>{callRoute(req)}</span>
                       <span style={styles.foldedTime}>{clockStr(req.createdAt)}</span>
+                      {/* On the folded row as well as inside the card. A mark
+                          that says "this record was reconstructed, not stamped"
+                          is no use if you have to open the card to find it —
+                          somebody scrolling a month of calls has to be able to
+                          see which of them were written up afterwards. */}
+                      {req.enteredAfterTheFact && <span style={styles.foldedFlag} title="Entered by hand">✎</span>}
                       {missingLogFields(req).length > 0 && <span style={styles.foldedFlag}>💡</span>}
                     </button>
                   )}
@@ -1211,7 +1217,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                     </>
                   )}
 
-                  <CallTimes times={req.times} />
+                  <CallTimes times={req.times} req={req} />
                   <AssistStatusLine req={req} units={units} />
                   {/* Coding a call is a closed-call job — a call still running
                       is coded from the live board above, where the crew are

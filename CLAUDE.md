@@ -368,6 +368,15 @@ patch", that document is the target — do not start a fresh exploration.
   things: pruning the board when it outgrows the server (`board-size.jsx`), and
   a key that is genuinely one whole object. Reach for it and you are choosing to
   overwrite everybody.
+- **A call the board never saw can still be written up, and it says so.**
+  `PastCall.jsx` — the desk types the six times, the truck, the route and *why*
+  it is being entered by hand, and the record carries `enteredAfterTheFact`
+  wherever it is read: on the folded row, beside the times, and as its own
+  column on the sheet. `createdAt` is the time it RAN, not the time it was
+  typed, or it files under the wrong operational day. A call that crosses
+  midnight rolls forward rather than being refused. It cannot be credited to
+  anybody's UHU — that comes from who was signed on at the time, and during an
+  outage nobody was — and the form says so rather than pretending otherwise.
 - **Getting data back is a button on the Backups panel**, and
   `scripts/restore.mjs` for the day the app will not open. Both compare a copy
   with the live board key by key, mark what holds fewer items than it did — the
