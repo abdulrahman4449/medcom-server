@@ -941,27 +941,35 @@ export function App() {
       archiveRef.current = true;
       try {
         const now = Date.now();
-        const freshRequests = await readKey("ems:requests", requests);
-        const have = (await readKey(ARCHIVE_KEY, [])) || [];
-        const days = unarchivedOpDays(freshRequests, have, now);
+        // Read for real, and give up on this pass if the board cannot be
+        // reached. `readKey` answers a failed read with the fallback it was
+        // given, and the fallback here is React state frozen at the render this
+        // effect was created on — so during a redeploy this pass would have
+        // archived a day out of a stale snapshot and written it as the record.
+        // A day kept from the wrong data is worse than a day kept an hour late.
+        const freshRequests = await readKeyRaw("ems:requests");
+        const have = await readKeyRaw(ARCHIVE_KEY);
+        if (freshRequests === READ_FAILED || have === READ_FAILED) return;
+        const days = unarchivedOpDays(freshRequests || [], have || [], now);
         if (!days.length) return;
 
-        const freshUnits = await readKey("ems:units", units);
-        const freshLog = await readKey("ems:log", log);
-        const freshScheduled = await readKey("ems:scheduled", scheduled);
+        const freshUnits = await readKeyRaw("ems:units");
+        const freshLog = await readKeyRaw("ems:log");
+        const freshScheduled = await readKeyRaw("ems:scheduled");
+        if (freshUnits === READ_FAILED || freshLog === READ_FAILED || freshScheduled === READ_FAILED) return;
 
         for (const dayStart of days) {
           // A night call that ran past 07:00 holds its own day open until the
           // crew close it. That is the point: the archive gets the finished
           // call, not a snapshot of one halfway through.
-          if (!opDayComplete(freshRequests, dayStart, now)) continue;
+          if (!opDayComplete(freshRequests || [], dayStart, now)) continue;
 
           const won = await archiveOpDay({
             dayStart,
-            requests: freshRequests,
-            units: freshUnits,
-            log: freshLog,
-            scheduled: freshScheduled,
+            requests: freshRequests || [],
+            units: freshUnits || [],
+            log: freshLog || [],
+            scheduled: freshScheduled || [],
             closedBy: "",
             reason: "clock",
             boardId: clientIdRef.current,
@@ -970,7 +978,7 @@ export function App() {
           if (alive) setArchives((await readKey(ARCHIVE_KEY, [])) || []);
           await addLog(
             `Operational day ${opDayLabel(dayStart)} (07:00 → 07:00) kept to the archive automatically · ` +
-              `${requestsForOpDay(freshRequests, dayStart).length} calls, both stations`,
+              `${requestsForOpDay(freshRequests || [], dayStart).length} calls, both stations`,
             "status"
           );
         }
@@ -1572,6 +1580,17 @@ export function App() {
       const templates = list.filter(
         (x) => x && isRecurring(x) && !isReturnLeg(x) && !x.repeatOf
       );
+
+      // Arrangements that were dispatched before they stopped being
+      // appointments. The board used to release the template itself, which left
+      // a standing dialysis run reading "Sun 23 Aug 07:15 · DISPATCHED" for
+      // ever, and sitting in Upcoming as a booking that had already gone. The
+      // call it produced is a real call and stays exactly where it is; what is
+      // repaired here is the arrangement, which is live and always was. A
+      // stopped arrangement is left stopped.
+      const stranded = templates.filter(
+        (t) => t.status === "released" || t.status === "releasing"
+      );
       for (const t of templates) {
         for (const occ of repeatOccurrencesDue(t, now)) {
           const exists = [...list, ...made].some(
@@ -1607,7 +1626,7 @@ export function App() {
         }
       }
 
-      if (!made.length) return;
+      if (!made.length && !stranded.length) return;
       // Re-read immediately before writing: another desk may have made the same
       // ones in the seconds this took, and a duplicate booking is a second
       // ambulance sent to the same patient.
@@ -1618,8 +1637,25 @@ export function App() {
           ? !before.some((x) => x && x.returnOf === m.returnOf)
           : !before.some((x) => x && x.repeatOf === m.repeatOf && x.repeatKey === m.repeatKey)
       );
-      if (!keep.length) return;
-      await saveScheduled([...before, ...keep]);
+      const strandedIds = new Set(stranded.map((t) => t.id));
+      const mended = strandedIds.size
+        ? before.map((x) =>
+            x && strandedIds.has(x.id) && (x.status === "released" || x.status === "releasing")
+              ? {
+                  ...x,
+                  status: "scheduled",
+                  releasedAt: null,
+                  releasedRequestId: null,
+                  releasedUnitId: null,
+                  claimedBy: null,
+                  claimedAt: null,
+                }
+              : x
+          )
+        : before;
+      const changed = keep.length > 0 || mended.some((x, i) => x !== before[i]);
+      if (!changed) return;
+      await saveScheduled([...mended, ...keep]);
       for (const line of lines.slice(0, keep.length)) await addLog(line, "call");
     } catch (e) {
       console.error("booking pass failed:", e);

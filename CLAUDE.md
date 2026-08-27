@@ -344,6 +344,23 @@ patch", that document is the target — do not start a fresh exploration.
   MRNs are joined across spaces and hyphens — `MRN-1234` and `mrn 1234` are one
   person, and joining on the raw string answered "have we had them before?"
   with "no".
+- **A repeating booking is an arrangement and is never dispatched.** The board
+  used to release the template itself, so Schedule → Repeating showed a standing
+  dialysis run as "Sun 23 Aug 07:15 · DISPATCHED" for ever, and it sat in
+  Upcoming as a booking that had already gone. `schedIsTemplate` keeps it out of
+  the release loop, out of Upcoming, off the pre-alert chime and off the export
+  sheet; the occurrence it throws off for the day is what goes out. The booking
+  pass repairs arrangements that older builds already dispatched.
+- **Getting data back is `docs/RESTORE-FROM-BACKUP.md` and
+  `scripts/restore.mjs`.** `diff` names the keys that hold fewer items than a
+  backup did — the shape a loss makes — and `put` copies just those keys into
+  the live board while the server keeps running. A whole-file rollback throws
+  away every hour worked since and is almost never the right answer.
+- **A housekeeping pass must never run on a failed read.** `readKey(key, fallback)`
+  answers an outage with the fallback, and inside an effect the fallback is React
+  state frozen at the render the effect was created on. The archive pass used it,
+  so a redeploy could have kept an operational day out of a stale snapshot and
+  written that as the record. `readKeyRaw` and a `READ_FAILED` bail, always.
 - **Wiping the board is `docs/RESET-THE-BOARD.md`, not a button.** The `-wal`
   file has to go with the `.db` or the last few minutes come back. Accounts live
   in their own table, so the board can be cleared without touching them.

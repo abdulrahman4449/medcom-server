@@ -9,7 +9,7 @@ import { scheduledShiftKey, shiftDateOf, shiftLabelWithWindow, shiftWindowAt, sh
 import { buildDispatchLogAOA, dressLogSheet, dressSheet, gridLogSheet, paintRows, personUhuRows, titleSheet } from "../domain/uhu-person.jsx";
 import { actorPost } from "./name-stamps.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
-import { SCHED_LEAD_MS, schedCancelReason, schedStatusMeta } from "../ui/booking-cancel.jsx";
+import { SCHED_LEAD_MS, schedCancelReason, schedIsTemplate, schedStatusMeta } from "../ui/booking-cancel.jsx";
 
 // ---------- making the export readable when it opens ----------
 //
@@ -341,7 +341,11 @@ export async function exportAndShareLog(log, requests, units, scheduled, station
   const onDispatchLog = (s) =>
     requests.some((r) => r && (r.scheduledId === s.id || (s.releasedRequestId && r.id === s.releasedRequestId)));
   const scheduledRows = (scheduled || [])
-    .filter((s) => s && !onDispatchLog(s))
+    // A standing arrangement is not a booking that happened. Its occurrences
+    // are on this sheet, or on the dispatch log once they went out; the
+    // arrangement itself is the rule they came from, and putting it here counts
+    // one dialysis run as two.
+    .filter((s) => s && !onDispatchLog(s) && !schedIsTemplate(s))
     .slice()
     .sort((a, b) => (a.scheduledFor || 0) - (b.scheduledFor || 0))
     .map((s) => {

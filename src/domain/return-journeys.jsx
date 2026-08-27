@@ -93,9 +93,13 @@ export function repeatOccurrencesDue(template, now) {
     if (!days.includes(d.getDay())) continue;
     d.setHours(src.getHours(), src.getMinutes(), 0, 0);
     const at = d.getTime();
-    // Never behind the clock, and never the template's own occurrence.
+    // Never behind the clock.
+    //
+    // It used to skip the template's own calendar day as well, because the
+    // template was itself the first appointment and went out like any booking.
+    // It no longer does — an arrangement is never dispatched — so the day it
+    // was set up on needs an occurrence like every other day it runs.
     if (at <= now) continue;
-    if (localDayKey(at) === localDayKey(template.scheduledFor)) continue;
     out.push({ at, key: localDayKey(at) });
   }
   return out;

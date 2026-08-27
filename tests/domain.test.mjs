@@ -271,4 +271,29 @@ export function run(D, t) {
     t.ok("records: a search reaches the ward as well as the number",
       D.recordMatches(me, "renal") && D.recordMatches(me, "mrn77") && !D.recordMatches(me, "zzz"));
   }
+
+  // ---------- a standing arrangement is never dispatched
+  {
+    const tmpl = { id: "t1", status: "scheduled", scheduledFor: at(2026, 8, 20, 7, 15),
+      repeat: { days: [0, 2, 4] }, nature: "HD appointment" };
+    const occurrence = { ...tmpl, id: "o1", repeatOf: "t1", repeatKey: "2026-08-25", repeat: null,
+      scheduledFor: at(2026, 8, 25, 7, 15) };
+    const plain = { id: "p1", status: "scheduled", scheduledFor: at(2026, 8, 20, 7, 15) };
+    const now = at(2026, 8, 27, 16);
+
+    t.ok("repeats: the arrangement is a template", D.schedIsTemplate(tmpl));
+    t.ok("repeats: an occurrence it threw off is not", !D.schedIsTemplate(occurrence));
+    t.ok("repeats: a one-off booking is not", !D.schedIsTemplate(plain));
+
+    t.ok("repeats: an arrangement long past its time never falls due",
+      !D.schedDue(tmpl, now));
+    t.ok("repeats: its occurrence does", D.schedDue(occurrence, now));
+    t.ok("repeats: and so does an ordinary booking", D.schedDue(plain, now));
+
+    // The day it was set up on runs like every other day it runs on. It used to
+    // be skipped, because the arrangement was itself the first appointment.
+    const madeToday = { scheduledFor: at(2026, 8, 27, 18), repeat: { days: [0, 1, 2, 3, 4, 5, 6] } };
+    t.is("repeats: the day it was set up on still gets an occurrence",
+      D.repeatOccurrencesDue(madeToday, at(2026, 8, 27, 16)).length, 1);
+  }
 }

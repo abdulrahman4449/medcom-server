@@ -1,4 +1,5 @@
 import { shortDurationStr } from "../domain/messages.jsx";
+import { isRecurring } from "../domain/return-journeys.jsx";
 import { hhmm, shiftMeta } from "../domain/shift-helpers.jsx";
 import { SHIFTS } from "../domain/shifts.jsx";
 import { gregDayMonthStr, gregLongDateStr } from "../lib/dates.jsx";
@@ -104,8 +105,24 @@ export function schedReleaseAt(s) {
   return s.scheduledFor || 0;
 }
 
+// A standing arrangement is not an appointment, and must never be dispatched.
+//
+// It used to be: the template carried a real date and time, the release loop
+// saw it fall due like any other booking, and sent it out. The record left
+// behind was an arrangement stamped DISPATCHED with the date it was set up on —
+// so Schedule → Repeating showed "Sun 23 Aug 07:15 · DISPATCHED" for a dialysis
+// run that goes out three times a week, for ever. It also sat in Upcoming,
+// taking up room, as a booking that had already gone.
+//
+// The template is the arrangement now and nothing else. What goes out is the
+// occurrence it throws off for the day — see `repeatOccurrencesDue`.
+export function schedIsTemplate(s) {
+  return !!(s && isRecurring(s) && !s.repeatOf);
+}
+
 export function schedDue(s, now) {
   if (schedAwaitCall(s)) return false;
+  if (schedIsTemplate(s)) return false;
   return schedOpen(s, now) && schedReleaseAt(s) <= now;
 }
 

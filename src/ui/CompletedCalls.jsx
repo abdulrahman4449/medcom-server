@@ -20,7 +20,7 @@ import { CallRoute, InfoNote } from "./AssistanceTasks.jsx";
 import { WhenPicker, bookingsNear, bookingsOnDay } from "./ScheduledRequests.jsx";
 import { CallCodingFields, CallTypeTag, LoadedKmTag } from "./StatusBoard.jsx";
 import { MIN_LEAD_MS } from "./WhenPicker.jsx";
-import { SCHED_CANCEL_REASONS, SCHED_CANCEL_REASON_MAX, SCHED_DUE_SOON_MS, SCHED_LEAD_MS, SCHED_PREALERT_MS, SCHED_PREALERT_TICK_MS, dayHeadingStr, defaultScheduleTs, schedAwaitCall, schedCancelReason, schedOpen, schedStatusMeta, startOfDay, untilStr, whenStr } from "./booking-cancel.jsx";
+import { SCHED_CANCEL_REASONS, SCHED_CANCEL_REASON_MAX, SCHED_DUE_SOON_MS, SCHED_LEAD_MS, SCHED_PREALERT_MS, SCHED_PREALERT_TICK_MS, dayHeadingStr, defaultScheduleTs, schedAwaitCall, schedCancelReason, schedIsTemplate, schedOpen, schedStatusMeta, startOfDay, untilStr, whenStr } from "./booking-cancel.jsx";
 
 // ---------- the quarter-hour reminder ----------
 //
@@ -104,7 +104,10 @@ export function useSchedulePreAlerts(user, scheduled, audioCtxRef) {
       const showing = [];
       let chime = false;
       (list || []).forEach((entry) => {
-        if (!entry || !schedOpen(entry, now)) return;
+        // An arrangement never goes out, so nothing about it falls due and
+        // there is nothing to chime about. Its occurrences do, and they are
+        // ordinary bookings by the time they reach here.
+        if (!entry || !schedOpen(entry, now) || schedIsTemplate(entry)) return;
         const delta = (entry.scheduledFor || 0) - now;
         if (delta <= 0 || delta > SCHED_PREALERT_MS) return;
         if (!bookingInUserShift(entry, u)) return;
@@ -346,8 +349,13 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
   // station's bookings would be written out of existence.
   const list = scheduled || [];
   const saveFallback = allScheduled || scheduled || [];
+  // What is actually coming out. A standing arrangement is not — it is the
+  // reason occurrences exist, and it lives in Repeating where somebody goes to
+  // see what is coming or to stop it. Left in, it sat at the top of Upcoming
+  // for ever, with a date from whenever it was set up, taking the room a real
+  // booking needed.
   const upcoming = list
-    .filter((s) => s && schedOpen(s, now))
+    .filter((s) => s && schedOpen(s, now) && !schedIsTemplate(s))
     .sort((a, b) => (a.scheduledFor || 0) - (b.scheduledFor || 0));
   // Dispatched and cancelled, scoped to the shift running now.
   //
