@@ -1181,16 +1181,13 @@ export function App() {
     if (sent.value && !sent.stale) setLog(sent.value);
   }
 
-  // Administration names the policy, then attaches the file that already
-  // exists — a signed PDF, or a photograph of the sheet on the wall. The name
-  // is what everybody navigates by, so it is typed rather than inherited from
-  // whatever the scanner called the file.
+  // Administration attaches the file that already exists — a signed PDF, or a
+  // photograph of the sheet on the wall. The name is what everybody navigates
+  // by; a typed one is better than "SCAN_0043", but requiring one held the
+  // attach button grey with nothing on screen saying why, so the file's own
+  // name stands in when none is typed.
   async function addPolicy(title, file) {
-    const name = String(title || "").trim();
-    if (!name) {
-      alert("Give the policy a name first.");
-      return;
-    }
+    const name = String(title || "").trim() || "Untitled policy";
     setPolicyBusy(true);
     try {
       const doc = await readPolicyFile(file);

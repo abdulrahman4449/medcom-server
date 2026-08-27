@@ -51,9 +51,10 @@ export function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
     0
   );
   const [openId, setOpenId] = useState(null);
-  // Name first, then the file. The name is what the shelf is read by, and a
+  // A name, then the file. The name is what the shelf is read by, and a
   // scanner's filename is not a name — "SCAN_0043" tells a dispatcher at 3am
-  // nothing about which policy they are looking at.
+  // nothing about which policy they are looking at. It is still optional: see
+  // the button below for why.
   const [draftName, setDraftName] = useState("");
 
   return (
@@ -85,23 +86,30 @@ export function PolicyLibrary({ policies, canManage, onAdd, onRemove, busy }) {
             style={styles.policyNameInput}
             value={draftName}
             maxLength={120}
-            placeholder="Name of the policy"
+            placeholder="Name of the policy (optional)"
             onChange={(e) => setDraftName(e.target.value)}
           />
-          <label style={busy || !draftName.trim() ? styles.policyAddOff : styles.policyAdd}>
+          {/* The name is optional now.
+              It used to be required, and the button sat grey until something
+              was typed — with nothing on screen saying so. From the other side
+              of it that is a dead button on a page with no way forward, which
+              is exactly how it was reported. A file already has a name; if
+              nobody types a better one, that is the name. */}
+          <label style={busy ? styles.policyAddOff : styles.policyAdd}>
             {busy ? "Adding…" : "Attach PDF or picture"}
             <input
               type="file"
               accept="application/pdf,image/*"
               style={{ display: "none" }}
-              disabled={busy || !draftName.trim()}
+              disabled={busy}
               onChange={(e) => {
                 const f = e.target.files && e.target.files[0];
                 e.target.value = "";
-                if (f) {
-                  onAdd(draftName, f);
-                  setDraftName("");
-                }
+                if (!f) return;
+                // "Fleet Safety Policy v3.pdf" -> "Fleet Safety Policy v3"
+                const fromFile = String(f.name || "").replace(/\.[^.]+$/, "").trim();
+                onAdd(draftName.trim() || fromFile || "Untitled policy", f);
+                setDraftName("");
               }}
             />
           </label>
