@@ -276,6 +276,20 @@ export const styles = {
   pastTimeField: { display: "flex", flexDirection: "column", gap: 4 },
   pastTimeLabel: { fontSize: 11.5, color: "var(--ink-3)", letterSpacing: 0.2 },
   pastTimeNeeded: { color: "var(--hold)", fontWeight: 700 },
+  // ---- is this device in sync ----
+  syncOk: {
+    display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 12px",
+    borderRadius: 12, marginBottom: 10, fontSize: 12.5, lineHeight: 1.5,
+    background: "rgba(48,209,88,.08)", border: "1px solid rgba(48,209,88,.32)", color: "var(--ink-2)",
+  },
+  syncHeld: {
+    display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 12px",
+    borderRadius: 12, marginBottom: 10, fontSize: 12.5, lineHeight: 1.5,
+    background: "rgba(255,159,10,.09)", border: "1px solid rgba(255,159,10,.38)", color: "var(--ink-2)",
+  },
+  syncDot: { width: 8, height: 8, borderRadius: 999, flex: "none", marginTop: 5 },
+  syncWords: { minWidth: 0 },
+
   // The mark a reconstructed record carries, wherever it is shown.
   byHandTag: {
     display: "inline-flex", alignItems: "center", gap: 4,

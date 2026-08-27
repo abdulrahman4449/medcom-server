@@ -1,4 +1,5 @@
 import { authHeaders } from "../lib/auth.jsx";
+import { connectionListeners, connectionOk, lastSyncedAt, lastWriteError, totalPendingCount } from "../lib/offline-queue.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
@@ -22,6 +23,63 @@ import { AlertTriangle, Archive, RotateCcw } from "../lib/icons.jsx";
 // plug a drive into, and the second copy is the one somebody downloads.
 const BACKUP_POLL_MS = 5 * 60 * 1000;
 const TOKEN_KEY = "ems:backupToken";
+
+// ---------- is this device actually in sync? ----------
+//
+// The banner at the top of the app speaks up when something is wrong and says
+// nothing when it is not, which is right for a crew working a call — but it
+// leaves "is my data safe" answerable only by the absence of a warning, and an
+// absence is not an answer anybody trusts. This says it out loud, beside the
+// backups, where somebody is standing precisely because they are worried about
+// exactly this.
+function SyncStatus() {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const fn = () => force((n) => n + 1);
+    connectionListeners.add(fn);
+    // Nothing here changes on a timer except the words "a minute ago", and a
+    // status line that re-renders every second is a status line that twitches.
+    const t = setInterval(fn, 30000);
+    return () => { connectionListeners.delete(fn); clearInterval(t); };
+  }, []);
+
+  const held = totalPendingCount();
+  const ok = connectionOk && held === 0 && !lastWriteError;
+  const ago = lastSyncedAt ? Date.now() - lastSyncedAt : null;
+  const when =
+    ago === null ? null
+      : ago < 60000 ? "a moment ago"
+      : ago < 3600000 ? `${Math.round(ago / 60000)} minutes ago`
+      : gregDateTimeStr(lastSyncedAt);
+
+  return (
+    <div style={ok ? styles.syncOk : styles.syncHeld}>
+      <span style={{ ...styles.syncDot, background: ok ? "var(--ok)" : "var(--hold)" }} />
+      <span style={styles.syncWords}>
+        {lastWriteError ? (
+          <>
+            <strong>The server is refusing to save.</strong> {held} change
+            {held === 1 ? "" : "s"} held on this device. Nothing is lost.
+          </>
+        ) : !connectionOk ? (
+          <>
+            <strong>No signal.</strong> {held} change{held === 1 ? "" : "s"} held on this device
+            and sent automatically when it comes back. Nothing is lost.
+          </>
+        ) : held > 0 ? (
+          <>
+            <strong>Catching up.</strong> {held} change{held === 1 ? "" : "s"} still going up.
+          </>
+        ) : (
+          <>
+            <strong>In sync.</strong> Everything entered on this device has reached the server.{" "}
+            {when ? `Last saved ${when}.` : "Nothing has needed saving since this page opened."}
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
 
 // ---------- putting something back ----------
 //
@@ -198,6 +256,7 @@ export function BackupPanel({ role }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [pickToTake, setPickToTake] = useState("");
   const [token, setToken] = useState(() => {
     try { return window.localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
   });
@@ -271,6 +330,9 @@ export function BackupPanel({ role }) {
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
+      {/* First thing in the panel: this device, before anything about copies. */}
+      <SyncStatus />
+
       {b.unreachable ? (
         <div style={styles.storageBanner}>
           <AlertTriangle size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
@@ -351,6 +413,13 @@ export function BackupPanel({ role }) {
             ) : (
               <>
                 <span style={styles.backupNote}>
+                  This is how a copy reaches an external drive: download it and save it there.
+                  The server has no drive of its own to write to — a hosted machine has no socket
+                  to plug one into. (On a server the department owns, <code>BACKUP_DIR_2</code>
+                  writes every snapshot straight to a mounted drive as well, and no download is
+                  needed.)
+                  <br />
+                  <br />
                   This file contains patient MRNs. Keep it where the department keeps
                   confidential records — not in a personal folder or a consumer cloud drive.
                 </span>
@@ -362,18 +431,34 @@ export function BackupPanel({ role }) {
                     value={token}
                     onChange={(e) => rememberToken(e.target.value)}
                   />
+                  {/* Any copy, not only the newest. Carrying one away is
+                      usually about a particular day — the one before whatever
+                      went wrong — and "newest" is the one day that is no use
+                      for that. */}
+                  <select
+                    style={{ ...styles.assignSelect, maxWidth: 260 }}
+                    value={pickToTake}
+                    onChange={(e) => setPickToTake(e.target.value)}
+                  >
+                    <option value="">Newest copy</option>
+                    {(b.copies || []).map((c) => (
+                      <option key={c.name} value={c.name}>
+                        {gregDateTimeStr(new Date(c.at).getTime())} · {bytesStr(c.bytes || 0)}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     style={styles.ghostBtn}
                     disabled={!token || !b.primary || !b.primary.newest}
                     onClick={() => {
-                      const name = b.primary.newest.name;
+                      const name = pickToTake || b.primary.newest.name;
                       window.open(
                         `${API_BASE}/api/backups/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}`,
                         "_blank"
                       );
                     }}
                   >
-                    Download newest
+                    Download
                   </button>
                 </div>
               </>

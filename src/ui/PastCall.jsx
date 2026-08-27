@@ -364,7 +364,7 @@ export function PastCallSection({ user, units, saveRequests, addLog }) {
   return (
     <div>
       <SectionBanner
-        title="A CALL THAT RAN WHILE THE BOARD WAS DOWN"
+        title="ADD A CALL THE BOARD MISSED"
         action={
           <button style={styles.bannerBtn} onClick={() => setOpen((v) => !v)}>
             {open ? "Close" : "Write one up"}
