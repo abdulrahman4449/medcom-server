@@ -29,6 +29,13 @@ administrators read statistics and file shift logs.
 
 ## Read before you redesign anything
 
+`design/README.md` also carries the **card contract**, and it is the answer to
+"which of these two looks is right": **16px radius, `1px solid var(--hair)`,
+`0 6px 18px var(--lift)`, on a flat `--raised` surface.** Modals, sheets and
+overlays are their own class and keep their larger radii; buttons are their own
+vocabulary again. When a surface looks like it belongs to an older version of
+the app, check it against those three numbers first.
+
 **`design/README.md` records the approved visual direction**, signed off
 18 August 2026. When the ask is "remodel", "redesign" or "the next big
 patch", that document is the target — do not start a fresh exploration.

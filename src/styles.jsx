@@ -528,16 +528,22 @@ export const styles = {
     padding: "3px 8px",
     fontWeight: 600,
   },
+  // Geometry shared with alarmAckBtnBusy below. The two are one button in two
+  // states, and they had different radii, padding and type sizes — so the
+  // biggest button in the app visibly jumped and reshaped itself the moment a
+  // crew pressed it, on the alarm screen, which is the worst place to look
+  // unreliable. Change one and change the other.
   alarmAckBtn: {
     marginTop: 12,
+    width: "100%",
     background: "var(--ink-alt)",
     color: "#FFFFFF",
-    border: "none",
-    borderRadius: 10,
-    padding: "13px 22px",
+    border: "1px solid transparent",
+    borderRadius: 12,
+    padding: "16px 16px",
     fontWeight: 800,
-    fontSize: 16,
-    letterSpacing: 0.6,
+    fontSize: 17,
+    letterSpacing: 0.5,
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
@@ -722,14 +728,20 @@ export const styles = {
   // The opened card is the tile grown up: the same gradient, the same lit edge,
   // the same soft shadow. It was still flat while the tiles around it had been
   // rebuilt, so opening one felt like leaving the app.
+  // The approved card treatment — design/README.md, "Tokens — unchanged":
+  // 16px radius, 1px solid var(--hair), 0 6px 18px var(--lift), on a flat
+  // --raised surface. This card predated that direction and kept a 20px
+  // radius, a --veil border, a much heavier shadow and a gradient, so the
+  // busiest surface on the board was the one that did not match the pending
+  // and unit cards sitting beside it.
   callCard: {
-    background: "linear-gradient(180deg, var(--inset-2), var(--panel))",
-    border: "1px solid var(--veil)",
+    background: "var(--raised)",
+    border: "1px solid var(--hair)",
     borderLeft: "4px solid",
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 12,
-    boxShadow: "0 14px 34px var(--lift)",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 10,
+    boxShadow: "0 6px 18px var(--lift)",
   },
   callCardFolded: { padding: "0", background: "none", boxShadow: "none" },
   // The booked-ahead card, at the weight of a pending call tile.
@@ -1478,11 +1490,13 @@ export const styles = {
     alignItems: "center",
     gap: 5,
   },
+  // The waiting state of assistBtn. A pill that turns into a rounded rectangle
+  // the moment it is pressed reads as a different control, not a changed one.
   assistBtnPending: {
     background: "rgba(239,68,68,0.12)",
     border: "1px solid rgba(239,68,68,0.5)",
     color: "var(--crit-2)",
-    borderRadius: 8,
+    borderRadius: 999,
     padding: "6px 10px",
     cursor: "default",
     fontFamily: display,
@@ -1659,7 +1673,7 @@ export const styles = {
     border: "1px solid var(--crit)",
     borderRadius: 16,
     padding: 12,
-    boxShadow: "0 8px 22px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   refusalPanelHead: {
     fontSize: 12,
@@ -1731,7 +1745,7 @@ export const styles = {
     background: "linear-gradient(180deg,#3A2A05,#241A03)",
     border: "1px solid var(--gold)",
     color: "var(--hold-3)",
-    borderRadius: 14,
+    borderRadius: 16,
     padding: "14px 16px",
     fontSize: 15.5,
     fontWeight: 800,
@@ -1756,7 +1770,7 @@ export const styles = {
   receiverPanel: {
     marginTop: 10, background: "var(--ground)", border: "1px solid var(--ok)",
     borderRadius: 16, padding: 12,
-    boxShadow: "0 8px 22px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   receiverHead: {
     fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: "var(--ok)",
@@ -1765,11 +1779,11 @@ export const styles = {
   // A row of indicators, sized so more can be added without rearranging.
   bandWrap: {
     background: "linear-gradient(180deg, var(--inset-2), var(--panel))",
-    border: "1px solid var(--veil)",
-    borderRadius: 20,
+    border: "1px solid var(--hair)",
+    borderRadius: 16,
     padding: "14px 14px 12px",
     marginTop: 14,
-    boxShadow: "0 12px 30px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   bandHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
   bandTitle: {
@@ -1808,9 +1822,9 @@ export const styles = {
 
   mixCard: {
     background: "linear-gradient(180deg, var(--raised), var(--panel))",
-    border: "1px solid var(--veil)",
-    borderRadius: 18, padding: "13px 14px", marginTop: 10,
-    boxShadow: "0 8px 22px var(--lift)",
+    border: "1px solid var(--hair)",
+    borderRadius: 16, padding: "13px 14px", marginTop: 10,
+    boxShadow: "0 6px 18px var(--lift)",
   },
   mixBar: {
     display: "flex", height: 12, borderRadius: 999, overflow: "hidden",
@@ -1917,7 +1931,7 @@ export const styles = {
   reliefWait: {
     background: "linear-gradient(180deg,#3A2A05,#241A03)",
     border: "1px solid var(--gold)", borderRadius: 16, padding: 14, marginBottom: 14,
-    boxShadow: "0 8px 22px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   reliefWaitHead: { fontSize: 14.5, fontWeight: 800, color: "var(--hold-3)", letterSpacing: 0.2 },
   reliefWaitBody: { fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 8 },
@@ -1941,8 +1955,8 @@ export const styles = {
 
   needsDetail: {
     marginTop: 10, background: "rgba(233,196,106,.07)",
-    border: "1px solid rgba(233,196,106,.5)", borderRadius: 14, padding: "12px 14px",
-    boxShadow: "0 8px 22px var(--lift)",
+    border: "1px solid rgba(233,196,106,.5)", borderRadius: 16, padding: "12px 14px",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   checkTodayRow: {
     display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
@@ -2231,7 +2245,7 @@ export const styles = {
   shelfWarn: {
     fontSize: 12, lineHeight: 1.55, color: "var(--ink)", marginBottom: 10,
     background: "rgba(255,159,10,.12)", border: "1px solid rgba(255,159,10,.45)",
-    borderRadius: 11, padding: "9px 12px",
+    borderRadius: 12, padding: "9px 12px",
   },
   policyAddRow: {
     display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
@@ -2298,7 +2312,7 @@ export const styles = {
     background: "var(--raised)",
     border: "1px solid var(--hair)",
     boxShadow: "0 6px 18px var(--lift)",
-    borderRadius: 14,
+    borderRadius: 16,
     padding: "9px 10px 8px",
     display: "flex",
     flexDirection: "column",
@@ -2945,9 +2959,9 @@ export const styles = {
     borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap",
   },
   checkCard: {
-    background: "var(--panel)", border: "1px solid var(--hair-2)", borderRadius: 14,
+    background: "var(--panel)", border: "1px solid var(--hair-2)", borderRadius: 16,
     padding: 12, marginTop: 10,
-    boxShadow: "0 8px 22px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   checkHead: {
     display: "flex", alignItems: "baseline", gap: 8,
@@ -3375,7 +3389,7 @@ export const styles = {
   },
   coverageRowLive: {
     display: "flex", alignItems: "center", gap: 10,
-    background: "rgba(255,77,94,.10)", border: "1px solid var(--crit)", borderRadius: 12, padding: "10px 12px",
+    background: "rgba(255,77,94,.10)", border: "1px solid var(--crit)", borderRadius: 16, padding: "10px 12px",
     boxShadow: "0 8px 22px var(--lift)",
   },
   coverageRowHead: { fontSize: 14, fontWeight: 700, color: "var(--ink)", display: "flex", gap: 8, flexWrap: "wrap" },
@@ -3424,10 +3438,12 @@ export const styles = {
   ackBtnBusy: {
     opacity: 0.6, cursor: "wait",
   },
+  // The pressed state of alarmAckBtn — same box, different colours only.
   alarmAckBtnBusy: {
+    marginTop: 12,
     width: "100%", background: "var(--hair-2)", border: "1px solid var(--hair-3)",
-    color: "var(--ink-3)", borderRadius: 12, padding: "18px 16px",
-    fontSize: 18, fontWeight: 800, letterSpacing: 0.5, cursor: "wait",
+    color: "var(--ink-3)", borderRadius: 12, padding: "16px 16px",
+    fontSize: 17, fontWeight: 800, letterSpacing: 0.5, cursor: "wait",
   },
 
   deskAssistBtn: {
@@ -3509,7 +3525,7 @@ export const styles = {
 
   issueRow: {
     background: "var(--raised)", border: "1px solid var(--hair)", borderRadius: 16, padding: "11px 12px",
-    boxShadow: "0 8px 22px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   issueHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   issueOpen: {
@@ -3708,7 +3724,7 @@ export const styles = {
     border: "1px solid var(--flow)",
     borderRadius: 16,
     padding: 12,
-    boxShadow: "0 8px 22px var(--lift)",
+    boxShadow: "0 6px 18px var(--lift)",
   },
   editPanelHead: {
     fontSize: 12,
@@ -4393,13 +4409,17 @@ export const styles = {
   // The timeline button while the call is still missing its PCR author: still
   // legible, plainly not pressable, and in the same place it always is so the
   // crew are not hunting for it once the name is on.
+  // The unavailable state of primaryBtnSm. Same pill and the same 40px tap
+  // target: a button that shrinks when it is disabled shifts everything around
+  // it, so a row of them jumps about as the board updates.
   primaryBtnSmBlocked: {
     background: "var(--raised)",
     border: "1px solid var(--hair-2)",
     color: "var(--ink-4)",
     fontWeight: 700,
-    borderRadius: 8,
-    padding: "6px 10px",
+    borderRadius: 999,
+    minHeight: 40,
+    padding: "9px 16px",
     cursor: "not-allowed",
     fontFamily: display,
     fontSize: 13.5,
