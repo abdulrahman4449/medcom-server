@@ -24,7 +24,7 @@ import { clearPasswordFor, decideReset, pendingResets } from "./PasswordResets.j
 // Clearing a password does not delete anything. The account keeps its ID, its
 // name, its shifts, its overtime and every call on its record; only the
 // password goes, and the next sign-in walks them through choosing a new one.
-export function PasswordResets({ resets, setResets, user, addLog }) {
+export function PasswordResets({ resets, setResets, user, addLog, onIssued }) {
   const pending = pendingResets(resets);
   // Open when somebody is locked out, folded away when nobody is.
   //
@@ -68,15 +68,20 @@ export function PasswordResets({ resets, setResets, user, addLog }) {
         return;
       }
       if (ok && ok.code) {
-        // Shown once and never again. An alert rather than a panel because the
-        // administrator is standing next to the person who needs it.
-        window.alert(
-          `Password cleared for ${row.name || row.accountId}.\n\n` +
-            `SIGN-IN CODE:  ${ok.code}\n\n` +
-            `They type this with their employee ID at the next sign-in and then choose ` +
-            `their own password. It works once and lasts seven days. Write it down now — ` +
-            `it cannot be read back.`
-        );
+        // Through the same banner the roster uses, not an alert.
+        //
+        // It was an alert, on the reasoning that the administrator is standing
+        // next to the person who needs it. Often they are not — the request
+        // came in from another station — and there is no copying anything out
+        // of an alert on a phone, so the code was read once and lost. The
+        // banner carries a message ready to send.
+        onIssued([{
+          id: row.accountId,
+          name: row.name,
+          role: row.role,
+          code: ok.code,
+          expiresAt: ok.expiresAt || null,
+        }]);
       }
       setResets(await decideReset(row, "cleared", user && user.name));
       await addLog(

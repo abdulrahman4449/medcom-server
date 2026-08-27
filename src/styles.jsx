@@ -899,6 +899,27 @@ export const styles = {
     fontVariantNumeric: "tabular-nums",
   },
   claimCodeNote: { fontSize: 12, color: "var(--ink-3)", lineHeight: 1.5, margin: "9px 0 11px" },
+  // The hand-over message, ready to send. Nothing in this app can post a code
+  // to a person - they have not signed in yet, which is the whole reason the
+  // code exists - so the last step is always a human sending it. This is that
+  // step made one tap instead of transcribing a code onto a scrap of paper.
+  //
+  // 16px, like every other field: under that, focusing it zooms iOS and leaves
+  // the board hanging off the side of the screen.
+  claimCodeMsg: {
+    width: "100%", boxSizing: "border-box", resize: "vertical", overflowY: "auto",
+    background: "var(--inset)", border: "1px solid var(--hair)", borderRadius: 12,
+    color: "var(--ink-2)", fontSize: 16, lineHeight: 1.45, padding: "9px 10px",
+    fontFamily: "inherit", marginBottom: 10,
+  },
+  claimCodeActions: { display: "flex", gap: 8, flexWrap: "wrap" },
+  // On the roster row: whether this person is waiting on a code, or already
+  // holds one somebody has to find and pass on.
+  accountCodeTag: {
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: "var(--gold)",
+    border: "1px solid var(--gold)", borderRadius: 999, padding: "2px 7px",
+    whiteSpace: "nowrap",
+  },
   schedCard: {
     background: "var(--raised)",
     border: "1px solid var(--hair)",

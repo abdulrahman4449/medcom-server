@@ -62,7 +62,7 @@ export async function clearPasswordFor(accountId) {
     // The server issues the code that replaces the password in the same call.
     // Without handing it on, the administrator would clear an account and leave
     // the person unable to set a new password and with nothing to say why.
-    return (res && res.code) ? { code: res.code } : true;
+    return (res && res.code) ? { code: res.code, expiresAt: res.expiresAt || null } : true;
   } catch (e) {
     window.alert(e.message || "Could not clear that password.");
     return false;

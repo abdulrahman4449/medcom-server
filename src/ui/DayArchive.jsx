@@ -11,6 +11,7 @@ import { assistPending } from "../domain/second-ambulance.jsx";
 import { hhmm, seatLabel } from "../domain/shift-helpers.jsx";
 import { callStartTs } from "../domain/uhu.jsx";
 import { exportArchivedDay } from "../export/workbook.jsx";
+import { APP_NAME } from "../brand/brand.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { CalendarClock, HandRaised, Plus, Trash, Users } from "../lib/icons.jsx";
@@ -192,16 +193,28 @@ export function DayArchive({ archives, requests, units, log, scheduled }) {
 export function ClaimCodeBtn({ account, onIssued }) {
   const [busy, setBusy] = useState(false);
   if (account.hasPassword) return null;
+  // A code cannot be read back — only its hash is kept — so the roster cannot
+  // show the administrator the one they issued yesterday. What it can show is
+  // that one is out, which is the difference between "I still have to do this"
+  // and "I did it, they lost it". Either way the answer is a new code, and the
+  // button says which of the two it is about to be.
+  const out = !!account.codeIssued;
   return (
     <button
       style={styles.ghostBtnSm}
       disabled={busy}
-      title={`Issue a first sign-in code for ${account.name || account.id}`}
+      title={
+        out
+          ? `Replace the sign-in code for ${account.name || account.id} — the old one stops working`
+          : `Issue a first sign-in code for ${account.name || account.id}`
+      }
       onClick={async () => {
         setBusy(true);
         try {
           const res = await issueClaimCode(account.id);
-          if (res && res.code) onIssued([{ id: account.id, name: account.name, code: res.code }]);
+          if (res && res.code) {
+            onIssued([{ id: account.id, name: account.name, role: account.role, code: res.code, expiresAt: res.expiresAt }]);
+          }
         } catch (e) {
           window.alert(e.message || "Could not issue a code.");
         } finally {
@@ -209,8 +222,23 @@ export function ClaimCodeBtn({ account, onIssued }) {
         }
       }}
     >
-      {busy ? "…" : "Sign-in code"}
+      {busy ? "…" : out ? "New code" : "Sign-in code"}
     </button>
+  );
+}
+
+// "Code out · 5 days left" on the row, or nothing when there is no code to
+// chase. An administrator was otherwise looking at a roster of people marked
+// "Pending first login" with no way to tell which of them they had already
+// dealt with.
+export function ClaimCodeTag({ account }) {
+  if (!account || account.hasPassword || !account.codeIssued) return null;
+  const left = account.codeExpires ? account.codeExpires - Date.now() : 0;
+  const days = Math.ceil(left / 86400000);
+  return (
+    <span style={styles.accountCodeTag}>
+      {left <= 0 ? "CODE EXPIRED" : `CODE OUT · ${days}D`}
+    </span>
   );
 }
 
@@ -241,6 +269,28 @@ export function RemoveError({ role, removeError }) {
   return <div style={styles.loginError}>{removeError.message}</div>;
 }
 
+// The message that hands a code over, written out and ready to send.
+//
+// Nothing in this app can deliver a code to the person it belongs to. They have
+// not signed in yet — that is the whole reason the code exists — so they have
+// no seat, no dock, and nowhere for a message to land. The last step is always a
+// human sending it, in Teams or in person, and the complaint was exactly that:
+// the code was minted, shown for a moment, and nobody ever received it.
+//
+// So the app writes the whole message, not just the code. One tap puts it on
+// the clipboard and it goes wherever the department already talks.
+export function claimCodeMessage(c) {
+  const who = c.name ? `${c.name} (${c.id})` : c.id;
+  const expires = c.expiresAt ? ` It expires on ${gregDateTimeStr(c.expiresAt)}.` : "";
+  return (
+    `${APP_NAME} sign-in for ${who}.\n\n` +
+    `Your one-time sign-in code is ${c.code}\n\n` +
+    `Open ${APP_NAME}, type your employee ID ${c.id}, and when it asks for a sign-in code ` +
+    `enter the one above. You then choose your own password — nobody else ever sees it.\n\n` +
+    `The code works once.${expires}`
+  );
+}
+
 // The code an account was just given, shown once.
 //
 // It is minted by the server, hashed there, and never retrievable again — the
@@ -248,11 +298,49 @@ export function RemoveError({ role, removeError }) {
 // a block they have to deliberately dismiss rather than as a toast that slides
 // away while they are reaching for a pen.
 function ClaimCodeBanner({ issued, onDone }) {
+  const [copied, setCopied] = useState("");
+  const n = issued ? issued.length : 0;
+  // Codes are minted from two places on this page — the rosters at the top and
+  // Password help further down — and the banner sits between them, so from one
+  // of the two it appears off screen. Rendering it twice was worse: both copies
+  // are live at once and the administrator sees the same code duplicated. One
+  // banner that brings itself into view.
+  useEffect(() => {
+    if (!n) return;
+    const el = document.getElementById("claim-code-banner");
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [n]);
   if (!issued || !issued.length) return null;
+  const text = issued.map(claimCodeMessage).join("\n\n———\n\n");
+  async function copy() {
+    // `navigator.clipboard` is the good path and needs a secure context, which
+    // the deployed board is. A webview that refuses it still leaves the message
+    // selected in the box below, which is enough to copy by hand.
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied("Copied — paste it to them in Teams");
+      return;
+    } catch (e) {
+      /* falls through */
+    }
+    try {
+      const box = document.getElementById("claim-code-msg");
+      if (box) {
+        box.focus();
+        box.select();
+        const ok = document.execCommand && document.execCommand("copy");
+        setCopied(ok ? "Copied — paste it to them in Teams" : "Select the message above and copy it");
+        return;
+      }
+    } catch (e) {
+      /* falls through */
+    }
+    setCopied("Select the message above and copy it");
+  }
   return (
-    <div style={styles.claimCodeBanner}>
+    <div id="claim-code-banner" style={styles.claimCodeBanner}>
       <div style={styles.claimCodeHead}>
-        {issued.length === 1 ? "SIGN-IN CODE — WRITE IT DOWN NOW" : "SIGN-IN CODES — WRITE THEM DOWN NOW"}
+        {issued.length === 1 ? "SIGN-IN CODE — SEND IT NOW" : "SIGN-IN CODES — SEND THEM NOW"}
       </div>
       {issued.map((c) => (
         <div key={c.id} style={styles.claimCodeRow}>
@@ -263,13 +351,27 @@ function ClaimCodeBanner({ issued, onDone }) {
         </div>
       ))}
       <div style={styles.claimCodeNote}>
-        They type this with their employee ID the first time they sign in, and then choose their own
-        password. It works once and lasts seven days. It is not stored anywhere it can be read back —
-        if it is lost, issue another.
+        Nothing sends this for you — they have no account to receive it on yet, which is what the
+        code is for. Send them the message below. It works once and lasts seven days, and it is not
+        stored anywhere it can be read back: if it is lost, issue another.
       </div>
-      <button style={styles.primaryBtnSm} onClick={onDone}>
-        I have written it down
-      </button>
+      <textarea
+        id="claim-code-msg"
+        readOnly
+        rows={Math.min(24, text.split("\n").length + issued.length * 3 + 2)}
+        style={styles.claimCodeMsg}
+        value={text}
+        onFocus={(e) => e.target.select()}
+      />
+      <div style={styles.claimCodeActions}>
+        <button style={styles.primaryBtnSm} onClick={copy}>
+          Copy the message
+        </button>
+        <button style={styles.ghostBtnSm} onClick={onDone}>
+          Done — I have sent it
+        </button>
+      </div>
+      {copied && <div style={styles.claimCodeNote}>{copied}</div>}
     </div>
   );
 }
@@ -853,6 +955,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `Online — ${seat}` : a.hasPassword ? "Offline" : "Pending first login"}
                   </span>
+                  <ClaimCodeTag account={a} />
                   <ClaimCodeBtn account={a} onIssued={setIssuedCodes} />
                   <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
@@ -899,6 +1002,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
+                  <ClaimCodeTag account={a} />
                   <ClaimCodeBtn account={a} onIssued={setIssuedCodes} />
                   <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
@@ -944,6 +1048,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
+                  <ClaimCodeTag account={a} />
                   <ClaimCodeBtn account={a} onIssued={setIssuedCodes} />
                   <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
@@ -967,7 +1072,9 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         setResets={setPasswordResets}
         user={user}
         addLog={addLog}
+        onIssued={setIssuedCodes}
       />
+
 
       {/* Both stations, one under the other, each with its own roster and its
           own way of adding a truck. Administration is the only place the two

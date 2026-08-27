@@ -915,6 +915,15 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                   autoCorrect="off"
                   spellCheck={false}
                 />
+                {/* Said out loud, because the question it answers came up for
+                    real: "I don't receive a code." Nothing sends one. It is
+                    handed over by the administrator, who has it on their screen
+                    the moment they add you — the app has no way to message
+                    somebody who has not signed in yet. */}
+                <div style={styles.formHint}>
+                  No code arrives by text or email. Your administrator issues it and sends it to
+                  you — ask them for it if you have not been given one.
+                </div>
                 <label style={{ ...styles.label, marginTop: 14 }}>New password</label>
                 <input
                   type="password"

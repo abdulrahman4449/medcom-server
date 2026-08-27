@@ -1272,7 +1272,15 @@ export function App() {
         const before = prev.find((a) => a.id === account.id);
         if (!before || JSON.stringify(before) !== JSON.stringify(account)) {
           const saved = await saveAccount(account);
-          if (saved && saved.code) issued.push({ id: account.id, name: account.name, code: saved.code });
+          if (saved && saved.code) {
+            issued.push({
+              id: account.id,
+              name: account.name,
+              role: account.role,
+              code: saved.code,
+              expiresAt: saved.expiresAt || null,
+            });
+          }
         }
       }
       for (const account of prev || []) {

@@ -1179,9 +1179,23 @@ app.post("/api/auth/forgot", (req, res) => {
 
 // ---------- the roster, as administration keeps it ----------
 
+// Whether a code is outstanding is deliberately NOT on `publicAccount`.
+//
+// `/api/auth/lookup` answers to anybody, so putting it there would tell a
+// stranger which employee IDs are sitting unclaimed with a live code on them —
+// which is the half of the pair they do not have. Here it is behind the same
+// check as the roster itself, and it is what stops an administrator having to
+// guess whether they already handed somebody a code.
 app.get("/api/accounts", requireArea("teams"), (req, res) => {
   const rows = db.prepare("SELECT * FROM accounts ORDER BY role, id").all();
-  res.json({ ok: true, accounts: rows.map(publicAccount) });
+  res.json({
+    ok: true,
+    accounts: rows.map((r) => ({
+      ...publicAccount(r),
+      codeIssued: !!r.claim_hash,
+      codeExpires: r.claim_hash ? r.claim_expires || null : null,
+    })),
+  });
 });
 
 app.post("/api/accounts", requireArea("teams"), (req, res) => {
