@@ -1,5 +1,13 @@
 # Getting lost data back
 
+> **The easy way is in the app.** Sign in as an administrator → **Archive** →
+> **BACKUPS** → **PUT SOMETHING BACK**. Pick a copy, and it shows you what each
+> part of the board held then against what it holds now, with anything that has
+> shrunk already ticked. Press the button and it puts those parts back.
+>
+> Everything below is the same job from the Render shell, for the day the app
+> itself will not open.
+
 The server takes a snapshot of the whole database **on every start** — so every
 redeploy leaves one — and every 24 hours after that. They go to `BACKUP_DIR`,
 which is `/data/backups` unless you set it otherwise. They are kept **daily for

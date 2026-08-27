@@ -351,11 +351,18 @@ patch", that document is the target — do not start a fresh exploration.
   the release loop, out of Upcoming, off the pre-alert chime and off the export
   sheet; the occurrence it throws off for the day is what goes out. The booking
   pass repairs arrangements that older builds already dispatched.
-- **Getting data back is `docs/RESTORE-FROM-BACKUP.md` and
-  `scripts/restore.mjs`.** `diff` names the keys that hold fewer items than a
-  backup did — the shape a loss makes — and `put` copies just those keys into
-  the live board while the server keeps running. A whole-file rollback throws
-  away every hour worked since and is almost never the right answer.
+- **Getting data back is a button on the Backups panel**, and
+  `scripts/restore.mjs` for the day the app will not open. Both compare a copy
+  with the live board key by key, mark what holds fewer items than it did — the
+  shape a loss makes — and put back only the keys chosen. A whole-file rollback
+  throws away every hour worked since and is almost never the right answer.
+  `/api/backups*` is `requireAdmin` throughout, a safety copy is taken before
+  any restore, and accounts are unreachable from it.
+- **A backup filename carries seconds.** Two in the same minute collided, and
+  `db.backup()` overwrites — so the safety copy taken before a restore
+  destroyed the copy being restored from. Backups are also settled to
+  `journal_mode = DELETE` so each is one self-contained file: a `.db` with a
+  live `-wal` beside it is not a database anybody can copy away safely.
 - **A housekeeping pass must never run on a failed read.** `readKey(key, fallback)`
   answers an outage with the fallback, and inside an effect the fallback is React
   state frozen at the render the effect was created on. The archive pass used it,

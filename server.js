@@ -433,11 +433,18 @@ const BACKUP_DIR_2 = process.env.BACKUP_DIR_2 || "";
 // download route at all - a file this sensitive must not be one URL away.
 const BACKUP_TOKEN = process.env.BACKUP_TOKEN || "";
 
+// Seconds, not just minutes.
+//
+// Two backups in the same minute produced the same filename, and `db.backup()`
+// overwrites — so taking a safety copy immediately before a restore destroyed
+// the very copy being restored from. Found by driving the restore button
+// against a real server: the file list afterwards had one backup in it where
+// there should have been two.
 function backupName(at) {
   const d = new Date(at);
   const p2 = (n) => String(n).padStart(2, "0");
   return `board-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}` +
-         `-${p2(d.getHours())}${p2(d.getMinutes())}.db`;
+         `-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.db`;
 }
 
 function listBackups(dir) {
@@ -460,6 +467,18 @@ function listBackups(dir) {
 // couple of hundred MB rather than letting copies fill the disk we just added
 // a warning for.
 function pruneBackups(dir) {
+  // Sidecars left beside a backup by an older build, or by something reading
+  // one. They are not backups and they confuse both the list and anybody
+  // copying files off the disk by hand.
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!/-(wal|shm)$/.test(f)) continue;
+      if (!f.startsWith("board-") && !f.startsWith("before-restore-")) continue;
+      try { fs.unlinkSync(path.join(dir, f)); } catch (e) { /* already gone */ }
+    }
+  } catch (e) {
+    // the directory will be made on the next write
+  }
   const now = Date.now();
   const dailyCut = now - BACKUP_KEEP_DAILY * 24 * 60 * 60 * 1000;
   const weeklyCut = now - BACKUP_KEEP_WEEKLY * 7 * 24 * 60 * 60 * 1000;
@@ -470,6 +489,21 @@ function pruneBackups(dir) {
     const week = Math.floor(t / (7 * 24 * 60 * 60 * 1000));
     if (t >= weeklyCut && !weekSeen.has(week)) { weekSeen.add(week); continue; }
     try { fs.unlinkSync(path.join(dir, b.name)); } catch (e) { /* already gone */ }
+  }
+}
+
+// A finished snapshot, made into a single file. Best effort: a copy that could
+// not be settled is still a valid database, just one with sidecars.
+function settleBackupFile(file) {
+  try {
+    const copy = new Database(file);
+    copy.pragma("journal_mode = DELETE");
+    copy.close();
+    for (const ext of ["-wal", "-shm"]) {
+      try { fs.unlinkSync(file + ext); } catch (e) { /* not there, which is the point */ }
+    }
+  } catch (e) {
+    console.log(`Backup ${path.basename(file)} could not be settled: ${e.message}`);
   }
 }
 
@@ -484,7 +518,13 @@ async function runBackup(reason) {
   // that finished file, which is safe because by then it is no longer live.
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    await db.backup(path.join(BACKUP_DIR, name));
+    const dest = path.join(BACKUP_DIR, name);
+    await db.backup(dest);
+    // The copy inherits WAL journalling from the live database, which means
+    // reading it leaves a `-wal` and a `-shm` beside it and copying the `.db`
+    // on its own is copying an incomplete database. Turned off on the copy, it
+    // is one self-contained file that `cp` and a USB stick cannot get wrong.
+    settleBackupFile(dest);
     written.push(BACKUP_DIR);
     pruneBackups(BACKUP_DIR);
   } catch (e) {
@@ -534,11 +574,14 @@ function backupState() {
   };
 }
 
-app.get("/api/backups", (req, res) => {
+// Administrators only, both of them. The listing names the copies, and those
+// names are what the restore routes are addressed by; the other lets anyone
+// who can reach the server fill its disk with snapshots.
+app.get("/api/backups", requireAdmin, (req, res) => {
   res.json({ ok: true, ...backupState(), copies: listBackups(BACKUP_DIR) });
 });
 
-app.post("/api/backups", async (req, res) => {
+app.post("/api/backups", requireAdmin, async (req, res) => {
   const state = await runBackup("on demand");
   res.json({ ok: !!state.written.length, ...state });
 });
@@ -554,10 +597,131 @@ app.get("/api/backups/:name", (req, res) => {
   // Name comes from the URL, so it is taken apart and rebuilt rather than
   // trusted - "../../etc/passwd" is a path, not a backup.
   const name = path.basename(String(req.params.name));
-  if (!/^board-\d{8}-\d{4}\.db$/.test(name)) return res.status(400).json({ error: "Not a backup name." });
+  if (!/^board-\d{8}-\d{4,6}\.db$/.test(name)) return res.status(400).json({ error: "Not a backup name." });
   const file = path.join(BACKUP_DIR, name);
   if (!fs.existsSync(file)) return res.status(404).json({ error: "No such backup." });
   res.download(file, name);
+});
+
+// ---------- putting data back from a copy ----------
+//
+// A whole-file rollback throws away every hour worked since, so it is not what
+// these two routes do. They compare a backup with the live board key by key and
+// then put back only the keys somebody chooses — which is what an actual loss
+// looks like: the calls emptied, or the log truncated, while everything else
+// carried on being right.
+//
+// Administrators only, and the comparison deliberately returns sizes and counts
+// rather than values. What was in the board is patient data; how much of it
+// there was is not.
+function backupFileFor(rawName) {
+  const name = path.basename(String(rawName || ""));
+  if (!/^board-\d{8}-\d{4,6}\.db$/.test(name) && !/^before-restore-[0-9]{8,}\.db$/.test(name)) {
+    return { error: "Not a backup name." };
+  }
+  const file = path.join(BACKUP_DIR, name);
+  if (!fs.existsSync(file)) return { error: "No such backup." };
+  return { name, file };
+}
+
+// Every key in a board table, described by how much it holds.
+function boardShape(dbPath) {
+  const src = new Database(dbPath, { readonly: true });
+  let rows = [];
+  try {
+    rows = src.prepare("SELECT key, value, updated_at FROM board").all();
+  } finally {
+    src.close();
+  }
+  const out = new Map();
+  for (const r of rows) {
+    let count = null;
+    try {
+      const v = JSON.parse(r.value);
+      if (Array.isArray(v)) count = v.length;
+      else if (v && typeof v === "object") count = Object.keys(v).length;
+    } catch (e) {
+      // not JSON, so its size is all there is to say
+    }
+    out.set(r.key, { bytes: r.value.length, count, updatedAt: r.updated_at });
+  }
+  return out;
+}
+
+app.get("/api/backups/:name/compare", requireAdmin, (req, res) => {
+  const found = backupFileFor(req.params.name);
+  if (found.error) return res.status(404).json({ error: found.error });
+  let was;
+  try {
+    was = boardShape(found.file);
+  } catch (e) {
+    return res.status(500).json({ error: `That copy could not be read: ${e.message}` });
+  }
+  const now = boardShape(DB_PATH);
+  const keys = [...new Set([...was.keys(), ...now.keys()])]
+    .filter((k) => !FORBIDDEN_KEYS.has(k))
+    .sort();
+  const rows = keys.map((k) => {
+    const a = was.get(k) || null;
+    const b = now.get(k) || null;
+    // "Smaller now than it was" is the shape a loss makes. A key that has grown
+    // is not interesting and is not flagged, or every row would be.
+    const shrank = !!a && (!b || (a.count !== null && b.count !== null ? b.count < a.count : b.bytes < a.bytes));
+    return {
+      key: k,
+      backup: a && { bytes: a.bytes, count: a.count, updatedAt: a.updatedAt },
+      live: b && { bytes: b.bytes, count: b.count, updatedAt: b.updatedAt },
+      shrank,
+      restorable: !!a,
+    };
+  });
+  res.json({ ok: true, name: found.name, rows, lost: rows.filter((r) => r.shrank).map((r) => r.key) });
+});
+
+app.post("/api/backups/:name/restore", requireAdmin, async (req, res) => {
+  const found = backupFileFor(req.params.name);
+  if (found.error) return res.status(404).json({ error: found.error });
+  const asked = Array.isArray((req.body || {}).keys) ? req.body.keys : [];
+  const keys = [...new Set(asked.map(String))].filter((k) => k && !FORBIDDEN_KEYS.has(k));
+  if (!keys.length) return res.status(400).json({ error: "Name at least one key to put back." });
+
+  const src = new Database(found.file, { readonly: true });
+  let values;
+  try {
+    const get = src.prepare("SELECT value FROM board WHERE key = ?");
+    values = keys.map((k) => ({ key: k, row: get.get(k) }));
+  } catch (e) {
+    src.close();
+    return res.status(500).json({ error: `That copy could not be read: ${e.message}` });
+  }
+  src.close();
+  const absent = values.filter((v) => !v.row).map((v) => v.key);
+  if (absent.length) {
+    return res.status(400).json({ error: `Not in that copy: ${absent.join(", ")}` });
+  }
+
+  // What is about to be replaced, kept — so a restore that turns out to be the
+  // wrong one is itself undoable.
+  const safety = await runBackup("before a restore");
+  if (!safety.written.length) {
+    return res.status(500).json({
+      error: "A safety copy of the board could not be written, so nothing was changed.",
+    });
+  }
+
+  const put = db.prepare(
+    `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  );
+  db.transaction((list) => {
+    for (const v of list) put.run(v.key, v.row.value);
+  })(values);
+
+  console.log(
+    `Restore: ${keys.join(", ")} put back from ${found.name} by ${req.user.id}` +
+      ` · safety copy ${safety.name}`
+  );
+  res.json({ ok: true, restored: keys, from: found.name, safetyCopy: safety.name });
 });
 
 // The roster has to exist before anyone can sign in.

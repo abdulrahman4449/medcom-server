@@ -263,6 +263,44 @@ export const styles = {
   // introduces; `historyNote` is 15px and was shouting over the list it was
   // meant to caption.
   sectionNote: { fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55, margin: "2px 0 8px" },
+
+  // ---- putting something back from a copy ----
+  //
+  // A table of rows somebody ticks. Deliberately plain: this is the one screen
+  // in the app where reading the numbers before pressing the button is the
+  // whole job, so nothing here competes with them.
+  restoreHead: {
+    display: "flex", alignItems: "center", gap: 10, padding: "10px 10px 4px",
+    fontSize: 10, fontWeight: 800, letterSpacing: 0.8, color: "var(--ink-4)",
+  },
+  restoreHeadKey: { flex: 1, minWidth: 0, paddingLeft: 22 },
+  restoreHeadNum: { width: 68, textAlign: "right", flex: "none" },
+  restoreRow: {
+    display: "flex", alignItems: "center", gap: 10, width: "100%",
+    background: "var(--inset)", border: "1px solid var(--hair)", borderRadius: 10,
+    padding: "9px 10px", marginTop: 4, cursor: "pointer", textAlign: "left",
+    color: "var(--ink-2)", fontFamily: display, fontSize: 13,
+  },
+  restoreRowOn: {
+    display: "flex", alignItems: "center", gap: 10, width: "100%",
+    background: "rgba(10,132,255,.10)", border: "1px solid var(--flow)", borderRadius: 10,
+    padding: "9px 10px", marginTop: 4, cursor: "pointer", textAlign: "left",
+    color: "var(--ink)", fontFamily: display, fontSize: 13,
+  },
+  restoreTick: { width: 12, flex: "none", color: "var(--flow)", fontWeight: 800 },
+  restoreKey: { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8 },
+  restoreLost: {
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.6, color: "var(--hold)",
+    border: "1px solid var(--hold)", borderRadius: 5, padding: "1px 5px", flex: "none",
+  },
+  restoreNum: {
+    width: 68, textAlign: "right", flex: "none", fontFamily: mono, fontSize: 12.5,
+    fontVariantNumeric: "tabular-nums",
+  },
+  restoreDone: {
+    marginTop: 10, padding: "10px 12px", borderRadius: 10, fontSize: 12.5, lineHeight: 1.5,
+    background: "rgba(48,209,88,.10)", border: "1px solid rgba(48,209,88,.38)", color: "var(--ink-2)",
+  },
   // A button that lives inside a banner. `ghostBtnSm` is 40px tall and sized
   // for a thumb on a card; dropped into an 11px-padded strip it made the banner
   // taller than the thing it was heading.
