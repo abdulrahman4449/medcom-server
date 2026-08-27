@@ -266,6 +266,12 @@ patch", that document is the target — do not start a fresh exploration.
   the same shift and station steps and the same `finishDispatcherLogin`, so the
   log records a dispatch sign-on under their own name. The alternative people
   were using was signing in on somebody else's ID.
+- **"Understood" has to outlive the screen it was pressed on.** The refused
+  out-of-service notice was dismissed into component state, and Policies is a
+  *shared* page — opening it unmounts the crew view, so coming back rebuilt it
+  with the flag cleared and the refusal in the crew's face again. From their
+  side the button did nothing. It is remembered on the device now, keyed by the
+  answer's timestamp so a new refusal is still a new notice.
 - **Wiping the board is `docs/RESET-THE-BOARD.md`, not a button.** The `-wal`
   file has to go with the `.db` or the last few minutes come back. Accounts live
   in their own table, so the board can be cleared without touching them.

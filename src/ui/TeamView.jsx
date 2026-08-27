@@ -329,12 +329,41 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
   const [oosOpen, setOosOpen] = useState(false);
   const [oosReason, setOosReason] = useState("");
   const [oosNote, setOosNote] = useState("");
-  // A refusal stays on screen until the crew says they have read it.
+  // A refusal stays on screen until the crew says they have read it — and once
+  // they have, it stays read.
+  //
+  // "Understood" used to set a piece of component state, which lasted exactly
+  // as long as this screen was mounted. Policies is a shared page, so opening
+  // it unmounts the crew view; coming back rebuilt it with the flag cleared and
+  // the refusal in their face again. From the crew's side the button did
+  // nothing, every single time.
+  //
+  // Remembered on the device rather than on the board: it is a fact about who
+  // has read something on this screen, not about the truck, and writing it to
+  // the board would have every tablet posting the whole unit list back to say
+  // so. Keyed by the answer's timestamp, so a *new* refusal is a new notice.
+  const oosAnsweredAt =
+    (myUnit && myUnit.oosRequest && myUnit.oosRequest.answeredAt) || 0;
+  const oosSeenKey = `ems:oosSeen:${(myUnit && myUnit.id) || "none"}`;
   const [dismissedOos, setDismissedOos] = useState(false);
   useEffect(() => {
-    // A fresh answer is a fresh notice, even if the last one was dismissed.
-    setDismissedOos(false);
-  }, [myUnit && myUnit.oosRequest && myUnit.oosRequest.answeredAt]);
+    let seen = 0;
+    try {
+      seen = Number(window.localStorage.getItem(oosSeenKey) || 0);
+    } catch (e) {
+      // a device that cannot remember shows the notice again; no worse than before
+    }
+    setDismissedOos(!!oosAnsweredAt && seen === oosAnsweredAt);
+  }, [oosAnsweredAt, oosSeenKey]);
+
+  function dismissOos() {
+    try {
+      window.localStorage.setItem(oosSeenKey, String(oosAnsweredAt));
+    } catch (e) {
+      // ignore
+    }
+    setDismissedOos(true);
+  }
 
   // A crew who come across an emergency.
   //
@@ -1262,7 +1291,7 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
                 You asked: {myUnit.oosRequest.reason}
                 {myUnit.oosRequest.note ? ` — ${myUnit.oosRequest.note}` : ""}
               </div>
-              <button style={styles.primaryBtnSm} onClick={() => setDismissedOos(true)}>
+              <button style={styles.primaryBtnSm} onClick={dismissOos}>
                 Understood
               </button>
             </div>
