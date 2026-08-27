@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -65,7 +66,12 @@ try {
     useCallback: (f) => f,
   };
 
-  const D = await import(pathToFileURL(outFile).href);
+  const bundled = await import(pathToFileURL(outFile).href);
+  // The record merge is the server's, and the server is CommonJS. It is pulled
+  // in beside the domain because it is now the thing standing between a device
+  // with an old copy of the board and everybody else's work.
+  const require_ = createRequire(pathToFileURL(join(ROOT, "package.json")).href);
+  const D = { ...bundled, ...require_(join(ROOT, "lib/merge-records.cjs")) };
   const { run } = await import(pathToFileURL(join(ROOT, "tests/domain.test.mjs")).href);
 
   let passed = 0;

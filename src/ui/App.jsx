@@ -1171,7 +1171,8 @@ export function App() {
     const next = [entry, ...current].slice(0, LOG_CAP);
     const prevLog = log;
     setLog(next);
-    await writeList("ems:log", next, prevLog);
+    const sent = await writeList("ems:log", next, prevLog, { prepend: true, cap: LOG_CAP });
+    if (sent.value && !sent.stale) setLog(sent.value);
   }
 
   // Administration names the policy, then attaches the file that already
@@ -1215,7 +1216,8 @@ export function App() {
       const existing = (await readKey(POLICY_KEY, [])) || [];
       const next = [...existing, doc];
       setPolicies(next);
-      await writeList(POLICY_KEY, next, existing);
+      const sent = await writeList(POLICY_KEY, next, existing);
+      if (sent.value && !sent.stale) setPolicies(sent.value);
       await addLog(`Policy added: ${doc.title}`, "admin");
     } catch (e) {
       alert(e && e.message ? e.message : "That file could not be added.");
@@ -1230,17 +1232,25 @@ export function App() {
     const existing = (await readKey(POLICY_KEY, [])) || [];
     const next = existing.filter((p) => p && p.id !== pol.id);
     setPolicies(next);
-    await writeList(POLICY_KEY, next, existing);
+    const sent = await writeList(POLICY_KEY, next, existing);
+    if (sent.value && !sent.stale) setPolicies(sent.value);
     await addLog(`Policy removed: ${pol.title}`, "admin");
   }
 
   // Every board save goes through writeList, which keeps whatever didn't reach
   // the server on the device and replays it later. The screen is updated first
   // either way: a crew underground must be able to keep working the call.
+  // The screen is updated first, then the change is sent, then whatever the
+  // server holds after merging it is adopted. That last step is the point: a
+  // device whose copy was minutes old now has everybody else's work on it
+  // straight away, instead of at the next poll — and, far more importantly, it
+  // never sent its old copy over theirs to begin with.
   async function saveUnits(next) {
     const prev = units;
     setUnits(next);
-    await writeList("ems:units", next, prev);
+    const sent = await writeList("ems:units", next, prev);
+    if (sent.value && !sent.stale) setUnits(sent.value);
+    return sent.value || next;
   }
 
   // Adding, changing and removing people, through the administrator-only
@@ -1275,13 +1285,17 @@ export function App() {
   async function saveRequests(next) {
     const prev = requests;
     setRequests(next);
-    await writeList("ems:requests", next, prev);
+    const sent = await writeList("ems:requests", next, prev);
+    if (sent.value && !sent.stale) setRequests(sent.value);
+    return sent.value || next;
   }
 
   async function saveScheduled(next) {
     const prev = scheduled;
     setScheduled(next);
-    await writeList("ems:scheduled", next, prev);
+    const sent = await writeList("ems:scheduled", next, prev);
+    if (sent.value && !sent.stale) setScheduled(sent.value);
+    return sent.value || next;
   }
 
   // The desk filing its own shift. This is the end-of-tour action: it takes the

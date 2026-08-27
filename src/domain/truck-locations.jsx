@@ -1,6 +1,6 @@
 import { liveRequestFor } from "./in-service.jsx";
 import { stationOf } from "./live-sheet.jsx";
-import { readKey, writeKey } from "../lib/offline-queue.jsx";
+import { mergeWrite, readKey, writeKey } from "../lib/offline-queue.jsx";
 
 // A crew raising a problem on a call. This one only ever goes to an admin
 // board, and it does not require interaction: an issue is not an emergency and
@@ -82,10 +82,11 @@ export async function recordConsent({ accountId, name, status, reason }) {
       ackedAt: null,
     },
   };
-  // These stores are keyed maps rather than lists of records, so they cannot
-  // ride the offline queue — that works on records with ids. What they can do
-  // is stop pretending. The caller is told whether it landed and says so.
-  const ok = await writeKey(TRACKING_CONSENT_KEY, next);
+  // A map, not a list of records, so it cannot ride the offline queue — that
+  // works on ids. It can still be written as a change rather than as a whole
+  // map: `mergeWrite` sends this person's answer and leaves everybody else's
+  // alone. The caller is told whether it landed and says so.
+  const ok = await mergeWrite(TRACKING_CONSENT_KEY, next, existing);
   return ok ? next : null;
 }
 
@@ -111,7 +112,10 @@ export async function writePosition({ unit, coords, byName, accountId, requestId
       requestId: requestId || null,
     },
   };
-  await writeKey(LOCATION_KEY, next);
+  // One truck's position, not every truck's. Every moving ambulance writes
+  // this key, so a whole-map write meant the last one to report replaced the
+  // others with wherever it last saw them.
+  await mergeWrite(LOCATION_KEY, next, existing);
   return next;
 }
 
@@ -123,7 +127,7 @@ export async function clearPosition(unitId) {
   if (!existing[unitId]) return existing;
   const next = { ...existing };
   delete next[unitId];
-  await writeKey(LOCATION_KEY, next);
+  await mergeWrite(LOCATION_KEY, next, existing);
   return next;
 }
 

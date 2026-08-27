@@ -2,7 +2,7 @@ import { INVENTORY_MOVES_CAP, INVENTORY_MOVES_KEY } from "./inventory.jsx";
 import { stationOf } from "./live-sheet.jsx";
 import { callEndTs } from "./uhu.jsx";
 import { uid } from "../lib/helpers.jsx";
-import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
+import { mergeWrite, readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
 
 // ---------- restocking, after the call ----------
 //
@@ -80,7 +80,7 @@ export async function markRestocked({ request, unit, user }) {
     await writeKey(RESTOCK_KEY, trimmed);
     return trimmed;
   }
-  await writeKey(RESTOCK_KEY, next);
+  await mergeWrite(RESTOCK_KEY, next, existing);
   return next;
 }
 
@@ -106,8 +106,8 @@ export async function recordStockUse({ item, qty, unit, user, request }) {
   };
   const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
   const next = [...existing, entry].slice(-INVENTORY_MOVES_CAP);
-  await writeList(INVENTORY_MOVES_KEY, next, existing);
-  return next;
+  const sent = await writeList(INVENTORY_MOVES_KEY, next, existing, { cap: INVENTORY_MOVES_CAP });
+  return sent.value || next;
 }
 
 // Taking a line back off. A crew who tapped the wrong item, or the wrong
@@ -118,8 +118,8 @@ export async function undoStockUse({ moveId }) {
   if (!moveId) return null;
   const existing = (await readKey(INVENTORY_MOVES_KEY, [])) || [];
   const next = existing.filter((m) => m && m.id !== moveId);
-  await writeList(INVENTORY_MOVES_KEY, next, existing);
-  return next;
+  const sent = await writeList(INVENTORY_MOVES_KEY, next, existing, { cap: INVENTORY_MOVES_CAP });
+  return sent.value || next;
 }
 
 // What this call has already had recorded against it.

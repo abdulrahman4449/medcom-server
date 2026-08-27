@@ -46,8 +46,8 @@ export async function requestPasswordReset(account) {
     status: "pending",
   };
   const next = [entry, ...existing].slice(0, PWRESET_CAP);
-  const ok = await writeList(PWRESET_KEY, next, existing);
-  return ok ? next : false;
+  const sent = await writeList(PWRESET_KEY, next, existing, { prepend: true, cap: PWRESET_CAP });
+  return sent.ok ? sent.value || next : false;
 }
 
 // Clearing it. The account stays; only the password goes, and the next sign-in
@@ -76,6 +76,6 @@ export async function decideReset(row, status, by) {
       ? { ...r, status, decidedBy: by || "Administration", decidedAt: Date.now() }
       : r
   );
-  await writeList(PWRESET_KEY, next, existing);
-  return next;
+  const sent = await writeList(PWRESET_KEY, next, existing, { prepend: true, cap: PWRESET_CAP });
+  return sent.value || next;
 }

@@ -351,6 +351,23 @@ patch", that document is the target — do not start a fresh exploration.
   the release loop, out of Upcoming, off the pre-alert chime and off the export
   sheet; the occurrence it throws off for the day is what goes out. The booking
   pass repairs arrangements that older builds already dispatched.
+- **A write says what CHANGED. It never sends the whole board.** This is the
+  single most important rule in the app. The board used to be written whole —
+  close one call and all sixty went up — which works perfectly until two people
+  are using it: a phone that has been in a pocket for ten minutes holds a
+  ten-minute-old board, and the first thing its crew taps sends that up and
+  erases everything raised in between. No error, no queue, nothing to notice.
+  Reproduced in a browser: **one tap on a sleeping tablet erased four of five
+  calls.** `POST /api/board/records` merges `upsert`/`remove` into whatever the
+  server holds, inside a transaction, so a stale device can only ever affect the
+  records it actually touched. `writeList` for lists, `mergeWrite` for maps, and
+  the merged board comes back so the writer adopts everybody else's work in the
+  same breath. `mergeRecordsInto` is in `lib/merge-records.cjs` and is under
+  `npm test`; do not reimplement it in the client.
+  `POST /api/board` — the whole-key write — is still right for exactly two
+  things: pruning the board when it outgrows the server (`board-size.jsx`), and
+  a key that is genuinely one whole object. Reach for it and you are choosing to
+  overwrite everybody.
 - **Getting data back is a button on the Backups panel**, and
   `scripts/restore.mjs` for the day the app will not open. Both compare a copy
   with the live board key by key, mark what holds fewer items than it did — the

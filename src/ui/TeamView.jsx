@@ -21,7 +21,7 @@ import { soundCallAlert, soundReminderTone, soundStandDownTone, speakStandDown }
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Ambulance, Ban, CalendarClock, CheckCircle2, ChevronRight, Circle, Clock, FileSignature, HandRaised, PencilLine, PhoneIncoming, Radio, Users } from "../lib/icons.jsx";
 import { notifyAssignedCall } from "../lib/notify.jsx";
-import { readKey, writeKey } from "../lib/offline-queue.jsx";
+import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { SectionBanner } from "./AdminView.jsx";
@@ -913,9 +913,15 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
       setChecklistRuns(fresh);
       return;
     }
+    // Written as one filed list, not as every list ever filed: two crews
+    // filing within the same poll used to mean the second one replaced the
+    // first, and the truck the first crew checked read as unchecked.
     const next = [entry, ...fresh].slice(0, CHECKLIST_RUNS_CAP);
-    const ok = await writeKey(CHECKLIST_RUNS_KEY, next);
-    if (ok) setChecklistRuns(next);
+    const sent = await writeList(CHECKLIST_RUNS_KEY, next, fresh, {
+      prepend: true,
+      cap: CHECKLIST_RUNS_CAP,
+    });
+    if (sent.ok) setChecklistRuns(sent.value || next);
     // The flagged items go on the log in words, because that is what the desk
     // and the administrator actually read. A list where everything was fine
     // says so in one line and takes up no more room than that.

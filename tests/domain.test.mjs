@@ -296,4 +296,67 @@ export function run(D, t) {
     t.is("repeats: the day it was set up on still gets an occurrence",
       D.repeatOccurrencesDue(madeToday, at(2026, 8, 27, 16)).length, 1);
   }
+
+  // ---------- a device with an old copy of the board cannot erase it
+  //
+  // The bug this replaced: every save sent the whole list, so a tablet holding
+  // a ten-minute-old board sent that board up and wiped everything raised in
+  // between. Reproduced in a browser before the fix — one tap on a sleeping
+  // tablet erased four of five calls.
+  {
+    const M = (current, body) => D.mergeRecordsInto(current, body);
+    const board = [{ id: "r1", n: 1 }, { id: "r2", n: 2 }, { id: "r3", n: 3 }];
+
+    t.is("merge: changing one record leaves the others alone",
+      M(board, { upsert: [{ id: "r2", n: 22 }] }),
+      [{ id: "r1", n: 1 }, { id: "r2", n: 22 }, { id: "r3", n: 3 }]);
+
+    t.is("merge: a record the writer never knew about survives",
+      M(board, { upsert: [{ id: "r1", n: 11 }] }).length, 3);
+
+    t.is("merge: a new record is appended, and the order is kept",
+      M(board, { upsert: [{ id: "r4", n: 4 }] }).map((x) => x.id), ["r1", "r2", "r3", "r4"]);
+
+    t.is("merge: prepend puts it at the front instead",
+      M(board, { upsert: [{ id: "r0", n: 0 }], prepend: true }).map((x) => x.id),
+      ["r0", "r1", "r2", "r3"]);
+
+    t.is("merge: a deliberate removal removes",
+      M(board, { upsert: [], remove: ["r2"] }).map((x) => x.id), ["r1", "r3"]);
+
+    t.is("merge: removing wins over upserting the same record",
+      M(board, { upsert: [{ id: "r2", n: 99 }], remove: ["r2"] }).map((x) => x.id), ["r1", "r3"]);
+
+    t.is("merge: nothing to say changes nothing", M(board, { upsert: [] }), board);
+
+    t.is("merge: an empty board takes the records", M(null, { upsert: [{ id: "a" }] }), [{ id: "a" }]);
+
+    // A cap always drops the oldest, and the oldest is at the far end from
+    // wherever new records arrive.
+    t.is("merge: a newest-first list is cut at the back",
+      M([{ id: "l3" }, { id: "l2" }, { id: "l1" }], { upsert: [{ id: "l4" }], prepend: true, cap: 3 })
+        .map((x) => x.id), ["l4", "l3", "l2"]);
+    t.is("merge: an oldest-first list is cut at the front",
+      M([{ id: "m1" }, { id: "m2" }, { id: "m3" }], { upsert: [{ id: "m4" }], cap: 3 })
+        .map((x) => x.id), ["m2", "m3", "m4"]);
+    t.is("merge: a cap larger than the list changes nothing",
+      M(board, { upsert: [], cap: 99 }).length, 3);
+
+    // Maps merge by their own keys — overtime sent in, restock done, consents.
+    t.is("merge: a map keeps the entries the writer never saw",
+      M({ a: 1, b: 2 }, { upsert: { c: 3 } }), { a: 1, b: 2, c: 3 });
+    t.is("merge: a map entry can be removed",
+      M({ a: 1, b: 2 }, { upsert: {}, remove: ["a"] }), { b: 2 });
+
+    // A shape it cannot merge is refused rather than guessed at.
+    t.is("merge: a list is not a map", M([{ id: "a" }], { upsert: 7 }), null);
+
+    // Records with no id cannot be merged by id, so they are ignored rather
+    // than piling up a duplicate on every write.
+    t.is("merge: a record with no id is not taken", M(board, { upsert: [{ n: 4 }] }).length, 3);
+
+    // The cap is bounded, so a bad client cannot ask the server to hold a
+    // million records in memory.
+    t.ok("merge: the cap is bounded", D.RECORD_CAP_MAX <= 100000);
+  }
 }

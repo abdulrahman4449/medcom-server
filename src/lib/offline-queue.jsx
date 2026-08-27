@@ -64,6 +64,17 @@ export function changedRecords(next, prev) {
   return out;
 }
 
+// Which records `prev` had and `next` does not. Deliberate removals — an
+// administrator taking a truck off the fleet — and nothing else: a record
+// somebody else added while this device was not looking is in neither list, so
+// it cannot be swept up by one.
+export function removedIds(next, prev) {
+  const here = new Set((next || []).filter((x) => x && x.id).map((x) => String(x.id)));
+  return (prev || [])
+    .filter((x) => x && x.id && !here.has(String(x.id)))
+    .map((x) => String(x.id));
+}
+
 export function queueRecords(key, records) {
   if (!records || !Object.keys(records).length) return;
   const stamped = {};
@@ -260,6 +271,14 @@ export function setConnectionOk(ok) {
   });
 }
 
+// When this device last got something onto the server. The banner says it in
+// words, because "saved" and "saved somewhere the rest of the department can
+// see" are different states and only one of them is any use.
+export let lastSyncedAt = 0;
+export function noteSynced() {
+  lastSyncedAt = Date.now();
+}
+
 export function notifyPendingChanged() {
   connectionListeners.forEach((fn) => {
     try {
@@ -382,35 +401,151 @@ export function writeInFlight(key) {
   return false;
 }
 
+// Which write for a key is the newest. A device that taps twice quickly has two
+// merges in the air; the first one to come back carries a board that does not
+// know about the second tap, and adopting it would undo that tap on screen. The
+// caller checks this before taking the answer.
+const writeSeq = new Map();
+function nextSeq(key) {
+  const n = (writeSeq.get(key) || 0) + 1;
+  writeSeq.set(key, n);
+  return n;
+}
+
+// Send what changed, not the whole board.
+//
+// This is the difference between a stale device changing one call and a stale
+// device replacing the board with its own idea of it. See the comment on
+// /api/board/records in server.js: sending the whole list is silently
+// destructive the moment two people are using the app, and it is destructive in
+// the one way nobody notices, because a smaller board looks exactly like a
+// board with less on it.
+export async function writeRecords(key, upsert, remove, opts) {
+  const res = await fetch(`${API_BASE}/api/board/records`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ key, upsert, remove: remove || [], ...(opts || {}) }),
+  });
+  if (res.status === 401) {
+    noteAuthLost();
+    throw Object.assign(new Error(`writeRecords ${key}: signed out`), { httpStatus: 401 });
+  }
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409 && body.shape) return { shape: true };
+  if (!res.ok) {
+    const err = new Error(`writeRecords ${key} failed: ${res.status}`);
+    err.httpStatus = res.status;
+    throw err;
+  }
+  return { value: body.value };
+}
+
+// The same protection for a key that is a map rather than a list.
+//
+// `ems:locations` is written by every truck that is moving, `ems:overtimeSent`
+// by every person who sends their hours in, `ems:restockDone` by every crew
+// that finishes a call. All three were written whole, which means each of them
+// had the same flaw as the board: whoever wrote last replaced everybody else's
+// entries with their own idea of them.
+//
+// Works out what this write actually changes and sends only that. Falls back to
+// writing the key whole if the server is old or the key is not a map.
+export async function mergeWrite(key, next, prev, opts) {
+  const before = prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {};
+  const after = next && typeof next === "object" && !Array.isArray(next) ? next : {};
+  const upsert = {};
+  for (const k of Object.keys(after)) {
+    if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) upsert[k] = after[k];
+  }
+  const remove = Object.keys(before).filter((k) => !(k in after));
+  if (!Object.keys(upsert).length && !remove.length) return true;
+  try {
+    const sent = await writeRecords(key, upsert, remove, opts);
+    if (!sent.shape) {
+      setConnectionOk(true);
+      noteSynced();
+      return true;
+    }
+  } catch (e) {
+    if (e && e.httpStatus === 401) throw e;
+    // Anything else falls through to the whole-key write, which has the retry
+    // and the queue behind it.
+  }
+  return writeKey(key, next);
+}
+
 // The write every board change goes through. If it lands, nothing is held. If
 // it doesn't, the records that changed are kept on the device and replayed
 // later — which is the whole difference between a crew losing a call's times
 // underground and not losing them.
-export async function writeList(key, next, prev) {
+//
+// Answers `{ ok, value, stale }`. `value` is the board as the server holds it
+// after merging, so a caller can adopt it and see what everybody else did in
+// the same breath; `stale` says another write for this key started after this
+// one, and adopting would undo it.
+export async function writeList(key, next, prev, opts) {
   markWriteStarted(key);
+  const seq = nextSeq(key);
   try {
-    return await writeListInner(key, next, prev);
+    const out = await writeListInner(key, next, prev, opts);
+    return { ...out, stale: writeSeq.get(key) !== seq };
   } finally {
     markWriteFinished(key);
   }
 }
 
-export async function writeListInner(key, next, prev) {
+export async function writeListInner(key, next, prev, opts) {
+  const changed = changedRecords(next, prev);
+  const gone = removedIds(next, prev);
+  const ids = Object.keys(changed);
+
+  // Nothing actually changed. Every save used to post the whole board whether
+  // or not anything was different, which is bytes on the wire and one more
+  // chance for a stale copy to land on top of a fresh one.
+  if (!ids.length && !gone.length) return { ok: true, value: null };
+
+  try {
+    const sent = await writeRecords(key, ids.map((id) => changed[id]), gone, opts);
+    if (!sent.shape) {
+      if (pendingCountFor(key)) {
+        clearQueued(key, ids);
+        notifyPendingChanged();
+      }
+      setConnectionOk(true);
+      if (lastWriteError) {
+        lastWriteError = null;
+        notifyPendingChanged();
+      }
+      noteSynced();
+      return { ok: true, value: sent.value };
+    }
+    // The key does not hold records — an older board, or a key that is one
+    // whole thing. Written whole, as it always was.
+  } catch (e) {
+    if (e && e.httpStatus === 401) throw e;
+    if (e && e.httpStatus) {
+      lastWriteError = `The server refused to save (${e.httpStatus}). Nothing has been lost — it is held on this device — but it is not reaching the server.`;
+      notifyPendingChanged();
+      queueRecords(key, changed);
+      notifyPendingChanged();
+      return { ok: false, value: null };
+    }
+    // No signal. Fall through to the whole-key path, which has its own retry
+    // and its own queueing, rather than giving up here.
+  }
+
   const ok = await writeKey(key, next);
   if (ok) {
-    // Anything we were holding for these records has now gone up with this
-    // write, so it is no longer outstanding.
-    const ids = (next || []).filter((x) => x && x.id).map((x) => x.id);
     if (pendingCountFor(key)) {
       clearQueued(key, ids);
       notifyPendingChanged();
     }
-    return true;
+    noteSynced();
+    return { ok: true, value: null };
   }
-  const changed = changedRecords(next, prev);
-  if (Object.keys(changed).length) {
+  if (ids.length) {
     queueRecords(key, changed);
     notifyPendingChanged();
   }
-  return false;
+  return { ok: false, value: null };
 }

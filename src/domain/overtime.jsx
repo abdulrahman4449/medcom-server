@@ -2,7 +2,7 @@ import { DEFAULT_STATION, stationOf } from "./live-sheet.jsx";
 import { otHoursStr } from "./messages.jsx";
 import { seatLabel, shiftLabelWithWindow } from "./shift-helpers.jsx";
 import { callEndTs, callStartTs } from "./uhu.jsx";
-import { writeKey } from "../lib/offline-queue.jsx";
+import { mergeWrite, writeKey } from "../lib/offline-queue.jsx";
 
 // ---------- overtime ----------
 //
@@ -60,7 +60,7 @@ export async function sendOvertimeClaim({ claim, sent, setSent, user, addLog }) 
       claimedMs: claim.claimedMs || 0,
     },
   };
-  const ok = await writeKey(OVERTIME_SENT_KEY, next);
+  const ok = await mergeWrite(OVERTIME_SENT_KEY, next, sent || {});
   if (!ok) {
     window.alert("That could not be sent — no signal to the server. Nothing has changed; try again.");
     return false;

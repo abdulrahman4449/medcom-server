@@ -108,8 +108,10 @@ export async function postMessage({ unit, from, byName, byAccountId, text, stati
   // typed — went nowhere at all, while the comment here claimed the opposite.
   // Now it is held on the device and drains on the next poll with signal, like
   // every other record on the board.
-  await writeList(MESSAGES_KEY, next, existing);
-  return next;
+  const sent = await writeList(MESSAGES_KEY, next, existing, { cap: MESSAGES_CAP });
+  // What the server holds after merging, so a crew sees the desk's message in
+  // the same breath as their own rather than on the next poll.
+  return sent.value || next;
 }
 
 export function notifyMessage(msg) {

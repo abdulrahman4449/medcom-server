@@ -1,6 +1,6 @@
 import { TRACKING_CONSENT_KEY } from "../domain/truck-locations.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
-import { writeKey } from "../lib/offline-queue.jsx";
+import { mergeWrite, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { FoldingSection } from "./AdminView.jsx";
@@ -185,7 +185,7 @@ export function TrackingConsentAdmin({ consents, user, setConsents, addLog }) {
         ackedAt: Date.now(),
       },
     };
-    const ok = await writeKey(TRACKING_CONSENT_KEY, next);
+    const ok = await mergeWrite(TRACKING_CONSENT_KEY, next, consents || {});
     if (!ok) {
       window.alert("That could not be saved — no signal to the server. Try again.");
       return;

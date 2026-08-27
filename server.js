@@ -355,6 +355,72 @@ app.post("/api/board", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- writing records, not the whole board ----------
+//
+// The board used to be written whole. Close one call and the app sent all sixty
+// back, and the server stored exactly that. It works perfectly until two people
+// are using it: a phone that has been in a pocket for ten minutes holds a
+// ten-minute-old board, and the first thing its crew taps sends that old board
+// up and erases everything raised in between. No error, no retry, nothing to
+// notice — the board is simply smaller than it was.
+//
+// So a write says what CHANGED. "Call r17 is now completed", not "here are all
+// sixty calls". The server merges it into whatever it currently holds, inside a
+// transaction, so a device with an old copy can only ever affect the records it
+// actually touched. Everything else on the board is untouchable by it.
+//
+// The whole-key route above still exists and is still right for the two things
+// that genuinely replace a whole key: pruning the board when it outgrows the
+// server, and the handful of keys that are not records at all.
+const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
+
+app.post("/api/board/records", requireAuth, (req, res) => {
+  const { key } = req.body || {};
+  if (typeof key !== "string") return res.status(400).json({ error: "Missing key" });
+  if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
+  if (ADMIN_ONLY_KEYS.has(key) && req.user.role !== "admin") {
+    return res.status(403).json({ error: "Only an administrator can change that." });
+  }
+  const body = req.body || {};
+  const wantsList = Array.isArray(body.upsert);
+  const wantsMap = !wantsList && body.upsert && typeof body.upsert === "object";
+  if (!wantsList && !wantsMap) {
+    return res.status(400).json({ error: "upsert must be a list of records or a map." });
+  }
+
+  // Read, merge and write as one thing. Two devices merging at the same instant
+  // serialise here rather than one of them reading before the other has
+  // written — which would be the whole-board bug again, in miniature.
+  let merged;
+  try {
+    merged = db.transaction(() => {
+      const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
+      const current = row ? JSON.parse(row.value) : null;
+      // A key that holds a list cannot be merged with a map, or the other way
+      // round. The client is told so and falls back to writing the key whole.
+      if (current !== null && current !== undefined) {
+        if (wantsList && !Array.isArray(current)) return "SHAPE";
+        if (wantsMap && (Array.isArray(current) || typeof current !== "object")) return "SHAPE";
+      }
+      const next = mergeRecordsInto(current, body);
+      if (next === null) return "SHAPE";
+      db.prepare(
+        `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      ).run(key, JSON.stringify(next));
+      return next;
+    })();
+  } catch (e) {
+    return res.status(500).json({ error: `That could not be saved: ${e.message}` });
+  }
+  if (merged === "SHAPE") {
+    return res.status(409).json({ error: "That key does not hold records of this shape.", shape: true });
+  }
+  // The merged board goes back, so the device that wrote adopts what everybody
+  // else has done in the same breath rather than waiting for the next poll.
+  res.json({ ok: true, value: merged });
+});
+
 // "Is my data actually being kept?" — answerable in one click instead of by
 // reading deploy logs. Reports where the board is stored, whether that survives
 // a redeploy, and what is currently in it. Key names and sizes only; no values,
