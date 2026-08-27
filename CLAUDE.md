@@ -298,8 +298,22 @@ patch", that document is the target — do not start a fresh exploration.
 
 ## Checking your work
 
-There is no test suite. `npm run check` is what stands in for one, and it must
-pass before you build. It walks every module in `src/` and asserts:
+Two commands, and both must pass before you build.
+
+**`npm test`** runs the domain rules for real — the ones in this file. That a
+day runs 07:00 to 07:00 and files under the date it opened; that Zahrawi is
+measured against nine and a half hours; that a crew who came on at one o'clock
+is not credited with the call that ran at eight; that a checklist belongs to the
+person and not the truck; that a stale `"available"` on an empty truck reads as
+out of service; that an archived day exports with its own date and not today's;
+that a crew stay is keyed by the shift window and never by the word "day".
+Fifty of them, in `tests/domain.test.mjs`, each one there because getting it
+wrong has been a real bug at least once. **When a fault turns out to be a rule
+nobody had written down, add it there** — it costs nothing to run and it is the
+only thing that will catch it coming back.
+
+**`npm run check`** is the static half. It walks every module in `src/` and
+asserts:
 
 1. **It parses.**
 2. **Every identifier resolves** — declared locally, imported, or a browser
@@ -313,6 +327,10 @@ pass before you build. It walks every module in `src/` and asserts:
    always an unresolved name.
 3. **Nothing is declared twice** in a module, and no key appears twice inside
    the `styles` object, where the later one silently wins.
+
+Between them: `npm run check` proves the code parses and every name resolves,
+`npm test` proves it still does what the department decided it should do. A
+green compile has never been evidence of the second.
 
 Then `npm run build`, and `git diff --stat`. An index-based splice that removed
 more than you meant to looks like a large deletion count and like nothing else.
