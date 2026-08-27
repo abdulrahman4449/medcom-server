@@ -24,6 +24,7 @@ import { UnitRosterCard } from "./ChatDock.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
 import { CompletedCalls, EscalationChip, EscalationThread } from "./Escalations.jsx";
 import { InventoryAdmin } from "./InventoryAdmin.jsx";
+import { issueClaimCode } from "../lib/auth.jsx";
 import { PasswordResets, TrackingConsentAdmin } from "./LocationConsents.jsx";
 import { OvertimePanel } from "./OvertimePanel.jsx";
 import { ChecklistAdmin, CoveragePanel, IndicatorBand, IssuesRaised, LiveCoverageBanner, SavedLogs, Statistics } from "./Statistics.jsx";
@@ -176,6 +177,38 @@ export function DayArchive({ archives, requests, units, log, scheduled }) {
 // button away and build a fresh one - so a tap landing while the board polls
 // can hit a node that is on its way out. Out here its identity is stable and
 // React updates the button in place.
+// Issues the code for an account that has never been signed into.
+//
+// Every account created from now on comes with one, but the ones already on the
+// board predate that and would otherwise be unclaimable — and the only other
+// route to a code is Clear password, which is buried in a panel that only lists
+// people who have already asked for help. This sits on the row that already
+// says "Pending first login", which is exactly where somebody looks.
+export function ClaimCodeBtn({ account, onIssued }) {
+  const [busy, setBusy] = useState(false);
+  if (account.hasPassword) return null;
+  return (
+    <button
+      style={styles.ghostBtnSm}
+      disabled={busy}
+      title={`Issue a first sign-in code for ${account.name || account.id}`}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const res = await issueClaimCode(account.id);
+          if (res && res.code) onIssued([{ id: account.id, name: account.name, code: res.code }]);
+        } catch (e) {
+          window.alert(e.message || "Could not issue a code.");
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? "…" : "Sign-in code"}
+    </button>
+  );
+}
+
 export function RemoveBtn({ account, user, adminAccounts, removingId, onRemove }) {
   const isSelf = user && user.accountId === account.id;
   const lastAdmin = account.role === "admin" && adminAccounts.length <= 1;
@@ -201,6 +234,39 @@ export function RemoveBtn({ account, user, adminAccounts, removingId, onRemove }
 export function RemoveError({ role, removeError }) {
   if (!removeError || removeError.role !== role) return null;
   return <div style={styles.loginError}>{removeError.message}</div>;
+}
+
+// The code an account was just given, shown once.
+//
+// It is minted by the server, hashed there, and never retrievable again — the
+// same treatment a password gets. So it is put in front of the administrator as
+// a block they have to deliberately dismiss rather than as a toast that slides
+// away while they are reaching for a pen.
+function ClaimCodeBanner({ issued, onDone }) {
+  if (!issued || !issued.length) return null;
+  return (
+    <div style={styles.claimCodeBanner}>
+      <div style={styles.claimCodeHead}>
+        {issued.length === 1 ? "SIGN-IN CODE — WRITE IT DOWN NOW" : "SIGN-IN CODES — WRITE THEM DOWN NOW"}
+      </div>
+      {issued.map((c) => (
+        <div key={c.id} style={styles.claimCodeRow}>
+          <span style={styles.claimCodeWho}>
+            {c.name || c.id} <span style={styles.claimCodeId}>{c.id}</span>
+          </span>
+          <span style={styles.claimCodeValue}>{c.code}</span>
+        </div>
+      ))}
+      <div style={styles.claimCodeNote}>
+        They type this with their employee ID the first time they sign in, and then choose their own
+        password. It works once and lasts seven days. It is not stored anywhere it can be read back —
+        if it is lost, issue another.
+      </div>
+      <button style={styles.primaryBtnSm} onClick={onDone}>
+        I have written it down
+      </button>
+    </div>
+  );
 }
 
 export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, locations, trackingConsents, setTrackingConsents }) {
@@ -283,6 +349,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
 
   const [crewName, setCrewName] = useState("");
   const [crewId, setCrewId] = useState("");
+  // Codes handed out by the last thing this screen did.
+  const [issuedCodes, setIssuedCodes] = useState([]);
   const [crewError, setCrewError] = useState("");
   // Which required boxes are empty, so the form can point at them.
   const [crewMissing, setCrewMissing] = useState({});
@@ -437,7 +505,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         createdAt: Date.now(),
       },
     ];
-    await saveAccounts(next);
+    setIssuedCodes(await saveAccounts(next));
     await addLog(`Admin added crew ID for ${crewName.trim()}`, "status");
     setCrewName("");
     setCrewId("");
@@ -464,7 +532,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       ...accts,
       { id: adminId.trim(), name: adminName.trim(), role: "admin", team: null, createdAt: Date.now() },
     ];
-    await saveAccounts(next);
+    setIssuedCodes(await saveAccounts(next));
     await addLog(`Admin added a new admin ID for ${adminName.trim()}`, "status");
     setAdminName("");
     setAdminId("");
@@ -491,7 +559,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       ...accts,
       { id: dispId.trim(), name: dispName.trim(), role: "dispatcher", team: null, createdAt: Date.now() },
     ];
-    await saveAccounts(next);
+    setIssuedCodes(await saveAccounts(next));
     await addLog(`Admin added a dispatcher ID for ${dispName.trim()}`, "status");
     setDispName("");
     setDispId("");
@@ -733,6 +801,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `Online — ${seat}` : a.hasPassword ? "Offline" : "Pending first login"}
                   </span>
+                  <ClaimCodeBtn account={a} onIssued={setIssuedCodes} />
                   <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
               );
@@ -778,6 +847,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
+                  <ClaimCodeBtn account={a} onIssued={setIssuedCodes} />
                   <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
               );
@@ -822,6 +892,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   <span style={seat || a.hasPassword ? styles.accountActiveTag : styles.accountPendingTag}>
                     {seat ? `On a team — ${seat}` : a.hasPassword ? "Active" : "Pending first login"}
                   </span>
+                  <ClaimCodeBtn account={a} onIssued={setIssuedCodes} />
                   <RemoveBtn account={a} user={user} adminAccounts={adminAccounts} removingId={removingId} onRemove={removeAccount} />
                 </div>
               );
@@ -834,6 +905,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         </InfoNote>
       </div>
       </FoldingSection>
+
+      <ClaimCodeBanner issued={issuedCodes} onDone={() => setIssuedCodes([])} />
 
       {/* Somebody who cannot sign in is standing at a tablet right now, so this
           sits with the accounts rather than on the statistics page. */}

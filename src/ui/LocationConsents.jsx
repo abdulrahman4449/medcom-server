@@ -67,6 +67,17 @@ export function PasswordResets({ resets, setResets, user, addLog }) {
         window.alert("That did not save — no signal to the server. Nothing has changed.");
         return;
       }
+      if (ok && ok.code) {
+        // Shown once and never again. An alert rather than a panel because the
+        // administrator is standing next to the person who needs it.
+        window.alert(
+          `Password cleared for ${row.name || row.accountId}.\n\n` +
+            `SIGN-IN CODE:  ${ok.code}\n\n` +
+            `They type this with their employee ID at the next sign-in and then choose ` +
+            `their own password. It works once and lasts seven days. Write it down now — ` +
+            `it cannot be read back.`
+        );
+      }
       setResets(await decideReset(row, "cleared", user && user.name));
       await addLog(
         `Password cleared for ${row.name || row.accountId} (${row.accountId}) — they choose a new ` +

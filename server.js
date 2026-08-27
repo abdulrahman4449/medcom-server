@@ -100,6 +100,13 @@ db.exec(`
     -- The old unsalted SHA-256, kept only so an existing password still works
     -- once. It is replaced with a proper hash the first time they sign in.
     legacy_hash TEXT,
+    -- A one-time code, salted and hashed like a password, that an account with
+    -- no password yet must be claimed with. Without it, anyone who could guess
+    -- an employee ID could claim an account that had never been signed into and
+    -- become that person — and employee IDs are printed on badges.
+    claim_salt TEXT,
+    claim_hash TEXT,
+    claim_expires INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS settings (
@@ -126,6 +133,48 @@ function authSecret() {
 function hashPassword(password, salt) {
   return crypto.scryptSync(String(password), salt, 32).toString("hex");
 }
+// Boards created before claim codes existed do not have the columns. Added
+// here rather than in the CREATE above, which only runs on an empty database.
+for (const col of ["claim_salt TEXT", "claim_hash TEXT", "claim_expires INTEGER"]) {
+  try {
+    db.prepare(`ALTER TABLE accounts ADD COLUMN ${col}`).run();
+  } catch (e) {
+    // already there
+  }
+}
+
+// The code itself: short enough to read down a phone, long enough not to be
+// guessed inside the rate limit. No vowels, so it cannot spell anything, and no
+// characters that are read as each other on a badge printer - 0/O and 1/I/L.
+const CLAIM_ALPHABET = "23456789BCDFGHJKMNPQRSTVWXYZ";
+const CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function makeClaimCode() {
+  const bytes = crypto.randomBytes(8);
+  let out = "";
+  for (let i = 0; i < 8; i++) out += CLAIM_ALPHABET[bytes[i] % CLAIM_ALPHABET.length];
+  return `${out.slice(0, 4)}-${out.slice(4)}`;
+}
+function issueClaimCode(id) {
+  const code = makeClaimCode();
+  const salt = crypto.randomBytes(16).toString("hex");
+  db.prepare(
+    "UPDATE accounts SET claim_salt = ?, claim_hash = ?, claim_expires = ? WHERE id = ?"
+  ).run(salt, hashPassword(code, salt), Date.now() + CLAIM_TTL_MS, id);
+  return code;
+}
+function checkClaimCode(account, code) {
+  if (!account.claim_hash || !account.claim_salt) return false;
+  if (account.claim_expires && Date.now() > account.claim_expires) return false;
+  const given = Buffer.from(hashPassword(String(code || "").trim().toUpperCase(), account.claim_salt), "hex");
+  const held = Buffer.from(account.claim_hash, "hex");
+  return given.length === held.length && crypto.timingSafeEqual(given, held);
+}
+function clearClaimCode(id) {
+  db.prepare(
+    "UPDATE accounts SET claim_salt = NULL, claim_hash = NULL, claim_expires = NULL WHERE id = ?"
+  ).run(id);
+}
+
 function setPassword(id, password) {
   const salt = crypto.randomBytes(16).toString("hex");
   db.prepare("UPDATE accounts SET pw_salt = ?, pw_hash = ?, legacy_hash = NULL WHERE id = ?")
@@ -528,7 +577,21 @@ function seedAccounts() {
   // chooses one.
   insert.run("F1525518", "Admin", "admin", null, null, null, null);
   insert.run("D1000001", "Dispatcher", "dispatcher", null, null, null, null);
+  // Somebody has to be able to open a brand new board, and nobody exists yet to
+  // issue a code. This one is printed to the server log — the deploy log on a
+  // hosted box — which is readable by whoever runs the service and by nobody
+  // else. It opens the administrator's account once and is then spent, and from
+  // there every other code is handed out from inside the app.
+  const bootstrap = issueClaimCode("F1525518");
   console.log("Accounts: seeded the default administrator and dispatcher.");
+  console.log("");
+  console.log("  ┌──────────────────────────────────────────────────────────┐");
+  console.log("  │  FIRST SIGN-IN                                           │");
+  console.log("  │  Employee ID    F1525518                                 │");
+  console.log(`  │  Sign-in code   ${bootstrap}${" ".repeat(41 - bootstrap.length)}│`);
+  console.log("  │  Valid for 7 days, and once only.                        │");
+  console.log("  └──────────────────────────────────────────────────────────┘");
+  console.log("");
 }
 seedAccounts();
 
@@ -574,19 +637,63 @@ app.post("/api/auth/login", (req, res) => {
 // First sign-in, and only then. Setting a password over an account that
 // already has one is a reset, and a reset goes through an administrator - so a
 // stolen employee ID cannot be turned into a working account.
+// Claiming an account: the employee ID is not enough.
+//
+// It used to be. Anyone who could name an ID that had never been signed into
+// could set a password on it and become that person - and employee IDs are
+// printed on badges and follow a pattern. The one-time code an administrator
+// issues is the second thing, and it is checked here under the same rate limit
+// as a password so it cannot be worked through either.
 app.post("/api/auth/set-password", (req, res) => {
-  const { id, password } = req.body || {};
+  const { id, password, code } = req.body || {};
   const acct = findAccount(id);
   if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
   if (acct.pw_hash || acct.legacy_hash) {
     return res.status(409).json({ error: "That account already has a password. Ask an administrator to clear it." });
   }
+  const key = String(id || "").trim().toUpperCase();
+  if (loginBlocked(key)) {
+    return res.status(429).json({ error: "Too many attempts. Try again later." });
+  }
+  if (!acct.claim_hash) {
+    return res.status(403).json({
+      error: "This account needs a sign-in code before a password can be set. Ask your administrator for one.",
+      needsCode: true,
+    });
+  }
+  if (!checkClaimCode(acct, code)) {
+    loginFailed(key);
+    const expired = acct.claim_expires && Date.now() > acct.claim_expires;
+    return res.status(403).json({
+      error: expired
+        ? "That sign-in code has expired. Ask your administrator for a new one."
+        : "That sign-in code is not right.",
+      needsCode: true,
+    });
+  }
   if (!password || String(password).length < 4) {
     return res.status(400).json({ error: "Choose a password of at least four characters." });
   }
+  LOGIN_TRIES.delete(key);
   setPassword(acct.id, password);
+  // Spent. A code opens an account once.
+  clearClaimCode(acct.id);
   const fresh = findAccount(acct.id);
   res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
+});
+
+// An administrator hands one out. Shown once, here, and never again — only its
+// hash is kept, exactly like a password.
+app.post("/api/accounts/:id/claim-code", requireAdmin, (req, res) => {
+  const acct = findAccount(req.params.id);
+  if (!acct) return res.status(404).json({ error: "No account with that employee ID." });
+  if (acct.pw_hash || acct.legacy_hash) {
+    return res.status(409).json({
+      error: "That account already has a password. Clear it first if they need to start again.",
+    });
+  }
+  const code = issueClaimCode(acct.id);
+  res.json({ ok: true, code, expiresAt: Date.now() + CLAIM_TTL_MS, account: publicAccount(findAccount(acct.id)) });
 });
 
 // The forgotten-password request, which by its nature is made by somebody who
@@ -642,7 +749,17 @@ app.post("/api/accounts", requireAdmin, (req, res) => {
      ON CONFLICT(id) DO UPDATE SET name = excluded.name, role = excluded.role,
        team = excluded.team, slot = excluded.slot, station = excluded.station`
   ).run(key, String(name || ""), role, team || null, slot || null, station || null);
-  res.json({ ok: true, account: publicAccount(findAccount(key)) });
+  // A brand new account comes with the code that opens it, so an administrator
+  // adding somebody can hand it straight over rather than going back for it.
+  // An account that already has a password is being edited, not created, and
+  // keeps whatever it had.
+  const made = findAccount(key);
+  const code = made && !made.pw_hash && !made.legacy_hash ? issueClaimCode(key) : null;
+  res.json({
+    ok: true,
+    account: publicAccount(findAccount(key)),
+    ...(code ? { code, expiresAt: Date.now() + CLAIM_TTL_MS } : {}),
+  });
 });
 
 app.delete("/api/accounts/:id", requireAdmin, (req, res) => {
@@ -657,11 +774,16 @@ app.delete("/api/accounts/:id", requireAdmin, (req, res) => {
 // Clearing a password is how a forgotten one is dealt with: the account keeps
 // its history and the person chooses a new password at the next sign-in.
 // Nobody, including an administrator, can set a password on somebody's behalf.
+// Clearing a password issues the code that replaces it in the same breath.
+// Clearing without one would leave the person unable to set a new password and
+// unable to say why - the account would simply refuse them, which is precisely
+// the lockout this route exists to end.
 app.post("/api/accounts/:id/clear-password", requireAdmin, (req, res) => {
   const key = String(req.params.id || "").trim().toUpperCase();
   if (!findAccount(key)) return res.status(404).json({ error: "No such account." });
   db.prepare("UPDATE accounts SET pw_salt = NULL, pw_hash = NULL, legacy_hash = NULL WHERE id = ?").run(key);
-  res.json({ ok: true });
+  const code = issueClaimCode(key);
+  res.json({ ok: true, code, expiresAt: Date.now() + CLAIM_TTL_MS });
 });
 
 app.get("/api/health", (req, res) => {

@@ -88,10 +88,19 @@ export async function signIn(id, password) {
   return data.account;
 }
 
-export async function choosePassword(id, password) {
-  const data = await post("/api/auth/set-password", { id, password });
+// Claiming an account for the first time. The one-time code an administrator
+// issued goes up with the password: an employee ID on its own is printed on a
+// badge, and on its own it used to be enough to become that person.
+export async function choosePassword(id, password, code) {
+  const data = await post("/api/auth/set-password", { id, password, code });
   setToken(data.token);
   return data.account;
+}
+
+// An administrator hands one out. The plain code comes back once, here, and is
+// never retrievable again — only its hash is kept, exactly like a password.
+export function issueClaimCode(id) {
+  return post(`/api/accounts/${encodeURIComponent(id)}/claim-code`, {});
 }
 
 // Signs in without keeping the token - used to check a second crew member's

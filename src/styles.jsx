@@ -751,6 +751,32 @@ export const styles = {
   // running and wrong for a list of twenty transfers next Tuesday. At that
   // size a day's bookings do not fit on a phone and the desk scrolls to read
   // its own diary. Same information, a third of the height.
+  // The one-time sign-in code, shown once. Deliberately the loudest thing on
+  // the page while it is up: it cannot be read back, so an administrator who
+  // scrolls past it has to issue another.
+  claimCodeBanner: {
+    marginTop: 14,
+    background: "var(--raised)",
+    border: "1px solid var(--gold)",
+    borderRadius: 16,
+    padding: "13px 14px 14px",
+    boxShadow: "0 6px 18px var(--lift)",
+  },
+  claimCodeHead: {
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.8, color: "var(--gold)", marginBottom: 9,
+  },
+  claimCodeRow: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 10, flexWrap: "wrap", padding: "6px 0",
+    borderTop: "1px solid var(--hair)",
+  },
+  claimCodeWho: { fontSize: 14, fontWeight: 650, color: "var(--ink)" },
+  claimCodeId: { fontSize: 12, color: "var(--ink-4)", marginLeft: 6 },
+  claimCodeValue: {
+    fontSize: 21, fontWeight: 800, letterSpacing: 3, color: "var(--ink)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  claimCodeNote: { fontSize: 12, color: "var(--ink-3)", lineHeight: 1.5, margin: "9px 0 11px" },
   schedCard: {
     background: "var(--raised)",
     border: "1px solid var(--hair)",

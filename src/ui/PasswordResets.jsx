@@ -58,8 +58,11 @@ export async function clearPasswordFor(accountId) {
   // else's behalf, so a cleared account is one the person themselves has to
   // choose a new password for at the next sign-in.
   try {
-    await clearAccountPassword(accountId);
-    return true;
+    const res = await clearAccountPassword(accountId);
+    // The server issues the code that replaces the password in the same call.
+    // Without handing it on, the administrator would clear an account and leave
+    // the person unable to set a new password and with nothing to say why.
+    return (res && res.code) ? { code: res.code } : true;
   } catch (e) {
     window.alert(e.message || "Could not clear that password.");
     return false;

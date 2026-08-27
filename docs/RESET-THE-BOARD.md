@@ -67,9 +67,23 @@ accounts it always seeds, **neither with a password**:
 - `F1525518` — administrator
 - `D1000001` — dispatcher
 
-The first person to sign in with each of those IDs chooses the password. Sign
-in as `F1525518` first and add the real staff from **Teams → Add crew /
-Add dispatcher / Add admin**.
+**Read the deploy log.** A fresh board prints a one-time sign-in code for
+`F1525518`, in a box, once:
+
+```
+  ┌──────────────────────────────────────────────────────────┐
+  │  FIRST SIGN-IN                                           │
+  │  Employee ID    F1525518                                 │
+  │  Sign-in code   XXXX-XXXX                                │
+  │  Valid for 7 days, and once only.                        │
+  └──────────────────────────────────────────────────────────┘
+```
+
+That code is the only way into a new board — an employee ID on its own is not
+enough, deliberately. Sign in as `F1525518` with it, choose a password, then add
+the real staff from **Teams → Add crew / Add dispatcher / Add admin**. Each new
+account comes with its own code, shown once on screen; write it down before
+dismissing it, because it cannot be read back.
 
 If your `DB_PATH` is set to something other than `/data/board.db`, use that
 path instead. `GET /api/health` tells you which file is in use.

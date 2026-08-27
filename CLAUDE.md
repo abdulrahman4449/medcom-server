@@ -174,6 +174,15 @@ patch", that document is the target — do not start a fresh exploration.
   as a sign-out fires on a loop at the sign-in screen. `loadAll`/`loadCold`
   wait for a token before polling at all. An old unsalted SHA-256 hash is
   accepted once and replaced with a salted one on that sign-in.
+- **An employee ID is printed on a badge, so it is not enough to claim an
+  account.** An account with no password yet needs a **one-time code** an
+  administrator issues (`claim_hash`, hashed and salted like a password, spent
+  on use, seven days). Without it, anyone who could name an ID that had never
+  been signed into could become that person. A fresh database prints a bootstrap
+  code for `F1525518` to the server log — that is the only way into a new board,
+  and every code after it is handed out from Teams. Clearing a password issues
+  the replacement code in the same call, because clearing without one leaves the
+  person unable to set a new password and with nothing to say why.
 - **Only an administrator may write the department's definitions.**
   `ADMIN_ONLY_KEYS` in `server.js` — policies, checklists, inventory. Everyone
   signed in may write the day's work. Roles are checked on the server; a

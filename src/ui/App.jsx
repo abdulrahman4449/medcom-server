@@ -1201,10 +1201,17 @@ export function App() {
   async function saveAccounts(next) {
     const prev = accounts;
     const byId = new Map((next || []).map((a) => [a.id, a]));
+    // Any sign-in codes the server minted on the way through. A brand new
+    // account comes with the one that opens it, and it is shown once — so it
+    // has to be carried back to whoever pressed Add rather than dropped here.
+    const issued = [];
     try {
       for (const account of next || []) {
         const before = prev.find((a) => a.id === account.id);
-        if (!before || JSON.stringify(before) !== JSON.stringify(account)) await saveAccount(account);
+        if (!before || JSON.stringify(before) !== JSON.stringify(account)) {
+          const saved = await saveAccount(account);
+          if (saved && saved.code) issued.push({ id: account.id, name: account.name, code: saved.code });
+        }
       }
       for (const account of prev || []) {
         if (!byId.has(account.id)) await removeAccount(account.id);
@@ -1213,6 +1220,7 @@ export function App() {
       window.alert(e.message || "The server would not accept that change to the roster.");
     }
     setAccounts(await listAccounts());
+    return issued;
   }
 
   async function saveRequests(next) {

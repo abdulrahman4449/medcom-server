@@ -122,6 +122,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   }, [partnerAccount, partnerPw]);
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
+  // The one-time code an administrator issued for a first sign-in.
+  const [claimCode, setClaimCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -290,6 +292,10 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // Setting a password for the first time. The server decides whether that is
   // allowed — this screen cannot grant it.
   async function handleCreatePassword() {
+    if (!claimCode.trim()) {
+      setError("Enter the sign-in code your administrator gave you.");
+      return;
+    }
     if (pw.length < 4) {
       setError("Password must be at least 4 characters.");
       return;
@@ -303,7 +309,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     try {
       // The server stores it, salted, and signs this device in as part of the
       // same call - there is no moment where a password exists on the device.
-      updatedAccount = await choosePassword(foundAccount.id, pw);
+      updatedAccount = await choosePassword(foundAccount.id, pw, claimCode.trim());
     } catch (e) {
       setBusy(false);
       setError(e.message || "Could not set that password.");
@@ -702,6 +708,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     setShiftKey(null);
     setPw("");
     setPw2("");
+    setClaimCode("");
     setError("");
   }
 
@@ -813,7 +820,20 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
             {stage === "createPassword" && (
               <>
                 <div style={styles.loginSub}>First time signing in — choose a password.</div>
-                <label style={styles.label}>New password</label>
+                {/* The code is what proves this account is theirs. An employee
+                    ID is printed on a badge; on its own it used to be enough to
+                    claim an account nobody had signed into yet. */}
+                <label style={styles.label}>Sign-in code from your administrator</label>
+                <input
+                  style={{ ...styles.input, letterSpacing: 2, textTransform: "uppercase" }}
+                  value={claimCode}
+                  onChange={(e) => setClaimCode(e.target.value.toUpperCase())}
+                  placeholder="XXXX-XXXX"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                <label style={{ ...styles.label, marginTop: 14 }}>New password</label>
                 <input
                   type="password"
                   style={styles.input}
