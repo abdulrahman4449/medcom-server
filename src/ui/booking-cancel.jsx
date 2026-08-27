@@ -120,6 +120,21 @@ export function schedIsTemplate(s) {
   return !!(s && isRecurring(s) && !s.repeatOf);
 }
 
+// The day's copy of an arrangement — what the template threw off for today, and
+// the thing that actually goes out.
+//
+// It is a real booking and is released like any other, but it is not something
+// the desk booked: it belongs to an arrangement somebody set up once, and it is
+// already visible in Schedule → Repeating, where the patient's card says which
+// days they run and when they are next in. Listed in Upcoming as well it read
+// as a second, separate booking for the same patient — a dialysis run appearing
+// twice on a board the desk is trying to read at a glance. So Upcoming carries
+// what the desk booked; the arrangement carries the rest, and the day's copy
+// surfaces at its time, as a call card, once.
+export function schedIsOccurrence(s) {
+  return !!(s && s.repeatOf);
+}
+
 export function schedDue(s, now) {
   if (schedAwaitCall(s)) return false;
   if (schedIsTemplate(s)) return false;

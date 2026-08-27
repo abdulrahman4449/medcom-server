@@ -295,6 +295,24 @@ export function run(D, t) {
     const madeToday = { scheduledFor: at(2026, 8, 27, 18), repeat: { days: [0, 1, 2, 3, 4, 5, 6] } };
     t.is("repeats: the day it was set up on still gets an occurrence",
       D.repeatOccurrencesDue(madeToday, at(2026, 8, 27, 16)).length, 1);
+
+    // Neither half of an arrangement belongs in Upcoming: not the arrangement,
+    // which is not a booking, and not the day's copy, which the desk did not
+    // book and can already see on the patient's card in Repeating. Listed there
+    // too, one dialysis patient read as two bookings.
+    t.ok("repeats: the day's copy is an occurrence", D.schedIsOccurrence(occurrence));
+    t.ok("repeats: the arrangement itself is not", !D.schedIsOccurrence(tmpl));
+    t.ok("repeats: nor is a booking the desk made", !D.schedIsOccurrence(plain));
+    const inUpcoming = (s) => D.schedOpen(s, now) && !D.schedIsTemplate(s) && !D.schedIsOccurrence(s);
+    t.ok("repeats: Upcoming carries the desk's own booking", inUpcoming(plain));
+    t.ok("repeats: Upcoming carries neither the arrangement", !inUpcoming(tmpl));
+    t.ok("repeats: nor the day's copy of it", !inUpcoming(occurrence));
+
+    // One card per day, however many desks are watching: the copy is keyed by
+    // the local calendar day, so a second pass finds it already made.
+    const twice = D.repeatOccurrencesDue(madeToday, at(2026, 8, 27, 16));
+    t.is("repeats: one occurrence a day, keyed by the calendar day",
+      new Set(twice.map((o) => o.key)).size, twice.length);
   }
 
   // ---------- a device with an old copy of the board cannot erase it

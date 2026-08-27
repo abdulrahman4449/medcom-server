@@ -20,7 +20,7 @@ import { CallRoute, InfoNote } from "./AssistanceTasks.jsx";
 import { WhenPicker, bookingsNear, bookingsOnDay } from "./ScheduledRequests.jsx";
 import { CallCodingFields, CallTypeTag, LoadedKmTag } from "./StatusBoard.jsx";
 import { MIN_LEAD_MS } from "./WhenPicker.jsx";
-import { SCHED_CANCEL_REASONS, SCHED_CANCEL_REASON_MAX, SCHED_DUE_SOON_MS, SCHED_LEAD_MS, SCHED_PREALERT_MS, SCHED_PREALERT_TICK_MS, dayHeadingStr, defaultScheduleTs, schedAwaitCall, schedCancelReason, schedIsTemplate, schedOpen, schedStatusMeta, startOfDay, untilStr, whenStr } from "./booking-cancel.jsx";
+import { SCHED_CANCEL_REASONS, SCHED_CANCEL_REASON_MAX, SCHED_DUE_SOON_MS, SCHED_LEAD_MS, SCHED_PREALERT_MS, SCHED_PREALERT_TICK_MS, dayHeadingStr, defaultScheduleTs, schedAwaitCall, schedCancelReason, schedIsOccurrence, schedIsTemplate, schedOpen, schedStatusMeta, startOfDay, untilStr, whenStr } from "./booking-cancel.jsx";
 
 // ---------- the quarter-hour reminder ----------
 //
@@ -349,13 +349,23 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
   // station's bookings would be written out of existence.
   const list = scheduled || [];
   const saveFallback = allScheduled || scheduled || [];
-  // What is actually coming out. A standing arrangement is not — it is the
-  // reason occurrences exist, and it lives in Repeating where somebody goes to
-  // see what is coming or to stop it. Left in, it sat at the top of Upcoming
-  // for ever, with a date from whenever it was set up, taking the room a real
-  // booking needed.
+  // What the desk booked, and nothing else.
+  //
+  // A standing arrangement is not a booking — it is the reason occurrences
+  // exist, and it lives in Repeating where somebody goes to see what is coming
+  // or to stop it. Left in, it sat at the top of Upcoming for ever, with a date
+  // from whenever it was set up, taking the room a real booking needed.
+  //
+  // Nor is the day's copy of one. It is a booking in every mechanical sense —
+  // it falls due, it chimes, it is released — but the desk did not make it and
+  // has nothing to decide about it, and its patient is already on a card in
+  // Repeating that says which days they run and when they are next in. Shown
+  // here as well, a three-times-a-week dialysis run read as two separate
+  // bookings for the same patient. Upcoming is the diary; the arrangement is
+  // the arrangement; and the day's copy appears at its time, on the board, as
+  // one call card.
   const upcoming = list
-    .filter((s) => s && schedOpen(s, now) && !schedIsTemplate(s))
+    .filter((s) => s && schedOpen(s, now) && !schedIsTemplate(s) && !schedIsOccurrence(s))
     .sort((a, b) => (a.scheduledFor || 0) - (b.scheduledFor || 0));
   // Dispatched and cancelled, scoped to the shift running now.
   //
