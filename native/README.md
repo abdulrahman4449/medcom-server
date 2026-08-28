@@ -49,9 +49,15 @@ alarm still sounds, on the alarm path, at full volume.
 
 ## Installing — Android
 
-1. Copy `android/PulseOpsAlarmPlugin.java` into
-   `android/app/src/main/java/com/pulseops/app/` (match the package line to
-   your own applicationId if it differs).
+1. Copy `android/PulseOpsAlarmPlugin.java` into the folder your
+   `MainActivity.java` already lives in — `android/app/src/main/java/com/PulseOps/`
+   on this project.
+
+   **Then make the `package` line on line 1 identical to the one at the top of
+   `MainActivity.java`.** Java requires the package statement to match the
+   folder, and Android Studio stops the build on the mismatch before it looks at
+   anything else: *"Package name 'x' does not correspond to the file path 'y'"*.
+   It is the first thing to check and the easiest to miss.
 2. Register it in `MainActivity.java`:
 
    ```java
@@ -66,7 +72,12 @@ alarm still sounds, on the alarm path, at full volume.
 3. Put your alert tone at
    `android/app/src/main/res/raw/dispatch_alert.mp3`.
    The filename matters — the plugin looks it up by name.
-4. Add to `AndroidManifest.xml`, inside `<manifest>`:
+4. `minSdk` may be anything from 24 up. Channels, `VibrationEffect`,
+   `AudioFocusRequest` and the channel-settings intents all arrived in API 26,
+   so every one of them is behind a `Build.VERSION.SDK_INT` check with a
+   working path for 24 and 25 — do not remove those branches to tidy the file
+   up unless you also raise `minSdk`.
+5. Add to `AndroidManifest.xml`, inside `<manifest>`:
 
    ```xml
    <uses-permission android:name="android.permission.VIBRATE" />
@@ -75,7 +86,7 @@ alarm still sounds, on the alarm path, at full volume.
    Nothing else. In particular **do not** add
    `ACCESS_BACKGROUND_LOCATION` — that triggers Google's Location Permissions
    declaration review, which this app's whole location design exists to avoid.
-5. Rebuild the AAB and reinstall.
+6. Rebuild the AAB and reinstall.
 
 ## "Sometimes it works, sometimes it's late, sometimes it doesn't"
 

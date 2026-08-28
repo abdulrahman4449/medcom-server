@@ -1,4 +1,9 @@
-package com.pulseops.app;
+// The package must match the folder this file sits in, and that folder is
+// whatever your Capacitor project already uses - open MainActivity.java, read
+// its first line, and make this one identical. Android Studio reports a
+// mismatch as "Package name ... does not correspond to the file path", which is
+// the one error that stops the build before anything else is even looked at.
+package com.PulseOps;
 
 import android.app.Activity;
 import android.app.Notification;
@@ -347,8 +352,20 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 getContext(), 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-            Notification.Builder b = new Notification.Builder(getContext(), CHANNEL_ID)
-                .setContentTitle(title)
+            // Channels arrived in API 26 and so did the constructor that takes
+            // one. This project still builds for 24, so the older constructor
+            // is kept for those two versions - on them there is no channel to
+            // belong to, and the priority flag is what makes the banner
+            // interrupt instead of sliding into the drawer quietly.
+            Notification.Builder b;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                b = new Notification.Builder(getContext(), CHANNEL_ID);
+            } else {
+                b = new Notification.Builder(getContext())
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .setSound(alarmSoundUri(), AudioManager.STREAM_ALARM);
+            }
+            b.setContentTitle(title)
                 .setContentText(body)
                 .setStyle(new Notification.BigTextStyle().bigText(body))
                 .setSmallIcon(getContext().getApplicationInfo().icon)
@@ -390,7 +407,11 @@ public class PulseOpsAlarmPlugin extends Plugin {
      */
     @PluginMethod
     public void keepAwake(PluginCall call) {
-        final boolean on = call.getBoolean("on", true);
+        // getBoolean hands back a Boolean, and unboxing a null one throws -
+        // the default only applies when the key is absent, not when it is
+        // present and null.
+        final Boolean asked = call.getBoolean("on", true);
+        final boolean on = asked == null || asked.booleanValue();
         final Activity activity = getActivity();
         if (activity == null) {
             call.reject("No activity to hold awake.");
