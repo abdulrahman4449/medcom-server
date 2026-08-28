@@ -2295,6 +2295,7 @@ export function App() {
               setMessages={setMessages}
               locations={locations}
               archives={archives}
+              log={log}
             />
           )}
           {!onSharedPage && user.role === "team" && (

@@ -789,6 +789,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           <PastCallSection
             user={user}
             units={units}
+            log={log}
             saveRequests={saveRequests}
             addLog={addLog}
           />

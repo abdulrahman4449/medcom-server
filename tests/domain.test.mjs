@@ -315,6 +315,55 @@ export function run(D, t) {
       new Set(twice.map((o) => o.key)).size, twice.length);
   }
 
+  // ---------- a call written up by hand names its crew
+  //
+  // The board was not there when it ran, so nothing on it knows who crewed the
+  // call. The names used to be typed, and a name typed at eight in the morning
+  // about a call at two is spelt three ways across three entries. They are
+  // picked now, off everybody the log has seen work.
+  {
+    const units = [
+      { id: "u1", name: "MEDIC 1", alpha: { accountId: "F9001", name: "R. Chen" }, bravo: null },
+      { id: "u2", name: "MEDIC 2", alpha: null, bravo: { accountId: "F9002", name: "S. Ahmed" } },
+    ];
+    const log = [
+      { id: "1", role: "team", accountId: "F9003", name: "M. Farah", ts: at(2026, 8, 20, 7) },
+      { id: "2", role: "team", accountId: "F9004", name: "L. Haddad", ts: at(2026, 8, 26, 7) },
+      // A dispatcher is not somebody who could have been in the back of a
+      // truck, and the same test the statistics use keeps them out.
+      { id: "3", role: "dispatch", accountId: "F9005", name: "Desk", ts: at(2026, 8, 27, 7) },
+      // The same person again, on another day. One entry, not two.
+      { id: "4", role: "team", accountId: "F9003", name: "M. Farah", ts: at(2026, 8, 25, 7) },
+      // A line with no name on it is not a person.
+      { id: "5", role: "team", accountId: "", name: "", ts: at(2026, 8, 27, 8) },
+    ];
+    const crew = D.knownCrew(log, units);
+    const ids = crew.map((p) => p.accountId);
+
+    t.ok("past call: a dispatcher is never offered as crew", !ids.includes("F9005"));
+    t.is("past call: everybody who has been on a truck, once each", crew.length, 4);
+    t.is("past call: one entry for somebody who signed on twice",
+      crew.filter((p) => p.accountId === "F9003").length, 1);
+    t.ok("past call: whoever is in a seat now sorts first",
+      ids[0] === "F9001" || ids[0] === "F9002");
+    t.ok("past call: and the most recent sign-on comes before an older one",
+      ids.indexOf("F9004") < ids.indexOf("F9003"));
+
+    // The record carries the employee ID, because a name is not an identity —
+    // two people share one often enough that a sheet cannot rely on it.
+    t.is("past call: a person is held by their employee ID",
+      D.crewOptionValue({ accountId: "F9001", name: "R. Chen" }), "F9001");
+    t.is("past call: and by name when the board has no ID for them",
+      D.crewOptionValue({ accountId: "", name: "Agency medic" }), "Agency medic");
+    t.is("past call: a picked value finds its person",
+      (D.crewByValue(crew, "F9003") || {}).name, "M. Farah");
+    t.is("past call: and an empty pick finds nobody", D.crewByValue(crew, ""), null);
+
+    // An empty board still answers, rather than throwing on the one screen
+    // somebody reaches for when the board has just come back.
+    t.is("past call: no log and no trucks is an empty list", D.knownCrew(null, null).length, 0);
+  }
+
   // ---------- statistics describe a period somebody chose
   //
   // The tabs used to mean "the one running now" and nothing else, so an

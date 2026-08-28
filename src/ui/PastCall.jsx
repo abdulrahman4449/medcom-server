@@ -2,6 +2,7 @@ import { PRIORITY, REQUIREMENTS } from "../domain/constants.jsx";
 import { CALL_TYPES, LOADED_KM, callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
 import { DEFAULT_STATION, atStation } from "../domain/live-sheet.jsx";
 import { callRoute } from "../domain/call-locations.jsx";
+import { crewByValue, crewOptionValue, knownCrew } from "../domain/crew-roster.jsx";
 import { scheduledShiftKey } from "../domain/shift-helpers.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
@@ -81,13 +82,58 @@ export function pastCallTimes(ymd, entered) {
   return { times: out, rolled };
 }
 
-export function PastCallForm({ user, units, saveRequests, addLog, onDone }) {
+// "Someone else" — an agency medic, a relief from the other hospital, anybody
+// the board has never seen sign on. A picker with no way out of it is a form
+// somebody cannot finish.
+export const OTHER_CREW = "__other__";
+
+// One seat's picker, plus the box that appears when the answer is not on the
+// list. Both seats are drawn by this, so they cannot drift apart.
+//
+// Declared out here rather than inside the form. A component defined inside
+// another is a new component type on every render, so React throws the old
+// select away and builds a fresh one — which loses the typed name mid-word.
+function CrewSeat({ label, hint, roster, value, setValue, typed, setTyped }) {
+  return (
+    <div style={{ flex: 1, minWidth: 150 }}>
+      <label style={styles.label}>{label}</label>
+      <select style={styles.input} value={value} onChange={(e) => setValue(e.target.value)}>
+        <option value="">{hint}</option>
+        {roster.map((p) => (
+          <option key={crewOptionValue(p)} value={crewOptionValue(p)}>
+            {p.name}{p.accountId ? ` \u00b7 ${p.accountId}` : ""}
+          </option>
+        ))}
+        <option value={OTHER_CREW}>Someone else…</option>
+      </select>
+      {value === OTHER_CREW && (
+        <input
+          style={{ ...styles.input, marginTop: 6 }}
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder="Their name"
+        />
+      )}
+    </div>
+  );
+}
+
+export function PastCallForm({ user, units, log, saveRequests, addLog, onDone }) {
   const now = Date.now();
   const [ymd, setYmd] = useState(() => localYmd(now));
   const [times, setTimes] = useState({});
   const [unitId, setUnitId] = useState("");
+  // A picked person, held as the value their option carries — their employee
+  // ID where the board knows one. `OTHER` is the escape hatch for somebody the
+  // log has never seen: an agency medic, a relief from the other hospital.
   const [alpha, setAlpha] = useState("");
   const [bravo, setBravo] = useState("");
+  const [alphaTyped, setAlphaTyped] = useState("");
+  const [bravoTyped, setBravoTyped] = useState("");
+  // Which seat wrote the PCR. Never guessed: the board can see who was on the
+  // truck but not who picked up the pen, and a PCR credited to the wrong person
+  // is a compliance figure against the wrong name.
+  const [pcrSeat, setPcrSeat] = useState("alpha");
   const [nature, setNature] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -102,6 +148,24 @@ export function PastCallForm({ user, units, saveRequests, addLog, onDone }) {
 
   const station = (user && user.station) || DEFAULT_STATION;
   const mine = atStation(units || [], station);
+  // Everybody the board has seen on a truck, most recent first.
+  const roster = knownCrew(log, units);
+  // What each seat resolves to: a person off the roster, or the name typed
+  // into the "Someone else" box beside it.
+  const alphaName = alpha === OTHER_CREW
+    ? alphaTyped.trim()
+    : (crewByValue(roster, alpha) || {}).name || "";
+  const bravoName = bravo === OTHER_CREW
+    ? bravoTyped.trim()
+    : (crewByValue(roster, bravo) || {}).name || "";
+  const alphaId = alpha === OTHER_CREW ? "" : (crewByValue(roster, alpha) || {}).accountId || "";
+  const bravoId = bravo === OTHER_CREW ? "" : (crewByValue(roster, bravo) || {}).accountId || "";
+  // The PCR can only belong to a seat that has somebody in it. If the chosen
+  // seat empties — Bravo is picked as the author and then cleared — the choice
+  // falls back to the seat that is still crewed rather than to nobody.
+  const pcrOn = pcrSeat === "bravo" && bravoName ? "bravo" : alphaName ? "alpha" : bravoName ? "bravo" : "";
+  const pcrName = pcrOn === "bravo" ? bravoName : pcrOn === "alpha" ? alphaName : "";
+  const pcrId = pcrOn === "bravo" ? bravoId : pcrOn === "alpha" ? alphaId : "";
 
   function setTime(key, v) {
     setTimes((t) => ({ ...t, [key]: v }));
@@ -110,14 +174,15 @@ export function PastCallForm({ user, units, saveRequests, addLog, onDone }) {
 
   // Whoever is in the seats now, as a starting point. During an outage the
   // crew that ran the call may not be the crew sitting there afterwards, so
-  // these are typed rather than picked.
+  // this only fills a seat that is still empty, and either can be changed.
   function pickUnit(id) {
     setUnitId(id);
     const u = mine.find((x) => x.id === id);
     if (!u) return;
-    if (!alpha && u.alpha && u.alpha.name) setAlpha(u.alpha.name);
-    if (!bravo && u.bravo && u.bravo.name) setBravo(u.bravo.name);
+    if (!alpha && u.alpha && u.alpha.name) setAlpha(crewOptionValue(u.alpha));
+    if (!bravo && u.bravo && u.bravo.name) setBravo(crewOptionValue(u.bravo));
   }
+
 
   function toggleRequirement(key) {
     setRequirements((r) => (r.includes(key) ? r.filter((x) => x !== key) : [...r, key]));
@@ -166,13 +231,18 @@ export function PastCallForm({ user, units, saveRequests, addLog, onDone }) {
       // Who ran it, as words. The board cannot credit their UHU — that is
       // worked out from who was signed on at the time, and during an outage
       // nobody was — but the sheet and the card can at least say their names.
-      crewNames: { alpha: alpha.trim(), bravo: bravo.trim() },
-      // The PCR belongs to a person. Alpha unless only Bravo was named.
-      pcrAuthor: alpha.trim() || bravo.trim()
+      crewNames: { alpha: alphaName, bravo: bravoName },
+      // And their employee IDs where the board knows them, so a search for a
+      // person's calls finds this one too. A name is not an identity: two
+      // people share one often enough that the sheet cannot rely on it.
+      crewIds: { alpha: alphaId, bravo: bravoId },
+      // The PCR belongs to the person the desk named, not to whoever happened
+      // to be sitting in Alpha.
+      pcrAuthor: pcrName
         ? {
-            seat: alpha.trim() ? "alpha" : "bravo",
-            name: alpha.trim() || bravo.trim(),
-            accountId: null,
+            seat: pcrOn,
+            name: pcrName,
+            accountId: pcrId || null,
             unitId,
             unitName: unit ? unit.name : "",
             assignedAt: at,
@@ -263,13 +333,44 @@ export function PastCallForm({ user, units, saveRequests, addLog, onDone }) {
       )}
 
       <div style={styles.formRow}>
+        <CrewSeat
+          label="Alpha"
+          hint="Who was in the seat"
+          roster={roster}
+          value={alpha}
+          setValue={setAlpha}
+          typed={alphaTyped}
+          setTyped={setAlphaTyped}
+        />
+        <CrewSeat
+          label="Bravo"
+          hint="If a second seat was crewed"
+          roster={roster}
+          value={bravo}
+          setValue={setBravo}
+          typed={bravoTyped}
+          setTyped={setBravoTyped}
+        />
+      </div>
+
+      {/* Who wrote the PCR, said rather than assumed.
+          It used to be whoever was in Alpha, on the reasoning that Alpha
+          usually writes it. Usually is not always, and PCR authorship is a
+          compliance figure attached to a name — assumed wrong, it credits one
+          person's paperwork to another for good. */}
+      <div style={styles.formRow}>
         <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={styles.label}>Alpha</label>
-          <input style={styles.input} value={alpha} onChange={(e) => setAlpha(e.target.value)} placeholder="Who was in the seat" />
-        </div>
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={styles.label}>Bravo</label>
-          <input style={styles.input} value={bravo} onChange={(e) => setBravo(e.target.value)} placeholder="If a second seat was crewed" />
+          <label style={styles.label}>Who wrote the PCR</label>
+          <select
+            style={styles.input}
+            value={pcrOn}
+            onChange={(e) => setPcrSeat(e.target.value || "alpha")}
+            disabled={!alphaName && !bravoName}
+          >
+            {!alphaName && !bravoName && <option value="">Name a crew member first</option>}
+            {alphaName && <option value="alpha">{alphaName} — Alpha</option>}
+            {bravoName && <option value="bravo">{bravoName} — Bravo</option>}
+          </select>
         </div>
       </div>
 
@@ -358,7 +459,7 @@ export function PastCallForm({ user, units, saveRequests, addLog, onDone }) {
 }
 
 // The banner and the button that opens it.
-export function PastCallSection({ user, units, saveRequests, addLog }) {
+export function PastCallSection({ user, units, log, saveRequests, addLog }) {
   const [open, setOpen] = useState(false);
   if (!user || (user.role !== "dispatcher" && user.role !== "admin")) return null;
   return (
@@ -375,6 +476,7 @@ export function PastCallSection({ user, units, saveRequests, addLog }) {
         <PastCallForm
           user={user}
           units={units}
+          log={log}
           saveRequests={saveRequests}
           addLog={addLog}
           onDone={() => setOpen(false)}
