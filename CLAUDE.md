@@ -417,6 +417,16 @@ patch", that document is the target — do not start a fresh exploration.
   always reads "Dispatch" on a crew tablet: naming the trucks that are talking
   is the desk's behaviour, and on a crew screen it put the crew's own truck name
   on the pill.
+- **Moving to a lent area is not a sign-out.** `switchRole` in `App.jsx` flips
+  the role the SCREEN is drawn for and writes nothing: the desk is kept, no
+  sign-off/sign-on pair goes into the shift log, and the board never shows the
+  desk empty. Switching INTO administration on lent authority must carry
+  `delegatedScopes` with it — `canArea` reads the ABSENCE of that list as "a
+  real administrator, holds everything", so without it a dispatcher lent the
+  overtime alone was offered the whole of administration. The server still
+  refuses the writes, but a screen that offers what it cannot do is a screen
+  that lies. It is a plain function, not a `useCallback`: it sits below
+  `if (!ready) return`, and a hook there is React error #310 and a blank screen.
 - **An administrator can take the dispatch desk, and it is a real dispatcher
   session.** The sign-in role choice offers it to admins only; it goes through
   the same shift and station steps and the same `finishDispatcherLogin`, so the
@@ -519,6 +529,19 @@ patch", that document is the target — do not start a fresh exploration.
   throws away every hour worked since and is almost never the right answer.
   `/api/backups*` is `requireAdmin` throughout, a safety copy is taken before
   any restore, and accounts are unreachable from it.
+- **A backup filename must not be able to land on an existing one.** Seconds
+  were added when two copies in the same minute collided; seconds are not enough
+  either, because taking a copy and restoring from it inside the same second is
+  two clicks, and `db.backup()` overwrites — so the safety copy became a picture
+  of the damage it was meant to undo, silently. `backupName(at, dir)` checks the
+  directory and suffixes `-2`, `-3`. Found by a test that did exactly that.
+- **"Put back what is missing" is a merge, not a rollback.**
+  `POST /api/backups/:name/sync` adds every record the live board no longer has,
+  by record id: nothing already there is touched, the live version of a record
+  present in both wins, and nothing is ever removed. It skips anything a
+  finalised submission already contains, so the completed calls `pruneArchivedWork`
+  correctly dropped are not dragged back onto the live board. Running it twice
+  adds nothing the second time.
 - **A backup filename carries seconds.** Two in the same minute collided, and
   `db.backup()` overwrites — so the safety copy taken before a restore
   destroyed the copy being restored from. Backups are also settled to

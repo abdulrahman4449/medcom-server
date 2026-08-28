@@ -562,11 +562,31 @@ const BACKUP_TOKEN = process.env.BACKUP_TOKEN || "";
 // the very copy being restored from. Found by driving the restore button
 // against a real server: the file list afterwards had one backup in it where
 // there should have been two.
-function backupName(at) {
+// A name no existing copy already has.
+//
+// Seconds were added when two backups in the same MINUTE collided and the
+// safety copy taken before a restore destroyed the copy being restored from.
+// Seconds are not enough either: taking a copy and then restoring from it
+// inside the same second is a thing a person can do by clicking twice, and a
+// test does it every run - and `db.backup()` overwrites, so the copy simply
+// became a picture of the damage it was supposed to undo. Silently.
+//
+// So the name is checked against the disk and given a suffix if it is taken.
+// A backup must never be able to destroy another backup.
+function backupName(at, dir) {
   const d = new Date(at);
   const p2 = (n) => String(n).padStart(2, "0");
-  return `board-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}` +
-         `-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.db`;
+  const stem =
+    `board-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}` +
+    `-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  let name = `${stem}.db`;
+  if (!dir) return name;
+  try {
+    for (let n = 2; fs.existsSync(path.join(dir, name)); n++) name = `${stem}-${n}.db`;
+  } catch (e) {
+    // Cannot look: the plain name is still better than nothing.
+  }
+  return name;
 }
 
 function listBackups(dir) {
@@ -633,9 +653,17 @@ let lastBackup = null;
 
 async function runBackup(reason) {
   const at = Date.now();
-  const name = backupName(at);
   const written = [];
   const failed = [];
+  // Named against the directory it is going into, so it cannot land on a copy
+  // that is already there.
+  let name;
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    name = backupName(at, BACKUP_DIR);
+  } catch (e) {
+    name = backupName(at);
+  }
   // The first destination is written by SQLite itself; the second is a copy of
   // that finished file, which is safe because by then it is no longer live.
   try {
@@ -798,6 +826,132 @@ app.get("/api/backups/:name/compare", requireArea("archive"), (req, res) => {
     };
   });
   res.json({ ok: true, name: found.name, rows, lost: rows.filter((r) => r.shrank).map((r) => r.key) });
+});
+
+// ---------- sync with a copy ----------
+//
+// Restoring key by key is right for a known loss and wrong for "something is
+// missing and I do not know what". This is the other one: read a copy, and put
+// back every record the live board no longer has - by record id, so nothing
+// that is already there is touched and nothing arrives twice.
+//
+// It never removes anything. Whatever the board has now it keeps, and a record
+// present in both keeps the LIVE version, because the live one is the one
+// people have been working on since the copy was taken.
+//
+// And it does not resurrect what the board deliberately let go. A completed
+// call is pruned four shifts after its shift was filed, because the archive
+// already holds it - putting those back would fill the live board with work
+// that is finished and filed, which is the duplication this is meant to avoid.
+// So a record is skipped when a finalised submission already contains it.
+function filedRecordIds(liveBoard) {
+  const ids = new Set();
+  let subs = [];
+  try {
+    const row = liveBoard.prepare("SELECT value FROM board WHERE key = 'ems:submissions'").get();
+    subs = row ? JSON.parse(row.value) || [] : [];
+  } catch (e) {
+    return ids;
+  }
+  (Array.isArray(subs) ? subs : []).forEach((sub) => {
+    if (!sub || sub.status !== "final") return;
+    ["requests", "log"].forEach((part) => {
+      (Array.isArray(sub[part]) ? sub[part] : []).forEach((r) => {
+        if (r && r.id) ids.add(String(r.id));
+      });
+    });
+  });
+  return ids;
+}
+
+app.post("/api/backups/:name/sync", requireArea("archive"), async (req, res) => {
+  const found = backupFileFor(req.params.name);
+  if (found.error) return res.status(404).json({ error: found.error });
+
+  let src;
+  try {
+    src = new Database(found.file, { readonly: true });
+  } catch (e) {
+    return res.status(500).json({ error: `That copy could not be opened: ${e.message}` });
+  }
+
+  const safety = await runBackup("before a sync");
+  if (!safety.written.length) {
+    src.close();
+    return res.status(500).json({
+      error: "A safety copy of the board could not be written, so nothing was changed.",
+    });
+  }
+
+  const filed = filedRecordIds(db);
+  const report = [];
+  try {
+    const rows = src.prepare("SELECT key, value FROM board").all();
+    const put = db.prepare(
+      `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    );
+    const work = [];
+    for (const row of rows) {
+      if (!row || FORBIDDEN_KEYS.has(row.key)) continue;
+      let was;
+      let now;
+      try {
+        was = JSON.parse(row.value);
+        const liveRow = db.prepare("SELECT value FROM board WHERE key = ?").get(row.key);
+        now = liveRow ? JSON.parse(liveRow.value) : undefined;
+      } catch (e) {
+        continue;
+      }
+      // Only lists of records can be merged by id. A key holding one whole
+      // object is left alone: there is no way to tell a missing half from a
+      // deliberately changed one, and guessing would undo somebody's edit.
+      if (!Array.isArray(was)) continue;
+      if (now === undefined) {
+        work.push({ key: row.key, value: JSON.stringify(was), added: was.length });
+        continue;
+      }
+      if (!Array.isArray(now)) continue;
+      const have = new Set(now.map((r) => r && r.id).filter(Boolean));
+      const missing = was.filter(
+        (r) => r && r.id && !have.has(r.id) && !filed.has(String(r.id))
+      );
+      const skipped = was.filter((r) => r && r.id && !have.has(r.id) && filed.has(String(r.id)));
+      if (!missing.length) {
+        if (skipped.length) report.push({ key: row.key, added: 0, alreadyFiled: skipped.length });
+        continue;
+      }
+      work.push({
+        key: row.key,
+        value: JSON.stringify([...now, ...missing]),
+        added: missing.length,
+        alreadyFiled: skipped.length,
+      });
+    }
+    db.transaction((list) => {
+      for (const w of list) put.run(w.key, w.value);
+    })(work);
+    work.forEach((w) => report.push({ key: w.key, added: w.added, alreadyFiled: w.alreadyFiled || 0 }));
+  } catch (e) {
+    src.close();
+    return res.status(500).json({ error: `That copy could not be read: ${e.message}` });
+  }
+  src.close();
+
+  const total = report.reduce((n, r) => n + r.added, 0);
+  console.log(
+    `Sync: ${total} record(s) put back from ${found.name} by ${req.user.id}` +
+      ` (safety copy ${safety.name || "?"})`
+  );
+  res.json({
+    ok: true,
+    from: found.name,
+    // `written` is the directories it reached; the filename is the same for
+    // all of them.
+    safety: safety.name ? [safety.name] : [],
+    added: total,
+    keys: report.filter((r) => r.added || r.alreadyFiled).sort((a, b) => b.added - a.added),
+  });
 });
 
 app.post("/api/backups/:name/restore", requireArea("archive"), async (req, res) => {

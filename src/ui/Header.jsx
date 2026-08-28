@@ -11,7 +11,7 @@ import { InfoNote } from "./AssistanceTasks.jsx";
 
 // ---------- header ----------
 
-export function Header({ user, clock, onLogout, onChangeShift, theme, onToggleTheme }) {
+export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, theme, onToggleTheme }) {
   return (
     <div style={styles.headerWrap}>
       {/* Two bodies own this service, so their crests take the two ends of the
@@ -68,12 +68,42 @@ export function Header({ user, clock, onLogout, onChangeShift, theme, onToggleTh
             <span style={{ color: "var(--ink-3)" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
             <span style={{ color: "var(--ink)", fontWeight: 600 }}>{user.name}</span>
           </div>
+          <RoleSwitch user={user} onSwitchRole={onSwitchRole} />
           <button style={styles.iconBtn} onClick={onLogout} title="Sign out">
             <LogOut size={16} />
           </button>
         </div>
       </div>
     </div>
+  );
+}
+
+// Moving between the seat somebody signed in on and the area they have been
+// lent, without signing out of either.
+//
+// Lending an area used to mean signing out and back in to use it, which on a
+// desk is not a small thing: it ends the dispatch session, writes a sign-off
+// and a sign-on into the shift log, and leaves the board briefly showing
+// nobody at the desk - all so one person could look at the overtime they were
+// asked to look at. It is the same person doing another task, so it is one
+// session, and nothing is written.
+//
+// Only shown to somebody who actually holds both: the server decides that and
+// sends it as `roles`, re-derived from the account on every request, so a
+// delegation taken back disappears from here on the next poll.
+export function RoleSwitch({ user, onSwitchRole }) {
+  const roles = Array.isArray(user && user.roles) ? user.roles : [];
+  const other = roles.find((r) => r && r !== user.role);
+  if (!other || !onSwitchRole) return null;
+  const label = other === "admin" ? "Administration" : other === "dispatcher" ? "Dispatch desk" : "My truck";
+  return (
+    <button
+      style={styles.roleSwitchBtn}
+      onClick={() => onSwitchRole(other)}
+      title={`Work on ${label} — you stay signed in, and the desk is not stood down`}
+    >
+      {label}
+    </button>
   );
 }
 

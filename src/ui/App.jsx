@@ -34,6 +34,7 @@ import { useCallback, useEffect, useRef, useState } from "../lib/react.jsx";
 import { SESSION_VERSION, clearSession, patchSession, readSession, writeSession } from "../lib/session.jsx";
 import { styles } from "../styles.jsx";
 import { BottomBar } from "./AssistanceTasks.jsx";
+import { SyncStatus } from "./BackupPanel.jsx";
 import { DispatcherView } from "./ChatDock.jsx";
 import { AdminView } from "./DayArchive.jsx";
 import { Header } from "./Header.jsx";
@@ -2279,6 +2280,60 @@ export function App() {
   const tabKeys = navTabs.map((t) => t.key);
   const navTab = tabKeys.includes(navTabWanted) ? navTabWanted : tabKeys[0] || navTabWanted;
 
+  // Moving between the seat somebody signed in on and an area lent to them,
+  // without signing out of either.
+  //
+  // Nothing is released and nothing is written. A dispatcher keeps the desk
+  // while they are looking at the overtime they were asked to look at, so no
+  // sign-off and sign-on pair goes into the shift log, the board never shows
+  // the desk empty, and coming back is one tap. The role the SCREEN is drawn
+  // for changes; the session behind it does not.
+  //
+  // The server is still the one deciding what they may do: `roles` and
+  // `scopes` are re-derived from the account on every request, so a delegation
+  // taken back stops working on the next poll whatever this says.
+  // A plain function, not a useCallback.
+  //
+  // This sits below `if (!ready) return`, and a hook below an early return is
+  // a hook that is skipped on the renders that take the early path — React
+  // error #310, and a blank screen. Nothing here needs memoising: Header is
+  // not memoised, so a fresh function every render costs nothing.
+  function switchRole(next) {
+    {
+      const u = userRef.current;
+      if (!u || !Array.isArray(u.roles) || !u.roles.includes(next)) return;
+      // Switching INTO administration on lent authority has to carry the areas
+      // with it, exactly as signing in that way does.
+      //
+      // `canArea` decides what a session may touch from `delegatedScopes`, and
+      // treats its ABSENCE as "this is a real administrator, they hold
+      // everything" - so handing somebody the admin role without the list
+      // would have shown a dispatcher lent the overtime alone the whole of
+      // administration. The server would still have refused the writes, but a
+      // screen that offers what it cannot do is a screen that lies.
+      //
+      // Their own role never carries a list: an administrator switching to the
+      // desk and back is not a delegate.
+      const lent = u.delegation && Array.isArray(u.delegation.scopes) ? u.delegation.scopes : null;
+      const borrowed = next === "admin" && u.role !== "admin" && lent;
+      setSession({
+        ...u,
+        role: next,
+        ...(borrowed ? { delegated: true, delegatedScopes: lent } : {}),
+        // Going back to their own role puts the list away with it.
+        ...(next === u.ownRole || (next !== "admin" && !borrowed)
+          ? { delegated: false, delegatedScopes: undefined }
+          : {}),
+      });
+      // Land somewhere that exists under the role being switched to rather
+      // than on whichever tab happened to be open under the old one. `navTab`
+      // falls back to the first available tab when the wanted one is not in
+      // the new role's list, so a delegated area with no board still lands
+      // somewhere sensible.
+      setNavTab("board");
+    }
+  }
+
   const onSharedPage = navTab === "policies";
 
   return (
@@ -2289,6 +2344,7 @@ export function App() {
         clock={clock}
         onLogout={handleLogout}
         onChangeShift={changeShift}
+        onSwitchRole={switchRole}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
       />
@@ -2296,6 +2352,12 @@ export function App() {
           should have to scroll to find out whether the board is reaching the
           server. */}
       <ConnectionBanner />
+      {/* Whether what this device has entered has actually reached the server,
+          and a way to make it. Above everything, under the header, for the two
+          roles that enter the department's record rather than their own truck's
+          — a desk holding unsent calls is a desk showing a board nobody else
+          can see. */}
+      {(user.role === "dispatcher" || user.role === "admin") && <SyncStatus />}
       <StorageBanner role={user.role} />
       {/* The bar floats over the board, so the last section needs room to clear
           it — otherwise the final call on a long day sits underneath it. */}

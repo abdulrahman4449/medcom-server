@@ -1,5 +1,5 @@
 import { authHeaders } from "../lib/auth.jsx";
-import { connectionListeners, connectionOk, lastSyncedAt, lastWriteError, totalPendingCount } from "../lib/offline-queue.jsx";
+import { connectionListeners, connectionOk, lastSyncedAt, lastWriteError, notifyPendingChanged, pushPendingWrites, totalPendingCount } from "../lib/offline-queue.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
@@ -32,8 +32,17 @@ const TOKEN_KEY = "ems:backupToken";
 // absence is not an answer anybody trusts. This says it out loud, beside the
 // backups, where somebody is standing precisely because they are worried about
 // exactly this.
-function SyncStatus() {
+// Exported, because the desk needs this as much as administration does.
+//
+// Every write in the app goes through the same queue, so a dispatcher raising
+// calls on a weak connection is holding them exactly as a crew would be - and
+// until now the only place that said so was a panel inside the admin screens.
+// A desk that cannot see it has no way to know the board it is looking at is
+// ahead of the board everyone else is looking at.
+export function SyncStatus({ compact }) {
   const [, force] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [said, setSaid] = useState("");
   useEffect(() => {
     const fn = () => force((n) => n + 1);
     connectionListeners.add(fn);
@@ -77,6 +86,132 @@ function SyncStatus() {
           </>
         )}
       </span>
+      {/* Save.
+          The queue drains by itself on every poll, so this is not the
+          mechanism - it is the answer to "is it actually saved?", which is a
+          question somebody standing at the end of a shift is entitled to ask
+          and to get an answer to without waiting three seconds to find out.
+          It says what happened either way. */}
+      <button
+        style={{ ...styles.ghostBtnSm, ...(saving ? { opacity: 0.6, cursor: "wait" } : null) }}
+        disabled={saving}
+        onClick={async () => {
+          setSaving(true);
+          setSaid("");
+          const before = totalPendingCount();
+          try {
+            await pushPendingWrites();
+          } catch (e) {
+            /* reported by what is left behind, below */
+          }
+          const after = totalPendingCount();
+          setSaid(
+            after === 0
+              ? before === 0
+                ? "Nothing was waiting — everything was already saved."
+                : `Saved. ${before} change${before === 1 ? "" : "s"} sent.`
+              : `${after} change${after === 1 ? "" : "s"} still held — the server is not reachable. Nothing is lost.`
+          );
+          notifyPendingChanged();
+          setSaving(false);
+          force((n) => n + 1);
+        }}
+      >
+        {saving ? "Saving…" : "Save now"}
+      </button>
+      {said && <span style={styles.syncSaid}>{said}</span>}
+    </div>
+  );
+}
+
+// One button for "something is missing and I do not know what".
+//
+// Picking keys off a table is the right shape for a known loss and the wrong
+// one for the usual case, where somebody knows the board is short and does not
+// know of what. This reads a copy and puts back every record the board no
+// longer has, by record id - so nothing already there is touched, nothing
+// arrives twice, and nothing is ever removed.
+//
+// It leaves finished work alone. A completed call is dropped from the live
+// board four shifts after its shift was filed because the archive already
+// holds it; putting those back would fill the board with work that is done.
+// The count is reported either way, so the number that did not come back is
+// not a silent decision.
+function SyncFromCopy({ copies, onDone }) {
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const [error, setError] = useState("");
+
+  async function run() {
+    const name = pick || (copies[0] && copies[0].name);
+    if (!name) return;
+    if (
+      !window.confirm(
+        `Put back everything ${name} has that this board no longer does?\n\n` +
+          `Nothing is removed and nothing already on the board is changed — only ` +
+          `records that have gone missing are added back. A safety copy is taken first.`
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    setDone(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/backups/${encodeURIComponent(name)}/sync`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: "{}",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `The server refused (${res.status}).`);
+      setDone(data);
+      if (onDone) onDone();
+    } catch (e) {
+      setError(e.message || "That did not run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={styles.restoreBox}>
+      <div style={styles.restoreHead}>PUT BACK WHAT IS MISSING</div>
+      <div style={styles.formHint}>
+        Reads a copy and adds back only the records this board no longer has. Nothing is removed,
+        nothing already here is changed, and calls already filed in the archive are left alone.
+      </div>
+      <div style={styles.formRow}>
+        <select
+          style={{ ...styles.input, flex: 1, minWidth: 200 }}
+          value={pick || (copies[0] ? copies[0].name : "")}
+          onChange={(e) => setPick(e.target.value)}
+        >
+          {copies.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name} · {bytesStr(c.bytes)}
+            </option>
+          ))}
+        </select>
+        <button style={styles.primaryBtnSm} disabled={busy || !copies.length} onClick={run}>
+          {busy ? "Putting back…" : "Sync with this copy"}
+        </button>
+      </div>
+      {error && <div style={styles.loginError}>{error}</div>}
+      {done && (
+        <div style={styles.formHint}>
+          {done.added === 0
+            ? "Nothing was missing — the board already has everything in that copy."
+            : `${done.added} record${done.added === 1 ? "" : "s"} put back.`}
+          {(done.keys || []).map((k) => (
+            <div key={k.key} style={styles.restoreDoneRow}>
+              {keyName(k.key)}: {k.added} back
+              {k.alreadyFiled ? ` · ${k.alreadyFiled} left alone (already filed)` : ""}
+            </div>
+          ))}
+          <div style={{ marginTop: 6 }}>Safety copy: {(done.safety || []).join(", ") || "—"}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -465,6 +600,9 @@ export function BackupPanel({ role }) {
             )}
           </div>
 
+          {/* The usual case first: something is missing and nobody knows what.
+              The key-by-key one below is for a loss somebody can already name. */}
+          <SyncFromCopy copies={b.copies || []} onDone={load} />
           <RestoreFromCopy copies={b.copies || []} onDone={load} />
         </>
       )}
