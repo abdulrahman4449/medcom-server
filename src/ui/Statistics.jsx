@@ -63,9 +63,15 @@ export function ReachNote({ win, log, requests }) {
   (requests || []).forEach((r) => { if (r && r.createdAt) stamps.push(r.createdAt); });
   if (!stamps.length) return null;
   const oldest = Math.min(...stamps);
-  // Only when the window starts before anything the board still holds, and
-  // with a day's grace so the note does not appear on a board that happens to
-  // have been quiet since this morning.
+  // Only about a period that has finished.
+  //
+  // The period running now obviously holds only what has happened so far, and
+  // on a board a department has just started using that is every period — so
+  // the note appeared on the current month for the first few weeks and read
+  // like a warning about missing data when nothing was missing.
+  if (win.end > Date.now()) return null;
+  // And only when the window starts before anything the board still holds,
+  // with a day's grace either way.
   if (win.start >= oldest - 86400000) return null;
   const whole = win.end <= oldest;
   return (
