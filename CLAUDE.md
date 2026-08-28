@@ -303,6 +303,21 @@ patch", that document is the target — do not start a fresh exploration.
   focus are the two the plugin does handle: it raises the alarm stream to 70%
   for the length of an alert and puts it back, and takes transient focus so
   navigation ducks.
+- **The stand-down speaks; the repeat must not.** `speakStandDown` opens with
+  `speechSynthesis.cancel()` — it has to, or a second stand-down queues behind
+  the first. That is right when it is called once and wrong on a loop: a repeat
+  every 450 ms cut the sentence mid-word and the crew heard "the call — the
+  call — the call" until they pressed Understood. `soundStandDownTone` is the
+  tone alone and is the only thing that repeats. The words are said once, twice
+  over, at the start.
+- **The tone leads the stand-down and the words follow it.** Speaking takes the
+  device's audio session — an iOS utterance activates its own, Android takes
+  audio focus — and `speakStandDown` holds it for roughly the first four
+  seconds. With the words first, the three tones scheduled at 0/450/900 ms were
+  spoken over, and the first tone a crew actually heard was the repeat at four
+  seconds. Reported twice off a handset as "the phrase played, the tone did not,
+  then a tone came a few seconds later". Tone at 0, words at 1400 ms, repeat
+  from 5600 ms: nothing scheduled on top of anything else.
 - **Stopping the alarm must not stop the stand-down with it.** A cancellation
   does both at the same moment, from two places in the web layer, and on the
   shells they land on the main queue in whichever order they arrive. When
@@ -356,6 +371,15 @@ patch", that document is the target — do not start a fresh exploration.
   including the speaker check, on a phone that is not muted. `playWhenAwake`
   takes the ref rather than the context so it can throw a dead one away and
   build another. A context is cheap; a silent tablet is not.
+- **A colour written as a literal cannot follow a theme.** `alarmAckBtn` had
+  `background: var(--ink-alt)` with a hard-coded `#FFFFFF` text — and
+  `--ink-alt` is near-white in dark mode, which is what every crew tablet runs.
+  White on white, on ACKNOWLEDGE CALL, on the screen a crew looks at with a
+  call coming in. `--ground` is the token that inverts alongside `--ink-alt`;
+  pair them. A quick scan for a hard-coded light text colour on a
+  theme-flipping background (`--ink*`, `--panel`, `--raised`, `--ground`,
+  `--inset*`) finds this class of bug; white on `var(--crit)` or `var(--flow)`
+  is fine, because those do not flip.
 - **Any text field under 16px zooms the whole board on iOS.** Focusing one makes
   iOS enlarge the page and leave it there, with the layout hanging off the side
   and no way back. Every `<input>`, `<textarea>` and `<select>` style is 16px

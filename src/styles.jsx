@@ -658,8 +658,17 @@ export const styles = {
   alarmAckBtn: {
     marginTop: 12,
     width: "100%",
+    // Both halves have to flip with the theme, and one of them did not.
+    //
+    // The background is `--ink-alt`, which is near-white in dark mode and
+    // near-black in light. The text was a hard-coded #FFFFFF. So in dark mode
+    // - the default, and what every crew tablet is on - this was white on
+    // white: the most important button in the app, on the screen a crew looks
+    // at with a call coming in, with nothing readable on it. `--ground` is the
+    // token that inverts alongside `--ink-alt`, which is what the badge above
+    // already uses. A colour written as a literal cannot follow a theme.
     background: "var(--ink-alt)",
-    color: "#FFFFFF",
+    color: "var(--ground)",
     border: "1px solid transparent",
     borderRadius: 12,
     padding: "16px 16px",

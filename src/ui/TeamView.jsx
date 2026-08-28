@@ -283,19 +283,56 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
     // Three tones in quick succession, every four seconds, with a longer buzz -
     // a stand-down is the one message where being annoying is the point, and it
     // stops the instant somebody presses Understood.
+    // The tone leads, and the words follow it. This order is the whole fix for
+    // "the phrase played, the tone did not, and then a tone arrived a few
+    // seconds later" - reported twice off a real handset.
+    //
+    // It used to speak first and sound underneath. Speaking takes the device's
+    // audio session: on iOS an utterance activates its own, and on Android it
+    // takes audio focus. `speakStandDown` says the sentence at 220ms and again
+    // at 2000ms, roughly 1.8 seconds each, so the voice holds the audio for
+    // about the first four seconds - which is exactly where the first three
+    // tones were scheduled. They were being spoken over. The first tone the
+    // crew actually heard was the repeat at four seconds, once the voice had
+    // finished, and that is the delay that was described.
+    //
+    // So: tone first, on its own; the sentence once the tones have cleared;
+    // the repeat once the sentence has. Nothing is scheduled on top of
+    // anything else, and the tone - the part that carries the meaning fastest
+    // - is the part that is never late.
+    const SPEAK_AFTER_MS = 1400;
+    const REPEAT_AFTER_MS = 5600;
+    // Every pending timer, so pressing Understood silences all of it and
+    // nothing fires into a banner that is already gone.
+    const timers = new Set();
+    const later = (fn, ms) => {
+      const id = setTimeout(() => {
+        timers.delete(id);
+        fn();
+      }, ms);
+      timers.add(id);
+      return id;
+    };
+
     const sound = () => {
       soundStandDownTone(audioCtxRef);
-      setTimeout(() => soundStandDownTone(audioCtxRef), 450);
-      setTimeout(() => soundStandDownTone(audioCtxRef), 900);
+      later(() => soundStandDownTone(audioCtxRef), 450);
+      later(() => soundStandDownTone(audioCtxRef), 900);
       buzz([500, 150, 500, 150, 500]);
     };
-    // Said once - which is two utterances, because speakStandDown says it
-    // twice - and then never again. What repeats is the tone and the buzz.
-    speakStandDown();
+
     sound();
-    const t = setInterval(sound, 4000);
+    later(speakStandDown, SPEAK_AFTER_MS);
+    let repeat = null;
+    later(() => {
+      sound();
+      repeat = setInterval(sound, 4000);
+    }, REPEAT_AFTER_MS);
+
     return () => {
-      clearInterval(t);
+      timers.forEach(clearTimeout);
+      timers.clear();
+      if (repeat) clearInterval(repeat);
       // Nothing half-spoken outlives the banner.
       try {
         if (window.speechSynthesis) window.speechSynthesis.cancel();
