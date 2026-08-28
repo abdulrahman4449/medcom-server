@@ -2,7 +2,7 @@ import { closeoutBlockers, closeoutMissingText } from "../domain/call-completene
 import { callRoute } from "../domain/call-locations.jsx";
 import { CHECKLIST_RUNS_CAP, CHECKLIST_RUNS_KEY, CHECK_ANSWERS, checklistIsMandatory, checklistPartForSeat, checklistRunFor, isWriteItem, personChecklistRun, shiftKeyFor } from "../domain/checklist.jsx";
 import { callCloseReason } from "../domain/close-reasons.jsx";
-import { PRIORITY, REQ_STATUS, TIME_STEPS, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf, proposeCallEditsTo, reqLabels } from "../domain/constants.jsx";
+import { PRIORITY, REQ_STATUS, reqStatusMeta, TIME_STEPS, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf, proposeCallEditsTo, reqLabels } from "../domain/constants.jsx";
 import { escalationViewer, lastAdminReply } from "../domain/escalations.jsx";
 import { effectiveStatusMeta, idleStatusFor, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
@@ -1639,7 +1639,13 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
           </div>
           <div style={styles.callCardMeta}>
             <CallRoute req={myRequest} />
-            <span style={{ ...styles.pill, background: REQ_STATUS[myRequest.status].color }}>{REQ_STATUS[myRequest.status].label}</span>
+            {/* Guarded like every other reader of this table. A status the
+                board can write and this table does not know is a blank screen
+                on the crew's own call card, which is the worst place in the
+                app for one. */}
+            <span style={{ ...styles.pill, background: reqStatusMeta(myRequest.status).color }}>
+              {reqStatusMeta(myRequest.status).label}
+            </span>
             <NoTransportTag req={myRequest} />
             <PcrAuthorTag req={myRequest} />
             <CallTypeTag req={myRequest} />

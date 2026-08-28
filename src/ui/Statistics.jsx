@@ -3,7 +3,7 @@ import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
 import { callRoute } from "../domain/call-locations.jsx";
 import { CHECKLIST_KEY, CHECKLIST_PARTS, UNSORTED_CHECK, checklistCategories, checklistDoneByPerson, checklistFlags, checklistItems, checklistRunFor, checklistTree, emptyChecklists, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
 import { CHECKLIST_GOOD, PCR_GOOD, RESPONSE_GOOD, RESPONSE_TARGET_MS, UHU_HEADROOM, UHU_TARGET, isInternalEmergency, responseCompliance, responseMsFor } from "../domain/compliance.jsx";
-import { REQ_STATUS } from "../domain/constants.jsx";
+import { REQ_STATUS, reqStatusMeta } from "../domain/constants.jsx";
 import { submissionGaps } from "../domain/coverage.jsx";
 import { medicCrewIndex, stayWindow } from "../domain/crew-stamps.jsx";
 import { escalatedCalls, escalationIsOpen } from "../domain/escalations.jsx";
@@ -1990,7 +1990,7 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td${cellClass(r, "c")}>${esc(loadedKmFor(r))}</td>
         <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
         <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
-        <td${cls}>${esc(callOutcomeLabel(r) || (r.status ? REQ_STATUS[r.status].label : ""))}</td>
+        <td${cls}>${esc(callOutcomeLabel(r) || reqStatusMeta(r.status).label)}</td>
       </tr>`;
     })
     .join("")}

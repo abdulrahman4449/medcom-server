@@ -49,6 +49,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "alert", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "standDown", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "standby", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestNotifications", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "notify", returnType: CAPPluginReturnPromise),
@@ -56,6 +57,9 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
 
     private var player: AVAudioPlayer?
+    // Held so ARC does not release it mid-note; the alarm player is separate
+    // because a stand-down must never stop an alarm that is still running.
+    private var standDownPlayer: AVAudioPlayer?
 
     public override func load() {
         // Printed so "is the plugin actually loaded?" is answerable from the
@@ -223,15 +227,17 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         // (frequency, seconds) — 0 Hz is silence.
         let steps: [(Double, Double)]
         switch priority {
-        case "cct", "critical":
+        // ALS and CCT are the same answer - somebody getting up and moving now
+        // - so the department wants them to sound the same. BLS keeps the
+        // chime that says this can be walked to, and that is the difference a
+        // crew acts on. Same figures as `toneKeyFor`/`playAlertTone` in
+        // src/lib/dates.jsx; change one and change the other.
+        case "cct", "critical", "als", "urgent":
             // Fast alternating wail. The one that has to cut through a room.
             steps = [
                 (950, 0.15), (650, 0.15), (950, 0.15),
                 (650, 0.15), (950, 0.15), (650, 0.15), (0, 0.45),
             ]
-        case "als", "urgent":
-            // Two rising beeps, with a gap so they read as two.
-            steps = [(700, 0.34), (0, 0.08), (1000, 0.34), (0, 0.5)]
         default:
             // The routine chime.
             steps = [(784, 0.30), (0, 0.02), (1046, 0.35), (0, 0.6)]
@@ -278,9 +284,66 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         return d
     }
 
+    /// The stand-down, on the alarm path rather than through page audio.
+    ///
+    /// A cancellation used to be a Web Audio tone and nothing else, so on a
+    /// phone whose page audio had been interrupted - which is every phone that
+    /// has just had an alarm playing over it - the crew were never told the
+    /// call was off. It goes out the same way the alarm does now.
+    ///
+    /// One shot, not a loop: the web layer decides how often to repeat it, and
+    /// a stand-down that ran forever would be worse than the call it cancels.
+    @objc func standDown(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.configureSession()
+            do {
+                let p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.standDownWav())
+                p.numberOfLoops = 0
+                p.volume = 1.0
+                p.prepareToPlay()
+                let started = p.play()
+                self.standDownPlayer = p
+                call.resolve(["ok": started])
+            } catch {
+                call.reject("Could not sound the stand-down: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Three descending notes - the opposite shape to the alarm's rising wail,
+    /// so it can never be mistaken for another call arriving.
+    private static func standDownWav() -> Data {
+        let rate = 22050
+        let steps: [(Double, Double)] = [(880, 0.18), (0, 0.04), (660, 0.18), (0, 0.04), (440, 0.34)]
+        var samples: [Int16] = []
+        for (freq, seconds) in steps {
+            let n = Int(Double(rate) * seconds)
+            for i in 0..<n {
+                if freq == 0 { samples.append(0); continue }
+                let t = Double(i) / Double(rate)
+                let fade = min(1.0, min(Double(i), Double(n - i)) / (Double(rate) * 0.008))
+                let v = sin(2.0 * Double.pi * freq * t) * 0.8 * fade
+                samples.append(Int16(max(-1.0, min(1.0, v)) * 32767.0))
+            }
+        }
+        return wav(samples: samples, rate: rate)
+    }
+
     @objc func alert(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             NSLog("PulseOpsAlarm: alert() called")
+            // Already sounding? Leave it alone and say yes.
+            //
+            // The web layer repeats this every 1.7 seconds while a call is
+            // unacknowledged, and this used to stop the player and build a new
+            // one each time. stopPlayer() ran first, so any rebuild that failed
+            // - the session interrupted by another app, the app mid-background
+            // - turned a working alarm into silence with no second chance. The
+            // player already loops on its own; a repeat is a no-op now.
+            if let playing = self.player, playing.isPlaying {
+                call.resolve(["ok": true, "already": true])
+                return
+            }
             self.stopPlayer()
             self.configureSession()
             // The bundled tone if there is one, and a tone built here if there

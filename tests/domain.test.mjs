@@ -315,6 +315,53 @@ export function run(D, t) {
       new Set(twice.map((o) => o.key)).size, twice.length);
   }
 
+  // ---------- a status the board writes must never be a blank screen
+  //
+  // The crew's own call card read REQ_STATUS[status].color with no guard,
+  // alone among every reader of that table. Any status the board holds that
+  // this table does not know threw there, React unmounted the tree, and the
+  // crew were left with nothing: no card, no banner, no tone, nothing to
+  // press. A blank screen on a crew's own call is the worst one available.
+  {
+    // Deliberately NOT adding a "cancelled" status - close-reasons.jsx says
+    // this board has none on purpose. The fix is the guard, not the entry.
+    t.ok("call status: there is still no cancelled status", !D.REQ_STATUS.cancelled);
+    ["pending", "assigned", "enroute", "onscene", "transporting", "arrived", "completed"]
+      .forEach((k) => {
+        t.ok(`call status: ${k} has a colour and a label`,
+          !!(D.REQ_STATUS[k] && D.REQ_STATUS[k].color && D.REQ_STATUS[k].label));
+      });
+    // And the reader never throws, whatever the board hands it - a status
+    // added on the server before the app knows about it is a real case.
+    t.is("call status: an unknown status still renders",
+      D.reqStatusMeta("something_new").label, "SOMETHING_NEW");
+    t.ok("call status: and still has a colour", !!D.reqStatusMeta("something_new").color);
+    t.ok("call status: even for nothing at all", !!D.reqStatusMeta(undefined).color);
+    t.is("call status: which reads as a dash", D.reqStatusMeta(undefined).label, "—");
+  }
+
+  // ---------- ALS and CCT are one tone, BLS is the other
+  //
+  // The department's decision, and the reason it is a test rather than a
+  // comment: a crew is not asked to tell two urgent tones apart in the second
+  // after waking up. What they act on is "get up now" against "this can be
+  // walked to", so that is the distinction the sound carries.
+  //
+  // This is NOT the old bug where every priority collapsed onto one fallback
+  // tone. BLS still has to be different, and the last assertion is what stops
+  // somebody quietly making all three the same again.
+  {
+    t.is("tones: a CCT call gets the wail", D.toneKeyFor("cct"), "critical");
+    t.is("tones: an ALS call gets the same wail", D.toneKeyFor("als"), "critical");
+    t.is("tones: a BLS call keeps the chime", D.toneKeyFor("bls"), "routine");
+    // Both vocabularies, because a board that has been running a while still
+    // holds the old words.
+    t.is("tones: the old word for CCT still maps", D.toneKeyFor("urgent"), "critical");
+    t.is("tones: and the old word for ALS", D.toneKeyFor("critical"), "critical");
+    t.is("tones: an unrecognised priority still makes a noise", D.toneKeyFor("nonsense"), "routine");
+    t.ok("tones: BLS is never the urgent tone", D.toneKeyFor("bls") !== D.toneKeyFor("cct"));
+  }
+
   // ---------- a call written up by hand names its crew
   //
   // The board was not there when it ran, so nothing on it knows who crewed the

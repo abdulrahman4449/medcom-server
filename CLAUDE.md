@@ -225,11 +225,17 @@ patch", that document is the target — do not start a fresh exploration.
   call — the call" until they pressed Understood. `soundStandDownTone` is the
   tone alone and is the only thing that repeats. The words are said once, twice
   over, at the start.
-- **The synthesised iOS tones are per priority, and must stay that way.** Which
-  of the three a crew hears is information. A single shared fallback tone made
-  CCT, ALS and BLS arrive sounding identical and none of them like the tone the
-  crews had learned. `alarmWav(priority:)` carries the same figures as
-  `playAlertTone`, note for note; change one and change the other.
+- **There are two call tones, not three: ALS and CCT share one, BLS keeps its
+  own.** The department's decision — both ALS and CCT mean somebody getting up
+  and moving now, and a crew woken at three in the morning does not act on the
+  difference between two urgent tones. BLS must stay different, because that IS
+  a difference they act on. This is not the old bug where every priority
+  collapsed onto one fallback tone; `npm test` asserts BLS is never the urgent
+  tone. `toneKeyFor`/`playAlertTone` in `src/lib/dates.jsx` and
+  `alarmWav(priority:)` in the iOS plugin carry the same figures, note for note;
+  change one and change the other. Android picks a raw file by the same rule
+  (`dispatch_alert_cct` / `dispatch_alert_bls`, falling back to
+  `dispatch_alert`), so a build shipping one mp3 uses it for everything.
 - **An alarm must not have a missing-file case.** Both plugins looked up
   `dispatch_alert.mp3` and gave up without it, falling back to the web tone —
   which cannot play before the page has been tapped, so a phone opened fresh to
@@ -297,6 +303,29 @@ patch", that document is the target — do not start a fresh exploration.
   focus are the two the plugin does handle: it raises the alarm stream to 70%
   for the length of an alert and puts it back, and takes transient focus so
   navigation ducks.
+- **A repeat of `alert()` must be a no-op, not a restart.** The web layer calls
+  the plugin every 1.7 seconds for as long as a call is unacknowledged, and both
+  plugins used to stop the player and build a new one each time. `stopPlayer()`
+  ran FIRST, so any rebuild that failed — another app taking the audio device,
+  the activity mid-pause — turned a working alarm into permanent silence, and
+  there is no second chance once the page is frozen. It also re-took audio focus
+  every pass (a fight the alarm can lose when somebody opens another app) and
+  restarted the vibration from its first pulse. Both players already loop; if
+  one is playing, resolve and return.
+- **A stand-down must go out the same way the alarm did.** It was Web Audio and
+  nothing else — the one context least likely to work at that moment, because an
+  alarm has just been playing over it on the system path and the app has
+  probably been backgrounded. A crew who were never told the call was off keep
+  driving to a patient nobody needs moved, which is worse than a missed alert.
+  `soundStandDownTone` goes through the plugin's `standDown` (one shot; the
+  repeat stays in the web layer) and falls back to the page tone without it.
+- **Read `REQ_STATUS` through `reqStatusMeta`, never directly.** The crew's own
+  call card did `REQ_STATUS[status].color` unguarded, alone among every reader
+  of that table, so any status the board holds that the table does not know
+  threw there and React unmounted the tree — no card, no stand-down banner, no
+  tone, nothing to press. A blank screen on a crew's own call is the worst one
+  available. Note `statusMeta` in `domain/in-service.jsx` is a UNIT's status and
+  `reqStatusMeta` is a CALL's; they are not interchangeable.
 - **`BUILD_STAMP` is on the crew screen under the speaker check.** A whole round
   of testing once went into a fault that was already fixed, because the phone
   was still running the previous build and nothing on screen said so. The same

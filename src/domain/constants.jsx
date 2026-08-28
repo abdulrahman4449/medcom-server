@@ -305,7 +305,27 @@ export const REQ_STATUS = {
   transporting: { label: "TRANSPORTING", color: "var(--move)" },
   arrived: { label: "ARRIVED AT DESTINATION", color: "var(--land)" },
   completed: { label: "COMPLETED", color: "var(--ink-4)" },
+  // Deliberately no "cancelled" here - see domain/close-reasons.jsx. A call the
+  // desk stands down is closed like any other and the reason carries it. Read
+  // this table through `reqStatusMeta` all the same: a status this board has
+  // not heard of must render as something rather than throw.
 };
+
+// One safe reader for the table above.
+//
+// Named for the thing it reads: `statusMeta` in domain/in-service.jsx is a
+// UNIT's status and this is a CALL's, and the two are not interchangeable.
+//
+// A status the board writes and this table has not heard of must render as
+// something, not throw - the alternative has been a blank screen twice now.
+export function reqStatusMeta(status) {
+  return (
+    REQ_STATUS[status] || {
+      label: String(status || "").toUpperCase() || "—",
+      color: "var(--ink-4)",
+    }
+  );
+}
 
 // Ordered crew timeline: each step's action button, the time field it stamps,
 // the request status it moves to, and the unit status that follows.

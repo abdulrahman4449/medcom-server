@@ -114,17 +114,25 @@ export function scheduleTone(ctx, notes, type, gainPeak, force) {
   notes.forEach((n) => scheduleNote(ctx, t0, n, type, peak));
 }
 
-// Each call priority gets a distinct, recognizable alert tone.
-// Which tone a call gets.
+// Which tone a call gets, and there are two of them.
 //
 // The urgency a crew hears has to match the level of care they are being sent
-// for: a critical care transfer is the one that must cut through a room, an ALS
-// run is the two-beep call to move, and everything else is the routine chime.
+// for. The department's decision is that ALS and CCT are the same answer —
+// both are somebody getting up and moving now — so both get the wail that has
+// to cut through a room, and BLS keeps the chime that says this can be walked
+// to. A crew was being asked to tell two urgent tones apart in the second
+// after waking up, which is not a distinction anybody acts on differently.
+//
+// This is deliberate and it is NOT the old bug where every priority collapsed
+// onto one fallback tone. BLS still sounds different, and that is the
+// difference that changes what a crew does. Change this and change
+// `alarmWav(priority:)` in the iOS plugin with it, note for note.
+//
 // Written against both vocabularies, so a board that still holds the old words
 // sounds the same as one that does not.
 export function toneKeyFor(priority) {
   if (priority === "cct" || priority === "critical") return "critical";
-  if (priority === "als" || priority === "urgent") return "urgent";
+  if (priority === "als" || priority === "urgent") return "critical";
   return "routine";
 }
 
@@ -142,12 +150,6 @@ export function playAlertTone(ctx, priorityIn, force) {
         { freq: 950, start: 0.6, dur: 0.15 },
         { freq: 650, start: 0.75, dur: 0.15 },
       ], "square", 0.55, force);
-    } else if (priority === "urgent") {
-      // two rising beeps, with a gap so they read as two
-      scheduleTone(ctx, [
-        { freq: 700, start: 0, dur: 0.34 },
-        { freq: 1000, start: 0.42, dur: 0.34 },
-      ], "square", 0.48, force);
     } else {
       // gentle two-note chime — anything that isn't critical or urgent lands
       // here, so an unrecognised priority still makes a noise
@@ -253,8 +255,36 @@ export function playStandDownTone(ctx) {
 // cancelled. The call is cancelled." and then "the call - the call - the call"
 // for as long as the banner was up. The words are said once, at the start,
 // twice over as they always were; only the tone repeats.
+// The stand-down goes out the same way the alarm did.
+//
+// It used to be page audio and nothing else, and that is the one context least
+// likely to work at the moment it is needed: an alarm has just been playing
+// over it on the system alarm path, the app has probably been in the
+// background, and on both platforms that leaves the page's AudioContext
+// interrupted or suspended. So a crew who had been sent somewhere were never
+// told the call was off — they were still driving to a patient nobody needed
+// moved, which is worse than a missed alert, not better.
+//
+// The plugin's stand-down is one shot; the repeat is still this layer's, so
+// nothing sounds for ever. Anything without the plugin, or a plugin too old to
+// have the method, falls through to the page tone exactly as before.
 export function soundStandDownTone(audioCtxRef) {
-  playWhenAwake(audioCtxRef, (ctx) => playStandDownTone(ctx));
+  const webTone = () => playWhenAwake(audioCtxRef, (ctx) => playStandDownTone(ctx));
+  try {
+    const plugin = nativeAlarm();
+    if (plugin && typeof plugin.standDown === "function") {
+      const answered = plugin.standDown();
+      if (answered && typeof answered.catch === "function") {
+        // A rejection is a promise, not a throw — a try/catch alone never sees
+        // it, which is how the alarm path once failed silently.
+        answered.catch(() => webTone());
+      }
+      return;
+    }
+  } catch (e) {
+    // no shell, or a shell older than this call
+  }
+  webTone();
 }
 
 export function soundStandDown(audioCtxRef) {

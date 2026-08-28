@@ -84,6 +84,9 @@ public class PulseOpsAlarmPlugin extends Plugin {
     private static final double MIN_ALARM_SHARE = 0.7;
 
     private MediaPlayer player;
+    // Separate from the alarm player, so a stand-down can never stop an alarm
+    // that is still running for a different call.
+    private MediaPlayer standDownPlayer;
     private AudioFocusRequest focusRequest;
     // What the alarm volume was before an alert raised it, so it can be put
     // back. -1 means "not raised by us".
@@ -123,6 +126,29 @@ public class PulseOpsAlarmPlugin extends Plugin {
         nm.createNotificationChannel(channel);
     }
 
+    /**
+     * The raw resource for a priority, or 0 if this build ships none.
+     *
+     * Looks for a per-tone file first and falls back to the single one, so a
+     * build with only dispatch_alert.mp3 behaves exactly as it always has and
+     * a build that later adds dispatch_alert_bls.mp3 starts using it with no
+     * code change. ALS and CCT deliberately resolve to the same name.
+     */
+    private int toneResource(String priority) {
+        String p = priority == null ? "" : priority.toLowerCase();
+        String name;
+        if (p.equals("cct") || p.equals("critical") || p.equals("als") || p.equals("urgent")) {
+            name = "dispatch_alert_cct";
+        } else {
+            name = "dispatch_alert_bls";
+        }
+        int id = getContext().getResources()
+            .getIdentifier(name, "raw", getContext().getPackageName());
+        if (id != 0) return id;
+        return getContext().getResources()
+            .getIdentifier("dispatch_alert", "raw", getContext().getPackageName());
+    }
+
     /** The bundled tone if this build has one, otherwise the phone's own alarm. */
     private Uri alarmSoundUri() {
         int resId = getContext().getResources()
@@ -148,8 +174,35 @@ public class PulseOpsAlarmPlugin extends Plugin {
     @PluginMethod
     public void alert(PluginCall call) {
         try {
-            stopPlayer();
             ensureChannel();
+
+            // Already sounding? Then leave it alone and say yes.
+            //
+            // This is the whole of the "it played for a few seconds and then
+            // stopped" fault. The web layer repeats this call every 1.7
+            // seconds for as long as the call is unacknowledged, and this
+            // method used to tear the player down and build a new one every
+            // time. Three things went wrong with that, all of them at once:
+            //
+            //  - stopPlayer() ran FIRST, so a rebuild that failed for any
+            //    reason - another app holding the audio device, memory
+            //    pressure, the activity mid-pause - left the crew with silence
+            //    where a working alarm had been a moment earlier, and there is
+            //    no second chance once the page is frozen.
+            //  - every pass asked for audio focus again, so tapping another
+            //    app's notification started a fight over the audio device that
+            //    the alarm could lose.
+            //  - every pass restarted the vibration pattern from the top, so
+            //    the buzz never got past its first pulse.
+            //
+            // The player already loops by itself and keeps looping while the
+            // page is frozen, which is exactly what is wanted. So a repeat is
+            // now a no-op: start once, keep going until stop().
+            if (player != null && player.isPlaying()) {
+                call.resolve(status());
+                return;
+            }
+            stopPlayer();
 
             // An alarm nobody can hear over a diesel engine is not an alarm.
             //
@@ -166,9 +219,14 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // and a truck with Maps running is the normal case, not the odd one.
             requestFocus();
 
+            // Which of the department's tones this call gets.
+            //
+            // ALS and CCT are the same answer - somebody getting up and moving
+            // now - so they share a tone; BLS keeps its own, because that is
+            // the difference a crew acts on. A build that ships only
+            // dispatch_alert.mp3 uses it for everything, exactly as before.
             boolean sounding = false;
-            int resId = getContext().getResources().getIdentifier("dispatch_alert", "raw",
-                getContext().getPackageName());
+            int resId = toneResource(call.getString("priority", "routine"));
             if (resId != 0) {
                 sounding = startPlayer(MediaPlayer.create(getContext(), resId));
             }
@@ -519,6 +577,66 @@ public class PulseOpsAlarmPlugin extends Plugin {
             call.resolve();
         } catch (Exception e) {
             call.reject("Could not open that settings page: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The stand-down, on the alarm path rather than through page audio.
+     *
+     * A cancellation used to be a Web Audio tone and nothing else, so on a
+     * phone whose page audio had been interrupted - which is every phone that
+     * has just had an alarm playing over it, and every phone that has been in
+     * the background - the crew were never told the call was off. They were
+     * left driving to a patient nobody needed moved.
+     *
+     * One shot, not a loop: the web layer decides how often to repeat it, and
+     * a stand-down that ran forever would be worse than the call it cancels.
+     * It uses its own player so it can never stop an alarm that is still
+     * running for a different call.
+     */
+    @PluginMethod
+    public void standDown(PluginCall call) {
+        try {
+            stopStandDown();
+            Uri tone = standDownUri();
+            MediaPlayer mp = tone == null ? null : MediaPlayer.create(getContext(), tone);
+            if (mp == null) {
+                call.reject("Nothing to sound the stand-down with.");
+                return;
+            }
+            mp.setAudioAttributes(alarmAttributes());
+            mp.setLooping(false);
+            mp.setOnCompletionListener((m) -> stopStandDown());
+            mp.setOnErrorListener((m, what, extra) -> { stopStandDown(); return true; });
+            mp.start();
+            standDownPlayer = mp;
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Could not sound the stand-down: " + e.getMessage());
+        }
+    }
+
+    /** A stand-down tone if this build ships one, otherwise the phone's own
+        notification sound - which is deliberately not its alarm sound, so a
+        cancellation can never be mistaken for another call arriving. */
+    private Uri standDownUri() {
+        int id = getContext().getResources()
+            .getIdentifier("dispatch_stand_down", "raw", getContext().getPackageName());
+        if (id != 0) {
+            return Uri.parse("android.resource://" + getContext().getPackageName() + "/raw/dispatch_stand_down");
+        }
+        Uri n = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        return n != null ? n : RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+    }
+
+    private void stopStandDown() {
+        try {
+            if (standDownPlayer != null) {
+                if (standDownPlayer.isPlaying()) standDownPlayer.stop();
+                standDownPlayer.release();
+                standDownPlayer = null;
+            }
+        } catch (Exception ignored) {
         }
     }
 
