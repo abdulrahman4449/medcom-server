@@ -14,7 +14,8 @@ import { opDayKey, opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
 import { callOutcomeLabel } from "../domain/second-ambulance.jsx";
 import { PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
-import { scheduledShiftKey, shiftMeta, shiftWindowAt } from "../domain/shift-helpers.jsx";
+import { scheduledShiftKey, shiftWindowAt } from "../domain/shift-helpers.jsx";
+import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWindow } from "../domain/stat-range.jsx";
 import { SHIFT_MS } from "../domain/shifts.jsx";
 import { topPerformers } from "../domain/standouts.jsx";
 import { callBusyMs, callEndTs, callStartTs, unitCallInterval } from "../domain/uhu.jsx";
@@ -47,59 +48,64 @@ import { EscalationInbox } from "./Escalations.jsx";
 // spent on a call, and the number of calls completed. A crew can be busy on one
 // long critical transfer or on nine short ones, and neither number alone tells
 // you which.
-export const STAT_RANGES = [
-  { key: "shift", label: "This shift" },
-  { key: "month", label: "This month" },
-  { key: "quarter", label: "This quarter" },
-  { key: "year", label: "This year" },
-];
-
-// A period, and what to call it.
+// How far back the board itself reaches.
 //
-// "This month" is fine on a screen somebody is looking at now. On a report that
-// will be filed, forwarded and read in November it says nothing — it has to say
-// August. So each window carries both: the phrase for the screen and the name
-// for the page.
-export const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
+// The statistics read the live board — the event log and the call list — and
+// both are capped, so a month asked for from last year is not "a quiet month",
+// it is a month the board no longer holds. Showing zeros for it without saying
+// so is the kind of number somebody puts in a report.
+//
+// The filed logs in the archive are where an old month actually lives; this
+// says so rather than pretending the window is empty.
+export function ReachNote({ win, log, requests }) {
+  const stamps = [];
+  (log || []).forEach((l) => { if (l && l.ts) stamps.push(l.ts); });
+  (requests || []).forEach((r) => { if (r && r.createdAt) stamps.push(r.createdAt); });
+  if (!stamps.length) return null;
+  const oldest = Math.min(...stamps);
+  // Only when the window starts before anything the board still holds, and
+  // with a day's grace so the note does not appear on a board that happens to
+  // have been quiet since this morning.
+  if (win.start >= oldest - 86400000) return null;
+  const whole = win.end <= oldest;
+  return (
+    <div style={styles.formHint}>
+      {whole
+        ? `The board holds nothing from ${win.title} — its records start on ${gregDateStr(oldest)}. `
+        : `The board's records start on ${gregDateStr(oldest)}, part-way through ${win.title}. `}
+      Earlier work is in the filed shift logs under Archive, not here.
+    </div>
+  );
+}
 
-export function statRangeWindow(key, now) {
-  const d = new Date(now);
-  if (key === "shift") {
-    const w = shiftWindowAt(now);
-    return {
-      start: w.start,
-      end: w.start + SHIFT_MS,
-      label: "this shift",
-      title: `${shiftMeta(w.key) ? shiftMeta(w.key).label : "Shift"} — ${gregDateStr(w.start)}`,
-    };
-  }
-  if (key === "month") {
-    const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-    return {
-      start,
-      end: new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(),
-      label: "this month",
-      title: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
-    };
-  }
-  if (key === "quarter") {
-    const q = Math.floor(d.getMonth() / 3) * 3;
-    return {
-      start: new Date(d.getFullYear(), q, 1).getTime(),
-      end: new Date(d.getFullYear(), q + 3, 1).getTime(),
-      label: "this quarter",
-      title: `Q${q / 3 + 1} ${d.getFullYear()} — ${MONTH_NAMES[q]} to ${MONTH_NAMES[q + 2]}`,
-    };
-  }
-  return {
-    start: new Date(d.getFullYear(), 0, 1).getTime(),
-    end: new Date(d.getFullYear() + 1, 0, 1).getTime(),
-    label: "this year",
-    title: String(d.getFullYear()),
-  };
+// Which period is being looked at, chosen.
+//
+// The tabs used to be the whole control, and each one meant "the one running
+// now" — so an administrator asked for last month's figures and had no way to
+// get them. The tab now picks the SIZE of the window and this picks WHICH one,
+// which is how somebody asks the question out loud: "the month — May".
+export function StatPeriodPicker({ range, setRange, now }) {
+  const base = statRangeBase(range);
+  if (base === "shift") return null;
+  const options = statPeriodOptions(range, now);
+  const win = statRangeWindow(range, now);
+  // The key as it will match an option: a bare "month" is this month.
+  const current = options.find((o) => o.key === range)
+    ? range
+    : (options[0] && options[0].key) || range;
+  return (
+    <select
+      style={{ ...styles.input, marginTop: 8 }}
+      value={current}
+      onChange={(e) => setRange(e.target.value)}
+      aria-label={`Which ${base}`}
+      title={win.title}
+    >
+      {options.map((o) => (
+        <option key={o.key} value={o.key}>{o.label}</option>
+      ))}
+    </select>
+  );
 }
 
 // Who was on which truck, when, and for how long — read off the sign-on and
@@ -1219,7 +1225,7 @@ export function IndicatorBand({ requests, units, log, checklistRuns, range, setR
           {STAT_RANGES.filter((r) => r.key !== "shift").map((r) => (
             <button
               key={r.key}
-              style={r.key === range ? styles.bandPeriodOn : styles.bandPeriod}
+              style={r.key === statRangeBase(range) ? styles.bandPeriodOn : styles.bandPeriod}
               onClick={() => setRange(r.key)}
             >
               {r.label.replace("This ", "")}
@@ -1227,6 +1233,11 @@ export function IndicatorBand({ requests, units, log, checklistRuns, range, setR
           ))}
         </div>
       </div>
+
+      {/* Which month, which quarter, which year. The band is the first thing on
+          the page, so the choice made here is the one the panels below inherit. */}
+      <StatPeriodPicker range={range} setRange={setRange} now={now} />
+      <ReachNote win={win} log={log} requests={requests} />
 
       {/* The four the department is actually judged on, side by side. They are
           read together — a response figure that looks good while utilisation is
@@ -1349,7 +1360,7 @@ export function Statistics({ log, requests, units, checklistRuns, range, setRang
   // so this needs no library and nothing more for IT to vendor.
   function downloadReport() {
     const html = buildStatisticsReport({
-      label: STAT_RANGES.find((x) => x.key === range).label,
+      label: win.label,
       win,
       staff: allStaff,
       origins,
@@ -1393,7 +1404,7 @@ export function Statistics({ log, requests, units, checklistRuns, range, setRang
   // for a different month.
   function download() {
     const wb = XLSX.utils.book_new();
-    const label = STAT_RANGES.find((x) => x.key === range).label;
+    const label = win.label;
 
     const staffRows = allStaff.map((p) => ({
       "EMPLOYEE ID": p.id,
@@ -1481,7 +1492,7 @@ export function Statistics({ log, requests, units, checklistRuns, range, setRang
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${APP_SLUG}-statistics-${range}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `${APP_SLUG}-statistics-${String(range).replace(/:/g, "-")}-${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1500,13 +1511,14 @@ export function Statistics({ log, requests, units, checklistRuns, range, setRang
         {STAT_RANGES.map((r) => (
           <button
             key={r.key}
-            style={r.key === range ? styles.archTabOn : styles.archTab}
+            style={r.key === statRangeBase(range) ? styles.archTabOn : styles.archTab}
             onClick={() => setRange(r.key)}
           >
             {r.label}
           </button>
         ))}
       </div>
+      <StatPeriodPicker range={range} setRange={setRange} now={now} />
       <div style={{ ...styles.archTabs, marginTop: 8 }}>
         <button style={mode === "uhu" ? styles.archTabOn : styles.archTab} onClick={() => setMode("uhu")}>
           UHU — share of shift on a call

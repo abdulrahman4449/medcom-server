@@ -315,6 +315,85 @@ export function run(D, t) {
       new Set(twice.map((o) => o.key)).size, twice.length);
   }
 
+  // ---------- statistics describe a period somebody chose
+  //
+  // The tabs used to mean "the one running now" and nothing else, so an
+  // administrator asked for last month's figures and had no way to get them.
+  // The chosen period is written into the range key, and every date in this
+  // block is one an off-by-one would quietly retitle a filed report with.
+  {
+    // 27 August 2026 — a Thursday in Q3.
+    const now = at(2026, 8, 27, 16);
+
+    t.is("stats: a bare key is the size of the window", D.statRangeBase("month"), "month");
+    t.is("stats: a chosen period keeps that size", D.statRangeBase("month:2026-4"), "month");
+    t.is("stats: and an empty one still answers", D.statRangeBase(""), "month");
+
+    const thisMonth = D.statRangeWindow("month", now);
+    t.is("stats: this month is titled August 2026", thisMonth.title, "August 2026");
+    t.is("stats: and reads as 'this month' on screen", thisMonth.label, "this month");
+    t.is("stats: it starts on the first", thisMonth.start, at(2026, 8, 1, 0));
+    t.is("stats: and ends on the first of the next", thisMonth.end, at(2026, 9, 1, 0));
+
+    // The month index, not the month number: 4 is May.
+    const may = D.statRangeWindow("month:2026-4", now);
+    t.is("stats: a chosen month is titled by its own name", may.title, "May 2026");
+    t.ok("stats: and is never called 'this month'", may.label !== "this month");
+    t.is("stats: it starts on the first of May", may.start, at(2026, 5, 1, 0));
+    t.is("stats: and ends on the first of June", may.end, at(2026, 6, 1, 0));
+
+    // A month from last year, which is the case that crosses a year boundary.
+    const dec = D.statRangeWindow("month:2025-11", now);
+    t.is("stats: December of last year", dec.title, "December 2025");
+    t.is("stats: ends at the new year", dec.end, at(2026, 1, 1, 0));
+
+    const thisQ = D.statRangeWindow("quarter", now);
+    t.is("stats: August is in Q3", thisQ.start, at(2026, 7, 1, 0));
+    t.is("stats: which runs to October", thisQ.end, at(2026, 10, 1, 0));
+
+    // Quarters are one-based, because that is what a quarter is called.
+    const q2 = D.statRangeWindow("quarter:2026-2", now);
+    t.is("stats: Q2 starts in April", q2.start, at(2026, 4, 1, 0));
+    t.is("stats: and ends in July", q2.end, at(2026, 7, 1, 0));
+    t.ok("stats: Q2 is titled April to June", /April to June/.test(q2.title));
+    const q4 = D.statRangeWindow("quarter:2025-4", now);
+    t.is("stats: Q4 of last year ends at the new year", q4.end, at(2026, 1, 1, 0));
+
+    const lastYear = D.statRangeWindow("year:2025", now);
+    t.is("stats: a chosen year is the whole year", lastYear.start, at(2025, 1, 1, 0));
+    t.is("stats: and stops at the next one", lastYear.end, at(2026, 1, 1, 0));
+
+    // A shift ignores any period appended to it: there is only one shift being
+    // worked, and it is the one running now.
+    t.is("stats: a shift is still the shift", D.statRangeWindow("shift", now).label, "this shift");
+
+    // The picker never offers a period that has not happened.
+    const months = D.statPeriodOptions("month", now);
+    t.is("stats: the month picker opens on this month", months[0].key, "month:2026-7");
+    t.ok("stats: and offers two years back", months.length === 24);
+    t.ok("stats: never a month ahead",
+      months.every((o) => D.statRangeWindow(o.key, now).start <= now));
+
+    const quarters = D.statPeriodOptions("quarter", now);
+    t.is("stats: the quarter picker opens on this quarter", quarters[0].key, "quarter:2026-3");
+    // Walking back across the new year is where a quarter picker goes wrong.
+    t.is("stats: and steps back into last year", quarters[3].key, "quarter:2025-4");
+    t.ok("stats: never a quarter ahead",
+      quarters.every((o) => D.statRangeWindow(o.key, now).start <= now));
+
+    const years = D.statPeriodOptions("year", now);
+    t.is("stats: the year picker opens on this year", years[0].key, "year:2026");
+    t.ok("stats: never a year ahead",
+      years.every((o) => D.statRangeWindow(o.key, now).start <= now));
+
+    // Every option the picker offers has to survive being read back.
+    t.ok("stats: every offered period parses to its own title",
+      [...months, ...quarters, ...years].every((o) => {
+        const w = D.statRangeWindow(o.key, now);
+        return w.end > w.start && !!w.title;
+      }));
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding
