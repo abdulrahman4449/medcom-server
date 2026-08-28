@@ -224,6 +224,16 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     /// takes.
     ///
     /// A gap follows each so the whole thing can loop without running together.
+    /// Which of the two tones a priority gets. ALS and CCT are one answer -
+    /// somebody getting up and moving now - and BLS is the other. The same rule
+    /// as `toneKeyFor` in src/lib/dates.jsx; change one and change the other.
+    static func toneKey(for priority: String) -> String {
+        switch priority {
+        case "cct", "critical", "als", "urgent": return "cct"
+        default: return "bls"
+        }
+    }
+
     private static func alarmWav(priority: String) -> Data {
         let rate = 22050
         // (frequency, seconds) — 0 Hz is silence.
@@ -373,13 +383,32 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
             // tone cannot play until the page has been tapped. On a phone
             // opened fresh to a waiting call there had been no tap, so the crew
             // got nothing at all. An alarm must not have a missing-file case.
+            let priority = call.getString("priority") ?? "routine"
+            let tone = PulseOpsAlarmPlugin.toneKey(for: priority)
             do {
                 let p: AVAudioPlayer
-                if let url = Bundle.main.url(forResource: "dispatch_alert", withExtension: "mp3") {
+                var source: String
+                // A tone per priority, or none at all.
+                //
+                // This used to reach for `dispatch_alert.mp3` first and play it
+                // whatever the call was - so the whole priority argument was
+                // discarded the moment somebody dragged one file into the
+                // project, and iOS sounded the same note for a dialysis run and
+                // a critical care transfer. Worse, it disagreed with the browser
+                // and with Android, which is exactly how "the ALS tone is right
+                // on the server and wrong in the app" happens.
+                //
+                // A bundled file may still override a tone, but only per tone:
+                // dispatch_alert_cct.mp3 and dispatch_alert_bls.mp3. The single
+                // generic file cannot express two tones, so it is not used for
+                // dispatch any more. With neither, the tone is built here from
+                // the same figures the browser uses.
+                if let url = Bundle.main.url(forResource: "dispatch_alert_\(tone)", withExtension: "mp3") {
                     p = try AVAudioPlayer(contentsOf: url)
+                    source = "dispatch_alert_\(tone).mp3"
                 } else {
-                    p = try AVAudioPlayer(
-                        data: PulseOpsAlarmPlugin.alarmWav(priority: call.getString("priority") ?? "routine"))
+                    p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.alarmWav(priority: priority))
+                    source = "built in memory"
                 }
                 // Repeat until the crew acknowledges; the web layer calls stop().
                 p.numberOfLoops = -1
@@ -394,16 +423,19 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 // is not one fault, it is five, and this says which.
                 let session = AVAudioSession.sharedInstance()
                 NSLog(
-                    "PulseOpsAlarm: source=%@ play()=%@ isPlaying=%@ volume=%.2f category=%@ outputVolume=%.2f",
-                    Bundle.main.url(forResource: "dispatch_alert", withExtension: "mp3") != nil
-                        ? "bundled mp3" : "built in memory",
+                    "PulseOpsAlarm: tone=%@ source=%@ play()=%@ isPlaying=%@ volume=%.2f category=%@ outputVolume=%.2f",
+                    tone,
+                    source,
                     started ? "accepted" : "REFUSED",
                     p.isPlaying ? "yes" : "NO",
                     p.volume,
                     session.category.rawValue,
                     session.outputVolume
                 )
-                call.resolve()
+                // Handed back so the crew screen can say which tone this phone
+                // actually played. "The ALS tone is wrong in the app" is not
+                // answerable from a console nobody can open on a truck.
+                call.resolve(["ok": started, "tone": tone, "source": source])
             } catch {
                 call.reject("Could not raise the alarm: \(error.localizedDescription)")
             }

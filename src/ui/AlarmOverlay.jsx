@@ -1,7 +1,7 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, soundCallAlert } from "../lib/dates.jsx";
+import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, soundCallAlert, standDownOutcome } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -86,7 +86,8 @@ export function SoundDiagnostics({ audioCtxRef }) {
   return (
     <div style={styles.soundDiag}>
       build {BUILD_STAMP} · plugin {plugin ? "loaded" : "NOT LOADED"} · page audio {state} ·
-      screen held {screenAwakeHeld() ? "yes" : "no"} · last alarm: {alarmOutcome()}
+      screen held {screenAwakeHeld() ? "yes" : "no"} · last alarm: {alarmOutcome()} ·
+      last stand-down: {standDownOutcome()}
       {bg ? ` · alarm volume ${bg.alarmVolumePct}% · notifications ${
         bg.notificationsEnabled ? "on" : "OFF"
       } · channel ${bg.channelSilenced ? "SILENCED" : "ok"} · battery saver ${

@@ -269,22 +269,32 @@ export function playStandDownTone(ctx) {
 // nothing sounds for ever. Anything without the plugin, or a plugin too old to
 // have the method, falls through to the page tone exactly as before.
 export function soundStandDownTone(audioCtxRef) {
-  const webTone = () => playWhenAwake(audioCtxRef, (ctx) => playStandDownTone(ctx));
+  const webTone = (why) => {
+    lastStandDownOutcome = why;
+    playWhenAwake(audioCtxRef, (ctx) => playStandDownTone(ctx));
+  };
   try {
     const plugin = nativeAlarm();
     if (plugin && typeof plugin.standDown === "function") {
       const answered = plugin.standDown();
-      if (answered && typeof answered.catch === "function") {
+      lastStandDownOutcome = "system alarm";
+      if (answered && typeof answered.then === "function") {
         // A rejection is a promise, not a throw — a try/catch alone never sees
         // it, which is how the alarm path once failed silently.
-        answered.catch(() => webTone());
+        answered.then(
+          () => {
+            lastStandDownOutcome = "system alarm";
+          },
+          (err) =>
+            webTone(`page audio (shell refused: ${(err && err.message) || "no reason given"})`)
+        );
       }
       return;
     }
   } catch (e) {
     // no shell, or a shell older than this call
   }
-  webTone();
+  webTone("page audio (no stand-down in this shell)");
 }
 
 export function soundStandDown(audioCtxRef) {
@@ -621,6 +631,17 @@ export function alarmOutcome() {
   return lastAlarmOutcome;
 }
 
+// What the last stand-down did, on the same principle as the alarm above.
+//
+// Two rounds of guessing went into "the cancellation tone comes late" without
+// anybody being able to see whether the plugin had played it, refused it, or
+// never been asked. A crew cannot read a console and neither can a supervisor
+// on a phone.
+let lastStandDownOutcome = "none yet";
+export function standDownOutcome() {
+  return lastStandDownOutcome;
+}
+
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
   if (!unmissable && soundSilenced()) return;
   const webTone = () =>
@@ -643,11 +664,22 @@ export function soundCallAlert(audioCtxRef, priority, unmissable) {
         const answered = plugin.alert({ priority: String(priority || "routine") });
         handed = true;
         lastAlarmOutcome = "system alarm";
-        if (answered && typeof answered.catch === "function") {
-          answered.catch((err) => {
-            lastAlarmOutcome = `system alarm refused (${(err && err.message) || "no reason given"})`;
-            webTone();
-          });
+        if (answered && typeof answered.then === "function") {
+          answered.then(
+            (r) => {
+              // Which of the two tones the shell picked, and where it got it
+              // from. "The ALS tone is wrong in the app" is a sentence somebody
+              // can now read off the screen and send on, instead of a thing
+              // three people guess at.
+              const tone = r && r.tone ? String(r.tone).toUpperCase() : "?";
+              const from = r && r.source ? r.source : "shell";
+              lastAlarmOutcome = `system alarm · ${tone} · ${from}`;
+            },
+            (err) => {
+              lastAlarmOutcome = `system alarm refused (${(err && err.message) || "no reason given"})`;
+              webTone();
+            }
+          );
         }
       } catch (e) {
         handed = false;

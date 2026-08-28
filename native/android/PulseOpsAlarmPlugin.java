@@ -127,26 +127,84 @@ public class PulseOpsAlarmPlugin extends Plugin {
     }
 
     /**
-     * The raw resource for a priority, or 0 if this build ships none.
+     * Which of the two tones a priority gets.
      *
-     * Looks for a per-tone file first and falls back to the single one, so a
-     * build with only dispatch_alert.mp3 behaves exactly as it always has and
-     * a build that later adds dispatch_alert_bls.mp3 starts using it with no
-     * code change. ALS and CCT deliberately resolve to the same name.
+     * ALS and CCT are one answer - somebody getting up and moving now - and BLS
+     * is the other. The same rule as `toneKeyFor` in src/lib/dates.jsx and
+     * `toneKey(for:)` in the iOS plugin; change one and change all three.
+     */
+    static String toneKey(String priority) {
+        String p = priority == null ? "" : priority.toLowerCase();
+        if (p.equals("cct") || p.equals("critical") || p.equals("als") || p.equals("urgent")) {
+            return "cct";
+        }
+        return "bls";
+    }
+
+    /**
+     * The raw resource for a tone, or 0 if this build ships none for it.
+     *
+     * A bundled file may override a tone, but only per tone. The single generic
+     * dispatch_alert.mp3 is deliberately NOT used for a dispatch any more: one
+     * file cannot express two tones, so a build carrying it sounded the same
+     * note for a dialysis run and a critical care transfer, and disagreed with
+     * the browser and with iOS. That is exactly how "the ALS tone is right on
+     * the server and wrong in the app" happens. With no per-tone file the tone
+     * is built in memory below, from the same figures the browser uses.
      */
     private int toneResource(String priority) {
-        String p = priority == null ? "" : priority.toLowerCase();
-        String name;
-        if (p.equals("cct") || p.equals("critical") || p.equals("als") || p.equals("urgent")) {
-            name = "dispatch_alert_cct";
-        } else {
-            name = "dispatch_alert_bls";
-        }
-        int id = getContext().getResources()
-            .getIdentifier(name, "raw", getContext().getPackageName());
-        if (id != 0) return id;
         return getContext().getResources()
-            .getIdentifier("dispatch_alert", "raw", getContext().getPackageName());
+            .getIdentifier("dispatch_alert_" + toneKey(priority), "raw", getContext().getPackageName());
+    }
+
+    /**
+     * The alert tone, built here, note for note the same as the browser's.
+     *
+     * The department's two tones are a handful of sine steps; carrying them as
+     * numbers rather than as files is what stops the three paths drifting apart
+     * again. Written to the cache as a WAV so the existing MediaPlayer looping
+     * works unchanged.
+     *
+     * Same figures as `playAlertTone` in src/lib/dates.jsx and `alarmWav` in
+     * the iOS plugin.
+     */
+    private Uri builtToneUri(String priority) {
+        try {
+            String tone = toneKey(priority);
+            // {frequency Hz, milliseconds}. 0 Hz is silence.
+            int[][] steps = tone.equals("cct")
+                ? new int[][] { {950, 150}, {650, 150}, {950, 150},
+                                {650, 150}, {950, 150}, {650, 150}, {0, 450} }
+                : new int[][] { {784, 300}, {0, 20}, {1046, 350}, {0, 600} };
+            final int rate = 22050;
+            int frames = 0;
+            for (int[] st : steps) frames += (int) ((long) rate * st[1] / 1000);
+            byte[] out = new byte[44 + frames * 2];
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(out).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            b.put("RIFF".getBytes("US-ASCII")).putInt(36 + frames * 2).put("WAVE".getBytes("US-ASCII"));
+            b.put("fmt ".getBytes("US-ASCII")).putInt(16).putShort((short) 1).putShort((short) 1)
+                .putInt(rate).putInt(rate * 2).putShort((short) 2).putShort((short) 16);
+            b.put("data".getBytes("US-ASCII")).putInt(frames * 2);
+            for (int[] st : steps) {
+                int n = (int) ((long) rate * st[1] / 1000);
+                for (int i = 0; i < n; i++) {
+                    if (st[0] == 0) { b.putShort((short) 0); continue; }
+                    double t = (double) i / rate;
+                    // A short fade at each end: a tone starting at full
+                    // amplitude clicks, and this repeats until it is
+                    // acknowledged, so a click every second becomes the sound.
+                    double fade = Math.min(1.0, Math.min(i, n - i) / (rate * 0.008));
+                    double v = Math.sin(2 * Math.PI * st[0] * t) * 0.85 * fade;
+                    b.putShort((short) (Math.max(-1.0, Math.min(1.0, v)) * 32767));
+                }
+            }
+            java.io.File f = new java.io.File(getContext().getCacheDir(), "pulseops_" + tone + ".wav");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+            try { fos.write(out); } finally { fos.close(); }
+            return Uri.fromFile(f);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** The bundled tone if this build has one, otherwise the phone's own alarm. */
@@ -225,10 +283,18 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // now - so they share a tone; BLS keeps its own, because that is
             // the difference a crew acts on. A build that ships only
             // dispatch_alert.mp3 uses it for everything, exactly as before.
+            final String priority = call.getString("priority", "routine");
+            final String tone = toneKey(priority);
+            String source;
             boolean sounding = false;
-            int resId = toneResource(call.getString("priority", "routine"));
+            int resId = toneResource(priority);
             if (resId != 0) {
+                source = "dispatch_alert_" + tone;
                 sounding = startPlayer(MediaPlayer.create(getContext(), resId));
+            } else {
+                source = "built in memory";
+                Uri built = builtToneUri(priority);
+                if (built != null) sounding = startPlayer(MediaPlayer.create(getContext(), built));
             }
             // No tone in this build? Use the phone's own alarm sound rather
             // than nothing.
@@ -240,6 +306,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // already chosen to be woken by, and plays on the alarm stream like
             // everything else here.
             if (!sounding) {
+                source = "the phone's own alarm";
                 Uri alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
                 if (alarm == null) alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
                 if (alarm != null) {
@@ -259,7 +326,13 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 }
             }
             if (sounding) {
-                call.resolve(status());
+                // Handed back so the crew screen can say which tone this phone
+                // actually played. "The ALS tone is wrong in the app" is not
+                // answerable from a log nobody can open on a truck.
+                JSObject out = status();
+                out.put("tone", tone);
+                out.put("source", source);
+                call.resolve(out);
             } else {
                 releaseFocus();
                 restoreAlarmVolume();

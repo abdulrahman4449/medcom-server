@@ -225,6 +225,16 @@ patch", that document is the target — do not start a fresh exploration.
   call — the call" until they pressed Understood. `soundStandDownTone` is the
   tone alone and is the only thing that repeats. The words are said once, twice
   over, at the start.
+- **A bundled mp3 must never be the tone for every priority.** iOS reached for
+  `dispatch_alert.mp3` FIRST and played it whatever the call was, so the whole
+  priority argument was discarded the moment somebody dragged one file into the
+  project — and the app disagreed with the browser, which is exactly how "the
+  ALS tone is right on the server and wrong in the app" happens. Both shells now
+  build the tone in memory from the same note figures as `playAlertTone`, and a
+  bundled file may override only *per tone* (`dispatch_alert_cct.mp3`,
+  `dispatch_alert_bls.mp3`). The single generic file is no longer used for a
+  dispatch: one file cannot express two tones. `alert()` hands back which tone
+  and which source it used, and the crew screen prints it.
 - **There are two call tones, not three: ALS and CCT share one, BLS keeps its
   own.** The department's decision — both ALS and CCT mean somebody getting up
   and moving now, and a crew woken at three in the morning does not act on the
