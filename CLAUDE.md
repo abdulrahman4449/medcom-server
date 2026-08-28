@@ -94,6 +94,11 @@ patch", that document is the target — do not start a fresh exploration.
   scanned PDFs is megabytes, so it is read only when that tab is opened.
   `GET /api/health` lists every key with its size; check there before
   putting anything new on the fast path.
+- **A day's bookings are tiles, not a column.** `schedGrid` — a day with eight
+  transfers was eight full-width cards and a scroll, and the desk could not read
+  its own day. The tile says what the booking is, when, and whether it has a
+  team; the two-times breakdown, the return note and the waiting time appear on
+  the one the desk has opened, not on all of them.
 - **A booked-ahead card is a diary entry, not a call card.** Bookings were drawn
   with the full call-card treatment and carried every control inline — a team
   picker, a reschedule button, a cancel button — 167px of controls under 92px of
@@ -535,6 +540,19 @@ patch", that document is the target — do not start a fresh exploration.
   two clicks, and `db.backup()` overwrites — so the safety copy became a picture
   of the damage it was meant to undo, silently. `backupName(at, dir)` checks the
   directory and suffixes `-2`, `-3`. Found by a test that did exactly that.
+- **A restore must not resurrect work that was in flight.** The first sweep put
+  back whatever a copy held, so a call that was mid-dispatch two days ago came
+  back reading `DISPATCHED · 48h · no crew signed on`, and bookings whose time
+  had passed came back waiting for a team that would never be sent. A desk
+  cannot tell a ghost from a job. `safeToRestore` in `server.js` puts back
+  finished work — completed calls, dealt-with bookings, every log line — plus
+  anything recent enough to still be real (a call raised inside the last day, a
+  booking whose time has not passed). Everything else stays in the copy.
+- **The panels a delegate sees are gated on the AREA, never the role.**
+  `BackupPanel` tested `role === "admin"` — and a delegate holding the archive
+  IS an admin session, but the areas decide what they may touch. The one person
+  asked to look after the backups was the one person who could not see them.
+  `canArea(user, "archive")`.
 - **"Put back what is missing" reads EVERY copy, not one.**
   `POST /api/backups/sync-all` sweeps all thirty, oldest first, and adds every
   record the live board no longer has, by record id. A loss is rarely confined

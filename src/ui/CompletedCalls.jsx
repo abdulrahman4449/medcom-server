@@ -1140,6 +1140,12 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     </span>
                   </div>
                 )}
+                {/* Tiles, not a column.
+                    A day with eight transfers was eight full-width cards and a
+                    scroll; the desk could not see its own day. Each tile says
+                    what the booking is, when, and whether it has a team - and
+                    the one being worked opens to everything else. */}
+                <div style={styles.schedGrid}>
                 {group.entries.map((entry) => {
               const unit = units.find((u) => u.id === entry.assignedUnitId);
               const meta = schedStatusMeta(entry.status);
@@ -1178,8 +1184,10 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                   </div>
 
                   {/* Two times, said as two things. A card showing one time when
-                      the booking has two is a card somebody will misread. */}
-                  {entry.dispatchAt && (
+                      the booking has two is a card somebody will misread. Only
+                      on the one being worked: on a closed tile it was 40px of
+                      arithmetic on every booking of the day. */}
+                  {entry.dispatchAt && openCard === entry.id && (
                     <div style={styles.twoTimes}>
                       <span>
                         Leaves <strong>{hhmm(entry.dispatchAt)}</strong>
@@ -1227,7 +1235,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
 
                   {/* What is coming after this leg, said on the card rather
                       than left for the desk to remember. */}
-                  {wantsReturn(entry) && !isReturnLeg(entry) && (
+                  {wantsReturn(entry) && !isReturnLeg(entry) && openCard === entry.id && (
                     <div style={styles.legLink}>
                       <span style={styles.legLinkArrow}>↩</span>
                       <span>
@@ -1251,7 +1259,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
 
                   {/* A return leg waiting on the ward: how long the patient has
                       been sitting there. Nobody could evidence this before. */}
-                  {isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && (
+                  {isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && openCard === entry.id && (
                     <div style={styles.historyClosedBy}>
                       Return leg · patient delivered {clockStr(entry.deliveredAt)} ·{" "}
                       <strong style={styles.legWaiting}>
@@ -1460,6 +1468,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                 </div>
               );
                 })}
+                </div>
               </React.Fragment>
             ))}
           </div>

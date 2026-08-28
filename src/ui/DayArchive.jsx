@@ -804,7 +804,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           />
           {/* Sits with the archive because it is the same question: what of
               this survives, and where is it kept. */}
-          <BackupPanel role={user.role} />
+          <BackupPanel user={user} />
           <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
         </>
       )}

@@ -321,6 +321,25 @@ export function run(D, t) {
     const twice = D.repeatOccurrencesDue(madeToday, at(2026, 8, 27, 16));
     t.is("repeats: one occurrence a day, keyed by the calendar day",
       new Set(twice.map((o) => o.key)).size, twice.length);
+    t.is("repeats: an every-day arrangement throws off exactly one", twice.length, 1);
+
+    // Asked again and again through the day, it must keep saying the same day.
+    // Two desks polling fifteen seconds apart is the ordinary case, and each
+    // answer is checked against what already exists by this key - so a key that
+    // drifted within a day would put a second ambulance on the same patient.
+    const keysThroughTheDay = [8, 10, 12, 14, 16].map(
+      (h) => (D.repeatOccurrencesDue(madeToday, at(2026, 8, 27, h))[0] || {}).key
+    );
+    t.is("repeats: the day's key does not drift as the day goes on",
+      new Set(keysThroughTheDay.filter(Boolean)).size, 1);
+
+    // And an arrangement running several days still only ever answers for the
+    // day being asked about — the horizon is today, not a week of cards.
+    const everyDay = { scheduledFor: at(2026, 8, 27, 23), repeat: { days: [0, 1, 2, 3, 4, 5, 6] } };
+    [27, 28, 29].forEach((d) => {
+      t.is(`repeats: ${d} August throws off one card, not several`,
+        D.repeatOccurrencesDue(everyDay, at(2026, 8, d, 9)).length, 1);
+    });
   }
 
   // ---------- the sheet says whether a patient was moved

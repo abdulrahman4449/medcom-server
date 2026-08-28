@@ -2,6 +2,7 @@ import { BrandMark, DEPT_LOGO, HOSPITAL_LOGO, ORG_NAME, SHOW_LOGOS, Wordmark } f
 import { msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { hhmm, overtimeMs, shiftMeta, shiftRemainingMs, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { SHIFTS, SHIFT_KEYS } from "../domain/shifts.jsx";
+import { areaLabel, areaSentence, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { soundCallAlert } from "../lib/dates.jsx";
 import { Clock, LogOut, Volume2, VolumeX } from "../lib/icons.jsx";
 import { useState } from "../lib/react.jsx";
@@ -67,6 +68,11 @@ export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, the
           <div style={styles.userBadge}>
             <span style={{ color: "var(--ink-3)" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
             <span style={{ color: "var(--ink)", fontWeight: 600 }}>{user.name}</span>
+            {/* What they have been lent, next to who they are.
+                Authority borrowed and authority held look identical on screen
+                otherwise, and the person working it is the one most entitled
+                to know which they are using — and which areas. */}
+            <DelegatedTag user={user} />
           </div>
           <RoleSwitch user={user} onSwitchRole={onSwitchRole} />
           <button style={styles.iconBtn} onClick={onLogout} title="Sign out">
@@ -91,6 +97,23 @@ export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, the
 // Only shown to somebody who actually holds both: the server decides that and
 // sends it as `roles`, re-derived from the account on every request, so a
 // delegation taken back disappears from here on the next poll.
+export function DelegatedTag({ user }) {
+  const held = user && Array.isArray(user.delegatedScopes) ? user.delegatedScopes : null;
+  const lent = held || (user && user.delegation && Array.isArray(user.delegation.scopes)
+    ? user.delegation.scopes : null);
+  if (!lent || !lent.length) return null;
+  const on = isDelegatedAdmin(user);
+  return (
+    <span
+      style={on ? styles.headerLentTagOn : styles.headerLentTag}
+      title={`${on ? "Working on" : "Lent to you"}: ${areaSentence(lent)}`}
+    >
+      {on ? "ON LOAN · " : "LENT · "}
+      {lent.map(areaLabel).join(", ")}
+    </span>
+  );
+}
+
 export function RoleSwitch({ user, onSwitchRole }) {
   const roles = Array.isArray(user && user.roles) ? user.roles : [];
   const other = roles.find((r) => r && r !== user.role);

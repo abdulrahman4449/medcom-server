@@ -864,6 +864,39 @@ function filedRecordIds(liveBoard) {
   return ids;
 }
 
+// Is this record safe to put back on a LIVE board?
+//
+// The first sweep put back work that was in flight when a copy was taken, and
+// a call that was in flight two days ago is not a call - it came back reading
+// "DISPATCHED · 48h · no crew signed on", and old bookings came back waiting
+// for a team that will never be sent. That is worse than the gap it filled: a
+// desk cannot tell a ghost from a job.
+//
+// So what comes back is work that is FINISHED, plus anything recent enough to
+// still be real. Everything else stays in the copy, where it does no harm.
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function safeToRestore(key, rec, now) {
+  if (!rec || typeof rec !== "object") return false;
+  if (key === "ems:requests") {
+    // A finished call is a fact and belongs in the statistics.
+    if (rec.status === "completed") return true;
+    // Anything unfinished is only real if it could still be running. A call
+    // raised within the last day can be; one from last week cannot.
+    return !!rec.createdAt && now - rec.createdAt < DAY_MS;
+  }
+  if (key === "ems:scheduled") {
+    // A booking already dealt with - dispatched or cancelled - is history and
+    // safe. One still open is only worth restoring if its time has not passed.
+    if (rec.status && rec.status !== "scheduled" && rec.status !== "releasing") return true;
+    if (!rec.scheduledFor) return false; // waiting on a phone call, from when?
+    return rec.scheduledFor > now - DAY_MS;
+  }
+  // Everything else - the log, checklists, inventory moves, overtime - is a
+  // record of something that happened. None of it can put a ghost on the board.
+  return true;
+}
+
 // Reading one copy into a pile of records the live board is missing.
 //
 // Nothing is written here — it only collects. `have` is every id the board
@@ -904,6 +937,13 @@ function collectMissing(file, live, have, filed, found) {
         // work that is finished.
         if (filed.has(id)) {
           pile.set("__filed__" + id, null);
+          continue;
+        }
+        // Finished work and things that could still be real. See
+        // `safeToRestore`: the first sweep resurrected calls that were in
+        // flight days ago, and they came back onto the board as live.
+        if (!safeToRestore(row.key, rec, Date.now())) {
+          pile.set("__stale__" + id, null);
           continue;
         }
         pile.set(id, rec);
@@ -976,15 +1016,18 @@ app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
   const work = [];
   const report = [];
   for (const [key, pile] of found) {
-    const back = [...pile.entries()].filter(([id]) => !id.startsWith("__filed__")).map(([, r]) => r);
+    const back = [...pile.entries()]
+      .filter(([id]) => !id.startsWith("__filed__") && !id.startsWith("__stale__"))
+      .map(([, r]) => r);
     const skipped = [...pile.keys()].filter((id) => id.startsWith("__filed__")).length;
+    const stale = [...pile.keys()].filter((id) => id.startsWith("__stale__")).length;
     if (!back.length) {
-      if (skipped) report.push({ key, added: 0, alreadyFiled: skipped });
+      if (skipped || stale) report.push({ key, added: 0, alreadyFiled: skipped, unfinished: stale });
       continue;
     }
     const now = liveLists.get(key) || [];
     work.push({ key, value: JSON.stringify([...now, ...back]) });
-    report.push({ key, added: back.length, alreadyFiled: skipped });
+    report.push({ key, added: back.length, alreadyFiled: skipped, unfinished: stale });
   }
   db.transaction((list) => {
     for (const w of list) put.run(w.key, w.value);
@@ -1001,7 +1044,7 @@ app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
     copiesRead: sweep.length,
     safety: safety.name ? [safety.name] : [],
     added: total,
-    keys: report.filter((r) => r.added || r.alreadyFiled).sort((a, b) => b.added - a.added),
+    keys: report.filter((r) => r.added || r.alreadyFiled || r.unfinished).sort((a, b) => b.added - a.added),
     unreadable,
   });
 });

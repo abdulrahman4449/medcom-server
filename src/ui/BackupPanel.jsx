@@ -1,3 +1,4 @@
+import { canArea } from "../domain/delegation.jsx";
 import { authHeaders } from "../lib/auth.jsx";
 import { connectionListeners, connectionOk, lastSyncedAt, lastWriteError, notifyPendingChanged, pushPendingWrites, totalPendingCount } from "../lib/offline-queue.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
@@ -380,7 +381,15 @@ function RestoreFromCopy({ copies, onDone }) {
   );
 }
 
-export function BackupPanel({ role }) {
+// Gated on the AREA, not the role.
+//
+// `role === "admin"` was the test, and a delegate holding the archive IS an
+// admin session - but the areas they were lent decide what they may touch, and
+// this panel is the archive's. Reading the role instead meant the one person
+// who had been asked to look after the backups was the one person who could
+// not see them.
+export function BackupPanel({ user }) {
+  const role = user && user.role;
   const [open, setOpen] = useState(false);
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -404,7 +413,7 @@ export function BackupPanel({ role }) {
     // Hooks run before the role check below, so without this a crew tablet
     // asked the server about backups every five minutes and was told 401 every
     // time, for a panel it never draws.
-    if (role !== "admin") return undefined;
+    if (!canArea(user, "archive")) return undefined;
     let alive = true;
     const tick = async () => { if (alive) await load(); };
     tick();
@@ -412,7 +421,7 @@ export function BackupPanel({ role }) {
     return () => { alive = false; clearInterval(t); };
   }, [role]);
 
-  if (role !== "admin") return null;
+  if (!canArea(user, "archive")) return null;
 
   async function backupNow() {
     setBusy(true);

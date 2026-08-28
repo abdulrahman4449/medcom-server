@@ -289,6 +289,22 @@ export const styles = {
   },
   // Switching to a lent area. Quiet: it is a way through, not an action, and
   // it sits next to the name because that is what it is about.
+  // What has been lent to this session, beside the name. Named for the
+  // masthead: `delegatedTag` further down is the roster row's, and the two are
+  // different sizes in different places.
+  headerLentTag: {
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.5, color: "var(--gold)",
+    border: "1px solid var(--gold)", borderRadius: 999, padding: "1px 7px",
+    whiteSpace: "nowrap", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis",
+    alignSelf: "flex-end", marginTop: 2,
+  },
+  // Louder while it is the authority actually being used.
+  headerLentTagOn: {
+    fontSize: 9.5, fontWeight: 800, letterSpacing: 0.5, color: "var(--ground)",
+    background: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 999,
+    padding: "1px 7px", whiteSpace: "nowrap", maxWidth: 220,
+    overflow: "hidden", textOverflow: "ellipsis", alignSelf: "flex-end", marginTop: 2,
+  },
   roleSwitchBtn: {
     background: "transparent", border: "1px solid var(--hair-2)", color: "var(--ink-2)",
     borderRadius: 999, padding: "5px 11px", fontSize: 12, fontWeight: 700,
@@ -967,19 +983,29 @@ export const styles = {
     border: "1px solid var(--gold)", borderRadius: 999, padding: "2px 7px",
     whiteSpace: "nowrap",
   },
+  // A day's bookings as tiles, the shape the team roster uses. A day with
+  // eight transfers used to be eight full-width cards and a scroll, and the
+  // desk could not read its own day.
+  schedGrid: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+    gap: 8, alignItems: "start",
+  },
   schedCard: {
     background: "var(--raised)",
     border: "1px solid var(--hair)",
     borderLeft: "4px solid",
     borderRadius: 16,
-    padding: "11px 13px 12px",
-    marginBottom: 8,
+    padding: "10px 12px 11px",
     boxShadow: "0 6px 18px var(--lift)",
+    minWidth: 0,
   },
-  schedCardNature: { fontFamily: display, fontWeight: 760, fontSize: 15, letterSpacing: -0.2 },
+  schedCardNature: {
+    fontFamily: display, fontWeight: 760, fontSize: 14.5, letterSpacing: -0.2,
+    minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
   schedCardMeta: {
-    display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap",
-    marginTop: 6, fontSize: 12, color: "var(--ink-3)",
+    display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap",
+    marginTop: 5, fontSize: 11.5, color: "var(--ink-3)",
   },
   schedCardActions: { display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" },
   // The repeating list: a standing arrangement, not an appointment. Its own
