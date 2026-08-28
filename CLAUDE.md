@@ -303,6 +303,23 @@ patch", that document is the target — do not start a fresh exploration.
   focus are the two the plugin does handle: it raises the alarm stream to 70%
   for the length of an alert and puts it back, and takes transient focus so
   navigation ducks.
+- **Stopping the alarm must not stop the stand-down with it.** A cancellation
+  does both at the same moment, from two places in the web layer, and on the
+  shells they land on the main queue in whichever order they arrive. When
+  `stop()` won, iOS deactivated the audio session out from under the stand-down
+  player that had just started, and Android handed back audio focus and dropped
+  the alarm stream — so the crew heard the spoken sentence, no tone, then a tone
+  four seconds later when the repeat came round. Reported exactly like that from
+  a handset. `stopPlayer()` returns early while a stand-down is playing; the
+  stand-down's own completion tidies up after it.
+- **`ems:requests` and `ems:log` shrink on a healthy board, on purpose.**
+  `pruneArchivedWork` drops a completed call four shifts after its own shift was
+  filed and finalised — verified against the stored submission, not assumed from
+  dates — and its log lines with it. So `restore.mjs diff` reporting those two
+  as "smaller now" is usually the board tidying itself, not a loss: check
+  whether `ems:archives` and `ems:submissions` grew. Putting them back
+  resurrects filed calls onto the live board twice. The tool says so itself now,
+  because the `put` command it prints looks like the obvious next step.
 - **A repeat of `alert()` must be a no-op, not a restart.** The web layer calls
   the plugin every 1.7 seconds for as long as a call is unacknowledged, and both
   plugins used to stop the player and build a new one each time. `stopPlayer()`

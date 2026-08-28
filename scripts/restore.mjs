@@ -145,6 +145,28 @@ if (cmd === "diff") {
   if (lost.length) {
     console.log(`\n${lost.length} key${lost.length === 1 ? " is" : "s are"} smaller than in that backup:\n`);
     console.log(`  node scripts/restore.mjs put ${path.basename(full)} ${lost.join(" ")}\n`);
+    // Smaller is not the same as lost, and on two keys it is usually neither.
+    //
+    // The live board prunes itself: a completed call whose shift has been
+    // filed and finalised comes off after four shifts, and its log lines go
+    // with it, because the archive already holds them. So ems:requests and
+    // ems:log shrink on a healthy board, every couple of days, on purpose.
+    // Putting them back would resurrect calls that are already filed - two
+    // copies of the same day, and a board growing again for no reason.
+    //
+    // Said here rather than left for somebody to work out, because the command
+    // above is right there and looks like the obvious next step.
+    const pruned = lost.filter((k) => k === "ems:requests" || k === "ems:log");
+    if (pruned.length) {
+      console.log(
+        `  Before you run that: ${pruned.join(" and ")} shrink on their own.\n` +
+        `  The board drops a completed call four shifts after its own shift was\n` +
+        `  filed, and its log lines with it, because the archive already holds\n` +
+        `  them. Check ems:archives and ems:submissions above - if those GREW,\n` +
+        `  this is the board tidying itself and there is nothing to put back.\n` +
+        `  Restoring them would put filed calls back on the live board twice.\n`
+      );
+    }
   } else {
     console.log("\nNothing is smaller now than it was in that backup.\n");
   }

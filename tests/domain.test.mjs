@@ -237,9 +237,17 @@ export function run(D, t) {
       // No MRN: there is nothing to join it by, so it must not appear at all.
       { id: "r3", nature: "Fall", status: "completed", createdAt: at(2026, 8, 25, 10), times: {} },
     ];
+    // Relative to now, not a date typed into the file.
+    //
+    // This was `at(2026, 8, 28, 9)` and it rotted exactly as you would expect:
+    // the assertion below says a booking still to come is "next, never last",
+    // and on the afternoon of 28 August 2026 that date stopped being in the
+    // future. A fixture that has to be in the future must be written as "in the
+    // future", or it is a test with an expiry date on it.
+    const soon = Date.now() + 3 * 86400000;
     const booked = [
       { id: "s1", mrn: "MRN77", nature: "Dialysis", locationFrom: "Ward 3", locationTo: "Renal",
-        status: "scheduled", scheduledFor: at(2026, 8, 28, 9) },
+        status: "scheduled", scheduledFor: soon },
     ];
     const archived = [{ requests: [
       // The same call the live board still has: one journey, not two.

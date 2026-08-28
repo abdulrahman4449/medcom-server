@@ -2,6 +2,7 @@ import Foundation
 import Capacitor
 import AVFoundation
 import UserNotifications
+import UIKit
 
 /**
  * The alarm path on iOS.
@@ -50,6 +51,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "alert", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "standDown", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "keepAwake", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "standby", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestNotifications", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "notify", returnType: CAPPluginReturnPromise),
@@ -293,6 +295,21 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     ///
     /// One shot, not a loop: the web layer decides how often to repeat it, and
     /// a stand-down that ran forever would be worse than the call it cancels.
+    /// Keep the screen on while somebody is signed on.
+    ///
+    /// The Android counterpart of this is the whole answer to "the alert was
+    /// late"; on iOS `standby` already keeps the app running, so this is the
+    /// smaller half - a tablet in a cradle should not dim and lock between
+    /// calls. It also stops the crew screen reporting "screen held: no" on a
+    /// platform where the web wake lock is not the mechanism in use.
+    @objc func keepAwake(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? true
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = on
+            call.resolve(["on": on])
+        }
+    }
+
     @objc func standDown(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             self.configureSession()
@@ -462,6 +479,17 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
             configureSession(ducking: false)
             return
         }
+        // Nor must it take the stand-down with it.
+        //
+        // A cancellation stops the alarm and sounds the stand-down at the same
+        // moment, from two different places in the web layer, and both land
+        // here on the main queue in whichever order they happen to arrive. When
+        // stop() won the race it deactivated the session out from under the
+        // stand-down player that had just started - so the crew heard the
+        // spoken sentence, no tone, and then a tone four seconds later when the
+        // repeat came round and stop() was long finished. Reported exactly like
+        // that from a real handset.
+        if standDownPlayer?.isPlaying == true { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }

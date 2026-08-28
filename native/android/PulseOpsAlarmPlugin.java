@@ -598,6 +598,10 @@ public class PulseOpsAlarmPlugin extends Plugin {
     public void standDown(PluginCall call) {
         try {
             stopStandDown();
+            // As audible as the alarm that preceded it. A stand-down nobody
+            // hears leaves a crew driving to a patient who does not need
+            // moving, which is worse than a missed alert rather than better.
+            raiseAlarmVolume();
             Uri tone = standDownUri();
             MediaPlayer mp = tone == null ? null : MediaPlayer.create(getContext(), tone);
             if (mp == null) {
@@ -638,15 +642,33 @@ public class PulseOpsAlarmPlugin extends Plugin {
             }
         } catch (Exception ignored) {
         }
+        // Only once nothing of ours is sounding. An alarm still running for a
+        // different call keeps the volume it was raised to.
+        if (player == null) {
+            releaseFocus();
+            restoreAlarmVolume();
+        }
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
         stopPlayer();
-        releaseFocus();
-        restoreAlarmVolume();
         Vibrator v = vibrator();
         if (v != null) v.cancel();
+        // The same race iOS had, in its Android form.
+        //
+        // A cancellation stops the alarm and sounds the stand-down at the same
+        // moment. Handing the audio focus back and dropping the alarm stream to
+        // whatever it was before, while a stand-down is playing on that very
+        // stream, is how a crew gets told the call is off in a whisper - or not
+        // at all. Both are left alone until the stand-down has finished; its
+        // own completion listener tidies up after it.
+        if (standDownPlayer != null && standDownPlayer.isPlaying()) {
+            if (call != null) call.resolve();
+            return;
+        }
+        releaseFocus();
+        restoreAlarmVolume();
         if (call != null) call.resolve();
     }
 
