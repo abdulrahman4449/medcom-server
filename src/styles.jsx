@@ -915,6 +915,25 @@ export const styles = {
   claimCodeActions: { display: "flex", gap: 8, flexWrap: "wrap" },
   // On the roster row: whether this person is waiting on a code, or already
   // holds one somebody has to find and pass on.
+  // "This phone may miss a call", and the button that fixes it. Gold rather
+  // than red: nothing is wrong with the board, something is wrong with this
+  // handset's settings, and the crew can put it right in two taps.
+  bgAlertNotice: {
+    marginTop: 10,
+    background: "var(--raised)",
+    border: "1px solid var(--gold)",
+    borderRadius: 16,
+    padding: "11px 12px 12px",
+    boxShadow: "0 6px 18px var(--lift)",
+  },
+  bgAlertHead: {
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.8, color: "var(--gold)", marginBottom: 8,
+  },
+  bgAlertRow: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 10, flexWrap: "wrap", padding: "6px 0", borderTop: "1px solid var(--hair)",
+  },
+  bgAlertSay: { fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.45, flex: 1, minWidth: 180 },
   accountCodeTag: {
     fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: "var(--gold)",
     border: "1px solid var(--gold)", borderRadius: 999, padding: "2px 7px",

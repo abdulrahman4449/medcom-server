@@ -1,10 +1,10 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { alarmOutcome, ensureAudioCtx, nativeAlarm, soundCallAlert } from "../lib/dates.jsx";
+import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, soundCallAlert } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
-import { useState } from "../lib/react.jsx";
+import { useEffect, useState } from "../lib/react.jsx";
 import { alertsArmedBefore, setSoundLevel, soundLevelMeta, useSoundLevel } from "../lib/sound.jsx";
 import { styles } from "../styles.jsx";
 
@@ -82,10 +82,97 @@ export function SoundDiagnostics({ audioCtxRef }) {
   const plugin = !!nativeAlarm();
   const ctx = audioCtxRef ? audioCtxRef.current : null;
   const state = ctx ? ctx.state : "none yet";
+  const bg = useBackgroundStatus();
   return (
     <div style={styles.soundDiag}>
-      build {BUILD_STAMP} · plugin {plugin ? "loaded" : "NOT LOADED"} · page audio {state} · last
-      alarm: {alarmOutcome()}
+      build {BUILD_STAMP} · plugin {plugin ? "loaded" : "NOT LOADED"} · page audio {state} ·
+      screen held {screenAwakeHeld() ? "yes" : "no"} · last alarm: {alarmOutcome()}
+      {bg ? ` · alarm volume ${bg.alarmVolumePct}% · notifications ${
+        bg.notificationsEnabled ? "on" : "OFF"
+      } · channel ${bg.channelSilenced ? "SILENCED" : "ok"} · battery saver ${
+        bg.batteryOptimised ? "ON" : "off"
+      }` : ""}
+    </div>
+  );
+}
+
+// The shell's answer to "will this phone actually make a noise", re-read on a
+// slow tick.
+//
+// Read rather than assumed, because every one of these is the owner's to change
+// and none of them is visible from inside a web page. Ten seconds is often
+// enough: a crew fixing one of these is standing at the phone, and the line has
+// to tell them it worked.
+export function useBackgroundStatus() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const read = () => {
+      const answered = nativeBackgroundStatus();
+      if (!answered || typeof answered.then !== "function") return;
+      answered.then((s) => {
+        if (live && s) setStatus(s);
+      });
+    };
+    read();
+    const t = setInterval(read, 10000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  return status;
+}
+
+// What is stopping this phone from being heard, in one sentence, with the
+// button that fixes it.
+//
+// "Sometimes the alert works and sometimes it does not" is almost never one
+// fault. It is four, each of which silences the alarm on its own, each set by
+// somebody long ago on one handset and not the next — and none of which the app
+// is allowed to change on the owner's behalf. So it names the one in the way
+// and opens the exact settings page.
+export function BackgroundAlertNotice() {
+  const bg = useBackgroundStatus();
+  if (!bg) return null;
+  const faults = [];
+  if (!bg.notificationsEnabled) {
+    faults.push({
+      which: "notifications",
+      say: "Notifications are turned off for this app, so a call raised while you are not looking at the screen will not show a banner.",
+    });
+  } else if (bg.channelSilenced) {
+    faults.push({
+      which: "channel",
+      say: "The Dispatch alerts channel has been silenced on this phone. Android will not let the app turn it back on — it has to be done in settings.",
+    });
+  }
+  if ((bg.alarmVolumePct || 0) < 30) {
+    faults.push({
+      which: null,
+      say: `The alarm volume on this phone is ${bg.alarmVolumePct}%. The alert plays on the alarm stream, so this is the slider it uses — not the media one.`,
+    });
+  }
+  if (bg.batteryOptimised) {
+    faults.push({
+      which: "battery",
+      say: "Battery optimisation is on for this app. Android will freeze it in the background, and a frozen app never learns a call was raised.",
+    });
+  }
+  if (!faults.length) return null;
+  return (
+    <div style={styles.bgAlertNotice}>
+      <div style={styles.bgAlertHead}>THIS PHONE MAY MISS A CALL</div>
+      {faults.map((f, i) => (
+        <div key={i} style={styles.bgAlertRow}>
+          <span style={styles.bgAlertSay}>{f.say}</span>
+          {f.which && (
+            <button style={styles.ghostBtnSm} onClick={() => openNativeSettings(f.which)}>
+              Fix it
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

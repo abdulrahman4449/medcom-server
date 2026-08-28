@@ -25,7 +25,7 @@ import { actorStamp } from "../export/name-stamps.jsx";
 import { exportAndShareLog } from "../export/workbook.jsx";
 import { API_BASE, READ_FAILED } from "../lib/board-api.jsx";
 import { pruneArchivedWork } from "../lib/board-size.jsx";
-import { ensureAudioCtx, nowTime, setNativeStandby } from "../lib/dates.jsx";
+import { ensureAudioCtx, nowTime, setNativeStandby, setScreenAwake } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Radio } from "../lib/icons.jsx";
 import { alertsSupported, registerAlertWorker, requestAlertPermission, requestNativeNotifications } from "../lib/notify.jsx";
@@ -374,6 +374,41 @@ export function App() {
   useEffect(() => {
     setNativeStandby(!!user);
     return () => setNativeStandby(false);
+  }, [!!user]);
+
+  // The same thing for Android, which suspends nothing but freezes everything.
+  //
+  // A backgrounded WebView has its timers throttled and then stopped, and the
+  // board is read by a three-second timer inside it — so a tablet that has gone
+  // to sleep learns about a call a minute late, or never. Holding the screen on
+  // while somebody is signed on keeps the page in the foreground, which keeps
+  // the poll running.
+  //
+  // Re-taken on every wake as well as at sign-on: the browser's wake lock is
+  // dropped whenever the page is hidden and is never handed back by itself, so
+  // a tablet that was locked once and unlocked would otherwise be running
+  // without one for the rest of the shift.
+  useEffect(() => {
+    if (!user) {
+      setScreenAwake(false);
+      return undefined;
+    }
+    setScreenAwake(true);
+    const retake = () => {
+      try {
+        if (typeof document !== "undefined" && document.hidden) return;
+      } catch (e) {
+        /* read anyway */
+      }
+      setScreenAwake(true);
+    };
+    document.addEventListener("visibilitychange", retake);
+    window.addEventListener("focus", retake);
+    return () => {
+      document.removeEventListener("visibilitychange", retake);
+      window.removeEventListener("focus", retake);
+      setScreenAwake(false);
+    };
   }, [!!user]);
 
   useEffect(() => {

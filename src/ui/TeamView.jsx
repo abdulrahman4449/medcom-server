@@ -25,7 +25,7 @@ import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { SectionBanner } from "./AdminView.jsx";
-import { AlarmOverlay, AlertToneCheck, CallAlertNotice, SoundDiagnostics } from "./AlarmOverlay.jsx";
+import { AlarmOverlay, AlertToneCheck, BackgroundAlertNotice, CallAlertNotice, SoundDiagnostics } from "./AlarmOverlay.jsx";
 import { CallEditForm, CallRoute, ChecklistCard, EditHistory, InfoNote, ReceiverBanner, RefusalForm } from "./AssistanceTasks.jsx";
 import { CallRestock } from "./CallRestock.jsx";
 import { ChatDock, useMessageAlerts } from "./ChatDock.jsx";
@@ -1254,6 +1254,12 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
           the rest is dispatch's picture to hold, not theirs to watch. */}
 
       <CallAlertNotice audioCtxRef={audioCtxRef} />
+      {/* And the four things about the handset itself that silence an alert —
+          notifications off, the channel silenced, the alarm slider at zero,
+          battery optimisation freezing the app. Outside the page test, like the
+          notice above it: a crew whose phone cannot be heard needs telling on
+          whichever screen they are standing on. */}
+      <BackgroundAlertNotice />
 
       {/* A crew signing on can check the tablet's speaker against all three
           tones before they are relying on one of them. */}

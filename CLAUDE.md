@@ -270,6 +270,33 @@ patch", that document is the target — do not start a fresh exploration.
   `USAGE_ALARM` channel. Local, not push: it needs the app running. Permission
   is asked at sign-in *and* on mount, because a restored session never passes
   through the sign-in screen.
+- **"Sometimes the Android alert works and sometimes it doesn't" is a poll that
+  stopped, not a sound that failed.** A backgrounded WebView has its timers
+  throttled to one a minute and then frozen outright, and the board is read by a
+  three-second timer inside it — so a sleeping tablet learns about a call a
+  minute late, or never, and Doze plus each manufacturer's battery saver decide
+  which. `setScreenAwake` holds the screen on while somebody is signed on — the
+  shell's `FLAG_KEEP_SCREEN_ON` and the browser's Screen Wake Lock, neither of
+  which needs a permission or a Play declaration — because a screen that stays
+  on is a page that is never backgrounded. It does **not** survive Home or a
+  lock; only a foreground service or FCM would, and both cost a Play
+  declaration or a server. Say that rather than implying it is covered.
+- **A notification channel belongs to the user, not to the app.** Android
+  refuses to change an existing channel's importance, sound or DND bypass, for
+  ever — so a handset that installed an early build, or whose owner once chose
+  "turn off notifications like this", kept a silent channel that reinstalling
+  did not fix while the phone beside it was fine. `CHANNEL_ID` carries a version
+  and the old ids are deleted on the way past. Bump it whenever the sound, the
+  importance or the bypass changes; nothing else can hand somebody a corrected
+  channel.
+- **Four settings silence the alert and the app may change none of them.**
+  Notifications off, the channel silenced, the alarm stream at zero, battery
+  optimisation on. `backgroundStatus()` reads all four and `BackgroundAlertNotice`
+  names the one in the way with a button that opens that exact settings page —
+  ask for that line before diagnosing "no tone". The alarm volume and audio
+  focus are the two the plugin does handle: it raises the alarm stream to 70%
+  for the length of an alert and puts it back, and takes transient focus so
+  navigation ducks.
 - **`BUILD_STAMP` is on the crew screen under the speaker check.** A whole round
   of testing once went into a fault that was already fixed, because the phone
   was still running the previous build and nothing on screen said so. The same

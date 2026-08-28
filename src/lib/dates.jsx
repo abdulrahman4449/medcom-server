@@ -475,6 +475,112 @@ export function setNativeStandby(on) {
   }
 }
 
+// Keep the screen on while somebody is signed on — the Android half of
+// standby, and the answer to "the alert was late".
+//
+// iOS suspends an app that is not playing audio; Android does something
+// quieter and worse. It throttles a backgrounded WebView's timers to about one
+// a second, then to one a minute, and after a few minutes freezes the page
+// outright. The board is read by a three-second timer inside that page, so a
+// throttled tablet learns about a call up to a minute late and a frozen one
+// never learns at all — and Doze and each manufacturer's own battery saver
+// decide which of those happens, which is why the same dispatch reaches one
+// tablet instantly, the next a minute later, and the third not at all.
+//
+// A screen that stays on is a page that is never backgrounded. Two routes,
+// because neither covers every device: the shell's window flag, and the
+// browser's own Screen Wake Lock for a tablet running this in a browser.
+// Neither needs a permission or anything declared to Google.
+//
+// It does NOT survive Home being pressed or the tablet being locked. Nothing a
+// web layer can do does — see native/README.md.
+let screenLock = null;
+
+export function setScreenAwake(on) {
+  try {
+    const plugin = nativeAlarm();
+    if (plugin && typeof plugin.keepAwake === "function") {
+      const answered = plugin.keepAwake({ on: !!on });
+      if (answered && typeof answered.catch === "function") answered.catch(() => {});
+    }
+  } catch (e) {
+    // no shell, or a shell older than this call
+  }
+  try {
+    const wl = typeof navigator !== "undefined" && navigator.wakeLock;
+    if (!wl || typeof wl.request !== "function") return;
+    if (on) {
+      if (screenLock) return;
+      const got = wl.request("screen");
+      if (got && typeof got.then === "function") {
+        got.then((lock) => {
+          screenLock = lock;
+          // The browser drops the lock whenever the page is hidden, and does
+          // not give it back by itself. Forgetting the handle here is what
+          // lets the effect below take it again on the next wake.
+          try {
+            lock.addEventListener("release", () => {
+              if (screenLock === lock) screenLock = null;
+            });
+          } catch (e) {
+            /* older shape, nothing to listen on */
+          }
+        }, () => {});
+      }
+      return;
+    }
+    const held = screenLock;
+    screenLock = null;
+    if (held && typeof held.release === "function") {
+      const done = held.release();
+      if (done && typeof done.catch === "function") done.catch(() => {});
+    }
+  } catch (e) {
+    // no wake lock on this device
+  }
+}
+
+export function screenAwakeHeld() {
+  return !!screenLock;
+}
+
+// Everything about this phone that decides whether a call will be heard, read
+// from the shell.
+//
+// None of it is visible from inside a web page, and every one of them has
+// silenced a real alert: notifications turned off for the app, the alarm
+// channel silenced by its owner in a way Android will not let the app undo, the
+// alarm stream sitting at zero, battery optimisation freezing the app in the
+// background. A crew cannot read a log, so these come back as a sentence for
+// the screen.
+export function nativeBackgroundStatus() {
+  try {
+    const plugin = nativeAlarm();
+    if (!plugin || typeof plugin.backgroundStatus !== "function") return null;
+    const answered = plugin.backgroundStatus();
+    if (answered && typeof answered.then === "function") {
+      return answered.catch(() => null);
+    }
+    return Promise.resolve(answered);
+  } catch (e) {
+    return null;
+  }
+}
+
+// Two taps to the screen that fixes it. "which" is "notifications", "channel"
+// or "battery".
+export function openNativeSettings(which) {
+  try {
+    const plugin = nativeAlarm();
+    if (!plugin || typeof plugin.openSettings !== "function") return false;
+    const answered = plugin.openSettings({ which: String(which || "notifications") });
+    if (answered && typeof answered.catch === "function") answered.catch(() => {});
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // What the last dispatch alarm actually did, for the diagnostics line.
 //
 // A plugin that is not registered and a plugin that refuses look identical from

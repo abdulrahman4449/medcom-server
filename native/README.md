@@ -28,7 +28,8 @@ native shell. Say that to the crews rather than implying it is covered.
 | Beats the volume slider | yes — alarm volume is separate | yes |
 | Beats Do Not Disturb | yes (`setBypassDnd`) | **no** — Apple does not allow it |
 | Repeats until acknowledged | yes | yes |
-| Keeps the app awake in the background | no — see below | yes (`standby`) |
+| Keeps the app awake in the background | partly — `keepAwake` holds the screen on | yes (`standby`) |
+| Reports why this handset is silent | yes (`backgroundStatus`) | — |
 | Vibrates | yes | handled by the system |
 
 The web app finds the plugin by name. When it is there, a dispatch goes through
@@ -75,6 +76,93 @@ alarm still sounds, on the alarm path, at full volume.
    `ACCESS_BACKGROUND_LOCATION` — that triggers Google's Location Permissions
    declaration review, which this app's whole location design exists to avoid.
 5. Rebuild the AAB and reinstall.
+
+## "Sometimes it works, sometimes it's late, sometimes it doesn't"
+
+That exact triad has one main cause and four smaller ones, and none of them is
+the alarm code. When the alarm is reached it plays; the problem is that on
+Android it is often never reached.
+
+**The main cause: a backgrounded WebView stops reading the board.**
+
+The board is polled every three seconds by a timer inside the WebView. Android
+throttles a backgrounded WebView's timers to roughly one a second, then to one
+a minute, and after a few minutes freezes the page outright. A frozen page runs
+no timer, makes no request, and never learns a call was raised — so there is
+nothing for any alarm to sound about. Doze and each manufacturer's own battery
+saver (Samsung, Xiaomi and Huawei are the aggressive ones) decide which of
+those states a given handset lands in, which is precisely why one tablet gets
+the call instantly, the next one a minute late, and the third not at all.
+
+`keepAwake` is the answer that costs nothing: while somebody is signed on, the
+app holds `FLAG_KEEP_SCREEN_ON`. A screen that stays on is a page that is never
+backgrounded, so the poll keeps running at three seconds and the alarm is on
+time. No permission, nothing declared to Google, released the moment the crew
+signs out. It costs battery, which is the right trade for a tablet in a cradle
+on a charger.
+
+**It does not survive Home being pressed or the tablet being locked.** Nothing a
+web layer can do does. See "Going further" below.
+
+**The four smaller ones**, each of which silences the alert on its own, each set
+by somebody long ago on one handset and not the next, and none of which the app
+is allowed to change on the owner's behalf:
+
+| What | What it does | Where it shows |
+|---|---|---|
+| Notifications turned off for the app | no banner at all | `notificationsEnabled` |
+| The alert channel silenced by its owner | banner arrives mute — **Android will not let the app undo this** | `channelSilenced` |
+| The alarm stream at zero | the tone plays on the right stream, into silence | `alarmVolumePct` |
+| Battery optimisation on | the app is frozen in the background | `batteryOptimised` |
+
+`backgroundStatus()` reads all four, and the crew screen shows them under the
+speaker check with a **Fix it** button that opens the exact settings page. Ask
+for that line before diagnosing "no tone" — it is the difference between four
+possible faults and one named one.
+
+Two of these the plugin now handles itself rather than reporting:
+
+- **The alarm volume is raised** to 70% of the handset's maximum for the length
+  of an alert and put back by `stop()`, so a tablet handed over with the alarm
+  slider at zero still makes a noise. Do Not Disturb can refuse this; that is
+  what the reported percentage is for.
+- **Audio focus is requested**, so navigation and music duck out of the way. A
+  truck with Maps running is the normal case, and an alert underneath a
+  turn-by-turn instruction is one a crew can miss.
+
+**And one that was silently permanent.** A notification channel is created once
+and is then the *user's*: Android refuses to change its importance, its sound or
+its DND bypass afterwards, for ever. A phone that installed an early build — or
+whose owner once swiped an alert away and chose "turn off notifications like
+this" — kept a silent channel that reinstalling did not fix, while the phone
+beside it was fine. The channel id now carries a version (`pulseops_dispatch_v2`)
+and the old one is deleted on the way past, so this build hands every handset a
+correct channel. **Bump that number whenever the sound, the importance or the
+bypass changes** — it is the only way to hand somebody a corrected channel.
+
+## Going further: the two things that would cover a locked phone
+
+Neither is in this build, and both cost something. They are here so the choice
+is made deliberately rather than discovered on a shift.
+
+**1. A foreground service.** The standard Android answer to "my app must keep
+running": a persistent notification and a process the system will not freeze.
+It would make a locked, pocketed phone behave like an on-screen one. The cost:
+from Android 14 a `foregroundServiceType` must be declared, the honest one here
+is `specialUse`, and **Google Play asks you to justify it in a review form**.
+Given the standing instruction to avoid anything needing a Play declaration,
+this is a decision to take on purpose.
+
+**2. Push notifications (FCM).** The real answer for an app that is not
+running at all. A high-priority FCM message wakes the app even in Doze and even
+after a force-quit, which is the one case nothing else covers. The cost: a
+Firebase project, a server-side send from `server.js`, and device tokens on the
+board. It is the right long-term answer and it is not a Friday-afternoon change.
+
+Until one of those is in, say this to the crews plainly: **the alert is reliable
+while the app is on screen, and a phone locked in a pocket can still miss a
+call.** That is the truth, and it is better than a crew trusting a tablet that
+is going to let them down at three in the morning.
 
 ## Capacitor 6 and later: the registration that is easy to miss
 
