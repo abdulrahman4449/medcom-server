@@ -1,6 +1,6 @@
 import { callFrom, callTo } from "./call-locations.jsx";
 import { callCloseReason } from "./close-reasons.jsx";
-import { REQ_STATUS } from "./constants.jsx";
+import { reqStatusMeta } from "./constants.jsx";
 import { ZAHRAWI_SHIFT_MS, coverageActor, isZahrawi } from "./coverage.jsx";
 import { stayWindow } from "./crew-stamps.jsx";
 import { STATIONS, stationLabel, stationOf } from "./live-sheet.jsx";
@@ -9,7 +9,7 @@ import { opDayEnd, opDayLabel, opDayStart } from "./op-day.jsx";
 import { REFUSAL_TIME_KEY } from "./outcomes.jsx";
 import { pcrAuthorStamp } from "./pcr-author.jsx";
 import { journeyLabel } from "./return-journeys.jsx";
-import { assistOf, assistTeamNames, callOutcomeLabel } from "./second-ambulance.jsx";
+import { assistOf, assistTeamNames, callOutcomeLabel, requestOutcomeKey, requestOutcomeLabel } from "./second-ambulance.jsx";
 import { missingLogFields } from "./sheet-gaps.jsx";
 import { scheduledShiftKey, seatLabel, shiftDateOf, shiftLabelWithWindow, shiftMeta, shiftWindowFor } from "./shift-helpers.jsx";
 import { SHIFT_EVENTS, SHIFT_MS } from "./shifts.jsx";
@@ -435,11 +435,44 @@ export function dressLogSheet(sheet, aoa) {
   // grey.
   fillBlankCells(sheet, headerRow, aoa.callRows instanceof Set ? aoa.callRows : null);
   shadeNightRows(sheet, aoa, 0);
+  // After the night shading, so a call stood down at two in the morning still
+  // reads as cancelled rather than as an ordinary night row.
+  shadeCancelledRows(sheet, aoa, 0);
   paintCategoryColumn(sheet, aoa, 0, typeof aoa.categoryCol === "number" ? aoa.categoryCol : -1);
   paintCodedColumn(sheet, typeof aoa.serviceCol === "number" ? aoa.serviceCol : -1, SERVICE_FILLS, headerRow);
   paintCodedColumn(sheet, typeof aoa.callTypeCol === "number" ? aoa.callTypeCol : -1, CALLTYPE_FILLS, headerRow);
   // Last, so nothing painted above can strip it back off again.
   gridLogSheet(sheet, headerRow, aoa.callRows instanceof Set ? aoa.callRows : null);
+  return sheet;
+}
+
+// Light yellow across a call that was stood down rather than run.
+//
+// Light, and not bold: this is a row somebody should be able to spot while
+// scanning a month, not one that shouts over the forty around it. Red on this
+// sheet already means no coverage and must not also mean cancelled.
+export function shadeCancelledRows(sheet, aoa, offset) {
+  const rows = (aoa && aoa.cancelledRows) || [];
+  if (!rows.length || !sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  rows.forEach((r) => {
+    const rowIdx = r + (offset || 0);
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
+      if (!cell) continue;
+      cell.s = {
+        ...(cell.s || {}),
+        fill: { patternType: "solid", fgColor: { rgb: "FFFFF2CC" } },
+        font: {
+          name: XL_FONT,
+          ...((cell.s || {}).font || {}),
+          color: { rgb: "FF7F6000" },
+          bold: false,
+          sz: 10,
+        },
+      };
+    }
+  });
   return sheet;
 }
 
@@ -473,6 +506,23 @@ export function shadeNightRows(sheet, aoa, offset) {
     }
   });
   return sheet;
+}
+
+// Who was in the Bravo seat on this call.
+//
+// A call written up by hand carries the crew it was actually run by, typed at
+// the time; a live call takes it from the truck. The two are not the same
+// thing, and the hand-entered one wins because the truck's seats may have
+// changed hands twice since.
+export function bravoNameFor(req, unit) {
+  // The name alone. The E-PCR author column carries the full stamp because it
+  // has to say which seat wrote it; this column is headed BRAVO and sits beside
+  // a TEAM column naming the truck, so repeating "(MEDIC 1 · BRAVO)" on every
+  // row is width spent saying what the heading already said.
+  const typed = req && req.crewNames && req.crewNames.bravo;
+  if (typed) return typed;
+  if (unit && unit.bravo && unit.bravo.name) return unit.bravo.name;
+  return "";
 }
 
 export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage, dayStart) {
@@ -544,6 +594,11 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     // the truck, and a month-end read that cannot tell them apart is a read
     // that quietly overstates how much of the sheet was recorded live.
     "ENTERED BY HAND",
+    // Last column, and the one the department reads the sheet for: did this
+    // call move a patient or was it called off? It was answerable only by
+    // reading the close reason on every row. A cancelled row is also shaded,
+    // so a month can be scanned rather than read.
+    "REQUEST STATUS",
   ];
 
   // ---------- the filed shift log is the master ----------
@@ -578,7 +633,13 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     ["KILO METER", "Km"],
     ["CALL CATEGORY", "Call category"],
     ["E-PCR AUTHOR", "E-PCR author"],
+    // Beside the author, because the pair is read together: who wrote it up and
+    // who else was on the truck.
+    ["BRAVO", "Bravo"],
     ["OUTCOME", "Outcome"],
+    // Last of the columns the sheet opens with, so it is the last thing read
+    // across a row. Everything after this is in the collapsed group.
+    ["REQUEST STATUS", "Request status"],
   ];
   const coreIdx = SHIFT_LOG_COLUMNS.map(([from]) => {
     const i = header.indexOf(from);
@@ -622,9 +683,15 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       r.callCategory || "",
       r.emergencyCode || "",
       pcrAuthorStamp(r, unit),
-      r.pcrAuthor && r.pcrAuthor.seat === "alpha"
-        ? (unit.bravo ? unit.bravo.name : "")
-        : (unit.alpha ? unit.alpha.name : ""),
+      // The Bravo seat, and only ever the Bravo seat.
+      //
+      // This column used to hold "whoever the PCR author is not" - so on a call
+      // Bravo wrote up, the column headed BRAVO carried Alpha's name. A sheet
+      // that names the wrong person under a fixed heading is worse than one
+      // with a blank. A call entered by hand carries the crew it was run by
+      // rather than whoever is sitting in the truck now, which may be a
+      // different shift entirely.
+      bravoNameFor(r, unit),
       // Dispatch to arrival at the destination — the whole wait, which is the
       // one the department is judged on.
       durationStr(r.createdAt, t.arrivalDestination),
@@ -637,7 +704,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       // is an answer, not a gap: it must not hold the row open.
       missingLogFields(r).length === 0 && t.backInService ? "Completed" : "Incomplete",
       shift ? shift.short : "",
-      r.status ? REQ_STATUS[r.status].label : "",
+      reqStatusMeta(r.status).label,
       callOutcomeLabel(r),
       clockStr(t[REFUSAL_TIME_KEY]),
       r.refusal ? r.refusal.name : "",
@@ -660,6 +727,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
         ? `${r.enteredAfterTheFact.by || "Desk"}` +
           (r.enteredAfterTheFact.reason ? ` — ${r.enteredAfterTheFact.reason}` : "")
         : "",
+      requestOutcomeLabel(r),
     ];
     return COLUMN_ORDER.map((i) => cells[i]);
   };
@@ -719,6 +787,9 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // department will be asked about, so they are marked in red and carry the
   // sheet's own NO COVERAGE category rather than being invented as a new idea.
   const coverageRows = [];
+  // And which calls were stood down rather than run. Shaded light yellow, so a
+  // month's sheet can be scanned for them instead of read row by row.
+  const cancelledRows = [];
 
   groups.forEach((g, gi) => {
     if (gi > 0) out.push([]);
@@ -727,6 +798,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     out.push(["#", ...header]);
     g.rows.forEach((r, idx) => {
       if (isNightCall(r)) nightRows.push(out.length);
+      if (requestOutcomeKey(r) === "cancelled") cancelledRows.push(out.length);
       callRows.add(out.length);
       out.push([idx + 1, ...rowFor(r)]);
     });
@@ -765,6 +837,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
 
   out.nightRows = nightRows;
   out.coverageRows = coverageRows;
+  out.cancelledRows = cancelledRows;
   // Where the treatments need to land. Reported by the builder rather than
   // guessed at by the code that dresses the sheet — it is the only thing that
   // knows how many title lines it wrote.

@@ -1,3 +1,4 @@
+import { callWasCancelled } from "./close-reasons.jsx";
 import { NO_TRANSPORT } from "./outcomes.jsx";
 import { callEndTs } from "./uhu.jsx";
 
@@ -80,6 +81,39 @@ export function isNoTransport(req) {
 // board knows for certain happened.
 export function callOutcomeLabel(req) {
   return isNoTransport(req) ? NO_TRANSPORT.label : "";
+}
+
+// Did this call move a patient, or was it called off?
+//
+// The question the department asks a month-end sheet first, and until now it
+// had to be worked out by reading the close reason on every row. Four answers
+// rather than the two it is usually asked as, because the two in between are
+// real and recording either of them as a transfer would be a lie:
+//
+//  - CANCELLED       the desk stood it down; nobody was moved
+//  - NOT TRANSPORTED the truck rolled and the patient refused or was not there
+//  - IN PROGRESS     it has not finished yet
+//  - TRANSFERRED     the patient was delivered
+//
+// A refusal is deliberately not a cancellation: the truck went, the team
+// assessed somebody, and that call happened. See close-reasons.jsx.
+export const REQUEST_OUTCOMES = {
+  cancelled: "CANCELLED",
+  notTransported: "NOT TRANSPORTED",
+  inProgress: "IN PROGRESS",
+  transferred: "TRANSFERRED",
+};
+
+export function requestOutcomeKey(req) {
+  if (!req) return "inProgress";
+  if (callWasCancelled(req)) return "cancelled";
+  if (req.status !== "completed") return "inProgress";
+  if (isNoTransport(req)) return "notTransported";
+  return "transferred";
+}
+
+export function requestOutcomeLabel(req) {
+  return REQUEST_OUTCOMES[requestOutcomeKey(req)] || "";
 }
 
 // Every team that was sent to help on this call, named, in the order they were

@@ -315,6 +315,43 @@ export function run(D, t) {
       new Set(twice.map((o) => o.key)).size, twice.length);
   }
 
+  // ---------- the sheet says whether a patient was moved
+  //
+  // The question the department reads a month-end sheet for, and until now it
+  // was answerable only by reading the close reason on every row. Four answers,
+  // not two: recording a refusal or a call still running as a transfer would be
+  // a lie, and a refusal is deliberately not a cancellation — the truck went
+  // and the team assessed somebody, so that call happened.
+  {
+    const done = (extra) => ({ status: "completed", times: { backInService: at(2026, 8, 27, 12) }, ...extra });
+
+    t.is("sheet: a delivered patient reads as transferred",
+      D.requestOutcomeLabel(done({ closeReason: "Call completed — patient delivered" })), "TRANSFERRED");
+    t.is("sheet: a call the desk stood down reads as cancelled",
+      D.requestOutcomeLabel(done({ closeReason: "Cancelled before the team arrived" })), "CANCELLED");
+    t.is("sheet: and so does one stood down en route",
+      D.requestOutcomeLabel(done({ closeReason: "Team stood down en route" })), "CANCELLED");
+    // The reason can be added to, so it matches on the words rather than the
+    // whole string.
+    t.is("sheet: a cancellation with a sentence added is still cancelled",
+      D.requestOutcomeLabel(done({ closeReason: "Cancelled before the team arrived — ward rang back" })),
+      "CANCELLED");
+    t.is("sheet: a call still running is neither",
+      D.requestOutcomeLabel({ status: "assigned" }), "IN PROGRESS");
+    t.is("sheet: and nothing at all does not throw", D.requestOutcomeLabel(null), "IN PROGRESS");
+
+    // A refusal is its own ending. It is not a cancellation and it is not a
+    // transfer, and calling it either would put the wrong number in a report.
+    const refused = done({ closeReason: "Patient refused transport", noTransport: true });
+    t.ok("sheet: a refusal is not a cancellation", D.requestOutcomeLabel(refused) !== "CANCELLED");
+    t.ok("sheet: nor is it a transfer", D.requestOutcomeLabel(refused) !== "TRANSFERRED");
+
+    // The shading keys off the same answer the column prints, so a yellow row
+    // and a row reading CANCELLED can never disagree.
+    t.is("sheet: the shading and the column read the same call the same way",
+      D.requestOutcomeKey(done({ closeReason: "Duplicate call" })), "cancelled");
+  }
+
   // ---------- a status the board writes must never be a blank screen
   //
   // The crew's own call card read REQ_STATUS[status].color with no guard,
