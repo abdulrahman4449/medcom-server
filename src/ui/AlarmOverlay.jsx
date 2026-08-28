@@ -1,7 +1,7 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, soundCallAlert, standDownOutcome } from "../lib/dates.jsx";
+import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, shellReport, soundCallAlert, standDownOutcome } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -85,7 +85,7 @@ export function SoundDiagnostics({ audioCtxRef }) {
   const bg = useBackgroundStatus();
   return (
     <div style={styles.soundDiag}>
-      build {BUILD_STAMP} · plugin {plugin ? "loaded" : "NOT LOADED"} · page audio {state} ·
+      build {BUILD_STAMP} · {shellReport()} · page audio {state} ·
       screen held {screenAwakeHeld() ? "yes" : "no"} · last alarm: {alarmOutcome()} ·
       last stand-down: {standDownOutcome()}
       {bg ? ` · alarm volume ${bg.alarmVolumePct}% · notifications ${

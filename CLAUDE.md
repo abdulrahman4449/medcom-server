@@ -368,6 +368,15 @@ patch", that document is the target — do not start a fresh exploration.
   tone, nothing to press. A blank screen on a crew's own call is the worst one
   available. Note `statusMeta` in `domain/in-service.jsx` is a UNIT's status and
   `reqStatusMeta` is a CALL's; they are not interchangeable.
+- **`BUILD_STAMP` says nothing about the SHELL, and the two ship separately.**
+  `index.html` is copied into the project; the plugin is rebuilt in Xcode or
+  Android Studio. Doing one and not the other looks completely healthy — today's
+  build stamp, "plugin loaded" — while a method the web layer depends on simply
+  is not there. A whole round of testing went into a stand-down that could never
+  have worked, on a phone carrying an app built before the method existed.
+  `SHELL_METHODS`/`shellReport()` name what this build needs and check it, and
+  the crew line reads `SHELL IS OLD — rebuild the app (missing …)` rather than
+  anything a crew would mistake for a settings problem.
 - **`BUILD_STAMP` is on the crew screen under the speaker check.** A whole round
   of testing once went into a fault that was already fixed, because the phone
   was still running the previous build and nothing on screen said so. The same

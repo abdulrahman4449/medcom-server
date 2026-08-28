@@ -294,7 +294,7 @@ export function soundStandDownTone(audioCtxRef) {
   } catch (e) {
     // no shell, or a shell older than this call
   }
-  webTone("page audio (no stand-down in this shell)");
+  webTone("page audio — this app was built before the stand-down existed, rebuild it");
 }
 
 export function soundStandDown(audioCtxRef) {
@@ -384,7 +384,16 @@ export function playWhenAwake(audioCtxRef, play) {
 
   // Only ever called after a resume has failed to produce a running context,
   // and it never calls back into playWhenAwake, so there is no loop here.
-  const rebuild = () => {
+  //
+  // The one retry matters, and this is where it earns itself: a stand-down is
+  // sounded in the same instant the alarm is stopped, and stopping the alarm
+  // tears down the shell's audio session. WebKit answers that by interrupting
+  // the page's context, and a context built while the session is still settling
+  // comes up interrupted too - so the notes are scheduled onto something that
+  // is not running and are dropped without a sound. A few hundred milliseconds
+  // later it works. Rather than lose the one tone that tells a crew the call is
+  // off, this gives it a second go once the session has settled.
+  const rebuild = (retries) => {
     if (!ref) return;
     try {
       if (ref.current && ref.current.state !== "closed") ref.current.close();
@@ -394,6 +403,16 @@ export function playWhenAwake(audioCtxRef, play) {
     ref.current = null;
     const fresh = ensureAudioCtx(ref);
     if (!fresh) return;
+    const playOrRetry = () => {
+      if (fresh.state === "running") {
+        attempt(fresh);
+        return;
+      }
+      // Not runnable yet. One more attempt, far enough out that the session
+      // has settled and near enough that the tone is still the answer to what
+      // just happened.
+      if (retries > 0) setTimeout(() => rebuild(retries - 1), 400);
+    };
     if (fresh.state === "running") {
       attempt(fresh);
       return;
@@ -401,13 +420,14 @@ export function playWhenAwake(audioCtxRef, play) {
     try {
       const again = fresh.resume && fresh.resume();
       if (again && typeof again.then === "function") {
-        again.then(() => attempt(fresh)).catch(() => {});
+        again.then(playOrRetry).catch(playOrRetry);
         return;
       }
     } catch (e) {
+      playOrRetry();
       return;
     }
-    attempt(fresh);
+    playOrRetry();
   };
 
   try {
@@ -420,15 +440,15 @@ export function playWhenAwake(audioCtxRef, play) {
       resumed
         .then(() => {
           if (ctx.state === "running") attempt(ctx);
-          else rebuild();
+          else rebuild(2);
         })
-        .catch(() => rebuild());
+        .catch(() => rebuild(2));
       return;
     }
     if (ctx.state === "running") attempt(ctx);
-    else rebuild();
+    else rebuild(2);
   } catch (e) {
-    rebuild();
+    rebuild(2);
   }
 }
 
@@ -473,6 +493,30 @@ export function nativeAlarm() {
   } catch (e) {
     return null;
   }
+}
+
+// Whether the SHELL on this device is as new as the web layer running inside
+// it, and what is missing if it is not.
+//
+// The two halves ship separately: index.html is copied into the project, the
+// plugin is rebuilt in Xcode or Android Studio, and it is easy to do one and
+// not the other. When that happens everything looks right - the build stamp is
+// today's, the plugin says "loaded" - and a method the web layer depends on
+// simply is not there. A whole round of testing went into a stand-down that
+// could never have worked, because the app carrying it had been built before
+// the method existed.
+//
+// So the methods this build needs are named here and checked. Missing one is
+// not a fault in the phone or the settings; it means the app needs rebuilding,
+// and the crew line says so in those words.
+export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNotifications"];
+
+export function shellReport() {
+  const plugin = nativeAlarm();
+  if (!plugin) return "no shell (browser)";
+  const missing = SHELL_METHODS.filter((m) => typeof plugin[m] !== "function");
+  if (!missing.length) return "shell up to date";
+  return `SHELL IS OLD — rebuild the app (missing ${missing.join(", ")})`;
 }
 
 // Called where the alert is taken down, so a tone playing on the alarm stream
