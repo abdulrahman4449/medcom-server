@@ -3,6 +3,7 @@ import { shiftMsForUnit } from "./coverage.jsx";
 import { stayWindow } from "./crew-stamps.jsx";
 import { assistBusyMs, assistTeams } from "./second-ambulance.jsx";
 import { shiftWindowAt } from "./shift-helpers.jsx";
+import { SHIFT_MS } from "./shifts.jsx";
 
 // ---------- UHU (unit hour utilization) ----------
 //
@@ -23,14 +24,33 @@ export function isCallLive(req) {
   return req.status !== "completed";
 }
 
+// The longest a single call may count for.
+//
+// Nobody is on one call for two days. A call that is still open long after the
+// shift it was raised on is not work in progress — it is a call nobody closed,
+// and it must not go on earning on-call time for whoever happens to be signed
+// on. Left uncapped it did exactly that: an abandoned call showed 48h 50m and
+// carried one medic's UHU to 81.7% for a month, on a truck that had been
+// standing still. One shift is the ceiling because a shift is the longest
+// anybody is on duty for in one stretch.
+export const MAX_CALL_MS = SHIFT_MS;
+
 // Normally "Back in Service". If dispatch closed the call before the crew
 // finished the timeline, the last stamp they did record is the honest end
 // (and if there is none, the call contributed no measurable time) — anything
 // else would leave an abandoned call inflating the total forever.
+//
+// A call still running counts up to now, but never for longer than MAX_CALL_MS.
+// The board still shows the true age of an open call, because a call open for
+// two days is exactly the thing a desk needs to see; what it must not do is
+// count as two days of work.
 export function callEndTs(req, now) {
   const t = req.times || {};
   if (t.backInService) return t.backInService;
-  if (isCallLive(req)) return now;
+  if (isCallLive(req)) {
+    const start = callStartTs(req);
+    return start ? Math.min(now, start + MAX_CALL_MS) : now;
+  }
   const stamps = TIME_STEPS.map((s) => t[s.timeKey]).filter(Boolean);
   return stamps.length > 0 ? Math.max(...stamps) : callStartTs(req);
 }

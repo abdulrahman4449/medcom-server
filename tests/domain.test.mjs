@@ -342,6 +342,49 @@ export function run(D, t) {
     });
   }
 
+  // ---------- an abandoned call must not earn on-call time for ever
+  //
+  // A call still open counts up to now, which is right while a crew is out and
+  // wrong once nobody has closed it for two days. Left uncapped, an abandoned
+  // call showed 48h 50m of "on call" and carried one medic's UHU to 81.7% for a
+  // whole month, on a truck that had been standing still. Nobody is on one call
+  // for two days; a shift is the ceiling, because a shift is the longest
+  // anybody is on duty in one stretch.
+  {
+    const H = 3600000;
+    const now = at(2026, 8, 27, 18);
+    const open = (hoursAgo) => ({
+      id: "x", status: "assigned", assignedUnitId: "u1",
+      createdAt: now - hoursAgo * H, times: { assigned: now - hoursAgo * H },
+    });
+
+    t.is("uhu: a call running two hours counts two hours",
+      D.callBusyMs(open(2), now), 2 * H);
+    t.is("uhu: a call running eleven hours still counts them all",
+      D.callBusyMs(open(11), now), 11 * H);
+    // The cap. 48h50m was the real figure off a real board.
+    t.is("uhu: a call abandoned for two days counts one shift, not two days",
+      D.callBusyMs(open(48.83), now), D.MAX_CALL_MS);
+    t.ok("uhu: which is far less than the time it has been open",
+      D.callBusyMs(open(48.83), now) < 48 * H);
+
+    // A call that finished is measured by its stamps, capped or not — a
+    // recorded duration is a fact and this must not quietly rewrite it.
+    const done = {
+      id: "y", status: "completed", assignedUnitId: "u1",
+      createdAt: now - 30 * H,
+      times: { assigned: now - 30 * H, backInService: now - 29 * H },
+    };
+    t.is("uhu: a finished call is measured by its own stamps", D.callBusyMs(done, now), H);
+
+    // And a closed call with no stamps at all still contributes nothing,
+    // rather than everything since it was raised.
+    const abandoned = { id: "z", status: "completed", assignedUnitId: "u1",
+      createdAt: now - 40 * H, times: {} };
+    t.is("uhu: a closed call with no stamps contributes nothing",
+      D.callBusyMs(abandoned, now), 0);
+  }
+
   // ---------- the sheet says whether a patient was moved
   //
   // The question the department reads a month-end sheet for, and until now it

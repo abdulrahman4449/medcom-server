@@ -121,6 +121,14 @@ patch", that document is the target — do not start a fresh exploration.
   old code offered them "take over" against their own name, which stood them
   down, reset their hours and recorded a swap saying they relieved
   themselves.
+- **An open call counts up to now, and never for longer than one shift.**
+  `MAX_CALL_MS` in `domain/uhu.jsx`. A call still running should tick live; a
+  call nobody has closed for two days is not work, and left uncapped it went on
+  earning on-call time for whoever was signed on — an abandoned call reading
+  48h 50m carried one medic's UHU to **81.7% for a month** on a truck that had
+  not moved. The BOARD still shows the true age (`now - callStartTs`), because a
+  call open for two days is exactly what a desk needs to see; it is the
+  statistic that must not treat it as two days of work.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.
