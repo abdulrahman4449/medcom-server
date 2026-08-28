@@ -138,19 +138,16 @@ export function SyncStatus({ compact }) {
 // The count is reported either way, so the number that did not come back is
 // not a silent decision.
 function SyncFromCopy({ copies, onDone }) {
-  const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
   const [error, setError] = useState("");
 
   async function run() {
-    const name = pick || (copies[0] && copies[0].name);
-    if (!name) return;
     if (
       !window.confirm(
-        `Put back everything ${name} has that this board no longer does?\n\n` +
-          `Nothing is removed and nothing already on the board is changed — only ` +
-          `records that have gone missing are added back. A safety copy is taken first.`
+        `Read all ${copies.length} saved copies and put back everything this board no longer has?\n\n` +
+          `Nothing is removed and nothing already on the board is changed. A record found in ` +
+          `several copies comes back once. A safety copy is taken first.`
       )
     )
       return;
@@ -158,7 +155,7 @@ function SyncFromCopy({ copies, onDone }) {
     setError("");
     setDone(null);
     try {
-      const res = await fetch(`${API_BASE}/api/backups/${encodeURIComponent(name)}/sync`, {
+      const res = await fetch(`${API_BASE}/api/backups/sync-all`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: "{}",
@@ -176,39 +173,36 @@ function SyncFromCopy({ copies, onDone }) {
 
   return (
     <div style={styles.restoreBox}>
-      <div style={styles.restoreHead}>PUT BACK WHAT IS MISSING</div>
+      <div style={styles.restoreHead}>PUT BACK EVERYTHING THAT IS MISSING</div>
       <div style={styles.formHint}>
-        Reads a copy and adds back only the records this board no longer has. Nothing is removed,
-        nothing already here is changed, and calls already filed in the archive are left alone.
+        Reads every saved copy — all {copies.length} of them — and adds back any record this board
+        no longer has. Nothing is removed, nothing already here is changed, and a record found in
+        several copies comes back once. Safe to press at any time, and safe to press twice.
       </div>
-      <div style={styles.formRow}>
-        <select
-          style={{ ...styles.input, flex: 1, minWidth: 200 }}
-          value={pick || (copies[0] ? copies[0].name : "")}
-          onChange={(e) => setPick(e.target.value)}
-        >
-          {copies.map((c) => (
-            <option key={c.name} value={c.name}>
-              {c.name} · {bytesStr(c.bytes)}
-            </option>
-          ))}
-        </select>
-        <button style={styles.primaryBtnSm} disabled={busy || !copies.length} onClick={run}>
-          {busy ? "Putting back…" : "Sync with this copy"}
-        </button>
-      </div>
+      <button
+        style={{ ...styles.primaryBtn, width: "100%", justifyContent: "center", marginTop: 10 }}
+        disabled={busy || !copies.length}
+        onClick={run}
+      >
+        {busy ? "Reading every copy…" : `Sync with all ${copies.length} copies`}
+      </button>
       {error && <div style={styles.loginError}>{error}</div>}
       {done && (
         <div style={styles.formHint}>
           {done.added === 0
-            ? "Nothing was missing — the board already has everything in that copy."
-            : `${done.added} record${done.added === 1 ? "" : "s"} put back.`}
+            ? `Nothing was missing. All ${done.copiesRead} copies were read and the board already had everything in them.`
+            : `${done.added} record${done.added === 1 ? "" : "s"} put back, from ${done.copiesRead} copies.`}
           {(done.keys || []).map((k) => (
             <div key={k.key} style={styles.restoreDoneRow}>
               {keyName(k.key)}: {k.added} back
-              {k.alreadyFiled ? ` · ${k.alreadyFiled} left alone (already filed)` : ""}
+              {k.alreadyFiled ? ` · ${k.alreadyFiled} left alone (already filed in the archive)` : ""}
             </div>
           ))}
+          {(done.unreadable || []).length > 0 && (
+            <div style={styles.restoreDoneRow}>
+              Could not read: {done.unreadable.map((u) => u.name).join(", ")}
+            </div>
+          )}
           <div style={{ marginTop: 6 }}>Safety copy: {(done.safety || []).join(", ") || "—"}</div>
         </div>
       )}

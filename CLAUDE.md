@@ -535,13 +535,16 @@ patch", that document is the target — do not start a fresh exploration.
   two clicks, and `db.backup()` overwrites — so the safety copy became a picture
   of the damage it was meant to undo, silently. `backupName(at, dir)` checks the
   directory and suffixes `-2`, `-3`. Found by a test that did exactly that.
-- **"Put back what is missing" is a merge, not a rollback.**
-  `POST /api/backups/:name/sync` adds every record the live board no longer has,
-  by record id: nothing already there is touched, the live version of a record
-  present in both wins, and nothing is ever removed. It skips anything a
-  finalised submission already contains, so the completed calls `pruneArchivedWork`
-  correctly dropped are not dragged back onto the live board. Running it twice
-  adds nothing the second time.
+- **"Put back what is missing" reads EVERY copy, not one.**
+  `POST /api/backups/sync-all` sweeps all thirty, oldest first, and adds every
+  record the live board no longer has, by record id. A loss is rarely confined
+  to the newest backup — the missing week is spread across the copies that saw
+  it — so asking somebody to pick the right one is asking them to do the search
+  by hand. Nothing already on the board is touched, a record in several copies
+  comes back once and keeps its newest version, nothing is ever removed, and
+  running it twice writes nothing. It skips anything a finalised submission
+  already contains, so the completed calls `pruneArchivedWork` correctly dropped
+  are not dragged back onto the live board.
 - **A backup filename carries seconds.** Two in the same minute collided, and
   `db.backup()` overwrites — so the safety copy taken before a restore
   destroyed the copy being restored from. Backups are also settled to

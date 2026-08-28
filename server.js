@@ -864,42 +864,27 @@ function filedRecordIds(liveBoard) {
   return ids;
 }
 
-app.post("/api/backups/:name/sync", requireArea("archive"), async (req, res) => {
-  const found = backupFileFor(req.params.name);
-  if (found.error) return res.status(404).json({ error: found.error });
-
+// Reading one copy into a pile of records the live board is missing.
+//
+// Nothing is written here — it only collects. `have` is every id the board
+// already holds, `filed` every id a finalised submission already contains, and
+// `found` is the pile being built across however many copies are read. A record
+// seen in an older copy and again in a newer one keeps the NEWER version, which
+// is why the sweep below reads oldest first.
+function collectMissing(file, live, have, filed, found) {
   let src;
   try {
-    src = new Database(found.file, { readonly: true });
+    src = new Database(file, { readonly: true });
   } catch (e) {
-    return res.status(500).json({ error: `That copy could not be opened: ${e.message}` });
+    return { error: String((e && e.message) || e) };
   }
-
-  const safety = await runBackup("before a sync");
-  if (!safety.written.length) {
-    src.close();
-    return res.status(500).json({
-      error: "A safety copy of the board could not be written, so nothing was changed.",
-    });
-  }
-
-  const filed = filedRecordIds(db);
-  const report = [];
+  let read = 0;
   try {
-    const rows = src.prepare("SELECT key, value FROM board").all();
-    const put = db.prepare(
-      `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    );
-    const work = [];
-    for (const row of rows) {
+    for (const row of src.prepare("SELECT key, value FROM board").all()) {
       if (!row || FORBIDDEN_KEYS.has(row.key)) continue;
       let was;
-      let now;
       try {
         was = JSON.parse(row.value);
-        const liveRow = db.prepare("SELECT value FROM board WHERE key = ?").get(row.key);
-        now = liveRow ? JSON.parse(liveRow.value) : undefined;
       } catch (e) {
         continue;
       }
@@ -907,50 +892,117 @@ app.post("/api/backups/:name/sync", requireArea("archive"), async (req, res) => 
       // object is left alone: there is no way to tell a missing half from a
       // deliberately changed one, and guessing would undo somebody's edit.
       if (!Array.isArray(was)) continue;
-      if (now === undefined) {
-        work.push({ key: row.key, value: JSON.stringify(was), added: was.length });
-        continue;
+      if (!found.has(row.key)) found.set(row.key, new Map());
+      const pile = found.get(row.key);
+      const held = have.get(row.key) || new Set();
+      for (const rec of was) {
+        if (!rec || !rec.id) continue;
+        const id = String(rec.id);
+        if (held.has(id)) continue;
+        // Already filed and finalised. The archive holds it, the live board
+        // dropped it on purpose, and putting it back would fill the board with
+        // work that is finished.
+        if (filed.has(id)) {
+          pile.set("__filed__" + id, null);
+          continue;
+        }
+        pile.set(id, rec);
+        read++;
       }
-      if (!Array.isArray(now)) continue;
-      const have = new Set(now.map((r) => r && r.id).filter(Boolean));
-      const missing = was.filter(
-        (r) => r && r.id && !have.has(r.id) && !filed.has(String(r.id))
-      );
-      const skipped = was.filter((r) => r && r.id && !have.has(r.id) && filed.has(String(r.id)));
-      if (!missing.length) {
-        if (skipped.length) report.push({ key: row.key, added: 0, alreadyFiled: skipped.length });
-        continue;
-      }
-      work.push({
-        key: row.key,
-        value: JSON.stringify([...now, ...missing]),
-        added: missing.length,
-        alreadyFiled: skipped.length,
-      });
     }
-    db.transaction((list) => {
-      for (const w of list) put.run(w.key, w.value);
-    })(work);
-    work.forEach((w) => report.push({ key: w.key, added: w.added, alreadyFiled: w.alreadyFiled || 0 }));
   } catch (e) {
     src.close();
-    return res.status(500).json({ error: `That copy could not be read: ${e.message}` });
+    return { error: String((e && e.message) || e) };
   }
   src.close();
+  return { read };
+}
+
+// Everything this board is missing, from every copy on the disk, in one press.
+//
+// Picking one copy is the wrong shape for the usual case. A loss is rarely
+// confined to the newest backup: the missing week is spread across the twenty
+// copies that saw it, and asking somebody to work out which one holds what is
+// asking them to do the search by hand. This reads them all, oldest first, and
+// puts back everything the board no longer has.
+//
+// Safe to press at any time, and safe to press twice. Nothing is removed, a
+// record already on the board is never touched, a record seen in several copies
+// is added once, and anything a finalised submission already contains is left
+// where it is. Running it again when nothing is missing writes nothing at all.
+app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
+  const copies = listBackups(BACKUP_DIR)
+    .slice()
+    // Oldest first, so a record that appears in several keeps the newest copy
+    // of itself.
+    .sort((a, b) => (a.at < b.at ? -1 : 1));
+  if (!copies.length) return res.status(404).json({ error: "There are no copies to read." });
+
+  const safety = await runBackup("before a sync");
+  if (!safety.written.length) {
+    return res.status(500).json({
+      error: "A safety copy of the board could not be written, so nothing was changed.",
+    });
+  }
+  // Its own safety copy is not one of the copies to read back.
+  const sweep = copies.filter((c) => c.name !== safety.name);
+
+  const filed = filedRecordIds(db);
+  const have = new Map();
+  const liveLists = new Map();
+  for (const row of db.prepare("SELECT key, value FROM board").all()) {
+    if (!row || FORBIDDEN_KEYS.has(row.key)) continue;
+    try {
+      const v = JSON.parse(row.value);
+      if (!Array.isArray(v)) continue;
+      liveLists.set(row.key, v);
+      have.set(row.key, new Set(v.map((r) => r && r.id).filter(Boolean).map(String)));
+    } catch (e) {
+      /* not a list, not our business */
+    }
+  }
+
+  const found = new Map();
+  const unreadable = [];
+  for (const c of sweep) {
+    const r = collectMissing(path.join(BACKUP_DIR, c.name), db, have, filed, found);
+    if (r.error) unreadable.push({ name: c.name, error: r.error });
+  }
+
+  const put = db.prepare(
+    `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  );
+  const work = [];
+  const report = [];
+  for (const [key, pile] of found) {
+    const back = [...pile.entries()].filter(([id]) => !id.startsWith("__filed__")).map(([, r]) => r);
+    const skipped = [...pile.keys()].filter((id) => id.startsWith("__filed__")).length;
+    if (!back.length) {
+      if (skipped) report.push({ key, added: 0, alreadyFiled: skipped });
+      continue;
+    }
+    const now = liveLists.get(key) || [];
+    work.push({ key, value: JSON.stringify([...now, ...back]) });
+    report.push({ key, added: back.length, alreadyFiled: skipped });
+  }
+  db.transaction((list) => {
+    for (const w of list) put.run(w.key, w.value);
+  })(work);
 
   const total = report.reduce((n, r) => n + r.added, 0);
   console.log(
-    `Sync: ${total} record(s) put back from ${found.name} by ${req.user.id}` +
-      ` (safety copy ${safety.name || "?"})`
+    `Sync-all: ${total} record(s) put back from ${sweep.length} copies by ${req.user.id}` +
+      ` (safety copy ${safety.name || "?"})` +
+      (unreadable.length ? ` · unreadable: ${unreadable.map((u) => u.name).join(", ")}` : "")
   );
   res.json({
     ok: true,
-    from: found.name,
-    // `written` is the directories it reached; the filename is the same for
-    // all of them.
+    copiesRead: sweep.length,
     safety: safety.name ? [safety.name] : [],
     added: total,
     keys: report.filter((r) => r.added || r.alreadyFiled).sort((a, b) => b.added - a.added),
+    unreadable,
   });
 });
 
