@@ -6,7 +6,7 @@ import { medicCrewIndex } from "../domain/crew-stamps.jsx";
 import { STATIONS, atStation, isBoardLogEntry, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
 import { opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { scheduledShiftKey, shiftDateOf, shiftLabelWithWindow, shiftWindowAt, shiftWindowFor } from "../domain/shift-helpers.jsx";
-import { buildDispatchLogAOA, dressLogSheet, dressSheet, gridLogSheet, paintRows, personUhuRows, titleSheet } from "../domain/uhu-person.jsx";
+import { XL_FONT, buildDispatchLogAOA, dressLogSheet, dressSheet, gridLogSheet, paintRows, personUhuRows, titleSheet } from "../domain/uhu-person.jsx";
 import { actorPost } from "./name-stamps.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
 import { dedupeById } from "../lib/helpers.jsx";
@@ -92,6 +92,49 @@ export const NARROW_COLUMNS = {
   "E-PCR AUTHOR": 22,
 };
 
+// A column holding nothing but short whole numbers — a counter, not data.
+// At least one value, every value a number of four characters or fewer.
+function isCounterColumn(ws, range, heading, c) {
+  let seen = 0;
+  for (let r = heading + 1; r <= range.e.r; r++) {
+    const cell = ws[XLSX.utils.encode_cell({ r, c })];
+    if (!cell || cell.v === undefined || cell.v === null || cell.v === "") continue;
+    const text = String(cell.v).trim();
+    if (!text) continue;
+    if (!/^\d{1,4}$/.test(text)) return false;
+    seen += 1;
+  }
+  return seen > 0;
+}
+
+// The green header band, on every sheet in the workbook.
+//
+// It lived in `dressSheet`, which only some sheets were passed through — so
+// the dispatch log had captions a reader could see at a glance and the event
+// log, the utilisation and the origins beside it had plain black text on
+// white. One workbook that looks like two is one somebody has to work out
+// twice. Painted here, where every sheet already comes, so a new sheet cannot
+// be added without it.
+export function paintHeaderRow(ws, headerRowIndex) {
+  if (!ws || !ws["!ref"]) return ws;
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: headerRowIndex, c })];
+    if (!cell) continue;
+    cell.s = {
+      ...(cell.s || {}),
+      fill: { patternType: "solid", fgColor: { rgb: "FF0A5540" } },
+      font: { name: XL_FONT, color: { rgb: "FFFFFFFF" }, bold: true, sz: 10 },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+      border: {
+        bottom: { style: "thin", color: { rgb: "FF063A2C" } },
+        right: { style: "hair", color: { rgb: "FF2F6B57" } },
+      },
+    };
+  }
+  return ws;
+}
+
 export function autoFitSheet(ws, headerRow, foldFrom) {
   if (!ws || !ws["!ref"]) return ws;
   const range = XLSX.utils.decode_range(ws["!ref"]);
@@ -108,7 +151,15 @@ export function autoFitSheet(ws, headerRow, foldFrom) {
       const text = xlCellText(ws[XLSX.utils.encode_cell({ r, c })]);
       if (text) widest = Math.max(widest, xlTextWidth(text));
     }
-    const cap = NARROW_COLUMNS[headText.trim()];
+    // A column of numbers is as wide as its numbers.
+    //
+    // Every column starts at the 9-character minimum and grows to fit its
+    // heading, so a row-number column headed anything longer than "#" came out
+    // wide enough for a sentence with "12" sitting in the middle of it. Three
+    // digits is the most a shift will ever number, and that is what it gets.
+    // Judged on the CONTENT rather than only on the caption, because each sheet
+    // in this workbook heads its counter differently.
+    const cap = NARROW_COLUMNS[headText.trim()] || (isCounterColumn(ws, range, heading, c) ? 6 : 0);
     let wch = Math.min(XL_COL_MAX_WIDTH, Math.max(XL_COL_MIN_WIDTH, Math.ceil(widest + XL_COL_PADDING)));
     if (cap) wch = Math.min(wch, cap);
     // Everything past the shift log's own columns is folded away: grouped one
@@ -125,6 +176,7 @@ export function autoFitSheet(ws, headerRow, foldFrom) {
   }
   ws["!rows"] = rows;
 
+  paintHeaderRow(ws, heading);
   return ws;
 }
 

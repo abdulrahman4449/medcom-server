@@ -695,6 +695,40 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
       return;
     }
     closeCancel();
+    // Stopping an arrangement stops the copy it has already thrown off for
+    // today, if that copy has not gone out yet.
+    //
+    // The two are separate records — the arrangement and the day's booking —
+    // so cancelling the first left the second sitting on the board waiting for
+    // its time, and it went out an hour later from an arrangement the desk had
+    // stopped. A copy that has ALREADY been released is a live call and is not
+    // touched here: it is cancelled from the board like any other call, where
+    // the crew can be told.
+    if (schedIsTemplate(entry)) {
+      const fresh = await readKey("ems:scheduled", saveFallback);
+      const stamp = {
+        status: "cancelled",
+        cancelledAt: Date.now(),
+        cancelledBy: user.name || "Dispatch",
+        cancelReason: reason,
+      };
+      const stopped = fresh.filter(
+        (s) => s && s.repeatOf === entry.id && schedOpen(s, Date.now())
+      );
+      await saveScheduled(
+        fresh.map((s) =>
+          s && (s.id === entry.id || stopped.some((x) => x.id === s.id)) ? { ...s, ...stamp } : s
+        )
+      );
+      await addLog(
+        `Repeating booking stopped — ${entry.nature} (${callRoute(entry)}) · ${repeatLabel(entry)} · reason: ${reason}` +
+          (stopped.length
+            ? ` · today's booking cancelled with it`
+            : ""),
+        "assign"
+      );
+      return;
+    }
     await patchBooking(
       entry.id,
       {

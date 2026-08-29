@@ -129,6 +129,33 @@ patch", that document is the target — do not start a fresh exploration.
   `SCHED_LEAD_MS` comes off whichever it is. The lead used to apply only to
   `dispatchAt`, so a booking taken without one was raised AT its appointment
   time — the crew told about it exactly as late as it is possible to be told.
+- **A stopped arrangement stops.** `schedRepeatIsLive` — the pass that throws
+  off the day's copy picked its templates on shape alone (repeat days, not a
+  return leg, not itself a copy) and never looked at the status. So cancelling a
+  standing transfer took it off the Repeating tab, which filters cancelled ones
+  out, and changed nothing else: it went on raising a call every one of its days
+  for ever, from a card the desk could no longer see to stop it a second time.
+  Cancelling the arrangement also cancels the copy it has already thrown off for
+  today, unless that copy has already been released — a released one is a live
+  call and is cancelled from the board, where the crew can be told.
+- **A call called off before the crew reached the patient needs no restock.**
+  `restockNotNeeded`. Both halves are needed: a call stood down at the bedside
+  may well have cost gloves and a blanket, and a call with no scene stamp is an
+  unfinished timeline rather than a cancellation. So it comes off the list only
+  when the close reason says it was called off AND `times.arrival` is empty.
+- **A date field carries `lang="en-GB"`.** The browser draws its own calendar
+  and follows the ELEMENT's language, so on a device set to Arabic the picker
+  opens on the Hijri calendar and types a Hijri date into a field the board
+  reads as Gregorian — filing a call years out. `styles.dateInput` is the large
+  form; pair the two.
+- **Every sheet in a workbook wears the same header band.** `paintHeaderRow`
+  runs inside `autoFitSheet`, which every sheet already goes through, so a new
+  one cannot be added without it. It used to live in `dressSheet`, which only
+  some sheets were passed through — one workbook that looked like two.
+  `isCounterColumn` narrows a column of short whole numbers to six characters:
+  every column starts at the nine-character minimum and grows to fit its
+  heading, so a row counter headed anything longer than `#` came out wide
+  enough for a sentence with "12" in the middle of it.
 - **A booking being worked takes the whole row.** `schedCardOpen` —
   `schedGrid` is a two-up tile grid and a grid item is as wide as its column
   however much is inside it, so pressing Manage built the full card, controls

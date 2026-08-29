@@ -4,7 +4,7 @@ import { DEFAULT_STATION, atStation } from "../domain/live-sheet.jsx";
 import { callRoute } from "../domain/call-locations.jsx";
 import { crewByValue, crewOptionValue, knownCrew } from "../domain/crew-roster.jsx";
 import { scheduledShiftKey } from "../domain/shift-helpers.jsx";
-import { gregDateTimeStr } from "../lib/dates.jsx";
+import { gregDateTimeStr, gregLongDateStr } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { readKey } from "../lib/offline-queue.jsx";
 import { useState } from "../lib/react.jsx";
@@ -294,9 +294,20 @@ export function PastCallForm({ user, units, log, saveRequests, addLog, onDone })
       </InfoNote>
 
       <div style={styles.formRow}>
-        <div style={{ flex: 1, minWidth: 150 }}>
+        <div style={{ flex: 1, minWidth: 190 }}>
           <label style={styles.label}>Date it ran</label>
-          <input style={styles.input} type="date" value={ymd} onChange={(e) => { setYmd(e.target.value); setError(""); }} />
+          {/* lang="en-GB" so the picker opens on the Gregorian calendar.
+              Without it the calendar follows the device, and a phone set to
+              Arabic opens on the Hijri one — which types a date this board
+              then reads as Gregorian, filing the call years out. */}
+          <input
+            style={styles.dateInput}
+            type="date"
+            lang="en-GB"
+            value={ymd}
+            onChange={(e) => { setYmd(e.target.value); setError(""); }}
+          />
+          <div style={styles.formHint}>{ymd ? gregLongDateStr(tsFrom(ymd, "12:00")) : "Pick the day it ran"}</div>
         </div>
         <div style={{ flex: 2, minWidth: 180 }}>
           <label style={styles.label}>Team</label>

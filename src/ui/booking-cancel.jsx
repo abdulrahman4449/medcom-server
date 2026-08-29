@@ -151,6 +151,18 @@ export function schedIsOccurrence(s) {
   return !!(s && s.repeatOf);
 }
 
+// A stopped arrangement stops.
+//
+// The pass that throws off the day's copy picked its templates on shape alone —
+// "has repeat days, is not a return leg, is not itself a copy" — and never
+// looked at whether the arrangement was still wanted. So cancelling a standing
+// transfer took it off the Repeating tab, which filters cancelled ones out, and
+// changed nothing else: it went on producing a call every one of its days, for
+// ever, from a card the desk could no longer see to stop it a second time.
+export function schedRepeatIsLive(s) {
+  return schedIsTemplate(s) && s.status !== "cancelled";
+}
+
 export function schedDue(s, now) {
   if (schedAwaitCall(s)) return false;
   if (schedIsTemplate(s)) return false;

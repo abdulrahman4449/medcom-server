@@ -9,7 +9,7 @@ import { opDayEnd, opDayLabel, opDayStart } from "./op-day.jsx";
 import { REFUSAL_TIME_KEY } from "./outcomes.jsx";
 import { pcrAuthorStamp } from "./pcr-author.jsx";
 import { journeyLabel } from "./return-journeys.jsx";
-import { assistOf, assistTeamNames, callOutcomeLabel, requestOutcomeKey, requestOutcomeLabel } from "./second-ambulance.jsx";
+import { assistOf, assistTeamNames, requestOutcomeKey, requestOutcomeLabel } from "./second-ambulance.jsx";
 import { missingLogFields } from "./sheet-gaps.jsx";
 import { scheduledShiftKey, seatLabel, shiftDateOf, shiftLabelWithWindow, shiftMeta, shiftWindowFor } from "./shift-helpers.jsx";
 import { SHIFT_EVENTS, SHIFT_MS } from "./shifts.jsx";
@@ -564,7 +564,9 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     // the department's own columns stay exactly where they are.
     "SHIFT",
     "STATUS",
-    "OUTCOME",
+    // OUTCOME is gone. It said the same thing as REQUEST STATUS in a second
+    // vocabulary, and a sheet that answers "was the patient moved?" twice is a
+    // sheet that can answer it two different ways.
     "PT. REFUSED TIME",
     "REFUSED BY (NAME)",
     "REFUSED BY (NATIONAL ID)",
@@ -620,6 +622,15 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // Export caption -> the shift log's caption for the same column.
   const SHIFT_LOG_COLUMNS = [
     ["Location where the patient is coming from", "Patient coming from"],
+    // Where the ambulance actually goes, beside where the patient came from.
+    //
+    // Both columns already existed — "Coming from?" and "Transported to?" —
+    // but they were not among the ones the sheet opens with, so they sat past
+    // the fold with the codes and the refusal fields, and the front of the
+    // sheet named a ward and then never said where anybody was taken. They are
+    // the route: they belong next to the origin, before anything else.
+    ["Coming from?", "From"],
+    ["Transported to?", "To"],
     ["Call", "Call"],
     ["MRN", "MRN"],
     ["Dispatch time", "Disp."],
@@ -637,7 +648,6 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     // Beside the author, because the pair is read together: who wrote it up and
     // who else was on the truck.
     ["BRAVO", "Bravo"],
-    ["OUTCOME", "Outcome"],
     // Last of the columns the sheet opens with, so it is the last thing read
     // across a row. Everything after this is in the collapsed group.
     ["REQUEST STATUS", "Request status"],
@@ -706,7 +716,6 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       missingLogFields(r).length === 0 && t.backInService ? "Completed" : "Incomplete",
       shift ? shift.short : "",
       reqStatusMeta(r.status).label,
-      callOutcomeLabel(r),
       clockStr(t[REFUSAL_TIME_KEY]),
       r.refusal ? r.refusal.name : "",
       r.refusal ? r.refusal.nationalId : "",

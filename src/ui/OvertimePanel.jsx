@@ -40,7 +40,6 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
   // administrator actually came for was four rows down the third block. Each
   // part folds on its own now, and the two that need answering open first.
   const [openLive, setOpenLive] = useState(false);
-  const [openUnsent, setOpenUnsent] = useState(false);
   const [openClaims, setOpenClaims] = useState(true);
   const now = Date.now();
   // A pay period, not a calendar month. Defaults to the last 30 days and is
@@ -74,19 +73,19 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
   // not sent in is not waiting on anybody here, and counting it as pending put
   // a number on this panel that no amount of deciding could ever clear.
   const pending = claims.filter((c) => !c.decision && c.submitted);
-  const unsent = claims.filter((c) => !c.decision && !c.submitted);
-  const unsentMs = unsent.reduce((n, c) => n + (c.claimedMs || 0), 0);
   const label = validRange
     ? `${gregDateStr(from)} → ${gregDateStr(to - 1)}`
     : "Pick a period";
 
-  // Three figures, and only one of them is money.
+  // Two figures, and only one of them is money.
   //
-  // The third used to be everything anybody had ever claimed, declined hours
-  // included, under the heading CLAIMED IN TOTAL — so the largest number on the
-  // panel was the one nobody was being paid, sitting beside the one they were.
-  // A declined claim is not a total, it is a refusal. It is counted on its own
-  // and named as such, and the approved figure is the one the period comes to.
+  // It used to carry four: approved, awaiting, declined, and hours nobody had
+  // claimed. Two of those are not totals — a refusal is not money owed, and
+  // hours the person never sent in are not the department's to count — and an
+  // administrator opening this panel had to read past both to reach the figure
+  // they came for. `declined` is still summed because the claims list below
+  // marks each one, and the sum is what proves the approved figure excludes
+  // them.
   const totals = claims.reduce(
     (acc, c) => {
       const ms = overtimeApprovedMs(c);
@@ -210,7 +209,20 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
     if (!validRange || busy) return;
     setBusy(true);
     try {
-      await exportOvertime(claims, from, to, label);
+      // The period the administrator picked, and only the claims that are
+      // actually claims.
+      //
+      // Hours somebody worked and never sent in are not the department's to
+      // pay and are not on this panel any more; putting them on the sheet that
+      // goes to payroll would put them back. A decided claim stays on it even
+      // when it was refused — a refusal on the record is the point of having
+      // one — in its own column, adding to nothing.
+      await exportOvertime(
+        claims.filter((c) => c.decision || c.submitted),
+        from,
+        to,
+        label
+      );
     } finally {
       setBusy(false);
     }
@@ -253,21 +265,13 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
           </span>
           <span style={styles.otTotalLabel}>AWAITING A DECISION</span>
         </div>
-        <div style={styles.otTotal}>
-          <span style={{ ...styles.otTotalFig, color: totals.declined ? "var(--crit)" : "var(--ink-4)" }}>
-            {otHoursStr(totals.declined)}
-          </span>
-          <span style={styles.otTotalLabel}>DECLINED — NOT COUNTED ABOVE</span>
-        </div>
-        {/* The fourth figure, and the one that is nobody's job yet: hours
-            somebody worked and has not asked to be paid for. It is not a total
-            and it is not a refusal, so it is named as what it is. */}
-        <div style={styles.otTotal}>
-          <span style={{ ...styles.otTotalFig, color: unsentMs ? "var(--move)" : "var(--ink-4)" }}>
-            {otHoursStr(unsentMs)}
-          </span>
-          <span style={styles.otTotalLabel}>NOT SENT IN — THEIRS TO CLAIM</span>
-        </div>
+        {/* Two figures, not four.
+            The panel is here to answer one question — what does this period
+            come to, and what is still waiting on a decision. A declined claim
+            is a refusal, not a total, and hours nobody has claimed are not the
+            department's to count; both were figures an administrator had to
+            read past to reach the one they came for. The claims themselves are
+            still on the record below. */}
       </div>
 
       {/* Standing past their shift right now. */}
@@ -301,46 +305,6 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
             button is on each seat on the Teams page.
           </div>
         </div>
-        </OtBlock>
-      )}
-
-      {/* Hours nobody has been asked to decide on.
-          A stay a call held them through is sent on its own; anything else is
-          the person's to send, and until they do it is not a claim. They are
-          shown here rather than hidden, because an administrator who can see
-          somebody stayed two hours and never claimed for it may well want to
-          ask — and the button pulls it into the queue so it can be approved
-          without the person having to send it from a tablet they have already
-          handed back. */}
-      {unsent.length > 0 && (
-        <OtBlock
-          title="NOT SENT IN — THE PERSON'S OWN TO CLAIM"
-          count={unsent.length}
-          open={openUnsent}
-          onToggle={() => setOpenUnsent((v) => !v)}
-        >
-          <div style={styles.otLiveNote}>
-            {otHoursStr(unsentMs)} in total. None of these were held by a call, so the board did
-            not send them: the person is offered the choice when they sign off. Nothing here counts
-            towards the period until somebody acts on it.
-          </div>
-          {unsent.map((c) => (
-            <div key={c.id} style={styles.otLiveRow}>
-              <span style={styles.otLiveName}>{c.name || "Unnamed"}</span>
-              <span style={styles.otLiveUnit}>
-                {c.unitName}
-                {c.seat ? ` · ${seatLabel(c.seat)}` : ""} ·{" "}
-                {c.shiftStart ? gregDateStr(c.shiftStart) : ""}
-              </span>
-              <span style={styles.otLiveMs}>{otHoursStr(c.claimedMs)}</span>
-              <button style={styles.otGrantBtn} onClick={() => decide(c, "approved", c.claimedMs, "Brought in by administration")}>
-                Approve it anyway
-              </button>
-              <button style={styles.ghostBtnSm} onClick={() => decline(c)}>
-                Decline
-              </button>
-            </div>
-          ))}
         </OtBlock>
       )}
 

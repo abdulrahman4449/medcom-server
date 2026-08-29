@@ -499,7 +499,11 @@ export function PendingCallCard({ req, onOpen, now }) {
         </span>
 
         <span style={styles.callCardTileRoute}>{callRoute(req)}</span>
-        <span style={styles.callCardTileWait}>NO TEAM ASSIGNED</span>
+        {/* The tile is a button, and the one thing the desk has to do about a
+            waiting call is put a team on it — but the tile only said what was
+            wrong, not that pressing it was the way to fix it. Reported as
+            "the call landed and I was unable to assign a team". */}
+        <span style={styles.callCardTileWait}>TAP TO ASSIGN A TEAM</span>
 
         {(req.scheduledFor || req.handover || isReturnLeg(req)) && (
           <span style={styles.callCardTileTags}>

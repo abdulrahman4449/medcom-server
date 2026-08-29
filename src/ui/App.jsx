@@ -17,7 +17,7 @@ import { RESTOCK_KEY, callsAwaitingRestock } from "../domain/restock.jsx";
 import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { callsNeedingReturn, isRecurring, isReturnLeg, repeatOccurrencesDue, returnBookingFor, wantsReturn } from "../domain/return-journeys.jsx";
 import { callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
-import { crewShiftWindow, overtimeMs, scheduledShiftKey, seatLabel, shiftAssignment, shiftMeta, shiftPhrase, shiftWindowAt } from "../domain/shift-helpers.jsx";
+import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftAssignment, shiftMeta, shiftPhrase, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { SUBMISSION_KEY, amendSubmissionsWithLateCalls, finaliseOpenSubmissions, requestsForShift, submissionId, submitShiftLog } from "../domain/shift-log.jsx";
 import { SHIFTS, SHIFT_MS } from "../domain/shifts.jsx";
 import { LOCATION_KEY, TRACKING_CONSENT_KEY, pruneLocations } from "../domain/truck-locations.jsx";
@@ -25,10 +25,10 @@ import { actorStamp } from "../export/name-stamps.jsx";
 import { exportAndShareLog } from "../export/workbook.jsx";
 import { API_BASE, READ_FAILED } from "../lib/board-api.jsx";
 import { pruneArchivedWork } from "../lib/board-size.jsx";
-import { ensureAudioCtx, nowTime, setNativeStandby, setScreenAwake } from "../lib/dates.jsx";
+import { ensureAudioCtx, nowTime, setNativeStandby, setScreenAwake, soundReminderTone } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Radio } from "../lib/icons.jsx";
-import { alertsSupported, registerAlertWorker, requestAlertPermission, requestNativeNotifications } from "../lib/notify.jsx";
+import { alertsSupported, notifyBookingReleased, registerAlertWorker, requestAlertPermission, requestNativeNotifications } from "../lib/notify.jsx";
 import { connectionListeners, connectionOk, lastWriteError, loadPendingWrites, pushPendingWrites, readKey, readKeyRaw, totalPendingCount, writeInFlight, writeKey, writeList } from "../lib/offline-queue.jsx";
 import { useCallback, useEffect, useRef, useState } from "../lib/react.jsx";
 import { SESSION_VERSION, clearSession, patchSession, readSession, writeSession } from "../lib/session.jsx";
@@ -44,7 +44,7 @@ import { POLICY_KEY, PolicyLibrary, readPolicyFile } from "./PolicyLibrary.jsx";
 import { LogSheet } from "./ShiftReport.jsx";
 import { TeamView } from "./TeamView.jsx";
 import { UhuPanel } from "./UhuPanel.jsx";
-import { schedDue, whenStr } from "./booking-cancel.jsx";
+import { schedDue, schedRepeatIsLive, whenStr } from "./booking-cancel.jsx";
 import { GlobalFont } from "./font.jsx";
 import { BIG_KEY_BYTES, POLICY_SHELF_LIMIT, bytesStr, keyName } from "./storage-banner.jsx";
 
@@ -66,6 +66,50 @@ const FLEET_SEEDED_KEY = "ems:fleetSeeded";
 // The percentage is read off the filesystem rather than added up from the rows:
 // SQLite's file is bigger than the sum of its values, the write-ahead log sits
 // beside it, and other things share a hosted volume. Only the disk knows.
+// A booked transfer that has just become a live call, said out loud on the desk.
+//
+// It reuses the pre-alert's vocabulary on purpose: this is the same
+// conversation one step later — "one is coming" and then "it is here". The
+// difference that matters is the button, because what the desk has to do about
+// it is put a team on it, and the call is on another tab.
+export function BookedArrivalNotice({ entries, units, onDismiss, onOpen }) {
+  if (!entries || entries.length === 0) return null;
+  return (
+    <div style={styles.preAlert}>
+      <div style={styles.preAlertHead}>
+        <span style={styles.preAlertTitle}>
+          <Radio size={13} /> ON THE BOARD NOW
+        </span>
+        <span style={styles.preAlertCount}>
+          {entries.length === 1 ? "1 booked transfer" : `${entries.length} booked transfers`} raised
+        </span>
+        <button style={styles.preAlertDismiss} onClick={onDismiss}>
+          Dismiss
+        </button>
+      </div>
+      {entries.map((req) => {
+        const unit = (units || []).find((u) => u.id === req.assignedUnitId);
+        return (
+          <div key={req.id} style={styles.preAlertRow}>
+            <span style={styles.preAlertTime}>{req.scheduledFor ? hhmm(req.scheduledFor) : "now"}</span>
+            <span style={styles.preAlertNature}>{req.nature}</span>
+            <span style={styles.preAlertRoute}>{callRoute(req)}</span>
+            <span style={unit ? styles.assignedTag : styles.staffingWarn}>
+              {unit ? unit.name : "needs a team"}
+            </span>
+          </div>
+        );
+      })}
+      <div style={styles.preAlertFoot}>
+        Booked ahead and now waiting on the board like any other call.{" "}
+        <button style={styles.preAlertArmBtn} onClick={onOpen}>
+          open the board
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function StorageBanner({ role }) {
   const [state, setState] = useState(null);
   const warned = useRef(false);
@@ -403,6 +447,49 @@ export function App() {
       clearInterval(t);
     };
   }, [ready, user && user.accountId, updateSession]);
+
+  // A booked transfer has landed on the board, and the desk is told.
+  //
+  // The pre-alert warns that one is coming; nothing said when it arrived. That
+  // matters most for a standing arrangement, which the desk never sees in
+  // Upcoming at all — the first and only time a repeating transfer appears is
+  // as a call card among the live work, and a desk reading a busy board has no
+  // reason to notice one more card on it.
+  //
+  // Every desk announces it, not only the one whose poll happened to win the
+  // release: the claim decides who RAISES the call, and that may be the other
+  // station's board.
+  const seenBookedRef = useRef(null);
+  const [bookedArrivals, setBookedArrivals] = useState([]);
+  useEffect(() => {
+    if (!ready || !user || (user.role !== "dispatcher" && user.role !== "admin")) return;
+    const mine = (requests || []).filter(
+      (r) =>
+        r &&
+        r.scheduledId &&
+        r.status !== "completed" &&
+        (user.role === "admin" || !user.station || stationOf(r) === user.station)
+    );
+    const ids = new Set(mine.map((r) => r.id));
+    // The first pass adopts what is already there without announcing it —
+    // otherwise refreshing the page shouts about every booked call on the
+    // board, which is the fastest way to teach a desk to ignore the noise.
+    if (seenBookedRef.current === null) {
+      seenBookedRef.current = ids;
+      return;
+    }
+    const fresh = mine.filter((r) => !seenBookedRef.current.has(r.id));
+    seenBookedRef.current = ids;
+    if (!fresh.length) return;
+    setBookedArrivals((prev) => [...fresh, ...prev].slice(0, 6));
+    soundReminderTone(audioCtxRef);
+    try {
+      if (navigator.vibrate) navigator.vibrate([90, 70, 90]);
+    } catch (e) {
+      // no vibration on this device
+    }
+    fresh.forEach(notifyBookingReleased);
+  }, [ready, user && user.role, user && user.station, requests]);
 
   // Browsers only let a page make noise, buzz or ask about notifications off
   // the back of a real interaction. Sign-in provides one; a session that came
@@ -1713,7 +1800,7 @@ export function App() {
       //    the calendar day so the same Tuesday is never booked twice, however
       //    many desks are watching.
       const templates = list.filter(
-        (x) => x && isRecurring(x) && !isReturnLeg(x) && !x.repeatOf
+        (x) => schedRepeatIsLive(x) && !isReturnLeg(x)
       );
 
       // Arrangements that were dispatched before they stopped being
@@ -2432,6 +2519,15 @@ export function App() {
           — a desk holding unsent calls is a desk showing a board nobody else
           can see. */}
       {(user.role === "dispatcher" || user.role === "admin") && <SyncStatus />}
+      <BookedArrivalNotice
+        entries={bookedArrivals}
+        units={units}
+        onDismiss={() => setBookedArrivals([])}
+        onOpen={() => {
+          setBookedArrivals([]);
+          setNavTab("board");
+        }}
+      />
       <StorageBanner role={user.role} />
       {/* The bar floats over the board, so the last section needs room to clear
           it — otherwise the final call on a long day sits underneath it. */}

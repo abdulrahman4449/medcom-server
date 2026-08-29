@@ -169,6 +169,43 @@ export function notifyAssignedCall(request, unitName) {
 // another tab still gets it. Deliberately unlike the call notification: its own
 // tag per booking (a reminder must not replace a live call on the lock screen),
 // no interaction required, and it disappears on its own.
+// A booking has stopped being a booking: the desk's own notice that a call it
+// took days ago is now on the board and needs a team.
+//
+// The pre-alert warns that one is coming; nothing said when it actually
+// arrived. That matters most for a standing arrangement, which the desk never
+// sees in Upcoming — the first and only time a repeating transfer appears is
+// as a call card among the live work, and a desk reading a busy board has no
+// reason to notice one more card on it.
+export function notifyBookingReleased(req) {
+  try {
+    if (!alertsSupported() || Notification.permission !== "granted") return;
+    const title = `Booked transfer on the board — ${req.nature || "transfer"}`;
+    const options = {
+      body: `${callRoute(req)}\nNeeds a team`,
+      tag: `${SCHED_ALERT_TAG_PREFIX}live-${req.id}`,
+      renotify: false,
+      requireInteraction: false,
+    };
+    if (alertWorker && alertWorker.showNotification) {
+      const shown = alertWorker.showNotification(title, options);
+      if (shown && typeof shown.catch === "function") shown.catch(() => {});
+      return;
+    }
+    const n = new Notification(title, options);
+    n.onclick = () => {
+      try {
+        window.focus();
+        n.close();
+      } catch (e) {
+        // ignore
+      }
+    };
+  } catch (e) {
+    // ignore
+  }
+}
+
 export function notifyBookingSoon(entry, minutesOut) {
   try {
     if (!alertsSupported() || Notification.permission !== "granted") return;

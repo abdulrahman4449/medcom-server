@@ -930,6 +930,57 @@ export function run(D, t) {
     t.is("repeat: and the copy is not itself a template", D.schedIsTemplate(occ), false);
   }
 
+  // ---------- a stopped arrangement stops
+  //
+  // The pass that throws off the day's copy picked its templates on shape
+  // alone and never looked at whether the arrangement was still wanted, so
+  // cancelling a standing transfer took it off the Repeating tab — which
+  // filters cancelled ones out — and changed nothing else: it went on
+  // producing a call every one of its days, from a card the desk could no
+  // longer see to stop it a second time.
+  {
+    const live = { id: "t", scheduledFor: at(2026, 8, 18, 9), repeat: { days: [0, 2, 4] }, status: "scheduled" };
+    t.ok("repeat: a live arrangement is one the pass will run", D.schedRepeatIsLive(live));
+    t.is("repeat: a cancelled arrangement is not",
+      D.schedRepeatIsLive({ ...live, status: "cancelled" }), false);
+    t.is("repeat: and the day's copy is never a template to run",
+      D.schedRepeatIsLive({ ...live, repeatOf: "t" }), false);
+    t.is("repeat: nor is an ordinary booking with no days on it",
+      D.schedRepeatIsLive({ id: "b", scheduledFor: at(2026, 8, 18, 9), status: "scheduled" }), false);
+  }
+
+  // ---------- a call called off before the crew arrived used nothing
+  //
+  // Restocking a truck nobody opened is paperwork for its own sake. Both halves
+  // are needed: a call stood down at the bedside may well have cost gloves and
+  // a blanket, and a call with no scene stamp is an unfinished timeline rather
+  // than a cancellation.
+  {
+    const base = { id: "r", status: "completed", assignedUnitId: "u1", createdAt: at(2026, 8, 20, 9),
+      times: { backInService: at(2026, 8, 20, 10) } };
+    const cancelled = { ...base, closeReason: "Cancelled before the team arrived" };
+    t.ok("restock: called off before the scene needs none", D.restockNotNeeded(cancelled));
+    t.is("restock: called off AT the scene still needs one",
+      D.restockNotNeeded({ ...cancelled, times: { ...base.times, arrival: at(2026, 8, 20, 9, 20) } }), false);
+    t.is("restock: an ordinary call needs one",
+      D.restockNotNeeded({ ...base, closeReason: "Call completed — patient delivered" }), false);
+    t.is("restock: a call with no reason on it at all still needs one",
+      D.restockNotNeeded(base), false);
+    // A refusal is not a cancellation: the truck rolled and the crew assessed
+    // the patient, so that call happened.
+    t.is("restock: a refusal is not a cancellation",
+      D.restockNotNeeded({ ...base, closeReason: "Patient refused transport" }), false);
+
+    // And the list itself drops it.
+    const done = {};
+    t.is("restock: the outstanding list leaves it out",
+      D.callsAwaitingRestock([cancelled], "u1", at(2026, 8, 20, 7), done).length, 0);
+    t.is("restock: and keeps an ordinary one",
+      D.callsAwaitingRestock(
+        [{ ...base, closeReason: "Call completed — patient delivered" }], "u1", at(2026, 8, 20, 7), done
+      ).length, 1);
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

@@ -1,3 +1,4 @@
+import { callWasCancelled } from "./close-reasons.jsx";
 import { INVENTORY_MOVES_CAP, INVENTORY_MOVES_KEY } from "./inventory.jsx";
 import { stationOf } from "./live-sheet.jsx";
 import { callEndTs } from "./uhu.jsx";
@@ -39,6 +40,22 @@ export function restockIsDone(done, requestId) {
 //
 // `from` is the crew's own shift window, the same one their completed-call list
 // uses, so the two agree about which calls are theirs.
+// A call called off before the crew ever reached the patient used nothing, and
+// asking about it is asking a crew to confirm a truck they never opened.
+//
+// The test is both halves together. "Cancelled" alone is not enough — a call
+// stood down at the bedside, after the crew have been in with their bags, is a
+// cancellation that may well have cost a set of gloves and a blanket. And
+// "never arrived" alone is not enough either: a call that simply has no scene
+// stamp on it is an unfinished timeline, not a cancellation. So it comes off
+// the list only when the reason says it was called off AND there is no arrival
+// at the scene on the record.
+export function restockNotNeeded(req) {
+  if (!req) return false;
+  const reachedScene = !!((req.times || {}).arrival);
+  return callWasCancelled(req) && !reachedScene;
+}
+
 export function callsAwaitingRestock(requests, unitId, from, done) {
   if (!unitId) return [];
   const now = Date.now();
@@ -49,6 +66,7 @@ export function callsAwaitingRestock(requests, unitId, from, done) {
         r.status === "completed" &&
         r.assignedUnitId === unitId &&
         callEndTs(r, now) >= (from || 0) &&
+        !restockNotNeeded(r) &&
         !restockIsDone(done, r.id)
     )
     .sort((a, b) => callEndTs(b, now) - callEndTs(a, now));

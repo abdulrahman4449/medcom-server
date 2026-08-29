@@ -1005,6 +1005,30 @@ export const styles = {
   // buttons, nothing like the active call card it is the diary equivalent of.
   // Spanning every column puts it back to full width, and the controls lay out
   // in a row again.
+  // A date field somebody has to read a date out of.
+  //
+  // The browser draws its own calendar and sizes its own text, and at the
+  // ordinary input size the whole of "29/08/2026" sat in a box a thumb could
+  // not land on. Taller, wider, and the digits at 17px — still above the 16px
+  // floor that stops iOS zooming the board when the field takes focus.
+  //
+  // Pair it with lang="en-GB" on the input. The calendar system follows the
+  // element's language, so on a device set to Arabic the picker opens on the
+  // Hijri calendar and types a Hijri date into a field the board reads as
+  // Gregorian.
+  dateInput: {
+    width: "100%",
+    minHeight: 46,
+    fontSize: 17,
+    fontWeight: 650,
+    letterSpacing: 0.3,
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid var(--hair-2)",
+    background: "var(--inset)",
+    color: "var(--ink)",
+    fontFamily: "inherit",
+  },
   schedCardOpen: { gridColumn: "1 / -1" },
   schedCard: {
     background: "var(--raised)",

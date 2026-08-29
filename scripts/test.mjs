@@ -23,6 +23,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/in-service.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/uhu.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/checklist.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/restock.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/close-reasons.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/return-journeys.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/messages.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/uhu-person.jsx")};
