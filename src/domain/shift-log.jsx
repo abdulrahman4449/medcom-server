@@ -1,6 +1,7 @@
 import { COVERAGE_KEY, coverageGapsIn } from "./coverage.jsx";
 import { stationOf } from "./live-sheet.jsx";
 import { opDayKey, opDayLabel, opDayStart } from "./op-day.jsx";
+import { shiftWindowAt } from "./shift-helpers.jsx";
 import { SHIFTS } from "./shifts.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 
@@ -39,6 +40,39 @@ export function requestsForShift(requests, station, windowStart, windowEnd) {
 export function logForShift(log, station, windowStart, windowEnd) {
   return (log || []).filter(
     (e) => e && e.ts >= windowStart && e.ts < windowEnd && stationOf(e) === station
+  );
+}
+
+// Which shift a log line belongs to — one shift, never two.
+//
+// Both re-cuts below used to end the window at `Date.now()`, to pick up the
+// closing stamps and the sign-outs that landed after the desk submitted. It
+// works for the ten minutes that usually is, and it is wrong for everything
+// else: a day shift finalised at 21:00 swallowed the night crew's 19:00 sign-on,
+// which is also in the night shift's own submission — the same line filed under
+// two shifts and printed on two sheets. A submission held open by a call still
+// running took DAYS of that station's lines the same way.
+//
+// A line that NAMES a shift belongs to that shift wherever its clock time
+// falls: an Alpha signing off at 19:40 in overtime worked the day shift, and
+// filing that line under the night crew as well is the same duplication from
+// the other end. Everything else belongs to the window its timestamp falls in.
+//
+// The named shift is resolved through `shiftWindowAt` rather than compared
+// outright, because a shift start is not always a window start — Zahrawi
+// stands 09:30 — and a line that matched no window at all would be filed
+// under nothing and lost from every sheet.
+export function logShiftHome(entry) {
+  if (!entry || !entry.ts) return null;
+  const d = entry.detail;
+  const named = d && d.shiftStart;
+  return shiftWindowAt(named || entry.ts).start;
+}
+
+export function logForFiledShift(log, station, windowStart, windowEnd) {
+  const home = shiftWindowAt(windowStart).start;
+  return (log || []).filter(
+    (e) => e && stationOf(e) === station && logShiftHome(e) === home
   );
 }
 
@@ -92,7 +126,7 @@ export async function submitShiftLog({ requests, units, log, scheduled, station,
     // The snapshot as submitted. The live record is preferred on download when
     // it has moved on, and the sheet says so.
     requests: mine.map((r) => ({ ...r })),
-    log: logForShift(log, station, windowStart, windowEnd),
+    log: logForFiledShift(log, station, windowStart, windowEnd),
     scheduled: (scheduled || []).filter(
       (s) => s && stationOf(s) === station && s.scheduledFor >= windowStart && s.scheduledFor < windowEnd
     ),
@@ -139,7 +173,7 @@ export async function amendSubmissionsWithLateCalls({ requests, log }) {
       // overtime is counted when it does.
       status: stillOpen.length ? "open" : sub.status,
       callCount: merged.length,
-      log: logForShift(log, sub.station, sub.windowStart, Date.now()),
+      log: logForFiledShift(log, sub.station, sub.windowStart, sub.windowEnd),
       amendedAt: Date.now(),
       amendedCount: (sub.amendedCount || 0) + late.length,
     };
@@ -173,7 +207,7 @@ export async function finaliseOpenSubmissions({ requests, units, log, boardId })
       }).filter(Boolean),
       // The log is re-cut at completion so the closing stamps and the sign-outs
       // that happened after submission are in the record too.
-      log: logForShift(log, s.station, s.windowStart, Date.now()),
+      log: logForFiledShift(log, s.station, s.windowStart, s.windowEnd),
     };
   });
 

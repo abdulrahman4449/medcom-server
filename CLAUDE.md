@@ -373,6 +373,33 @@ patch", that document is the target — do not start a fresh exploration.
   board no longer holds. Anything new that counts a PERIOD must do the same.
   `FiledNote` says how much came from the archive, because a figure that grew
   without the board changing is one somebody has to be able to explain.
+- **A log line belongs to ONE shift, and the line says which.** `logShiftHome`
+  / `logForFiledShift` in `domain/shift-log.jsx`. Both re-cuts of a filed
+  submission used to end the window at `Date.now()` to pick up the sign-offs
+  that landed after the desk submitted — so a day shift finalised at 21:00
+  swallowed the night crew's 19:00 sign-on, which is also in the night shift's
+  own submission: the same line filed under two shifts and printed on two
+  sheets. Held open by a running call it took DAYS of that station's lines the
+  same way. A line that NAMES a shift (`detail.shiftStart`) belongs to that
+  shift wherever its clock time falls — an Alpha signing off at 19:40 in
+  overtime worked the day — and everything else belongs to the window its
+  timestamp is in. Resolved through `shiftWindowAt`, never compared outright:
+  Zahrawi starts at 09:30, and a line matching no window is filed under nothing
+  and lost from every sheet.
+- **A sheet prints one row per record id, and `dedupeById` is the last gate.**
+  `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
+  again before sorting. Everything upstream merges by id, but a workbook is
+  built from several sources at once — board, submission snapshot, kept day,
+  restored backup — and the sheet is the only place a duplicate is visible to a
+  human, where a call printed twice reads as two jobs and every total summed off
+  the page is wrong by one.
+- **Checklist compliance counts SHIFTS COVERED, not lists filed.** The rule is
+  one list per person per shift, so somebody who changed truck mid-shift filed
+  twice and scored two out of one shift — clamped to 100%, which then paid for a
+  shift they had filed nothing on. Over a month that reads as full compliance on
+  a department that is not at full compliance. Keyed by the shift window, the
+  same key `shifts` uses, and only counted for a shift the log says they worked,
+  so numerator and denominator are the same set.
 - **A repeat of `alert()` must be a no-op, not a restart.** The web layer calls
   the plugin every 1.7 seconds for as long as a call is unacknowledged, and both
   plugins used to stop the player and build a new one each time. `stopPlayer()`

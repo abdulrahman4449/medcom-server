@@ -838,6 +838,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         log={log}
         checklistRuns={checklistRuns}
         submissions={submissions}
+        archives={archives}
         range={statRange}
         setRange={setStatRange}
       />
@@ -851,6 +852,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         log={log}
         requests={requests}
         submissions={submissions}
+        archives={archives}
         units={units}
         user={user}
         addLog={addLog}
@@ -893,6 +895,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         units={units}
         checklistRuns={checklistRuns}
         submissions={submissions}
+        archives={archives}
         range={statRange}
         setRange={setStatRange}
       />

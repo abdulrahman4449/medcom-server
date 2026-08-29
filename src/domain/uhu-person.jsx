@@ -15,6 +15,7 @@ import { scheduledShiftKey, seatLabel, shiftDateOf, shiftLabelWithWindow, shiftM
 import { SHIFT_EVENTS, SHIFT_MS } from "./shifts.jsx";
 import { computePersonUhu } from "./uhu.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
+import { dedupeById } from "../lib/helpers.jsx";
 
 // ---------- UHU as a person, not as a seat ----------
 //
@@ -736,7 +737,15 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // the order they were dispatched, then the night shift's in the order they
   // were dispatched. Sorting purely by clock time put a 02:00 call from the
   // night before at the top of the sheet, above the morning that followed it.
-  const sorted = (requests || [])
+  // One row per call, whatever was handed in.
+  //
+  // The sheet is where a duplicate becomes visible and where it does damage: a
+  // call printed twice reads as two jobs, and every total anybody sums off the
+  // page is wrong by one. The corpus a sheet is built from is now merged from
+  // several places — the live board, a filed submission's snapshot, a kept day,
+  // a restored backup — and each of those merges by id, but the sheet is the
+  // last gate and the only one a human checks.
+  const sorted = dedupeById(requests)
     .slice()
     .sort((a, b) => {
       const da = opDayStart(a.createdAt);

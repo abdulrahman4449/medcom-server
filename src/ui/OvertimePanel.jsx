@@ -32,7 +32,7 @@ function OtBlock({ title, count, open, onToggle, children }) {
 // board is watched for. Open, it answers three things in order — what is
 // waiting on a decision, who is standing past their shift right now, and what
 // the period comes to.
-export function OvertimePanel({ log: liveLog, requests: liveRequests, units, user, addLog, decisions, setDecisions, sent, submissions }) {
+export function OvertimePanel({ log: liveLog, requests: liveRequests, units, user, addLog, decisions, setDecisions, sent, submissions, archives }) {
   const [open, setOpen] = useState(false);
   // Retractable inside as well as outside. Open, this panel ran to three
   // screens on a phone — a date range, three totals, everybody standing past
@@ -67,8 +67,8 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
   // filed shift logs still hold the sign-off line it is built from. Same corpus
   // as the statistics, deduplicated by record id, live copy preferred.
   const otWin = validRange ? { start: from, end: to } : null;
-  const log = statsLog(liveLog, submissions, otWin);
-  const requests = statsRequests(liveRequests, submissions, otWin);
+  const log = statsLog(liveLog, submissions, otWin, archives);
+  const requests = statsRequests(liveRequests, submissions, otWin, archives);
   const claims = validRange ? overtimeClaims(log, requests, from, to, decisions, sent) : [];
   // Waiting on a decision means waiting on *this* desk. A stay the person has
   // not sent in is not waiting on anybody here, and counting it as pending put

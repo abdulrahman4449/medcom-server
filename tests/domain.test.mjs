@@ -667,6 +667,176 @@ export function run(D, t) {
       ));
   }
 
+  // ---------- nothing is filed under two shifts, and nothing prints twice
+  //
+  // Both re-cuts of a filed submission's log used to end at `Date.now()`, so a
+  // day shift finalised at 21:00 swallowed the night crew's 19:00 sign-on —
+  // the same line filed under two shifts and printed on two sheets. Held open
+  // by a running call, it took days of that station's lines the same way.
+  {
+    const dayStart = at(2026, 8, 26, 7);
+    const dayEnd = at(2026, 8, 26, 19);
+    const line = (id, ts, shiftStart) => ({
+      id, ts, station: "main", type: "shift",
+      detail: { role: "team", kind: "off", name: "R. Chen", accountId: "F9001", station: "main", shiftStart },
+    });
+    const log = [
+      line("l-day", at(2026, 8, 26, 9), dayStart),
+      // The night crew signing on at 19:00. Theirs, not the day shift's.
+      line("l-night", at(2026, 8, 26, 19), dayEnd),
+      // The day's own Alpha, signing off in overtime at 19:40. Still theirs.
+      line("l-ot", at(2026, 8, 26, 19, 40), dayStart),
+      // A different station entirely.
+      { ...line("l-ccc", at(2026, 8, 26, 9), dayStart), station: "ccc", detail: { role: "team", kind: "off", station: "ccc", shiftStart: dayStart } },
+    ];
+    const cut = D.logForFiledShift(log, "main", dayStart, dayEnd).map((e) => e.id).sort().join();
+    t.is("filed log: the shift's own lines, plus its overtime sign-off", cut, "l-day,l-ot");
+    t.is("filed log: and that overtime line is filed under one shift only",
+      D.logForFiledShift(log, "main", dayEnd, at(2026, 8, 27, 7)).some((e) => e.id === "l-ot"), false);
+    // A shift start that is not a window start - Zahrawi stands 09:30 - still
+    // has to land somewhere. Filed under nothing is lost from every sheet.
+    t.is("filed log: a 09:30 start files under the day it worked",
+      D.logShiftHome({ ts: at(2026, 8, 26, 20), detail: { shiftStart: at(2026, 8, 26, 9, 30) } }),
+      at(2026, 8, 26, 7));
+    t.is("filed log: the next crew's sign-on is not filed under this shift",
+      D.logForFiledShift(log, "main", dayStart, dayEnd).some((e) => e.id === "l-night"), false);
+    t.is("filed log: and the other station is never in it",
+      D.logForFiledShift(log, "main", dayStart, dayEnd).some((e) => e.id === "l-ccc"), false);
+    // The night shift gets that sign-on, exactly once.
+    t.is("filed log: the sign-on belongs to the shift it opened",
+      D.logForFiledShift(log, "main", dayEnd, at(2026, 8, 27, 7)).map((e) => e.id).join(), "l-night");
+
+    // The last gate: a sheet can never print one call twice, whatever it is
+    // handed. Every merge upstream is by id; this is the one a human reads.
+    t.is("dedupe: one record per id, first copy kept, order untouched",
+      D.dedupeById([{ id: "a", v: 1 }, { id: "b" }, { id: "a", v: 2 }]).map((r) => r.id + (r.v || "")).join(),
+      "a1,b");
+    t.is("dedupe: a record with no id is never dropped",
+      D.dedupeById([{ ts: 1 }, { ts: 2 }]).length, 2);
+    t.is("dedupe: nothing at all is not a crash", D.dedupeById(null).length, 0);
+  }
+
+  // ---------- the checklist is one per person per shift, and so is the figure
+  //
+  // Compliance counted every list filed. Somebody who changed truck mid-shift
+  // filed twice and scored two out of one shift - clamped to 100%, which then
+  // paid for a shift they had filed nothing on. Over a month that reads as full
+  // compliance on a department that is not at full compliance.
+  {
+    const win = { start: at(2026, 8, 1, 0), end: at(2026, 9, 1, 0) };
+    const now = at(2026, 8, 28, 12);
+    const on = (id, ts, shiftStart) => ({ id, ts, station: "main", type: "shift",
+      detail: { kind: "on", role: "team", name: "R. Chen", accountId: "F9001", unitId: "u1",
+        unitName: "MEDIC 1", station: "main", seat: "alpha", shiftStart, shiftEnd: shiftStart + 12 * H } });
+    const off = (id, ts, shiftStart) => ({ ...on(id, ts, shiftStart), detail: { ...on(id, ts, shiftStart).detail, kind: "off" } });
+    // Two shifts worked: the 10th and the 12th.
+    const log = [
+      on("o1", at(2026, 8, 10, 7), at(2026, 8, 10, 7)), off("f1", at(2026, 8, 10, 19), at(2026, 8, 10, 7)),
+      on("o2", at(2026, 8, 12, 7), at(2026, 8, 12, 7)), off("f2", at(2026, 8, 12, 19), at(2026, 8, 12, 7)),
+    ];
+    // Two lists, both on the FIRST shift - they changed truck at lunchtime.
+    // Nothing at all on the second.
+    const runs = [
+      { id: "c1", at: at(2026, 8, 10, 7, 20), byAccountId: "F9001", byName: "R. Chen", unitId: "u1" },
+      { id: "c2", at: at(2026, 8, 10, 13, 5), byAccountId: "F9001", byName: "R. Chen", unitId: "u2" },
+    ];
+    const rows = D.staffStatsFor(log, [], [], win, now, runs);
+    t.is("checklist: two shifts worked", rows[0].shiftsWorked, 2);
+    t.is("checklist: two lists on one shift is one shift covered", rows[0].checklistsFiled, 1);
+    t.is("checklist: so compliance is half, not full", Math.round(rows[0].checklistCompliance), 50);
+
+    // One list on each shift is full compliance, and nothing else is.
+    const spread = [
+      { id: "c1", at: at(2026, 8, 10, 7, 20), byAccountId: "F9001", byName: "R. Chen", unitId: "u1" },
+      { id: "c3", at: at(2026, 8, 12, 7, 10), byAccountId: "F9001", byName: "R. Chen", unitId: "u1" },
+    ];
+    t.is("checklist: one on each shift is full compliance",
+      Math.round(D.staffStatsFor(log, [], [], win, now, spread)[0].checklistCompliance), 100);
+  }
+
+  // ---------- a kept operational day counts too, and never twice
+  {
+    const win = { start: at(2026, 5, 1, 0), end: at(2026, 6, 1, 0) };
+    const call = { id: "r-x", createdAt: at(2026, 5, 9, 9), status: "completed" };
+    const sub = { id: "s", status: "final", windowStart: at(2026, 5, 9, 7), windowEnd: at(2026, 5, 9, 19),
+      requests: [call], log: [] };
+    const arch = { id: "a", dayStart: at(2026, 5, 9, 7), dayEnd: at(2026, 5, 10, 7),
+      requests: [call], log: [] };
+    t.is("stats: a kept day the desk never filed a log for is still counted",
+      D.statsRequests([], [], win, [arch]).map((r) => r.id).join(), "r-x");
+    t.is("stats: and a call in the shift log AND the kept day is counted once",
+      D.statsRequests([], [sub], win, [arch]).length, 1);
+    t.is("stats: a kept day outside the period is not dragged in",
+      D.statsRequests([], [], win, [{ id: "a2", dayStart: at(2026, 2, 1, 7), dayEnd: at(2026, 2, 2, 7),
+        requests: [{ id: "r-feb", createdAt: at(2026, 2, 1, 9) }], log: [] }]).length, 0);
+  }
+
+  // ---------- a month spread across the board, a filed log and a kept day
+  //
+  // The whole of it at once, with the numbers worked out by hand, because the
+  // parts can each be right and the total still be wrong. One person changes
+  // truck mid-shift; one shift lives only in a submission; one lives only in a
+  // kept operational day; one is still on the board.
+  {
+    const unitsAB = [{ id: "u1", name: "MEDIC 1", station: "main" }, { id: "u2", name: "MEDIC 2", station: "main" }];
+    const call = (id, unitId, start, end) => ({
+      id, unitId, assignedUnitId: unitId, station: "main", status: "completed", createdAt: start,
+      times: { dispatch: start, arrivalScene: start + 6e5, departScene: start + 12e5,
+               arrivalDestination: end - 3e5, backInService: end } });
+    const seat = (id, ts, kind, who, unitId, shiftStart) => ({
+      id, ts, type: "shift", station: "main",
+      detail: { kind, role: "team", name: who.name, accountId: who.id, unitId,
+        unitName: unitId === "u1" ? "MEDIC 1" : "MEDIC 2", station: "main", seat: who.seat,
+        shiftStart, shiftEnd: shiftStart + 12 * H } });
+    const A = { id: "F9001", name: "R. Chen", seat: "alpha" };
+    const B = { id: "F9002", name: "K. Osei", seat: "bravo" };
+
+    const s1 = at(2026, 8, 3, 7), s2 = at(2026, 8, 5, 7), s3 = at(2026, 8, 20, 7);
+    const s1Calls = [call("c1", "u1", at(2026, 8, 3, 8), at(2026, 8, 3, 10)),
+                     call("c2", "u2", at(2026, 8, 3, 14), at(2026, 8, 3, 15))];
+    const s1Log = [
+      seat("a-on1", at(2026, 8, 3, 7), "on", A, "u1", s1),
+      seat("b-on", at(2026, 8, 3, 7), "on", B, "u1", s1),
+      seat("a-off1", at(2026, 8, 3, 13), "off", A, "u1", s1),
+      seat("a-on2", at(2026, 8, 3, 13), "on", A, "u2", s1),
+      seat("a-off2", at(2026, 8, 3, 19), "off", A, "u2", s1),
+      seat("b-off", at(2026, 8, 3, 19), "off", B, "u1", s1),
+    ];
+    const s2Log = [seat("a-on3", s2, "on", A, "u1", s2), seat("a-off3", at(2026, 8, 5, 19), "off", A, "u1", s2)];
+    const s3Calls = [call("c3", "u1", at(2026, 8, 20, 9), at(2026, 8, 20, 13))];
+    const s3Log = [seat("a-on4", s3, "on", A, "u1", s3), seat("a-off4", at(2026, 8, 20, 19), "off", A, "u1", s3)];
+
+    const submissions = [{ id: "sub1", station: "main", status: "final", windowStart: s1,
+      windowEnd: s1 + 12 * H, requests: s1Calls, log: s1Log, requestIds: s1Calls.map((r) => r.id) }];
+    const archives = [{ id: "arch1", dayStart: s2, dayEnd: s2 + 24 * H, requests: [], log: s2Log }];
+
+    const now = at(2026, 8, 28, 12);
+    const win = D.statRangeWindow("month:2026-7", now);
+    const reqs = D.statsRequests(s3Calls, submissions, win, archives);
+    const lines = D.statsLog(s3Log, submissions, win, archives);
+    t.is("month: three calls, from three different places", reqs.length, 3);
+    t.is("month: and not one of them twice", new Set(reqs.map((r) => r.id)).size, 3);
+    t.is("month: ten log lines, none of them twice", new Set(lines.map((l) => l.id)).size, 10);
+
+    const runs = [
+      { id: "k1", at: at(2026, 8, 3, 7, 20), byAccountId: A.id, byName: A.name, unitId: "u1" },
+      { id: "k2", at: at(2026, 8, 3, 13, 10), byAccountId: A.id, byName: A.name, unitId: "u2" },
+      { id: "k3", at: at(2026, 8, 20, 7, 15), byAccountId: A.id, byName: A.name, unitId: "u1" },
+    ];
+    const rows = D.staffStatsFor(lines, reqs, unitsAB, win, now, runs);
+    const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+    t.is("month: a truck change mid-shift is one shift", by.F9001.shiftsWorked, 3);
+    t.is("month: 3h on shift one and 4h on shift three", Math.round(by.F9001.onCallMs / H), 7);
+    t.is("month: so 7 hours over three twelves", Number(by.F9001.uhu.toFixed(1)), 19.4);
+    t.is("month: the Bravo is credited only with the call on their own truck",
+      Math.round(by.F9002.onCallMs / H), 2);
+    t.is("month: and measured on the one shift they worked", Number(by.F9002.uhu.toFixed(1)), 16.7);
+    t.is("month: two lists on one shift is two shifts covered out of three", by.F9001.checklistsFiled, 2);
+    t.is("month: so 67% compliance, not 100%", Math.round(by.F9001.checklistCompliance), 67);
+    t.is("month: the department is weighted by shifts, not averaged",
+      Number(D.departmentUhu(rows).toFixed(1)), 18.8);
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

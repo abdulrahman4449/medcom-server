@@ -139,6 +139,19 @@ export function StatPeriodPicker({ range, setRange, now }) {
 // Who was on which truck, when, and for how long — read off the sign-on and
 // sign-off lines rather than the current roster, so somebody who worked Tuesday
 // still counts on Friday.
+// How many of the shifts somebody worked they filed a list for. A list filed on
+// a shift the log has no sign-on for is not counted against a denominator that
+// does not include it either — the two have to be the same set or the
+// percentage means nothing.
+function filedShiftsOf(p) {
+  if (!p.checklistShifts) return 0;
+  let n = 0;
+  p.checklistShifts.forEach((sw) => {
+    if (p.shifts.has(sw)) n += 1;
+  });
+  return n;
+}
+
 export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
   const people = new Map();
   const person = (id, name) => {
@@ -232,11 +245,27 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
     });
   });
 
-  // The lists each person filed inside the window, credited by name.
+  // The SHIFTS each person filed a list for, credited by name — not the number
+  // of lists.
+  //
+  // The checklist belongs to the person, once per shift: the first list of
+  // their shift is the mandatory one and the one the statistics count, and a
+  // second on a truck they moved onto later is offered and not required. This
+  // counted every run, so somebody who changed truck mid-shift filed twice and
+  // scored two out of one shift — clamped to 100%, which then paid for a shift
+  // they had filed nothing on. Over a month that reads as full compliance on a
+  // department that is not at full compliance, which is the worst direction for
+  // this particular number to be wrong in.
+  //
+  // Keyed by the shift window, the same key `shifts` uses, and only counted for
+  // a shift the log says they actually worked — so the figure is "of the shifts
+  // you worked, how many did you check your kit on", and cannot exceed 100%
+  // without the clamp doing the work.
   (checklistRuns || []).forEach((r) => {
     if (!r || !r.at || r.at < win.start || r.at >= win.end) return;
     const p = person(r.byAccountId, r.byName);
-    p.checklistsFiled = (p.checklistsFiled || 0) + 1;
+    if (!p.checklistShifts) p.checklistShifts = new Set();
+    p.checklistShifts.add(shiftWindowAt(r.at).start);
   });
 
   return Array.from(people.values())
@@ -265,11 +294,9 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
       // worked ten shifts and filed eight is at 80%. Measured per person rather
       // than per truck because it is a thing a person did or did not do — and
       // it is credited to whoever filed it, not to whoever was rostered.
-      checklistsFiled: p.checklistsFiled || 0,
+      checklistsFiled: filedShiftsOf(p),
       checklistCompliance:
-        p.shifts.size > 0
-          ? Math.min(100, ((p.checklistsFiled || 0) / p.shifts.size) * 100)
-          : 0,
+        p.shifts.size > 0 ? Math.min(100, (filedShiftsOf(p) / p.shifts.size) * 100) : 0,
     }))
     .sort((a, b) => b.uhu - a.uhu);
 }
@@ -1226,16 +1253,16 @@ export function pcrCompliance(requests, from, to) {
   };
 }
 
-export function IndicatorBand({ requests: liveRequests, units, log: liveLog, checklistRuns, submissions, range, setRange }) {
+export function IndicatorBand({ requests: liveRequests, units, log: liveLog, checklistRuns, submissions, archives, range, setRange }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
   // The live board is not the record — see `domain/stat-source.jsx`. Every
   // figure on this band is counted over the board plus the filed shift logs,
   // deduplicated by record id, or a month older than four shifts reads as a
   // quiet month while its own PDF lists forty calls.
-  const requests = statsRequests(liveRequests, submissions, win);
-  const log = statsLog(liveLog, submissions, win);
-  const filed = filedContribution({ requests: liveRequests, log: liveLog, submissions, win });
+  const requests = statsRequests(liveRequests, submissions, win, archives);
+  const log = statsLog(liveLog, submissions, win, archives);
+  const filed = filedContribution({ requests: liveRequests, log: liveLog, submissions, win, archives });
   const resp = responseCompliance(requests, win.start, win.end);
   const uhu = fleetUhu(requests, units, win.start, win.end);
   const pcr = pcrCompliance(requests, win.start, win.end);
@@ -1345,7 +1372,7 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
   );
 }
 
-export function Statistics({ log: liveLog, requests: liveRequests, units, checklistRuns, submissions, range, setRange }) {
+export function Statistics({ log: liveLog, requests: liveRequests, units, checklistRuns, submissions, archives, range, setRange }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("uhu");
   const [search, setSearch] = useState("");
@@ -1353,8 +1380,8 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
   const win = statRangeWindow(range, now);
   // Same corpus as the band above, for the same reason: the two must never be
   // able to disagree, and neither may under-count a period the archive holds.
-  const requests = statsRequests(liveRequests, submissions, win);
-  const log = statsLog(liveLog, submissions, win);
+  const requests = statsRequests(liveRequests, submissions, win, archives);
+  const log = statsLog(liveLog, submissions, win, archives);
   const resp = responseCompliance(requests, win.start, win.end);
   const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns);
   const mix = categoryMixOf(requests, win.start, win.end);

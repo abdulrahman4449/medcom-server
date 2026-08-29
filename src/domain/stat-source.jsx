@@ -1,3 +1,5 @@
+import { dedupeById } from "../lib/helpers.jsx";
+
 // ---------- what the statistics are allowed to count ----------
 //
 // The statistics read `ems:requests` and `ems:log`, and neither of those is the
@@ -27,53 +29,66 @@
 // record id, so a call held in both places is counted once — the whole reason
 // "put back what is missing" and the statistics have to agree.
 
-// Every submission whose shift could have produced a record inside the window.
-//
-// A finalised submission's log is re-cut at the moment it completes, so it can
-// carry lines a little past its own window end; the caller filters by timestamp
-// anyway, so the loose edge costs nothing and a missed submission costs a
-// month's figures.
-export function filedInWindow(submissions, win) {
-  const all = Array.isArray(submissions) ? submissions : [];
-  if (!win || !win.start || !win.end) return all.filter(Boolean);
-  return all.filter(
-    (s) => s && !(s.windowEnd && s.windowEnd < win.start) && !(s.windowStart && s.windowStart >= win.end)
-  );
-}
-
-// The live list, plus everything the archive holds that it no longer does.
-export function withFiledWork(live, submissions, part, win) {
-  const out = Array.isArray(live) ? live.slice() : [];
-  const seen = new Set();
-  out.forEach((r) => {
-    if (r && r.id) seen.add(String(r.id));
-  });
-  filedInWindow(submissions, win).forEach((sub) => {
-    const held = Array.isArray(sub[part]) ? sub[part] : [];
-    held.forEach((rec) => {
-      if (!rec || !rec.id) return;
-      const id = String(rec.id);
-      if (seen.has(id)) return;
-      seen.add(id);
-      out.push(rec);
-    });
-  });
+// Everything that holds a filed copy of finished work: the shift logs the desks
+// submitted, and the operational days the board kept on its own. Both are read,
+// because they do not cover the same ground — a shift nobody submitted is still
+// in the day that was kept, and a day still open has its shifts filed already.
+// A record in both is one record; the merge below is by id.
+export function filedSources(submissions, archives) {
+  const out = [];
+  (Array.isArray(submissions) ? submissions : []).forEach((s) => { if (s) out.push(s); });
+  (Array.isArray(archives) ? archives : []).forEach((a) => { if (a) out.push(a); });
   return out;
 }
 
-export function statsRequests(requests, submissions, win) {
-  return withFiledWork(requests, submissions, "requests", win);
+// Every filed record-holder whose own window could have produced a record
+// inside the period being measured.
+//
+// A submission carries `windowStart`/`windowEnd` — its shift. A kept day
+// carries `dayStart`/`dayEnd`. One test, read off whichever it has.
+export function filedInWindow(sources, win) {
+  const all = Array.isArray(sources) ? sources.filter(Boolean) : [];
+  if (!win || !win.start || !win.end) return all;
+  return all.filter((s) => {
+    const start = s.windowStart || s.dayStart || null;
+    const end = s.windowEnd || s.dayEnd || null;
+    if (end && end < win.start) return false;
+    if (start && start >= win.end) return false;
+    return true;
+  });
 }
 
-export function statsLog(log, submissions, win) {
-  return withFiledWork(log, submissions, "log", win);
+// The live list, plus everything the filed copies hold that it no longer does.
+//
+// `dedupeById` keeps the FIRST copy of an id, and the live list is laid down
+// first — so the board's version of a call wins over the snapshot taken when
+// the desk filed, which is right: the snapshot is a picture of that moment and
+// the board has whatever happened after it.
+export function withFiledWork(live, sources, part, win) {
+  const filed = [];
+  filedInWindow(sources, win).forEach((sub) => {
+    (Array.isArray(sub[part]) ? sub[part] : []).forEach((rec) => {
+      if (rec && rec.id) filed.push(rec);
+    });
+  });
+  return dedupeById([...(Array.isArray(live) ? live : []), ...filed]);
 }
 
-// How many records the archive contributed, for the line that says so. A
+export function statsRequests(requests, submissions, win, archives) {
+  return withFiledWork(requests, filedSources(submissions, archives), "requests", win);
+}
+
+export function statsLog(log, submissions, win, archives) {
+  return withFiledWork(log, filedSources(submissions, archives), "log", win);
+}
+
+// How many records the filed copies contributed, for the line that says so. A
 // statistic that quietly grew when nothing on the board changed is one somebody
 // has to be able to explain.
-export function filedContribution({ requests, log, submissions, win }) {
-  const calls = statsRequests(requests, submissions, win).length - (requests || []).length;
-  const lines = statsLog(log, submissions, win).length - (log || []).length;
-  return { calls, lines };
+export function filedContribution({ requests, log, submissions, win, archives }) {
+  const live = (l) => dedupeById(l || []).length;
+  return {
+    calls: statsRequests(requests, submissions, win, archives).length - live(requests),
+    lines: statsLog(log, submissions, win, archives).length - live(log),
+  };
 }

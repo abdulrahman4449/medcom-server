@@ -9,6 +9,7 @@ import { scheduledShiftKey, shiftDateOf, shiftLabelWithWindow, shiftWindowAt, sh
 import { buildDispatchLogAOA, dressLogSheet, dressSheet, gridLogSheet, paintRows, personUhuRows, titleSheet } from "../domain/uhu-person.jsx";
 import { actorPost } from "./name-stamps.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
+import { dedupeById } from "../lib/helpers.jsx";
 import { SCHED_LEAD_MS, schedCancelReason, schedIsTemplate, schedStatusMeta } from "../ui/booking-cancel.jsx";
 
 // ---------- making the export readable when it opens ----------
@@ -140,6 +141,17 @@ export async function exportAndShareLog(log, requests, units, scheduled, station
     // before stations existed carry none, and belong to the Main Office.
     log = (log || []).filter((e) => stationOf(e) === station);
   }
+  // One record per id, before anything is counted or drawn.
+  //
+  // Every sheet in this workbook is built off these two lists, and they arrive
+  // from several places at once — the live board, a filed shift log's snapshot,
+  // a kept operational day, a restored backup. Each of those merges by id on
+  // the way in; this is the last gate, and the only one anybody actually reads.
+  // A call printed twice is a call that was run twice as far as the sheet is
+  // concerned, and every figure summed off the page is then wrong by one.
+  requests = dedupeById(requests);
+  log = dedupeById(log);
+
   const wb = XLSX.utils.book_new();
   // A call still running, and a seat still held, are both measured up to the
   // moment the export was taken.
