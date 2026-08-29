@@ -420,6 +420,47 @@ export function mergeCoverageCells(sheet, aoa, offset) {
   return sheet;
 }
 
+// Blank paper where there is no table.
+//
+// A spreadsheet application draws its OWN faint grid over every cell that has
+// no fill — `<sheetView>` carries no `showGridLines="0"` and this library gives
+// no way to write one — so an empty cell beside a table still reads as a ruled
+// box. Taking our borders off it was not enough; the ruling somebody sees there
+// is the app's, not ours.
+//
+// So the space around the tables is painted white and left unbordered. A cell
+// with a solid fill covers the application's gridline, which is the only way to
+// make the area read as paper rather than as a form nobody filled in.
+//
+// Only inside the sheet's own used range: outside it there is nothing to cover
+// and painting would grow the file for no reason.
+export function blankOutEmptyCells(sheet) {
+  if (!sheet || !sheet["!ref"]) return sheet;
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  const white = { patternType: "solid", fgColor: { rgb: "FFFFFFFF" } };
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = sheet[addr];
+      if (!cell) {
+        sheet[addr] = { t: "s", v: "", s: { fill: white } };
+        continue;
+      }
+      if (cell.v !== "" && cell.v !== null && cell.v !== undefined) continue;
+      // The border is REMOVED, not emptied: a style carrying `border: {}` is
+      // still a style with a border key on it, and the next pass that spreads
+      // it forward carries the key with it.
+      const next = { ...(cell.s || {}) };
+      delete next.border;
+      // A fill somebody deliberately put there stays — a shaded row runs the
+      // width of the table whether or not every cell on it has a value.
+      next.fill = next.fill || white;
+      cell.s = next;
+    }
+  }
+  return sheet;
+}
+
 export function gridLogSheet(sheet, headerRowIndex, dataRows) {
   if (!sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
@@ -484,6 +525,8 @@ export function dressLogSheet(sheet, aoa) {
   // so nothing above can undo it, and doing it here keeps the row heights it
   // sets from being overwritten.
   mergeCoverageCells(sheet, aoa, 0);
+  // Last of all: everything above has finished deciding what is a table.
+  blankOutEmptyCells(sheet);
   return sheet;
 }
 

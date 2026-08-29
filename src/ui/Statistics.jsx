@@ -3,7 +3,7 @@ import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
 import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { CHECKLIST_KEY, CHECKLIST_PARTS, UNSORTED_CHECK, checklistCategories, checklistDoneByPerson, checklistFlags, checklistItems, checklistRunFor, checklistTree, emptyChecklists, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
 import { CHECKLIST_GOOD, PCR_GOOD, RESPONSE_GOOD, RESPONSE_TARGET_MS, UHU_HEADROOM, UHU_TARGET, isInternalEmergency, responseCompliance, responseMsFor } from "../domain/compliance.jsx";
-import { REQ_STATUS, reqStatusMeta } from "../domain/constants.jsx";
+import { REQ_STATUS } from "../domain/constants.jsx";
 import { submissionGaps } from "../domain/coverage.jsx";
 import { medicCrewIndex, stayWindow } from "../domain/crew-stamps.jsx";
 import { escalatedCalls, escalationIsOpen } from "../domain/escalations.jsx";
@@ -12,6 +12,7 @@ import { STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-
 import { clockStr, durationStr, msDurationStr } from "../domain/messages.jsx";
 import { opDayKey, opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
+import { requestOutcomeKey, requestOutcomeLabel } from "../domain/second-ambulance.jsx";
 import { PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
 import { scheduledShiftKey, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWindow } from "../domain/stat-range.jsx";
@@ -1978,7 +1979,10 @@ td.night{background:#E9E9E9 !important}
 td.cat{font-weight:700;text-align:center;font-size:7pt}
 td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:center}
 .gap td{background:#F8DADA !important;color:#7F0000;font-weight:700}
-.cancelled td{background:#FBE4E4 !important;color:#7F0000}
+/* The same light yellow the spreadsheet shades a stood-down call with
+   (FFF2CC / 7F6000). Red on these documents already means no coverage and must
+   not also mean cancelled. */
+.cancelled td{background:#FFF2CC !important;color:#7F6000}
 .foot{margin-top:12pt;border-top:0.7pt solid #C9D4DD;padding-top:6pt;font-size:7pt;color:#6C7B89}
 .keep{break-inside:avoid;page-break-inside:avoid}
 .none{font-size:8pt;color:#5A6B7B;font-style:italic;margin:4pt 0 10pt}
@@ -2049,7 +2053,14 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
       const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
       const catStyle = fill ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"` : "";
       const svcStyle = paint(SERVICE_FILLS, serviceTypeFor(r));
-      return `<tr>
+      // Cancelled reads as cancelled on both documents, in the same colour.
+      // The board has no "cancelled" STATUS — a call the desk stands down is
+      // closed like any other and the only record of it is the close reason —
+      // so this asks `requestOutcomeKey`, which reads that reason, exactly as
+      // the REQUEST STATUS column of the spreadsheet does. Asking `r.status`
+      // instead answered COMPLETED for a call that was called off.
+      const offRow = requestOutcomeKey(r) === "cancelled" ? ` class="cancelled"` : "";
+      return `<tr${offRow}>
         <td class="c">${i + 1}</td>
         <td${cls}>${esc(r.patientOrigin || "")}</td>
         <td${cls}>${esc(callFrom(r))}</td>
@@ -2068,7 +2079,7 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
         <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
         <td${cls}>${esc(bravoNameFor(r, u))}</td>
-        <td${cls}>${esc(reqStatusMeta(r.status).label)}</td>
+        <td${cls}>${esc(requestOutcomeLabel(r))}</td>
       </tr>`;
     })
     .join("")}

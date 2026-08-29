@@ -155,11 +155,22 @@ patch", that document is the target — do not start a fresh exploration.
   and add it to `buildShiftReport` in the same breath, or a reader has to work
   out which column of one is which of the other. The PDF is a template literal,
   NOT JSX: a `{/* … */}` comment inside it prints on the page as text.
-- **An empty cell is not part of the table.** `gridLogSheet` rules only cells
-  that hold something. A blank inside a call is answered with `NA` before the
-  grid runs, so anything still empty is the space around the tables — ruling it
-  drew a grid over nothing and made the sheet look like a form nobody had
-  filled in.
+- **An empty cell is not part of the table, and taking OUR border off it is not
+  enough.** `gridLogSheet` rules only cells that hold something — but a
+  spreadsheet application draws its OWN faint grid over every cell with no fill,
+  `<sheetView>` carries no `showGridLines="0"`, and this library gives no way to
+  write one. So `blankOutEmptyCells` paints the space around the tables solid
+  white and removes the border key outright (`border: {}` is still a style with a
+  border on it). A filled cell covers the app's gridline; that is the only way to
+  make the area read as paper. It runs at the end of `autoFitSheet`, which every
+  sheet goes through, and again at the end of `dressLogSheet`.
+- **A cancelled call is read from the CLOSE REASON, never from `status`.** There
+  is no `cancelled` status on this board — a call the desk stands down is closed
+  like any other — so `requestOutcomeKey` reads the reason. The PDF asked
+  `r.status` under a column headed REQUEST STATUS and printed COMPLETED for a
+  call the spreadsheet beside it called CANCELLED. Both documents shade a
+  stood-down row the same light yellow (`FFF2CC`/`7F6000`); red already means no
+  coverage and must not also mean cancelled.
 - **A cell cannot be wider than its column, so widen the CELL.**
   `mergeCoverageCells` — the NO COVERAGE block sits under a forty-four column
   call table and borrows its widths, so "MEDIC 1, MEDIC 2, MEDIC 3" landed in a

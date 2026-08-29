@@ -6,7 +6,7 @@ import { medicCrewIndex } from "../domain/crew-stamps.jsx";
 import { STATIONS, atStation, isBoardLogEntry, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
 import { opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { scheduledShiftKey, shiftDateOf, shiftLabelWithWindow, shiftWindowAt, shiftWindowFor } from "../domain/shift-helpers.jsx";
-import { XL_FONT, buildDispatchLogAOA, dressLogSheet, dressSheet, gridLogSheet, paintRows, personUhuRows, titleSheet } from "../domain/uhu-person.jsx";
+import { XL_FONT, blankOutEmptyCells, buildDispatchLogAOA, dressLogSheet, dressSheet, gridLogSheet, paintRows, personUhuRows, titleSheet } from "../domain/uhu-person.jsx";
 import { actorPost } from "./name-stamps.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
 import { dedupeById } from "../lib/helpers.jsx";
@@ -177,6 +177,10 @@ export function autoFitSheet(ws, headerRow, foldFrom) {
   ws["!rows"] = rows;
 
   paintHeaderRow(ws, heading);
+  // The space around the table is paper, not a ruled box — see
+  // `blankOutEmptyCells`. Every sheet in every workbook comes through here, so
+  // a new one cannot be added without it.
+  blankOutEmptyCells(ws);
   return ws;
 }
 
