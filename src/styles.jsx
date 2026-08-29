@@ -997,6 +997,15 @@ export const styles = {
     display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
     gap: 8, alignItems: "start",
   },
+  // The booking the desk has opened, across the whole grid.
+  //
+  // `schedGrid` is a two-up tile grid, and a grid item is as wide as its
+  // column however much is inside it — so pressing Manage built the full card,
+  // controls and all, inside a 195px cell: one narrow vertical column of
+  // buttons, nothing like the active call card it is the diary equivalent of.
+  // Spanning every column puts it back to full width, and the controls lay out
+  // in a row again.
+  schedCardOpen: { gridColumn: "1 / -1" },
   schedCard: {
     background: "var(--raised)",
     border: "1px solid var(--hair)",

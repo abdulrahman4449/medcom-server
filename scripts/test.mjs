@@ -34,6 +34,7 @@ export * from ${JSON.stringify(ROOT + "src/ui/PastCall.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/delegation.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/stat-range.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/crew-roster.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/return-journeys.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/stat-source.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/shift-log.jsx")};
 export { dedupeById } from ${JSON.stringify(ROOT + "src/lib/helpers.jsx")};

@@ -107,9 +107,24 @@ patch", that document is the target — do not start a fresh exploration.
   controls one tap away on the one being worked.
 - **A repeating booking is an arrangement, and the board carries today.**
   `REPEAT_HORIZON_DAYS` is 0 — occurrences reach the dispatcher board on the day
-  they run, not two days early beside the calls being worked. The arrangement
-  itself lives in Schedule → Repeating, which is where somebody goes to see what
-  is coming or to stop it.
+  they run, not two days early beside the calls being worked. Sun/Tue/Thu means
+  three cards on three days. NEITHER the arrangement nor the day's copy appears
+  in Upcoming: `schedIsTemplate` keeps out the first (it is not an appointment)
+  and `schedIsOccurrence` the second (it is already on the board). The
+  arrangement itself lives in Schedule → Repeating, which is where somebody goes
+  to see what is coming or to stop it.
+- **A booking is raised fifteen minutes before it LEAVES, not before it is
+  due.** `schedLeaveAt` / `schedReleaseAt` — the leaving time is `dispatchAt`
+  where the desk gave one and the appointment time where it did not, and
+  `SCHED_LEAD_MS` comes off whichever it is. The lead used to apply only to
+  `dispatchAt`, so a booking taken without one was raised AT its appointment
+  time — the crew told about it exactly as late as it is possible to be told.
+- **A booking being worked takes the whole row.** `schedCardOpen` —
+  `schedGrid` is a two-up tile grid and a grid item is as wide as its column
+  however much is inside it, so pressing Manage built the full card, controls
+  and all, inside a 195px cell: one narrow vertical column of buttons. A booking
+  being worked is the diary equivalent of an active call, and an active call
+  card is full width.
 - **Restocking belongs to History, not to the live call.** A crew cannot do
   the paperwork of replacing a cannula while the patient is still in the
   truck. A finished call joins `callsAwaitingRestock`, the History tab

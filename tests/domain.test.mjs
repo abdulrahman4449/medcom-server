@@ -837,6 +837,72 @@ export function run(D, t) {
       Number(D.departmentUhu(rows).toFixed(1)), 18.8);
   }
 
+  // ---------- a booking is raised before it leaves, never as it leaves
+  //
+  // The department's rule: the card reaches the board fifteen minutes before
+  // the DISPATCH time, not the appointment time. Where no dispatch time was
+  // given the appointment time is the only time anybody knows, so it is what
+  // the crew work back from — and the lead applies to it too. It used to apply
+  // only to `dispatchAt`, so a booking taken without one was raised at the
+  // moment the patient was due to be somewhere else.
+  {
+    const appt = at(2026, 8, 20, 10, 0);
+    const leave = at(2026, 8, 20, 9, 30);
+    t.is("booking: fifteen minutes before the dispatch time",
+      D.schedReleaseAt({ scheduledFor: appt, dispatchAt: leave }), at(2026, 8, 20, 9, 15));
+    t.is("booking: and never fifteen minutes before the appointment when a dispatch time exists",
+      D.schedReleaseAt({ scheduledFor: appt, dispatchAt: leave }) === appt - 15 * 60000, false);
+    t.is("booking: with no dispatch time the appointment time is what it leaves for",
+      D.schedReleaseAt({ scheduledFor: appt }), at(2026, 8, 20, 9, 45));
+    t.is("booking: nothing booked is not a booking due now", D.schedReleaseAt({}), 0);
+    t.is("booking: and neither is nothing at all", D.schedReleaseAt(null), 0);
+
+    // Due is release-time, plus the two things that are never released at all.
+    const due = (s, now) => D.schedDue(s, now);
+    t.is("booking: not due a minute before its card is raised",
+      due({ status: "scheduled", scheduledFor: appt, dispatchAt: leave }, at(2026, 8, 20, 9, 14)), false);
+    t.is("booking: due once it is",
+      due({ status: "scheduled", scheduledFor: appt, dispatchAt: leave }, at(2026, 8, 20, 9, 15)), true);
+    t.is("booking: one waiting on the ward's call is never due",
+      due({ status: "scheduled", awaitCall: true, scheduledFor: null }, at(2026, 8, 20, 12)), false);
+    t.is("booking: and a standing arrangement is never due either",
+      due({ status: "scheduled", scheduledFor: appt, dispatchAt: leave, repeat: { days: [0, 2, 4] } },
+        at(2026, 8, 20, 12)), false);
+  }
+
+  // ---------- a repeating arrangement is one card, on the day it runs
+  //
+  // Sunday, Tuesday, Thursday means three cards on three days — not a week of
+  // them sitting in Upcoming beside the calls being worked. The horizon is
+  // zero: an occurrence is thrown off for TODAY, and only if its appointment
+  // has not already gone.
+  {
+    t.is("repeat: the horizon is today and nothing further", D.REPEAT_HORIZON_DAYS, 0);
+    // A Sunday/Tuesday/Thursday arrangement, appointment 07:15.
+    const tmpl = { id: "t1", scheduledFor: at(2026, 8, 18, 7, 15), repeat: { days: [0, 2, 4] } };
+    // 18 August 2026 is a Tuesday.
+    t.is("repeat: a day it runs throws off exactly one occurrence",
+      D.repeatOccurrencesDue(tmpl, at(2026, 8, 18, 6, 0)).length, 1);
+    t.is("repeat: and it is that day's appointment time",
+      D.repeatOccurrencesDue(tmpl, at(2026, 8, 18, 6, 0))[0].at, at(2026, 8, 18, 7, 15));
+    // 19 August is a Wednesday - not one of its days.
+    t.is("repeat: a day it does not run throws off nothing",
+      D.repeatOccurrencesDue(tmpl, at(2026, 8, 19, 6, 0)).length, 0);
+    t.is("repeat: nothing is stocked for the rest of the week",
+      D.repeatOccurrencesDue(tmpl, at(2026, 8, 18, 6, 0)).every(
+        (o) => o.at < at(2026, 8, 19, 0, 0)), true);
+    t.is("repeat: and nothing once the appointment has gone",
+      D.repeatOccurrencesDue(tmpl, at(2026, 8, 18, 8, 0)).length, 0);
+
+    // The arrangement itself never reaches Upcoming, and neither does the
+    // day's copy: one is not an appointment, the other is already on the
+    // board.
+    const occ = { id: "o1", repeatOf: "t1", scheduledFor: at(2026, 8, 18, 7, 15), repeat: { days: [0, 2, 4] } };
+    t.ok("repeat: the arrangement is a template, not a booking", D.schedIsTemplate(tmpl));
+    t.ok("repeat: the day's copy is an occurrence", D.schedIsOccurrence(occ));
+    t.is("repeat: and the copy is not itself a template", D.schedIsTemplate(occ), false);
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

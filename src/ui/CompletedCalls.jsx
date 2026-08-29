@@ -1189,6 +1189,16 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     // one still coming. It stays legible — somebody may need to
                     // see why — but it stops competing with live work.
                     ...(entry.status === "cancelled" ? styles.schedCancelled : null),
+                    // The one being worked takes the whole row.
+                    //
+                    // Opening it inside its own 195px grid cell squeezed every
+                    // control into a single column — a team picker, "the ward
+                    // has rung", a date button, a cancel button and Done, each
+                    // on its own line, in a card three times taller than the
+                    // screen. A booking being worked is the same thing as an
+                    // active call being worked, and an active call card is
+                    // full width.
+                    ...(openCard === entry.id ? styles.schedCardOpen : null),
                   }}
                 >
                   <div style={styles.callCardTop}>

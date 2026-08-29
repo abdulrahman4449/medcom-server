@@ -99,10 +99,26 @@ export function schedAwaitCall(s) {
 // all, and a booking without one behaves exactly as it always has.
 export const SCHED_LEAD_MS = 15 * 60 * 1000;
 
-export function schedReleaseAt(s) {
+// When the call card goes out — fifteen minutes before the truck has to leave.
+//
+// The time a booking LEAVES is `dispatchAt` where the desk gave one, and the
+// appointment time where it did not: with no dispatch time, the appointment
+// time is the only time anybody knows, so it is the time the crew is working
+// back from. Either way the card is raised `SCHED_LEAD_MS` ahead of it, so the
+// crew get the same notice whichever way the booking was taken.
+//
+// The lead used to be applied only to `dispatchAt`. A booking with no dispatch
+// time was raised AT its appointment time, which is the moment the patient was
+// due to be somewhere else — the crew were told about it exactly as late as it
+// is possible to be told.
+export function schedLeaveAt(s) {
   if (!s) return 0;
-  if (s.dispatchAt) return s.dispatchAt - SCHED_LEAD_MS;
-  return s.scheduledFor || 0;
+  return s.dispatchAt || s.scheduledFor || 0;
+}
+
+export function schedReleaseAt(s) {
+  const leaves = schedLeaveAt(s);
+  return leaves ? leaves - SCHED_LEAD_MS : 0;
 }
 
 // A standing arrangement is not an appointment, and must never be dispatched.
