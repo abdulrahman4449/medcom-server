@@ -1,5 +1,5 @@
 import { markAlertsArmed } from "../lib/sound.jsx";
-import { clearToken, getToken, listAccounts, onAuthLost, removeAccount, saveAccount } from "../lib/auth.jsx";
+import { clearToken, fetchMe, getToken, listAccounts, onAuthLost, removeAccount, saveAccount } from "../lib/auth.jsx";
 import { BrandLockup, COLD_POLL_MS, HOUSEKEEPING_MS, LOG_CAP, POLL_MS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
 import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
@@ -329,6 +329,80 @@ export function App() {
       clearToken();
     }
   }, []);
+
+  // Changing PART of who this device is, without rewriting the rest of it.
+  //
+  // `setSession` is sign-in and sign-out: it stamps a whole new session and
+  // resets `overtimeWindow`, which is the marker saying this shift's crossing
+  // into overtime has already been logged. Calling it on a poll would clear
+  // that marker every thirty seconds and put the same crossing on the shift log
+  // over and over.
+  const updateSession = useCallback((patch) => {
+    const cur = userRef.current;
+    if (!cur) return;
+    const next = { ...cur, ...patch };
+    userRef.current = next;
+    setUser(next);
+    const saved = readSession();
+    writeSession({
+      v: SESSION_VERSION,
+      user: next,
+      overtimeWindow: saved ? saved.overtimeWindow : null,
+    });
+  }, []);
+
+  // Authority moves while somebody is signed in, and the screen has to follow.
+  //
+  // A session is written once, at sign-in, and then lives in localStorage for
+  // the length of a shift. An administrator can lend an area at 22:00 to a
+  // dispatcher who signed on at 19:00, and take it back at 02:00. Neither
+  // reached the screen: the lent-area chip beside their name and the button
+  // that moves them into that area both read off the session, so a delegation
+  // made after sign-in never appeared at all — reported as "the small banner
+  // next to the dispatcher name is not shown" — and one revoked stayed up.
+  //
+  // On the slow poll, and only written when something actually changed, so this
+  // costs one row read and no renders on a board where nothing is moving.
+  useEffect(() => {
+    if (!ready || !user) return;
+    let alive = true;
+    const check = async () => {
+      let acct = null;
+      try {
+        acct = await fetchMe();
+      } catch (e) {
+        return;
+      }
+      if (!alive || !acct) return;
+      const cur = userRef.current;
+      if (!cur) return;
+      const roles = Array.isArray(acct.roles) ? acct.roles : [];
+      const del = acct.delegation && Array.isArray(acct.delegation.scopes) ? acct.delegation : null;
+      const same =
+        JSON.stringify(roles) === JSON.stringify(cur.roles || []) &&
+        JSON.stringify(del) === JSON.stringify(cur.delegation || null) &&
+        (acct.role || null) === (cur.ownRole || null);
+      if (same) return;
+      // An area taken back has to close the screen it was open on as well as
+      // remove the chip: a delegate sitting in administration when the
+      // administrator revokes it keeps a screen full of buttons the server has
+      // already started refusing.
+      const stillLent = del ? del.scopes : [];
+      const wasBorrowed = !!cur.delegatedScopes;
+      updateSession({
+        ownRole: acct.role || cur.ownRole || null,
+        roles,
+        delegation: del,
+        ...(wasBorrowed ? { delegatedScopes: stillLent } : {}),
+      });
+    };
+    check();
+    const t = setInterval(check, COLD_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [ready, user && user.accountId, updateSession]);
 
   // Browsers only let a page make noise, buzz or ask about notifications off
   // the back of a real interaction. Sign-in provides one; a session that came

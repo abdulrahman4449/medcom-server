@@ -10,7 +10,15 @@ export const ROLE_LABELS = { crew: "team member", dispatcher: "dispatcher", admi
 // Account admin is set up once and then rarely touched, but it sat open above
 // everything an administrator actually watches. These fold away and say how many
 // are on file, so the screen opens on the board rather than on three forms.
-export function FoldingSection({ title, count, countLabel, open, onToggle, children }) {
+// `always` is the part of a section that stays on screen when it is folded.
+//
+// A fold is the right shape for a shelf of history and the wrong shape for the
+// one row somebody actually came for. The operational-day panel is both: a
+// growing list of days that have been kept, and above it the day running now
+// with the button that exports it. Folding hid the second to tidy away the
+// first; not folding put a year of kept days on the page. What stays out is
+// what is still happening.
+export function FoldingSection({ title, count, countLabel, open, onToggle, always, children }) {
   return (
     <div style={{ marginTop: 14 }}>
       <button style={styles.foldHeader} onClick={onToggle}>
@@ -27,7 +35,12 @@ export function FoldingSection({ title, count, countLabel, open, onToggle, child
           {count} {countLabel}
         </span>
       </button>
-      {open && <div style={styles.foldBody}>{children}</div>}
+      {(always || open) && (
+        <div style={styles.foldBody}>
+          {always}
+          {open && children}
+        </div>
+      )}
     </div>
   );
 }

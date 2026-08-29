@@ -986,8 +986,15 @@ export const styles = {
   // A day's bookings as tiles, the shape the team roster uses. A day with
   // eight transfers used to be eight full-width cards and a scroll, and the
   // desk could not read its own day.
+  // Two-up on a phone, like the teams cards.
+  //
+  // It was minmax(240px), which on a 400px-wide board is one column and a
+  // full-width card however small the content is - so a day with eight
+  // bookings was still eight cards and a scroll, which is the thing the grid
+  // was introduced to fix. 150px is the teams grid's figure, and the teams
+  // grid is what the desk asked these to look like.
   schedGrid: {
-    display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+    display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
     gap: 8, alignItems: "start",
   },
   schedCard: {
@@ -1372,7 +1379,14 @@ export const styles = {
     fontWeight: 700,
     letterSpacing: 0.4,
     color: "var(--hold-2)",
+    // Never wider than the card it sits on. `nowrap` alone let it run off the
+    // edge of a 195px tile - the badge kept its one line and the tile could not
+    // hold it, so the border ended in mid-air.
     whiteSpace: "nowrap",
+    maxWidth: "100%",
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   readyNowBtn: {
     background: "var(--hold)",

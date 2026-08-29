@@ -53,7 +53,14 @@ import { AssistStatusLine, CallTimes, CallTypeTag, LoadedKmTag, NoTransportTag, 
 // from nothing and last night's calls are on last night's day where they
 // belong. Nothing carries over.
 export function DayArchive({ archives, requests, units, log, scheduled }) {
-  const [open, setOpen] = useState(true);
+  // Folded, with the day running now still out.
+  //
+  // It opened with the whole shelf out: the day in progress, the note about
+  // how the day works, and every day ever kept — a year of them on the page
+  // above everything else on the archive screen. What somebody comes to this
+  // panel for on any given morning is the day that is running; the kept days
+  // are reference, and reference folds.
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(null);
 
   const now = Date.now();
@@ -102,7 +109,7 @@ export function DayArchive({ archives, requests, units, log, scheduled }) {
       countLabel="days kept"
       open={open}
       onToggle={() => setOpen((v) => !v)}
-    >
+      always={
       <div style={styles.liveDayRow}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={styles.savedDay}>
@@ -124,7 +131,8 @@ export function DayArchive({ archives, requests, units, log, scheduled }) {
           {busy === "live" ? "…" : "Export the board now"}
         </button>
       </div>
-
+      }
+    >
       <InfoNote label="How this works">
         The day runs 07:00 to 07:00, so a night that crosses midnight stays on the day it
         started. At 07:00 this starts again at nothing — last night's calls are on last

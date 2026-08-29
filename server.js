@@ -1258,6 +1258,29 @@ app.post("/api/auth/login", (req, res) => {
   res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
 });
 
+// Who this device is signed in as, as the SERVER sees it right now.
+//
+// A session is written once, at sign-in, and then lives in localStorage for the
+// length of a shift. Authority does not: an administrator can lend an area at
+// 22:00 to somebody who signed on at 19:00, and can take it back at 02:00. The
+// app had no way to hear about either — the lent-area tag beside the
+// dispatcher's name and the button that moves them into that area both read
+// off the session, so a delegation made after sign-in simply never appeared,
+// and one revoked stayed on screen until they signed out.
+//
+// Cheap enough to sit on the slow poll: one row, re-read the way every other
+// request already re-reads it.
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  const live = findAccount(req.user.id);
+  if (!live) return res.status(401).json({ error: "That account no longer exists." });
+  res.json({
+    ok: true,
+    account: publicAccount(live),
+    acting: req.user.act || live.role,
+    scopes: req.user.scopes || [],
+  });
+});
+
 // Stepping into a delegated role.
 //
 // The token is issued when the password is checked, which is before anybody has

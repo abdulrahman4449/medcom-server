@@ -1165,6 +1165,19 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
               const releasedCall = entry.releasedRequestId
                 ? (requests || []).find((r) => r.id === entry.releasedRequestId)
                 : null;
+              // A tile, until it is the one being worked.
+              //
+              // The closed card was eight rows deep - two badge rows, the
+              // route, the type, the kilometres, the MRN, the notes and the
+              // requirements - so four bookings filled a phone screen and the
+              // desk could not read its own day. A tile says what it is, when,
+              // whose it is, and whether anybody is on it; `openCard` puts the
+              // rest one tap away on the one that matters.
+              //
+              // Past is not folded this way: nothing there opens, so a tile
+              // would be a card with its content removed and no way to get it
+              // back.
+              const compact = tab !== "past" && openCard !== entry.id;
               return (
                 <div
                   key={entry.id}
@@ -1203,19 +1216,27 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     {waiting ? (
                       <span style={styles.awaitCallTag}>
                         <PhoneIncoming size={11} />{" "}
-                        {schedOpen(entry, now) ? "NO TIME — THEY WILL CALL" : "NO TIME WAS SET"}
+                        {/* Short on a tile, because the sentence is wider than
+                            the tile is and ran off the edge of the card. The
+                            full wording stays on the one being worked, where
+                            there is a card's width to say it in. */}
+                        {compact
+                          ? "NO TIME YET"
+                          : schedOpen(entry, now)
+                          ? "NO TIME — THEY WILL CALL"
+                          : "NO TIME WAS SET"}
                       </span>
                     ) : (
                       <span style={{ ...styles.scheduledTag, color: meta.color, borderColor: meta.color }}>
                         <CalendarClock size={11} /> {whenStr(entry.scheduledFor)}
                       </span>
                     )}
-                    {!waiting && schedOpen(entry, now) && (
+                    {!waiting && schedOpen(entry, now) && !compact && (
                       <span style={overdue ? styles.staffingWarn : styles.historyDuration}>
                         {untilStr(entry.scheduledFor, now)}
                       </span>
                     )}
-                    {reminding && (
+                    {reminding && !compact && (
                       <span style={styles.remindingTag}>
                         <Bell size={10} /> REMINDER RUNNING
                       </span>
@@ -1225,13 +1246,29 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     {isRecurring(entry) && (
                       <span style={styles.repeatTag}>↻ REPEATS · {repeatLabel(entry)}</span>
                     )}
-                    {shift && (
+                    {shift && !compact && (
                       <span style={{ ...styles.shiftTag, color: shift.color, borderColor: shift.color }}>
                         {shift.glyph} {shift.short}
                       </span>
                     )}
-                    <span style={{ ...styles.pill, background: meta.color }}>{meta.label}</span>
+                    {!compact && <span style={{ ...styles.pill, background: meta.color }}>{meta.label}</span>}
                   </div>
+
+                  {/* Which of four identical bookings this one is.
+                      A repeating dialysis patient throws off a return leg every
+                      time they finish, and each one waits on the ward's call -
+                      so Upcoming carried four cards reading HD APPOINTMENT ·
+                      NO TIME · MRN 235 with nothing to tell them apart. How
+                      long the patient has been sitting there is the difference
+                      that matters, and it is the reason to pick one over
+                      another. */}
+                  {compact && isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && (
+                    <div style={styles.schedCardMeta}>
+                      <span style={styles.legWaiting}>
+                        waiting {shortDurationStr(Math.max(0, now - entry.deliveredAt))}
+                      </span>
+                    </div>
+                  )}
 
                   {/* What is coming after this leg, said on the card rather
                       than left for the desk to remember. */}
@@ -1268,15 +1305,21 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     </div>
                   )}
 
-                  <div style={styles.schedCardMeta}>
-                    <CallRoute req={entry} />
-                    <CallTypeTag req={entry} />
-                    <LoadedKmTag req={entry} />
-                  </div>
+                  {!compact && (
+                    <div style={styles.schedCardMeta}>
+                      <CallRoute req={entry} />
+                      <CallTypeTag req={entry} />
+                      <LoadedKmTag req={entry} />
+                    </div>
+                  )}
 
+                  {/* The patient stays on the tile. It is the one line that
+                      says WHICH booking this is, and four bookings for the
+                      same ward with the same nature are only told apart by
+                      it. */}
                   {entry.mrn && <div style={styles.mrnRow}>MRN: {entry.mrn}</div>}
-                  {entry.notes && <div style={styles.mrnRow}>{entry.notes}</div>}
-                  {entry.requirements && entry.requirements.length > 0 && (
+                  {entry.notes && !compact && <div style={styles.mrnRow}>{entry.notes}</div>}
+                  {!compact && entry.requirements && entry.requirements.length > 0 && (
                     <div style={styles.checklistRow}>
                       {entry.requirements.map((k) => (
                         <span key={k} style={styles.reqBadge}>

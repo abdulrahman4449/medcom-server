@@ -1190,8 +1190,16 @@ export function CategoryMix({ requests, from, to }) {
               />
             ))}
           </div>
+          {/* Every category, not the top eight.
+              The rest were "and 2 more categories" — a line that names the
+              number of things it is hiding and then hides them, on the one
+              panel whose whole job is to say what the department is called
+              for. The tail is where the unusual work is, which is the part
+              somebody is reading this to find. The bar above is already in
+              proportion, so a long list costs a few short rows and nothing
+              else. */}
           <div style={styles.mixList}>
-            {rows.slice(0, 8).map((r) => (
+            {rows.map((r) => (
               <div key={r.name} style={styles.mixRow}>
                 <span style={{ ...styles.mixDot, background: colourOf(r.name) }} />
                 <span style={styles.mixName}>{r.name}</span>
@@ -1199,9 +1207,10 @@ export function CategoryMix({ requests, from, to }) {
                 <span style={styles.mixN}>{r.n}</span>
               </div>
             ))}
-            {rows.length > 8 && (
-              <div style={styles.formHint}>and {rows.length - 8} more categories.</div>
-            )}
+            <div style={styles.formHint}>
+              {rows.length} categor{rows.length === 1 ? "y" : "ies"} · {total} call
+              {total === 1 ? "" : "s"} in this period.
+            </div>
           </div>
         </>
       )}

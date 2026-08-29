@@ -482,6 +482,19 @@ patch", that document is the target — do not start a fresh exploration.
   refuses the writes, but a screen that offers what it cannot do is a screen
   that lies. It is a plain function, not a `useCallback`: it sits below
   `if (!ready) return`, and a hook there is React error #310 and a blank screen.
+- **A session is written once; authority moves underneath it.** Every session
+  the sign-in screen builds must carry `ownRole`, `roles` and `delegation` from
+  the account (`authorityOf` in `LoginScreen.jsx`) — none of them did, so
+  `DelegatedTag` had nothing to draw the lent-area chip from and `RoleSwitch`
+  had no second role to offer: a dispatcher lent the overtime saw no chip beside
+  their name and no way into it without signing out, which is the whole feature.
+  Carrying it at sign-in is still not enough — an area lent at 22:00 to somebody
+  who signed on at 19:00 never appeared, and one taken back stayed on screen.
+  `GET /api/auth/me` is re-read on the slow poll and merged in with
+  `updateSession`, which is deliberately NOT `setSession`: that one stamps a
+  whole new session and resets `overtimeWindow`, the marker saying this shift's
+  crossing into overtime has already been logged, so using it on a poll writes
+  the same crossing to the shift log every thirty seconds.
 - **An administrator can take the dispatch desk, and it is a real dispatcher
   session.** The sign-in role choice offers it to admins only; it goes through
   the same shift and station steps and the same `finishDispatcherLogin`, so the

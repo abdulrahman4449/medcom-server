@@ -144,6 +144,22 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       ? foundAccount.delegation
       : null;
   const lentAreas = delegation ? delegation.scopes : [];
+
+  // What the ACCOUNT holds, carried onto every session this screen creates.
+  //
+  // None of the sessions built below used to carry it, so `DelegatedTag` had
+  // nothing to draw the lent-area chip from and `RoleSwitch` had no second role
+  // to offer — a dispatcher lent the overtime saw no chip beside their name and
+  // no way into it without signing out, which is the whole feature. `ownRole`
+  // is the role they actually are, so switching back knows where back is.
+  const authorityOf = (account) => ({
+    ownRole: (account && account.role) || null,
+    roles: Array.isArray(account && account.roles) ? account.roles : [],
+    delegation:
+      account && account.delegation && Array.isArray(account.delegation.scopes)
+        ? account.delegation
+        : null,
+  });
   // The desk is a role — a shift, a station, a sign-on on the log. Every other
   // area is a part of administration. Somebody can be lent both, and is then
   // offered both.
@@ -187,6 +203,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     setActingDelegated(true);
     if (role === "admin") {
       onLogin({
+        ...authorityOf(foundAccount),
         role: "admin",
         name: session.name,
         accountId: session.accountId,
@@ -235,6 +252,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     }
     const { unit, slot, member } = held;
     onLogin({
+      ...authorityOf(foundAccount),
       role: "team",
       accountId: foundAccount.id,
       name: foundAccount.name || member.name || foundAccount.id,
@@ -450,6 +468,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     // different answer from "a dispatcher".
     const borrowed = actingDelegated && account.role !== "dispatcher";
     const session = {
+      ...authorityOf(account),
       role: "dispatcher",
       name: account.name || account.id,
       accountId: account.id,
@@ -591,6 +610,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       );
       await saveUnits(nextUnits);
       const session = {
+        ...authorityOf(account),
         role: "team",
         accountId: account.id,
         name: account.name || account.id,
@@ -680,6 +700,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
           : "")
       : "";
     const session = {
+      ...authorityOf(account),
       role: "team",
       name: account.name || account.id,
       unitId: teamId,
@@ -773,7 +794,12 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   function continueAsSelf() {
     if (!foundAccount) return;
     if (foundAccount.role === "admin") {
-      onLogin({ role: "admin", name: foundAccount.name || foundAccount.id, accountId: foundAccount.id });
+      onLogin({
+        ...authorityOf(foundAccount),
+        role: "admin",
+        name: foundAccount.name || foundAccount.id,
+        accountId: foundAccount.id,
+      });
       return;
     }
     setPendingRole("dispatcher");

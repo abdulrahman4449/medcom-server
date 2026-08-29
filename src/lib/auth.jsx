@@ -112,6 +112,25 @@ export async function actAsRole(role) {
   return { account: data.account, scopes: data.scopes || [] };
 }
 
+// What the SERVER says this session holds, right now.
+//
+// The session is written once at sign-in and then sits in localStorage for the
+// length of a shift; authority moves underneath it. An area lent at 22:00 to
+// somebody who signed on at 19:00 never appeared, and one taken back stayed on
+// screen until they signed out. Read on the slow poll and merged into the
+// session, so the tag beside the name and the button that moves them into that
+// area are both telling the truth.
+export async function fetchMe() {
+  const res = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() });
+  if (res.status === 401) {
+    noteAuthLost();
+    return null;
+  }
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  return (data && data.account) || null;
+}
+
 // Lending named areas of an administrator's job to somebody who does not have
 // it. It stands until it is taken back — an empty list is taking it back.
 export function delegateAuthority(id, scopes) {
