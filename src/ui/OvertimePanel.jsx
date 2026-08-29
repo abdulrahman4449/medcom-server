@@ -2,6 +2,7 @@ import { stationLabel } from "../domain/live-sheet.jsx";
 import { clockStr, otHoursStr } from "../domain/messages.jsx";
 import { OVERTIME_KEY, grantWholeShiftOvertime, overtimeApprovedMs, overtimeClaims, overtimeStatusLabel } from "../domain/overtime.jsx";
 import { overtimeMs, seatLabel, shiftLabelWithWindow } from "../domain/shift-helpers.jsx";
+import { statsLog, statsRequests } from "../domain/stat-source.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
 import { writeKey } from "../lib/offline-queue.jsx";
 import { useState } from "../lib/react.jsx";
@@ -31,7 +32,7 @@ function OtBlock({ title, count, open, onToggle, children }) {
 // board is watched for. Open, it answers three things in order — what is
 // waiting on a decision, who is standing past their shift right now, and what
 // the period comes to.
-export function OvertimePanel({ log, requests, units, user, addLog, decisions, setDecisions, sent }) {
+export function OvertimePanel({ log: liveLog, requests: liveRequests, units, user, addLog, decisions, setDecisions, sent, submissions }) {
   const [open, setOpen] = useState(false);
   // Retractable inside as well as outside. Open, this panel ran to three
   // screens on a phone — a date range, three totals, everybody standing past
@@ -60,6 +61,14 @@ export function OvertimePanel({ log, requests, units, user, addLog, decisions, s
   const to = new Date(`${toStr}T00:00:00`).getTime() + 86400000;
   const validRange = Number.isFinite(from) && Number.isFinite(to) && to > from;
 
+  // A pay period is thirty days by default, and the live log is capped at 400
+  // lines and pruned four shifts after a shift is filed — so a claim from three
+  // weeks ago had simply stopped existing on this panel, hours and all. The
+  // filed shift logs still hold the sign-off line it is built from. Same corpus
+  // as the statistics, deduplicated by record id, live copy preferred.
+  const otWin = validRange ? { start: from, end: to } : null;
+  const log = statsLog(liveLog, submissions, otWin);
+  const requests = statsRequests(liveRequests, submissions, otWin);
   const claims = validRange ? overtimeClaims(log, requests, from, to, decisions, sent) : [];
   // Waiting on a decision means waiting on *this* desk. A stay the person has
   // not sent in is not waiting on anybody here, and counting it as pending put

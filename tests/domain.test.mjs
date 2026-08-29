@@ -597,6 +597,76 @@ export function run(D, t) {
       }));
   }
 
+  // ---------- the statistics count the archive, not just the live board
+  //
+  // `pruneArchivedWork` takes a filed call off the live board four shifts after
+  // its shift was finalised, and `ems:log` is capped at 400 lines regardless.
+  // Both are correct. What was wrong is that the statistics read only the live
+  // board — so a month whose shift log downloads as a forty-call PDF showed a
+  // handful of calls, a UHU nobody recognised, and no amount of restoring a
+  // backup could fix it, because nothing was ever missing.
+  {
+    const win = { start: at(2026, 5, 1, 0), end: at(2026, 6, 1, 0) };
+    const inMay = at(2026, 5, 12, 9);
+    const live = [{ id: "r-live", createdAt: at(2026, 5, 28, 9), status: "completed" }];
+    const liveLog = [{ id: "l-live", ts: at(2026, 5, 28, 9) }];
+    const subs = [
+      {
+        id: "2026-05-12::day::main",
+        station: "main",
+        status: "final",
+        windowStart: at(2026, 5, 12, 7),
+        windowEnd: at(2026, 5, 12, 19),
+        requests: [{ id: "r-filed", createdAt: inMay, status: "completed" }],
+        log: [{ id: "l-filed", ts: inMay }],
+      },
+      // A shift from a different month must not be dragged into May.
+      {
+        id: "2026-02-02::day::main",
+        station: "main",
+        status: "final",
+        windowStart: at(2026, 2, 2, 7),
+        windowEnd: at(2026, 2, 2, 19),
+        requests: [{ id: "r-feb", createdAt: at(2026, 2, 2, 9), status: "completed" }],
+        log: [{ id: "l-feb", ts: at(2026, 2, 2, 9) }],
+      },
+    ];
+
+    t.is("stats: a filed call the board no longer holds is still counted",
+      D.statsRequests(live, subs, win).map((r) => r.id).sort().join(), "r-filed,r-live");
+    t.is("stats: and its log lines with it",
+      D.statsLog(liveLog, subs, win).map((l) => l.id).sort().join(), "l-filed,l-live");
+    t.is("stats: a shift outside the window is not dragged in",
+      D.statsRequests(live, subs, win).some((r) => r.id === "r-feb"), false);
+
+    // The whole point of merging by id: the archive and the board hold the same
+    // call for four shifts, and counting it twice would double a month.
+    const both = [{ id: "r-filed", createdAt: inMay, status: "completed" }, ...live];
+    t.is("stats: a call held in both places is counted once",
+      D.statsRequests(both, subs, win).filter((r) => r.id === "r-filed").length, 1);
+    t.ok("stats: and the board's copy is the one kept, not the snapshot",
+      D.statsRequests(
+        [{ id: "r-filed", createdAt: inMay, status: "completed", note: "live" }],
+        subs, win
+      ).find((r) => r.id === "r-filed").note === "live");
+
+    // Nothing came from the archive when nothing was missing, so the line that
+    // explains the difference must not appear.
+    t.is("stats: nothing to say when the board still holds it all",
+      D.filedContribution({ requests: both, log: [{ id: "l-filed", ts: inMay }, ...liveLog], submissions: subs, win }).calls, 0);
+    t.is("stats: and it counts what the archive actually contributed",
+      D.filedContribution({ requests: live, log: liveLog, submissions: subs, win }).calls, 1);
+
+    // The rule the merge exists to compensate for, asserted here so the two
+    // cannot drift: a filed call IS dropped from the live board, on purpose.
+    const cutoff = D.pruneCutoff(at(2026, 5, 20, 9));
+    t.ok("stats: a finalised filed call is safe to prune off the board",
+      D.isSafeToPrune(
+        { id: "r-filed", createdAt: inMay, status: "completed", station: "main" },
+        subs, cutoff
+      ));
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

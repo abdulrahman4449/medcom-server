@@ -837,6 +837,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         units={units}
         log={log}
         checklistRuns={checklistRuns}
+        submissions={submissions}
         range={statRange}
         setRange={setStatRange}
       />
@@ -849,6 +850,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       <OvertimePanel
         log={log}
         requests={requests}
+        submissions={submissions}
         units={units}
         user={user}
         addLog={addLog}
@@ -890,6 +892,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         requests={requests}
         units={units}
         checklistRuns={checklistRuns}
+        submissions={submissions}
         range={statRange}
         setRange={setStatRange}
       />

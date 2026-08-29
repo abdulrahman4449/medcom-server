@@ -16,6 +16,7 @@ import { callOutcomeLabel } from "../domain/second-ambulance.jsx";
 import { PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
 import { scheduledShiftKey, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWindow } from "../domain/stat-range.jsx";
+import { filedContribution, statsLog, statsRequests } from "../domain/stat-source.jsx";
 import { SHIFT_MS } from "../domain/shifts.jsx";
 import { topPerformers } from "../domain/standouts.jsx";
 import { callBusyMs, callEndTs, callStartTs, unitCallInterval } from "../domain/uhu.jsx";
@@ -48,15 +49,17 @@ import { EscalationInbox } from "./Escalations.jsx";
 // spent on a call, and the number of calls completed. A crew can be busy on one
 // long critical transfer or on nine short ones, and neither number alone tells
 // you which.
-// How far back the board itself reaches.
+// How far back the records reach.
 //
-// The statistics read the live board — the event log and the call list — and
-// both are capped, so a month asked for from last year is not "a quiet month",
-// it is a month the board no longer holds. Showing zeros for it without saying
-// so is the kind of number somebody puts in a report.
+// A month asked for from before the department started using the app is not "a
+// quiet month", it is a month nothing was recorded in. Showing zeros for it
+// without saying so is the kind of number somebody puts in a report.
 //
-// The filed logs in the archive are where an old month actually lives; this
-// says so rather than pretending the window is empty.
+// It is handed the same corpus the figures are counted over — the live board
+// AND the filed shift logs — so it now describes the whole record rather than
+// the working store. It used to say "earlier work is in the filed shift logs
+// under Archive, not here", which stopped being true the moment the statistics
+// started reading them.
 export function ReachNote({ win, log, requests }) {
   const stamps = [];
   (log || []).forEach((l) => { if (l && l.ts) stamps.push(l.ts); });
@@ -77,9 +80,28 @@ export function ReachNote({ win, log, requests }) {
   return (
     <div style={styles.formHint}>
       {whole
-        ? `The board holds nothing from ${win.title} — its records start on ${gregDateStr(oldest)}. `
-        : `The board's records start on ${gregDateStr(oldest)}, part-way through ${win.title}. `}
-      Earlier work is in the filed shift logs under Archive, not here.
+        ? `Nothing was recorded in ${win.title} — the earliest work on this board or in the archive is ${gregDateStr(oldest)}. `
+        : `The records start on ${gregDateStr(oldest)}, part-way through ${win.title}, so the figures cover that date onwards. `}
+    </div>
+  );
+}
+
+// Where the numbers above came from, when part of them came from the archive.
+//
+// The statistics used to count the live board alone, so a month that had been
+// filed and tidied off the board read as a quiet month — while the same month's
+// shift log downloaded as a PDF with forty calls on it. The two now count the
+// same work, and this says so: a figure that grew without anything on the board
+// changing is one somebody has to be able to explain to their department.
+export function FiledNote({ filed }) {
+  if (!filed || (filed.calls <= 0 && filed.lines <= 0)) return null;
+  const bits = [];
+  if (filed.calls > 0) bits.push(`${filed.calls} call${filed.calls === 1 ? "" : "s"}`);
+  if (filed.lines > 0) bits.push(`${filed.lines} log line${filed.lines === 1 ? "" : "s"}`);
+  return (
+    <div style={styles.formHint}>
+      Counted with the archive: {bits.join(" and ")} from the filed shift logs,
+      which the live board no longer holds. Nothing is counted twice.
     </div>
   );
 }
@@ -1204,9 +1226,16 @@ export function pcrCompliance(requests, from, to) {
   };
 }
 
-export function IndicatorBand({ requests, units, log, checklistRuns, range, setRange }) {
+export function IndicatorBand({ requests: liveRequests, units, log: liveLog, checklistRuns, submissions, range, setRange }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
+  // The live board is not the record — see `domain/stat-source.jsx`. Every
+  // figure on this band is counted over the board plus the filed shift logs,
+  // deduplicated by record id, or a month older than four shifts reads as a
+  // quiet month while its own PDF lists forty calls.
+  const requests = statsRequests(liveRequests, submissions, win);
+  const log = statsLog(liveLog, submissions, win);
+  const filed = filedContribution({ requests: liveRequests, log: liveLog, submissions, win });
   const resp = responseCompliance(requests, win.start, win.end);
   const uhu = fleetUhu(requests, units, win.start, win.end);
   const pcr = pcrCompliance(requests, win.start, win.end);
@@ -1244,6 +1273,7 @@ export function IndicatorBand({ requests, units, log, checklistRuns, range, setR
           the page, so the choice made here is the one the panels below inherit. */}
       <StatPeriodPicker range={range} setRange={setRange} now={now} />
       <ReachNote win={win} log={log} requests={requests} />
+      <FiledNote filed={filed} />
 
       {/* The four the department is actually judged on, side by side. They are
           read together — a response figure that looks good while utilisation is
@@ -1315,12 +1345,16 @@ export function IndicatorBand({ requests, units, log, checklistRuns, range, setR
   );
 }
 
-export function Statistics({ log, requests, units, checklistRuns, range, setRange }) {
+export function Statistics({ log: liveLog, requests: liveRequests, units, checklistRuns, submissions, range, setRange }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("uhu");
   const [search, setSearch] = useState("");
   const now = Date.now();
   const win = statRangeWindow(range, now);
+  // Same corpus as the band above, for the same reason: the two must never be
+  // able to disagree, and neither may under-count a period the archive holds.
+  const requests = statsRequests(liveRequests, submissions, win);
+  const log = statsLog(liveLog, submissions, win);
   const resp = responseCompliance(requests, win.start, win.end);
   const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns);
   const mix = categoryMixOf(requests, win.start, win.end);

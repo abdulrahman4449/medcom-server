@@ -34,6 +34,8 @@ export * from ${JSON.stringify(ROOT + "src/ui/PastCall.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/delegation.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/stat-range.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/crew-roster.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/stat-source.jsx")};
+export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
 export { toneKeyFor } from ${JSON.stringify(ROOT + "src/lib/dates.jsx")};
 export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};
 export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "src/domain/second-ambulance.jsx")};

@@ -358,6 +358,21 @@ patch", that document is the target — do not start a fresh exploration.
   whether `ems:archives` and `ems:submissions` grew. Putting them back
   resurrects filed calls onto the live board twice. The tool says so itself now,
   because the `put` command it prints looks like the obvious next step.
+- **A statistic is counted over the board PLUS the archive, never the board
+  alone.** `src/domain/stat-source.jsx` — `statsRequests` / `statsLog`, merged
+  by record id with the live copy preferred. The live stores are working stores:
+  `pruneArchivedWork` takes a filed call off four shifts after its shift was
+  finalised, and `ems:log` is capped at 400 lines regardless — and sign-on and
+  sign-off are log lines, which are the DENOMINATOR of every UHU figure. So a
+  month whose shift log downloaded as a forty-call PDF showed a handful of calls
+  and a UHU nobody recognised, and restoring a backup could not fix it because
+  nothing was ever missing: `ems:submissions` had it all along and the
+  statistics were not looking there. `IndicatorBand`, `Statistics` and
+  `OvertimePanel` all read the merged corpus — overtime for the same reason, a
+  pay period is thirty days and the claim is built from a sign-off line the
+  board no longer holds. Anything new that counts a PERIOD must do the same.
+  `FiledNote` says how much came from the archive, because a figure that grew
+  without the board changing is one somebody has to be able to explain.
 - **A repeat of `alert()` must be a no-op, not a restart.** The web layer calls
   the plugin every 1.7 seconds for as long as a call is unacknowledged, and both
   plugins used to stop the player and build a new one each time. `stopPlayer()`
