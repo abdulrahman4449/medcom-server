@@ -1,6 +1,6 @@
 import { ORG_STAMP } from "../brand/artwork.jsx";
 import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
-import { callRoute } from "../domain/call-locations.jsx";
+import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { CHECKLIST_KEY, CHECKLIST_PARTS, UNSORTED_CHECK, checklistCategories, checklistDoneByPerson, checklistFlags, checklistItems, checklistRunFor, checklistTree, emptyChecklists, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
 import { CHECKLIST_GOOD, PCR_GOOD, RESPONSE_GOOD, RESPONSE_TARGET_MS, UHU_HEADROOM, UHU_TARGET, isInternalEmergency, responseCompliance, responseMsFor } from "../domain/compliance.jsx";
 import { REQ_STATUS, reqStatusMeta } from "../domain/constants.jsx";
@@ -12,7 +12,6 @@ import { STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-
 import { clockStr, durationStr, msDurationStr } from "../domain/messages.jsx";
 import { opDayKey, opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
-import { callOutcomeLabel } from "../domain/second-ambulance.jsx";
 import { PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
 import { scheduledShiftKey, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWindow } from "../domain/stat-range.jsx";
@@ -20,7 +19,7 @@ import { filedContribution, statsLog, statsRequests } from "../domain/stat-sourc
 import { SHIFT_MS } from "../domain/shifts.jsx";
 import { topPerformers } from "../domain/standouts.jsx";
 import { callBusyMs, callEndTs, callStartTs, unitCallInterval } from "../domain/uhu.jsx";
-import { CATEGORY_FILLS, SERVICE_FILLS, buildShiftHandoverRows, loadedKmFor, personUhuRows, serviceTypeFor } from "../domain/uhu-person.jsx";
+import { CATEGORY_FILLS, SERVICE_FILLS, bravoNameFor, buildShiftHandoverRows, loadedKmFor, personUhuRows, serviceTypeFor } from "../domain/uhu-person.jsx";
 import { autoFitSheet, exportSubmission } from "../export/workbook.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
@@ -2011,23 +2010,30 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
 <h2>Calls</h2>
 <table>
   <thead><tr>
-    <th class="c" style="width:2.4%">#</th>
-    <th style="width:11%">Patient coming from</th>
-    <th style="width:15%">Call</th>
-    <th style="width:6%">MRN</th>
-    <th class="c" style="width:4.4%">Disp.</th>
-    <th class="c" style="width:4.4%">En route</th>
-    <th class="c" style="width:4.4%">Scene</th>
-    <th class="c" style="width:4.4%">Depart</th>
-    <th class="c" style="width:4.4%">Arrived</th>
-    <th class="c" style="width:4.4%">In svc</th>
-    <th class="c" style="width:4.8%">Resp.</th>
-    <th style="width:6.5%">Team</th>
-    <th class="c" style="width:4%">Svc</th>
-    <th class="c" style="width:3.2%">Km</th>
-    <th style="width:9%">Call category</th>
-    <th style="width:8%">E-PCR author</th>
-    <th style="width:8.7%">Outcome</th>
+    <th class="c" style="width:2.2%">#</th>
+    <th style="width:8%">Patient coming from</th>
+    <!-- The same columns as the spreadsheet, in the same order, under the same
+         captions. The two documents describe one shift and a reader should not
+         have to work out which column of one is which of the other.
+         An HTML comment, not a JSX one: this is a template literal, and a
+         {/* … */} inside it is printed on the page as text. -->
+    <th style="width:8.5%">From</th>
+    <th style="width:8.5%">To</th>
+    <th style="width:5%">MRN</th>
+    <th class="c" style="width:4%">Disp.</th>
+    <th class="c" style="width:4%">En route</th>
+    <th class="c" style="width:4%">Scene</th>
+    <th class="c" style="width:4%">Depart</th>
+    <th class="c" style="width:4%">Arrived</th>
+    <th class="c" style="width:4%">In svc</th>
+    <th class="c" style="width:4.4%">Resp.</th>
+    <th style="width:6%">Team</th>
+    <th class="c" style="width:3.6%">Svc</th>
+    <th class="c" style="width:3%">Km</th>
+    <th style="width:7%">Call category</th>
+    <th style="width:6.8%">E-PCR author</th>
+    <th style="width:6.8%">Bravo</th>
+    <th style="width:6.5%">Request status</th>
   </tr></thead>
   <tbody>
   ${calls
@@ -2046,7 +2052,8 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
       return `<tr>
         <td class="c">${i + 1}</td>
         <td${cls}>${esc(r.patientOrigin || "")}</td>
-        <td${cls}><strong>${esc(r.nature)}</strong><br><span class="dim">${esc(callRoute(r))}</span></td>
+        <td${cls}>${esc(callFrom(r))}</td>
+        <td${cls}>${esc(callTo(r))}</td>
         <td${cls}>${esc(r.mrn || "")}</td>
         <td${cellClass(r, "c")}>${esc(clockStr(r.createdAt))}</td>
         <td${cellClass(r, "c")}>${esc(clockStr(t(r).enroute))}</td>
@@ -2060,7 +2067,8 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td${cellClass(r, "c")}>${esc(loadedKmFor(r))}</td>
         <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
         <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
-        <td${cls}>${esc(callOutcomeLabel(r) || reqStatusMeta(r.status).label)}</td>
+        <td${cls}>${esc(bravoNameFor(r, u))}</td>
+        <td${cls}>${esc(reqStatusMeta(r.status).label)}</td>
       </tr>`;
     })
     .join("")}

@@ -148,6 +148,24 @@ patch", that document is the target — do not start a fresh exploration.
   opens on the Hijri calendar and types a Hijri date into a field the board
   reads as Gregorian — filing a call years out. `styles.dateInput` is the large
   form; pair the two.
+- **The workbook and the PDF are one document in two formats.** They carry the
+  same columns, in the same order, under the same captions — `# · Patient coming
+  from · From · To · MRN · times · Resp. · Team · Svc · Km · Call category ·
+  E-PCR author · Bravo · Request status`. Add a column to `SHIFT_LOG_COLUMNS`
+  and add it to `buildShiftReport` in the same breath, or a reader has to work
+  out which column of one is which of the other. The PDF is a template literal,
+  NOT JSX: a `{/* … */}` comment inside it prints on the page as text.
+- **An empty cell is not part of the table.** `gridLogSheet` rules only cells
+  that hold something. A blank inside a call is answered with `NA` before the
+  grid runs, so anything still empty is the space around the tables — ruling it
+  drew a grid over nothing and made the sheet look like a form nobody had
+  filled in.
+- **A cell cannot be wider than its column, so widen the CELL.**
+  `mergeCoverageCells` — the NO COVERAGE block sits under a forty-four column
+  call table and borrows its widths, so "MEDIC 1, MEDIC 2, MEDIC 3" landed in a
+  column sized for a ward name and was cut off. Widening the column would
+  widen it for the call table too, so the teams cell is merged across the two
+  columns beside it, which that block leaves empty.
 - **Every sheet in a workbook wears the same header band.** `paintHeaderRow`
   runs inside `autoFitSheet`, which every sheet already goes through, so a new
   one cannot be added without it. It used to live in `dressSheet`, which only

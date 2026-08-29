@@ -392,6 +392,34 @@ export function fillBlankCells(sheet, headerRowIndex, dataRows) {
   return sheet;
 }
 
+// The teams-out cell, widened without widening the column.
+//
+// Excel gives a cell the width of its column and no more, so the only way to
+// show a long value in one cell of a narrow column is to merge it across the
+// ones beside it. The coverage block uses seven columns under a call table that
+// uses forty-four, so the two columns to the right of TEAMS OUT are empty on
+// exactly these rows and there is nothing to displace.
+export function mergeCoverageCells(sheet, aoa, offset) {
+  const rows = (aoa && aoa.coverageWideRows) || [];
+  if (!rows.length || !sheet["!ref"]) return sheet;
+  const merges = sheet["!merges"] || [];
+  rows.forEach((r) => {
+    const rowIdx = r + (offset || 0);
+    // Column 1 is TEAMS OUT — column 0 is the counter. Merged with 2 and 3,
+    // which the coverage table leaves empty.
+    merges.push({ s: { r: rowIdx, c: 1 }, e: { r: rowIdx, c: 3 } });
+  });
+  sheet["!merges"] = merges;
+  // Room for two lines, so a fourth truck wraps rather than disappearing.
+  const heights = sheet["!rows"] || [];
+  rows.forEach((r) => {
+    const rowIdx = r + (offset || 0);
+    heights[rowIdx] = { ...(heights[rowIdx] || {}), hpt: 30 };
+  });
+  sheet["!rows"] = heights;
+  return sheet;
+}
+
 export function gridLogSheet(sheet, headerRowIndex, dataRows) {
   if (!sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
@@ -408,9 +436,17 @@ export function gridLogSheet(sheet, headerRowIndex, dataRows) {
       const addr = XLSX.utils.encode_cell({ r, c });
       const cell = sheet[addr];
       if (!cell) continue;
+      // An empty cell is not part of the table.
+      //
+      // A blank inside a call is answered with NA before this runs, so anything
+      // still empty here is the space around the tables — the line between one
+      // station's calls and the next, the run-off past the end of the coverage
+      // block. Ruling it drew a grid over nothing and made the sheet look like
+      // a form somebody had failed to fill in.
+      const empty = cell.v === "" || cell.v === null || cell.v === undefined;
       cell.s = {
         ...(cell.s || {}),
-        border: { top: hair, bottom: hair, left: hair, right: hair },
+        ...(empty ? {} : { border: { top: hair, bottom: hair, left: hair, right: hair } }),
         font: { name: XL_FONT, sz: 10, ...(((cell.s || {}).font) || {}) },
         // Centred, horizontally and vertically. A sheet of times, codes and
         // short names reads as a grid when the values line up on an axis; left
@@ -444,6 +480,10 @@ export function dressLogSheet(sheet, aoa) {
   paintCodedColumn(sheet, typeof aoa.callTypeCol === "number" ? aoa.callTypeCol : -1, CALLTYPE_FILLS, headerRow);
   // Last, so nothing painted above can strip it back off again.
   gridLogSheet(sheet, headerRow, aoa.callRows instanceof Set ? aoa.callRows : null);
+  // After the grid: a merge is a property of the sheet rather than of a cell,
+  // so nothing above can undo it, and doing it here keeps the row heights it
+  // sets from being overwritten.
+  mergeCoverageCells(sheet, aoa, 0);
   return sheet;
 }
 
@@ -614,10 +654,10 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // behind those columns and is grouped into an outline the sheet opens with
   // collapsed - one click on the + and it is all there.
   //
-  // "Call" is genuinely new. The shift log leads with what the call was, and
-  // this sheet had no column for it at all: the route was here, the nature of
-  // the call was not.
-  header.splice(1, 0, "Call");
+  // There is no "Call" column. It was added when the route was the only thing
+  // this sheet said about a job, and it stopped earning its place once FROM and
+  // TO moved to the front: the nature of a transfer and the two ends of it said
+  // the same thing twice, in the four columns a reader looks at first.
 
   // Export caption -> the shift log's caption for the same column.
   const SHIFT_LOG_COLUMNS = [
@@ -631,7 +671,6 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     // the route: they belong next to the origin, before anything else.
     ["Coming from?", "From"],
     ["Transported to?", "To"],
-    ["Call", "Call"],
     ["MRN", "MRN"],
     ["Dispatch time", "Disp."],
     ["En-route time", "En route"],
@@ -673,9 +712,6 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
     const shift = shiftMeta(shiftKey);
     const cells = [
       r.patientOrigin || "",
-      // The shift log leads with what the call actually was; this sheet had
-      // only the route.
-      r.nature || "",
       callFrom(r),
       callTo(r),
       r.mrn || "",
@@ -805,6 +841,14 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // department will be asked about, so they are marked in red and carry the
   // sheet's own NO COVERAGE category rather than being invented as a new idea.
   const coverageRows = [];
+  // The rows whose second cell has to hold "MEDIC 1, MEDIC 2, MEDIC 3".
+  //
+  // The coverage block sits under a 44-column call table and borrows its widths,
+  // and its widest value lands in a column sized for a ward name — so the list
+  // of teams was cut off. A column cannot be widened for one table without
+  // widening it for the other, so the CELL is widened instead: merged across
+  // the two columns beside it, which the coverage table does not use.
+  const coverageWideRows = [];
   // And which calls were stood down rather than run. Shaded light yellow, so a
   // month's sheet can be scanned for them instead of read row by row.
   const cancelledRows = [];
@@ -831,9 +875,11 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       // on the sheet because the dispatch log puts a ward name there. In the old
       // order it landed in the MRN column and "MEDIC 1, MEDIC 2, MEDIC 3" was cut
       // off — column widths belong to the sheet, not to one table on it.
+      coverageWideRows.push(out.length);
       out.push(["#", "TEAMS OUT", "STARTED", "ENDED", "DURATION", "DECLARED BY", "ENDED BY"]);
       gaps.forEach((c, idx) => {
         coverageRows.push(out.length);
+        coverageWideRows.push(out.length);
         out.push([
           idx + 1,
           (c.unitsOut || []).join(", "),
@@ -855,6 +901,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
 
   out.nightRows = nightRows;
   out.coverageRows = coverageRows;
+  out.coverageWideRows = coverageWideRows;
   out.cancelledRows = cancelledRows;
   // Where the treatments need to land. Reported by the builder rather than
   // guessed at by the code that dresses the sheet — it is the only thing that
