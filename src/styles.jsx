@@ -1030,6 +1030,10 @@ export const styles = {
     fontFamily: "inherit",
   },
   schedCardOpen: { gridColumn: "1 / -1" },
+  // The arrangement's controls, opened inside the patient card that carries it.
+  // Inset a little so it reads as belonging to the row above rather than as a
+  // second card sitting under it.
+  repeatArrOpen: { marginTop: 8, marginBottom: 4 },
   schedCard: {
     background: "var(--raised)",
     border: "1px solid var(--hair)",

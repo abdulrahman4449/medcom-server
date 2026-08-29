@@ -415,8 +415,12 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
   // only once somebody has already pressed it.
   const repeatCount = new Set(repeating.map(repeatPatientKey)).size;
   const dayGroups =
+    // Nothing. The arrangement being worked opens inside its own patient card,
+    // under the row that was pressed — see `bookingCard` below. It used to be
+    // listed here instead, which put the controls below every patient card on
+    // the page and behind the message dock.
     tab === "repeating"
-      ? [{ key: "repeating", heading: "", entries: repeating.filter((s) => s.id === openCard) }]
+      ? []
       : tab === "upcoming"
       ? [
           ...(awaiting.length > 0
@@ -745,6 +749,389 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
     );
   }
 
+  // One booking card, wherever it is being worked.
+  //
+  // Pulled out of the calendar list because Schedule -> Repeating needs the
+  // same card in a different place. Pressing Manage on an arrangement used to
+  // open it in a separate list BELOW every patient card on the page, so on a
+  // desk with two standing patients the controls appeared off the bottom of
+  // the screen, behind the message dock — the button flipped to Done and, from
+  // where the desk was looking, nothing happened at all.
+  function bookingCard(entry) {
+              const unit = units.find((u) => u.id === entry.assignedUnitId);
+              const meta = schedStatusMeta(entry.status);
+              const waiting = schedAwaitCall(entry);
+              const shift = waiting ? null : shiftMeta(entry.shift || scheduledShiftKey(entry.scheduledFor));
+              const soon = !waiting && schedOpen(entry, now) && (entry.scheduledFor || 0) - now <= SCHED_DUE_SOON_MS;
+              const overdue = !waiting && schedOpen(entry, now) && (entry.scheduledFor || 0) <= now;
+              // Inside the reminder window and in this desk's own shift: the
+              // card says so, so nobody has to work out from a countdown
+              // whether the chime is going to come.
+              const reminding =
+                schedOpen(entry, now) &&
+                (entry.scheduledFor || 0) - now > 0 &&
+                (entry.scheduledFor || 0) - now <= SCHED_PREALERT_MS &&
+                bookingInUserShift(entry, user);
+              const priorityMeta = PRIORITY[priorityKeyOf(entry)];
+              const releasedCall = entry.releasedRequestId
+                ? (requests || []).find((r) => r.id === entry.releasedRequestId)
+                : null;
+              // A tile, until it is the one being worked.
+              //
+              // The closed card was eight rows deep - two badge rows, the
+              // route, the type, the kilometres, the MRN, the notes and the
+              // requirements - so four bookings filled a phone screen and the
+              // desk could not read its own day. A tile says what it is, when,
+              // whose it is, and whether anybody is on it; `openCard` puts the
+              // rest one tap away on the one that matters.
+              //
+              // Past is not folded this way: nothing there opens, so a tile
+              // would be a card with its content removed and no way to get it
+              // back.
+              const compact = tab !== "past" && openCard !== entry.id;
+              return (
+                <div
+                  key={entry.id}
+                  style={{
+                    ...styles.schedCard,
+                    borderLeftColor: entry.status === "cancelled" ? "var(--crit)" : priorityMeta.color,
+                    ...(soon ? styles.callCardDueSoon : null),
+                    // A booking that was called off should not read the same as
+                    // one still coming. It stays legible — somebody may need to
+                    // see why — but it stops competing with live work.
+                    ...(entry.status === "cancelled" ? styles.schedCancelled : null),
+                    // The one being worked takes the whole row.
+                    //
+                    // Opening it inside its own 195px grid cell squeezed every
+                    // control into a single column — a team picker, "the ward
+                    // has rung", a date button, a cancel button and Done, each
+                    // on its own line, in a card three times taller than the
+                    // screen. A booking being worked is the same thing as an
+                    // active call being worked, and an active call card is
+                    // full width.
+                    ...(openCard === entry.id ? styles.schedCardOpen : null),
+                  }}
+                >
+                  <div style={styles.callCardTop}>
+                    <div style={styles.schedCardNature}>{entry.nature}</div>
+                    <span style={{ ...styles.pill, background: priorityMeta.color }}>{priorityMeta.label}</span>
+                  </div>
+
+                  {/* Two times, said as two things. A card showing one time when
+                      the booking has two is a card somebody will misread. Only
+                      on the one being worked: on a closed tile it was 40px of
+                      arithmetic on every booking of the day. */}
+                  {entry.dispatchAt && openCard === entry.id && (
+                    <div style={styles.twoTimes}>
+                      <span>
+                        Leaves <strong>{hhmm(entry.dispatchAt)}</strong>
+                      </span>
+                      <span style={styles.twoTimesDim}>
+                        · appointment {hhmm(entry.scheduledFor)} · call raised{" "}
+                        {hhmm(entry.dispatchAt - SCHED_LEAD_MS)}
+                      </span>
+                    </div>
+                  )}
+
+                  <div style={styles.schedCardMeta}>
+                    {waiting ? (
+                      <span style={styles.awaitCallTag}>
+                        <PhoneIncoming size={11} />{" "}
+                        {/* Short on a tile, because the sentence is wider than
+                            the tile is and ran off the edge of the card. The
+                            full wording stays on the one being worked, where
+                            there is a card's width to say it in. */}
+                        {compact
+                          ? "NO TIME YET"
+                          : schedOpen(entry, now)
+                          ? "NO TIME — THEY WILL CALL"
+                          : "NO TIME WAS SET"}
+                      </span>
+                    ) : (
+                      <span style={{ ...styles.scheduledTag, color: meta.color, borderColor: meta.color }}>
+                        <CalendarClock size={11} /> {whenStr(entry.scheduledFor)}
+                      </span>
+                    )}
+                    {!waiting && schedOpen(entry, now) && !compact && (
+                      <span style={overdue ? styles.staffingWarn : styles.historyDuration}>
+                        {untilStr(entry.scheduledFor, now)}
+                      </span>
+                    )}
+                    {reminding && !compact && (
+                      <span style={styles.remindingTag}>
+                        <Bell size={10} /> REMINDER RUNNING
+                      </span>
+                    )}
+                    {isOutLeg(entry) && <span style={styles.legOut}>OUT</span>}
+                    {isReturnLeg(entry) && <span style={styles.legReturn}>↩ RETURN</span>}
+                    {isRecurring(entry) && (
+                      <span style={styles.repeatTag}>↻ REPEATS · {repeatLabel(entry)}</span>
+                    )}
+                    {shift && !compact && (
+                      <span style={{ ...styles.shiftTag, color: shift.color, borderColor: shift.color }}>
+                        {shift.glyph} {shift.short}
+                      </span>
+                    )}
+                    {!compact && <span style={{ ...styles.pill, background: meta.color }}>{meta.label}</span>}
+                  </div>
+
+                  {/* Which of four identical bookings this one is.
+                      A repeating dialysis patient throws off a return leg every
+                      time they finish, and each one waits on the ward's call -
+                      so Upcoming carried four cards reading HD APPOINTMENT ·
+                      NO TIME · MRN 235 with nothing to tell them apart. How
+                      long the patient has been sitting there is the difference
+                      that matters, and it is the reason to pick one over
+                      another. */}
+                  {compact && isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && (
+                    <div style={styles.schedCardMeta}>
+                      <span style={styles.legWaiting}>
+                        waiting {shortDurationStr(Math.max(0, now - entry.deliveredAt))}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* What is coming after this leg, said on the card rather
+                      than left for the desk to remember. */}
+                  {wantsReturn(entry) && !isReturnLeg(entry) && openCard === entry.id && (
+                    <div style={styles.legLink}>
+                      <span style={styles.legLinkArrow}>↩</span>
+                      <span>
+                        {entry.returnMode === "timed" && entry.returnAt ? (
+                          <>
+                            <strong style={styles.legLinkStrong}>
+                              Return booked {whenStr(entry.returnAt)}
+                            </strong>{" "}
+                            — it goes on the book once this leg is finished.
+                          </>
+                        ) : (
+                          <>
+                            <strong style={styles.legLinkStrong}>Return journey to follow</strong> —
+                            ring when ready. It appears on the board on its own when this leg
+                            closes.
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* A return leg waiting on the ward: how long the patient has
+                      been sitting there. Nobody could evidence this before. */}
+                  {isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && openCard === entry.id && (
+                    <div style={styles.historyClosedBy}>
+                      Return leg · patient delivered {clockStr(entry.deliveredAt)} ·{" "}
+                      <strong style={styles.legWaiting}>
+                        waiting {shortDurationStr(Math.max(0, now - entry.deliveredAt))}
+                      </strong>
+                    </div>
+                  )}
+
+                  {!compact && (
+                    <div style={styles.schedCardMeta}>
+                      <CallRoute req={entry} />
+                      <CallTypeTag req={entry} />
+                      <LoadedKmTag req={entry} />
+                    </div>
+                  )}
+
+                  {/* The patient stays on the tile. It is the one line that
+                      says WHICH booking this is, and four bookings for the
+                      same ward with the same nature are only told apart by
+                      it. */}
+                  {entry.mrn && <div style={styles.mrnRow}>MRN: {entry.mrn}</div>}
+                  {entry.notes && !compact && <div style={styles.mrnRow}>{entry.notes}</div>}
+                  {!compact && entry.requirements && entry.requirements.length > 0 && (
+                    <div style={styles.checklistRow}>
+                      {entry.requirements.map((k) => (
+                        <span key={k} style={styles.reqBadge}>
+                          {REQUIREMENTS.find((r) => r.key === k) ? REQUIREMENTS.find((r) => r.key === k).label : k}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {entry.status === "released" && (
+                    <div style={styles.historyClosedBy}>
+                      Dispatched {entry.releasedAt ? whenStr(entry.releasedAt) : ""}
+                      {releasedCall ? ` · now ${REQ_STATUS[releasedCall.status] ? REQ_STATUS[releasedCall.status].label : releasedCall.status}` : ""}
+                    </div>
+                  )}
+                  {entry.status === "cancelled" && (
+                    <div style={styles.historyClosedBy}>
+                      Cancelled{entry.cancelledBy ? ` by ${entry.cancelledBy}` : ""}
+                      {schedCancelReason(entry) ? (
+                        <span style={styles.cancelReasonSaid}> — {schedCancelReason(entry)}</span>
+                      ) : (
+                        " — no reason was recorded"
+                      )}
+                    </div>
+                  )}
+
+                  {schedOpen(entry, now) && openCard !== entry.id && (
+                    <div style={styles.schedCardActions}>
+                      <span style={unit ? styles.assignedTag : styles.pendingAckTag}>
+                        {unit ? unit.name : "No team yet"}
+                      </span>
+                      <button
+                        style={styles.ghostBtnSm}
+                        onClick={() => {
+                          setOpenCard(entry.id);
+                          closeCancel();
+                          setEditingId(null);
+                        }}
+                      >
+                        Manage
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={styles.schedCardActions}>
+                    {schedOpen(entry, now) && openCard === entry.id ? (
+                      <React.Fragment>
+                        {/* The ward has phoned: this is the button that turns a
+                            booking with no time into a live call, there and then.
+                            It stamps the current time on the booking and the
+                            normal release path picks it up within seconds, so the
+                            crew gets exactly the alarm and timeline they would
+                            get from a call phoned in on the spot. */}
+                        {waiting && (
+                          <button style={styles.readyNowBtn} onClick={() => markReady(entry)}>
+                            <PhoneIncoming size={13} />{" "}
+                            {isReturnLeg(entry)
+                              ? "The ward has rung — send it now"
+                              : "Patient ready — send it out now"}
+                          </button>
+                        )}
+                        <select
+                          style={styles.assignSelect}
+                          value={entry.assignedUnitId || ""}
+                          onChange={(e) => assignTeam(entry, e.target.value)}
+                        >
+                          <option value="">No team yet</option>
+                          {units.map((u) => (
+                            <option key={u.id} value={u.id}>{u.name}</option>
+                          ))}
+                        </select>
+                        {unit ? (
+                          <span style={styles.assignedTag}>{unit.name} — alerted when it goes out</span>
+                        ) : (
+                          <span style={styles.pendingAckTag}>Raised for the desk if nobody is set</span>
+                        )}
+                        {editingId !== entry.id && cancellingId !== entry.id && (
+                          <button
+                            style={styles.ghostBtnSm}
+                            onClick={() => {
+                              setEditingId(entry.id);
+                              setEditWhen(entry.scheduledFor || defaultScheduleTs(Date.now()));
+                              setEditError("");
+                              closeCancel();
+                            }}
+                          >
+                            <Clock size={12} /> {waiting ? "Set a date & time" : "Change date & time"}
+                          </button>
+                        )}
+                        {cancellingId !== entry.id && (
+                          <button style={styles.ghostBtnSm} onClick={() => openCancel(entry)}>
+                            <Trash size={12} /> Cancel booking
+                          </button>
+                        )}
+                        {cancellingId !== entry.id && editingId !== entry.id && (
+                          <button style={styles.ghostBtnSm} onClick={() => setOpenCard(null)}>
+                            Done
+                          </button>
+                        )}
+                      </React.Fragment>
+                    ) : (
+                      !schedOpen(entry, now) && unit && <span style={styles.assignedTag}>{unit.name}</span>
+                    )}
+                  </div>
+
+                  {/* The banner the desk answers before a booking can be
+                      cancelled. It sits on the card itself rather than in a
+                      dialog, so the transfer being cancelled stays in front of
+                      whoever is typing the reason for it. */}
+                  {cancellingId === entry.id && (
+                    <div style={styles.cancelReasonBanner}>
+                      <div style={styles.cancelReasonHead}>
+                        <Trash size={12} /> WHY IS THIS BOOKING BEING CANCELLED?
+                      </div>
+                      <div style={styles.cancelReasonNote}>
+                        {waiting
+                          ? "This booking is still waiting on the ward's call."
+                          : `Booked for ${whenStr(entry.scheduledFor)}.`}{" "}
+                        The reason is kept on the booking, written into the event log, and carried onto the
+                        Scheduled Requests sheet of the shared spreadsheet.
+                      </div>
+                      <div style={styles.checklistRow}>
+                        {SCHED_CANCEL_REASONS.map((r) => (
+                          <button
+                            key={r}
+                            style={cancelReason === r ? styles.reasonPillActive : styles.reasonPill}
+                            onClick={() => {
+                              setCancelReason(r);
+                              setCancelError("");
+                            }}
+                          >
+                            {r}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        style={{ ...styles.input, marginTop: 8 }}
+                        value={cancelReason}
+                        maxLength={SCHED_CANCEL_REASON_MAX}
+                        placeholder="Reason for cancelling — pick one above or type it"
+                        onChange={(e) => {
+                          setCancelReason(e.target.value);
+                          setCancelError("");
+                        }}
+                      />
+                      {cancelError && <div style={styles.loginError}>{cancelError}</div>}
+                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                        <button style={styles.dangerBtnSm} onClick={() => cancelBooking(entry)}>
+                          <Trash size={12} /> Cancel the booking
+                        </button>
+                        <button style={styles.ghostBtnSm} onClick={closeCancel}>
+                          Keep it on the book
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {editingId === entry.id && (
+                    <div style={styles.rescheduleBox}>
+                      <div style={styles.label}>{waiting ? "Give this booking a time" : "Move this booking"}</div>
+                      <WhenPicker
+                        value={editWhen}
+                        onChange={setEditWhen}
+                        now={now}
+                        hint={
+                          editWhen
+                            ? waiting
+                              ? `No time on it at the moment · setting it to ${whenStr(editWhen)} (${untilStr(editWhen, now)}) means it goes out on its own then, without waiting for their call`
+                              : `Currently ${whenStr(entry.scheduledFor)} · moving to ${whenStr(editWhen)} (${untilStr(editWhen, now)})`
+                            : ""
+                        }
+                      />
+                      {editError && <div style={styles.loginError}>{editError}</div>}
+                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                        <button style={styles.primaryBtnSm} onClick={() => reschedule(entry)}>
+                          {waiting ? "Save this time" : "Save new time"}
+                        </button>
+                        {/* The other direction: a booked time that has fallen
+                            through, where the ward now says it will call back. */}
+                        {!waiting && (
+                          <button style={styles.ghostBtnSm} onClick={() => clearBookingTime(entry)}>
+                            <PhoneIncoming size={12} /> Take the time off — they'll call
+                          </button>
+                        )}
+                        <button style={styles.ghostBtnSm} onClick={() => { setEditingId(null); setEditError(""); }}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+  }
   return (
     <div>
       <SectionBanner
@@ -1135,7 +1522,8 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                       const unit = units.find((u) => u.id === entry.assignedUnitId);
                       const at = nextRepeatAt(entry, now);
                       return (
-                        <div key={entry.id} style={styles.repeatArrRow}>
+                        <React.Fragment key={entry.id}>
+                        <div style={styles.repeatArrRow}>
                           <span style={styles.repeatArrDays}>
                             {repeatDays(entry).length === 7 ? "EVERY DAY" : repeatLabel(entry)}
                           </span>
@@ -1155,6 +1543,11 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                             {openCard === entry.id ? "Done" : "Manage"}
                           </button>
                         </div>
+                        {/* Opened where it was pressed. */}
+                        {openCard === entry.id && (
+                          <div style={styles.repeatArrOpen}>{bookingCard(entry)}</div>
+                        )}
+                      </React.Fragment>
                       );
                     })}
                   </div>
@@ -1180,381 +1573,7 @@ export function ScheduledRequests({ user, units, requests, scheduled, allSchedul
                     what the booking is, when, and whether it has a team - and
                     the one being worked opens to everything else. */}
                 <div style={styles.schedGrid}>
-                {group.entries.map((entry) => {
-              const unit = units.find((u) => u.id === entry.assignedUnitId);
-              const meta = schedStatusMeta(entry.status);
-              const waiting = schedAwaitCall(entry);
-              const shift = waiting ? null : shiftMeta(entry.shift || scheduledShiftKey(entry.scheduledFor));
-              const soon = !waiting && schedOpen(entry, now) && (entry.scheduledFor || 0) - now <= SCHED_DUE_SOON_MS;
-              const overdue = !waiting && schedOpen(entry, now) && (entry.scheduledFor || 0) <= now;
-              // Inside the reminder window and in this desk's own shift: the
-              // card says so, so nobody has to work out from a countdown
-              // whether the chime is going to come.
-              const reminding =
-                schedOpen(entry, now) &&
-                (entry.scheduledFor || 0) - now > 0 &&
-                (entry.scheduledFor || 0) - now <= SCHED_PREALERT_MS &&
-                bookingInUserShift(entry, user);
-              const priorityMeta = PRIORITY[priorityKeyOf(entry)];
-              const releasedCall = entry.releasedRequestId
-                ? (requests || []).find((r) => r.id === entry.releasedRequestId)
-                : null;
-              // A tile, until it is the one being worked.
-              //
-              // The closed card was eight rows deep - two badge rows, the
-              // route, the type, the kilometres, the MRN, the notes and the
-              // requirements - so four bookings filled a phone screen and the
-              // desk could not read its own day. A tile says what it is, when,
-              // whose it is, and whether anybody is on it; `openCard` puts the
-              // rest one tap away on the one that matters.
-              //
-              // Past is not folded this way: nothing there opens, so a tile
-              // would be a card with its content removed and no way to get it
-              // back.
-              const compact = tab !== "past" && openCard !== entry.id;
-              return (
-                <div
-                  key={entry.id}
-                  style={{
-                    ...styles.schedCard,
-                    borderLeftColor: entry.status === "cancelled" ? "var(--crit)" : priorityMeta.color,
-                    ...(soon ? styles.callCardDueSoon : null),
-                    // A booking that was called off should not read the same as
-                    // one still coming. It stays legible — somebody may need to
-                    // see why — but it stops competing with live work.
-                    ...(entry.status === "cancelled" ? styles.schedCancelled : null),
-                    // The one being worked takes the whole row.
-                    //
-                    // Opening it inside its own 195px grid cell squeezed every
-                    // control into a single column — a team picker, "the ward
-                    // has rung", a date button, a cancel button and Done, each
-                    // on its own line, in a card three times taller than the
-                    // screen. A booking being worked is the same thing as an
-                    // active call being worked, and an active call card is
-                    // full width.
-                    ...(openCard === entry.id ? styles.schedCardOpen : null),
-                  }}
-                >
-                  <div style={styles.callCardTop}>
-                    <div style={styles.schedCardNature}>{entry.nature}</div>
-                    <span style={{ ...styles.pill, background: priorityMeta.color }}>{priorityMeta.label}</span>
-                  </div>
-
-                  {/* Two times, said as two things. A card showing one time when
-                      the booking has two is a card somebody will misread. Only
-                      on the one being worked: on a closed tile it was 40px of
-                      arithmetic on every booking of the day. */}
-                  {entry.dispatchAt && openCard === entry.id && (
-                    <div style={styles.twoTimes}>
-                      <span>
-                        Leaves <strong>{hhmm(entry.dispatchAt)}</strong>
-                      </span>
-                      <span style={styles.twoTimesDim}>
-                        · appointment {hhmm(entry.scheduledFor)} · call raised{" "}
-                        {hhmm(entry.dispatchAt - SCHED_LEAD_MS)}
-                      </span>
-                    </div>
-                  )}
-
-                  <div style={styles.schedCardMeta}>
-                    {waiting ? (
-                      <span style={styles.awaitCallTag}>
-                        <PhoneIncoming size={11} />{" "}
-                        {/* Short on a tile, because the sentence is wider than
-                            the tile is and ran off the edge of the card. The
-                            full wording stays on the one being worked, where
-                            there is a card's width to say it in. */}
-                        {compact
-                          ? "NO TIME YET"
-                          : schedOpen(entry, now)
-                          ? "NO TIME — THEY WILL CALL"
-                          : "NO TIME WAS SET"}
-                      </span>
-                    ) : (
-                      <span style={{ ...styles.scheduledTag, color: meta.color, borderColor: meta.color }}>
-                        <CalendarClock size={11} /> {whenStr(entry.scheduledFor)}
-                      </span>
-                    )}
-                    {!waiting && schedOpen(entry, now) && !compact && (
-                      <span style={overdue ? styles.staffingWarn : styles.historyDuration}>
-                        {untilStr(entry.scheduledFor, now)}
-                      </span>
-                    )}
-                    {reminding && !compact && (
-                      <span style={styles.remindingTag}>
-                        <Bell size={10} /> REMINDER RUNNING
-                      </span>
-                    )}
-                    {isOutLeg(entry) && <span style={styles.legOut}>OUT</span>}
-                    {isReturnLeg(entry) && <span style={styles.legReturn}>↩ RETURN</span>}
-                    {isRecurring(entry) && (
-                      <span style={styles.repeatTag}>↻ REPEATS · {repeatLabel(entry)}</span>
-                    )}
-                    {shift && !compact && (
-                      <span style={{ ...styles.shiftTag, color: shift.color, borderColor: shift.color }}>
-                        {shift.glyph} {shift.short}
-                      </span>
-                    )}
-                    {!compact && <span style={{ ...styles.pill, background: meta.color }}>{meta.label}</span>}
-                  </div>
-
-                  {/* Which of four identical bookings this one is.
-                      A repeating dialysis patient throws off a return leg every
-                      time they finish, and each one waits on the ward's call -
-                      so Upcoming carried four cards reading HD APPOINTMENT ·
-                      NO TIME · MRN 235 with nothing to tell them apart. How
-                      long the patient has been sitting there is the difference
-                      that matters, and it is the reason to pick one over
-                      another. */}
-                  {compact && isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && (
-                    <div style={styles.schedCardMeta}>
-                      <span style={styles.legWaiting}>
-                        waiting {shortDurationStr(Math.max(0, now - entry.deliveredAt))}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* What is coming after this leg, said on the card rather
-                      than left for the desk to remember. */}
-                  {wantsReturn(entry) && !isReturnLeg(entry) && openCard === entry.id && (
-                    <div style={styles.legLink}>
-                      <span style={styles.legLinkArrow}>↩</span>
-                      <span>
-                        {entry.returnMode === "timed" && entry.returnAt ? (
-                          <>
-                            <strong style={styles.legLinkStrong}>
-                              Return booked {whenStr(entry.returnAt)}
-                            </strong>{" "}
-                            — it goes on the book once this leg is finished.
-                          </>
-                        ) : (
-                          <>
-                            <strong style={styles.legLinkStrong}>Return journey to follow</strong> —
-                            ring when ready. It appears on the board on its own when this leg
-                            closes.
-                          </>
-                        )}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* A return leg waiting on the ward: how long the patient has
-                      been sitting there. Nobody could evidence this before. */}
-                  {isReturnLeg(entry) && entry.deliveredAt && schedOpen(entry, now) && openCard === entry.id && (
-                    <div style={styles.historyClosedBy}>
-                      Return leg · patient delivered {clockStr(entry.deliveredAt)} ·{" "}
-                      <strong style={styles.legWaiting}>
-                        waiting {shortDurationStr(Math.max(0, now - entry.deliveredAt))}
-                      </strong>
-                    </div>
-                  )}
-
-                  {!compact && (
-                    <div style={styles.schedCardMeta}>
-                      <CallRoute req={entry} />
-                      <CallTypeTag req={entry} />
-                      <LoadedKmTag req={entry} />
-                    </div>
-                  )}
-
-                  {/* The patient stays on the tile. It is the one line that
-                      says WHICH booking this is, and four bookings for the
-                      same ward with the same nature are only told apart by
-                      it. */}
-                  {entry.mrn && <div style={styles.mrnRow}>MRN: {entry.mrn}</div>}
-                  {entry.notes && !compact && <div style={styles.mrnRow}>{entry.notes}</div>}
-                  {!compact && entry.requirements && entry.requirements.length > 0 && (
-                    <div style={styles.checklistRow}>
-                      {entry.requirements.map((k) => (
-                        <span key={k} style={styles.reqBadge}>
-                          {REQUIREMENTS.find((r) => r.key === k) ? REQUIREMENTS.find((r) => r.key === k).label : k}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {entry.status === "released" && (
-                    <div style={styles.historyClosedBy}>
-                      Dispatched {entry.releasedAt ? whenStr(entry.releasedAt) : ""}
-                      {releasedCall ? ` · now ${REQ_STATUS[releasedCall.status] ? REQ_STATUS[releasedCall.status].label : releasedCall.status}` : ""}
-                    </div>
-                  )}
-                  {entry.status === "cancelled" && (
-                    <div style={styles.historyClosedBy}>
-                      Cancelled{entry.cancelledBy ? ` by ${entry.cancelledBy}` : ""}
-                      {schedCancelReason(entry) ? (
-                        <span style={styles.cancelReasonSaid}> — {schedCancelReason(entry)}</span>
-                      ) : (
-                        " — no reason was recorded"
-                      )}
-                    </div>
-                  )}
-
-                  {schedOpen(entry, now) && openCard !== entry.id && (
-                    <div style={styles.schedCardActions}>
-                      <span style={unit ? styles.assignedTag : styles.pendingAckTag}>
-                        {unit ? unit.name : "No team yet"}
-                      </span>
-                      <button
-                        style={styles.ghostBtnSm}
-                        onClick={() => {
-                          setOpenCard(entry.id);
-                          closeCancel();
-                          setEditingId(null);
-                        }}
-                      >
-                        Manage
-                      </button>
-                    </div>
-                  )}
-
-                  <div style={styles.schedCardActions}>
-                    {schedOpen(entry, now) && openCard === entry.id ? (
-                      <React.Fragment>
-                        {/* The ward has phoned: this is the button that turns a
-                            booking with no time into a live call, there and then.
-                            It stamps the current time on the booking and the
-                            normal release path picks it up within seconds, so the
-                            crew gets exactly the alarm and timeline they would
-                            get from a call phoned in on the spot. */}
-                        {waiting && (
-                          <button style={styles.readyNowBtn} onClick={() => markReady(entry)}>
-                            <PhoneIncoming size={13} />{" "}
-                            {isReturnLeg(entry)
-                              ? "The ward has rung — send it now"
-                              : "Patient ready — send it out now"}
-                          </button>
-                        )}
-                        <select
-                          style={styles.assignSelect}
-                          value={entry.assignedUnitId || ""}
-                          onChange={(e) => assignTeam(entry, e.target.value)}
-                        >
-                          <option value="">No team yet</option>
-                          {units.map((u) => (
-                            <option key={u.id} value={u.id}>{u.name}</option>
-                          ))}
-                        </select>
-                        {unit ? (
-                          <span style={styles.assignedTag}>{unit.name} — alerted when it goes out</span>
-                        ) : (
-                          <span style={styles.pendingAckTag}>Raised for the desk if nobody is set</span>
-                        )}
-                        {editingId !== entry.id && cancellingId !== entry.id && (
-                          <button
-                            style={styles.ghostBtnSm}
-                            onClick={() => {
-                              setEditingId(entry.id);
-                              setEditWhen(entry.scheduledFor || defaultScheduleTs(Date.now()));
-                              setEditError("");
-                              closeCancel();
-                            }}
-                          >
-                            <Clock size={12} /> {waiting ? "Set a date & time" : "Change date & time"}
-                          </button>
-                        )}
-                        {cancellingId !== entry.id && (
-                          <button style={styles.ghostBtnSm} onClick={() => openCancel(entry)}>
-                            <Trash size={12} /> Cancel booking
-                          </button>
-                        )}
-                        {cancellingId !== entry.id && editingId !== entry.id && (
-                          <button style={styles.ghostBtnSm} onClick={() => setOpenCard(null)}>
-                            Done
-                          </button>
-                        )}
-                      </React.Fragment>
-                    ) : (
-                      !schedOpen(entry, now) && unit && <span style={styles.assignedTag}>{unit.name}</span>
-                    )}
-                  </div>
-
-                  {/* The banner the desk answers before a booking can be
-                      cancelled. It sits on the card itself rather than in a
-                      dialog, so the transfer being cancelled stays in front of
-                      whoever is typing the reason for it. */}
-                  {cancellingId === entry.id && (
-                    <div style={styles.cancelReasonBanner}>
-                      <div style={styles.cancelReasonHead}>
-                        <Trash size={12} /> WHY IS THIS BOOKING BEING CANCELLED?
-                      </div>
-                      <div style={styles.cancelReasonNote}>
-                        {waiting
-                          ? "This booking is still waiting on the ward's call."
-                          : `Booked for ${whenStr(entry.scheduledFor)}.`}{" "}
-                        The reason is kept on the booking, written into the event log, and carried onto the
-                        Scheduled Requests sheet of the shared spreadsheet.
-                      </div>
-                      <div style={styles.checklistRow}>
-                        {SCHED_CANCEL_REASONS.map((r) => (
-                          <button
-                            key={r}
-                            style={cancelReason === r ? styles.reasonPillActive : styles.reasonPill}
-                            onClick={() => {
-                              setCancelReason(r);
-                              setCancelError("");
-                            }}
-                          >
-                            {r}
-                          </button>
-                        ))}
-                      </div>
-                      <input
-                        style={{ ...styles.input, marginTop: 8 }}
-                        value={cancelReason}
-                        maxLength={SCHED_CANCEL_REASON_MAX}
-                        placeholder="Reason for cancelling — pick one above or type it"
-                        onChange={(e) => {
-                          setCancelReason(e.target.value);
-                          setCancelError("");
-                        }}
-                      />
-                      {cancelError && <div style={styles.loginError}>{cancelError}</div>}
-                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                        <button style={styles.dangerBtnSm} onClick={() => cancelBooking(entry)}>
-                          <Trash size={12} /> Cancel the booking
-                        </button>
-                        <button style={styles.ghostBtnSm} onClick={closeCancel}>
-                          Keep it on the book
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {editingId === entry.id && (
-                    <div style={styles.rescheduleBox}>
-                      <div style={styles.label}>{waiting ? "Give this booking a time" : "Move this booking"}</div>
-                      <WhenPicker
-                        value={editWhen}
-                        onChange={setEditWhen}
-                        now={now}
-                        hint={
-                          editWhen
-                            ? waiting
-                              ? `No time on it at the moment · setting it to ${whenStr(editWhen)} (${untilStr(editWhen, now)}) means it goes out on its own then, without waiting for their call`
-                              : `Currently ${whenStr(entry.scheduledFor)} · moving to ${whenStr(editWhen)} (${untilStr(editWhen, now)})`
-                            : ""
-                        }
-                      />
-                      {editError && <div style={styles.loginError}>{editError}</div>}
-                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                        <button style={styles.primaryBtnSm} onClick={() => reschedule(entry)}>
-                          {waiting ? "Save this time" : "Save new time"}
-                        </button>
-                        {/* The other direction: a booked time that has fallen
-                            through, where the ward now says it will call back. */}
-                        {!waiting && (
-                          <button style={styles.ghostBtnSm} onClick={() => clearBookingTime(entry)}>
-                            <PhoneIncoming size={12} /> Take the time off — they'll call
-                          </button>
-                        )}
-                        <button style={styles.ghostBtnSm} onClick={() => { setEditingId(null); setEditError(""); }}>Cancel</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-                })}
+                {group.entries.map((entry) => bookingCard(entry))}
                 </div>
               </React.Fragment>
             ))}

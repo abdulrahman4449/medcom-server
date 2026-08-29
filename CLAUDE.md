@@ -156,6 +156,13 @@ patch", that document is the target — do not start a fresh exploration.
   every column starts at the nine-character minimum and grows to fit its
   heading, so a row counter headed anything longer than `#` came out wide
   enough for a sentence with "12" in the middle of it.
+- **A control opens where it was pressed.** Schedule → Repeating draws one card
+  per patient, and Manage on an arrangement used to open that booking's controls
+  in a SEPARATE list below every patient card on the page — so on a desk with
+  two standing patients the team picker and the cancel button appeared off the
+  bottom of the screen behind the message dock. The button flipped to Done and,
+  from where the desk was looking, nothing happened. `bookingCard(entry)` is the
+  card as a function so the same one can be drawn inside the row that opened it.
 - **A booking being worked takes the whole row.** `schedCardOpen` —
   `schedGrid` is a two-up tile grid and a grid item is as wide as its column
   however much is inside it, so pressing Manage built the full card, controls
