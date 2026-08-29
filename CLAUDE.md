@@ -113,6 +113,16 @@ patch", that document is the target — do not start a fresh exploration.
   and `schedIsOccurrence` the second (it is already on the board). The
   arrangement itself lives in Schedule → Repeating, which is where somebody goes
   to see what is coming or to stop it.
+- **The day a repeating booking was BOOKED for is an occurrence too.** The form
+  takes a date and time AND a set of days, and `repeatOccurrencesDue` only ran
+  the days — so "today at 09:00, repeating Sun/Tue/Thu", booked on a Saturday,
+  silently never happened: not in Upcoming (a template), not on the board (a
+  template is never released), and nothing anywhere saying so. Its own comment
+  had said "the booking itself is the first occurrence" since before an
+  arrangement stopped being dispatchable, and that stopped being true without
+  anything noticing. `localDayKey(template.scheduledFor)` is checked alongside
+  the weekday list, and the two can never make two occurrences for one day
+  because `repeatKey` is that same day key.
 - **A booking is raised fifteen minutes before it LEAVES, not before it is
   due.** `schedLeaveAt` / `schedReleaseAt` — the leaving time is `dispatchAt`
   where the desk gave one and the appointment time where it did not, and

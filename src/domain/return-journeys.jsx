@@ -86,11 +86,25 @@ export function repeatOccurrencesDue(template, now) {
   const days = repeatDays(template);
   if (!days.length || !template.scheduledFor) return [];
   const src = new Date(template.scheduledFor);
+  // The day the desk actually booked. It is an occurrence in its own right,
+  // whatever the weekday list says.
+  //
+  // This is the bug that lost a booking outright. The form takes a date and
+  // time AND a set of days, and its own comment has always said "the booking
+  // itself is the first occurrence" — which was true while the template was
+  // dispatched like any other booking. Once an arrangement stopped being
+  // dispatchable, the first one had nowhere to go unless the day it was booked
+  // on happened to be one of the ticked days: book a run for today, tick
+  // Sun/Tue/Thu on a Saturday, and today's transfer is silently dropped. It is
+  // not in Upcoming (it is a template), it is not on the board (templates are
+  // never released), and nothing anywhere says it will not happen.
+  const bookedDay = localDayKey(template.scheduledFor);
   const out = [];
   for (let i = 0; i <= REPEAT_HORIZON_DAYS; i++) {
     const d = new Date(now);
     d.setDate(d.getDate() + i);
-    if (!days.includes(d.getDay())) continue;
+    const isBookedDay = localDayKey(d.getTime()) === bookedDay;
+    if (!days.includes(d.getDay()) && !isBookedDay) continue;
     d.setHours(src.getHours(), src.getMinutes(), 0, 0);
     const at = d.getTime();
     // Never behind the clock.

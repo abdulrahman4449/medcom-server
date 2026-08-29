@@ -894,6 +894,33 @@ export function run(D, t) {
     t.is("repeat: and nothing once the appointment has gone",
       D.repeatOccurrencesDue(tmpl, at(2026, 8, 18, 8, 0)).length, 0);
 
+    // The day the desk BOOKED is an occurrence in its own right, whatever the
+    // weekday list says.
+    //
+    // This lost a booking outright. The form takes a date and time AND a set of
+    // days, and the date it was booked for only ran if that weekday happened to
+    // be ticked — so "today at 09:00, repeating Sun/Tue/Thu", booked on a
+    // Saturday, silently never happened: not in Upcoming (it is a template),
+    // not on the board (a template is never released), and nothing anywhere
+    // saying so.
+    // 22 August 2026 is a Saturday; Sun/Tue/Thu does not include it.
+    const sat = { id: "t2", scheduledFor: at(2026, 8, 22, 9, 0), repeat: { days: [0, 2, 4] } };
+    t.is("repeat: the day it was booked for runs, even off the weekday list",
+      D.repeatOccurrencesDue(sat, at(2026, 8, 22, 6, 0)).length, 1);
+    t.is("repeat: at the time it was booked for",
+      D.repeatOccurrencesDue(sat, at(2026, 8, 22, 6, 0))[0].at, at(2026, 8, 22, 9, 0));
+    // And the Sunday after it still runs, from the same arrangement.
+    t.is("repeat: and the ticked days still run",
+      D.repeatOccurrencesDue(sat, at(2026, 8, 23, 6, 0)).length, 1);
+    // A day that is neither the booked day nor a ticked day runs nothing.
+    // 24 August 2026 is a Monday.
+    t.is("repeat: a day that is neither still runs nothing",
+      D.repeatOccurrencesDue(sat, at(2026, 8, 24, 6, 0)).length, 0);
+    // The booked day being a ticked day too must not make two.
+    const tue = { id: "t3", scheduledFor: at(2026, 8, 18, 9, 0), repeat: { days: [0, 2, 4] } };
+    t.is("repeat: a booked day that is also a ticked day is still one occurrence",
+      D.repeatOccurrencesDue(tue, at(2026, 8, 18, 6, 0)).length, 1);
+
     // The arrangement itself never reaches Upcoming, and neither does the
     // day's copy: one is not an appointment, the other is already on the
     // board.
