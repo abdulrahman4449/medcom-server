@@ -182,7 +182,10 @@ patch", that document is the target — do not start a fresh exploration.
   anchor's style is copied across the span or the box comes out open on the
   right; and `blankOutEmptyCells` skips anything inside a merge. `paintRows`
   paints only cells that hold something, or a nine-column block shades all
-  forty-four.
+  forty-four. The block's own `— NO COVERAGE` heading is merged the same way
+  (`coverageTitleRows`, columns 0–3): a sentence sitting in the five-character
+  counter column spilled across whatever was blank to its right and belonged to
+  none of it.
 - **Every sheet in a workbook wears the same header band.** `paintHeaderRow`
   runs inside `autoFitSheet`, which every sheet already goes through, so a new
   one cannot be added without it. It used to live in `dressSheet`, which only

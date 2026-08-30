@@ -407,8 +407,30 @@ export function fillBlankCells(sheet, headerRowIndex, dataRows) {
 // exactly these rows and there is nothing to displace.
 export function mergeCoverageCells(sheet, aoa, offset) {
   const rows = (aoa && aoa.coverageWideRows) || [];
-  if (!rows.length || !sheet["!ref"]) return sheet;
+  const titles = (aoa && aoa.coverageTitleRows) || [];
+  if ((!rows.length && !titles.length) || !sheet["!ref"]) return sheet;
   const merges = sheet["!merges"] || [];
+  const hair = { style: "thin", color: { rgb: "FFC9D4DD" } };
+
+  // The block's own heading: one bordered box across the counter and the teams
+  // cell beside it, so the sentence has somewhere to live and the box lines up
+  // with the table underneath.
+  titles.forEach((r) => {
+    const rowIdx = r + (offset || 0);
+    merges.push({ s: { r: rowIdx, c: 0 }, e: { r: rowIdx, c: 3 } });
+    for (let c = 0; c <= 3; c += 1) {
+      const addr = XLSX.utils.encode_cell({ r: rowIdx, c });
+      const cell = sheet[addr] || { t: "s", v: "" };
+      cell.s = {
+        ...(cell.s || {}),
+        font: { name: XL_FONT, sz: 10, bold: true, color: { rgb: "FF16222E" } },
+        alignment: { horizontal: "left", vertical: "center", wrapText: false },
+        fill: { patternType: "solid", fgColor: { rgb: "FFFFFFFF" } },
+        border: { top: hair, bottom: hair, left: hair, right: hair },
+      };
+      sheet[addr] = cell;
+    }
+  });
   rows.forEach((r) => {
     const rowIdx = r + (offset || 0);
     // Column 1 is TEAMS OUT — column 0 is the counter. Columns 2 and 3 are the
@@ -914,6 +936,8 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   // widening it for the other, so the CELL is widened instead: merged across
   // the two columns beside it, which the coverage table does not use.
   const coverageWideRows = [];
+  // The "— NO COVERAGE" line that heads the block.
+  const coverageTitleRows = [];
   // And which calls were stood down rather than run. Shaded light yellow, so a
   // month's sheet can be scanned for them instead of read row by row.
   const cancelledRows = [];
@@ -935,6 +959,13 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       .sort((a, b) => a.startedAt - b.startedAt);
     if (gaps.length) {
       out.push([]);
+      // The block's title is one cell holding a sentence, sitting in the
+      // counter column — five characters wide. It spilled across whatever
+      // happened to be blank to its right and belonged to none of it, so it
+      // read as loose text rather than as the heading of the table under it.
+      // Merged into one bordered box the width of the block's left half, which
+      // is where the counter and the teams cell sit.
+      coverageTitleRows.push(out.length);
       out.push([`${stationLabel(g.key).toUpperCase()} — NO COVERAGE`]);
       // The teams-out list takes the first content column, which is the widest
       // on the sheet because the dispatch log puts a ward name there. In the old
@@ -973,6 +1004,7 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
   out.nightRows = nightRows;
   out.coverageRows = coverageRows;
   out.coverageWideRows = coverageWideRows;
+  out.coverageTitleRows = coverageTitleRows;
   out.cancelledRows = cancelledRows;
   // Where the treatments need to land. Reported by the builder rather than
   // guessed at by the code that dresses the sheet — it is the only thing that
