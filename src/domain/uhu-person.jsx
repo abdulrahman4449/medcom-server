@@ -187,6 +187,12 @@ export function paintRows(sheet, rows, offset, bg, fg) {
     for (let c = range.s.c; c <= range.e.c; c++) {
       const cell = sheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
       if (!cell) continue;
+      // Only cells that hold something. `blankOutEmptyCells` creates a cell for
+      // every empty position in the used range, so painting "the row" used to
+      // mean painting all forty-four columns of it — and the NO COVERAGE block,
+      // which is nine columns wide, came out as a band of red running the whole
+      // width of the sheet.
+      if (cell.v === "" || cell.v === null || cell.v === undefined) continue;
       cell.s = {
         ...(cell.s || {}),
         fill: { patternType: "solid", fgColor: { rgb: bg } },
@@ -405,9 +411,20 @@ export function mergeCoverageCells(sheet, aoa, offset) {
   const merges = sheet["!merges"] || [];
   rows.forEach((r) => {
     const rowIdx = r + (offset || 0);
-    // Column 1 is TEAMS OUT — column 0 is the counter. Merged with 2 and 3,
-    // which the coverage table leaves empty.
+    // Column 1 is TEAMS OUT — column 0 is the counter. Columns 2 and 3 are the
+    // blanks the builder leaves for exactly this.
     merges.push({ s: { r: rowIdx, c: 1 }, e: { r: rowIdx, c: 3 } });
+    // A merged region is drawn from the borders of the cells UNDER it, so a
+    // box that is only bordered on its first third comes out open on the right.
+    // The anchor's style — border, fill and font — is copied across the span.
+    const anchor = sheet[XLSX.utils.encode_cell({ r: rowIdx, c: 1 })];
+    if (!anchor || !anchor.s) return;
+    for (let c = 2; c <= 3; c += 1) {
+      const addr = XLSX.utils.encode_cell({ r: rowIdx, c });
+      const cell = sheet[addr] || { t: "s", v: "" };
+      cell.s = { ...anchor.s };
+      sheet[addr] = cell;
+    }
   });
   sheet["!merges"] = merges;
   // Room for two lines, so a fourth truck wraps rather than disappearing.
@@ -438,10 +455,15 @@ export function blankOutEmptyCells(sheet) {
   if (!sheet || !sheet["!ref"]) return sheet;
   const range = XLSX.utils.decode_range(sheet["!ref"]);
   const white = { patternType: "solid", fgColor: { rgb: "FFFFFFFF" } };
+  // A cell under a merge is part of the merged box and carries its border; it
+  // is not the space around the table.
+  const merged = (r, c) =>
+    (sheet["!merges"] || []).some((m) => r >= m.s.r && r <= m.e.r && c >= m.s.c && c <= m.e.c);
   for (let r = range.s.r; r <= range.e.r; r++) {
     for (let c = range.s.c; c <= range.e.c; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
       const cell = sheet[addr];
+      if (merged(r, c)) continue;
       if (!cell) {
         sheet[addr] = { t: "s", v: "", s: { fill: white } };
         continue;
@@ -919,13 +941,19 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       // order it landed in the MRN column and "MEDIC 1, MEDIC 2, MEDIC 3" was cut
       // off — column widths belong to the sheet, not to one table on it.
       coverageWideRows.push(out.length);
-      out.push(["#", "TEAMS OUT", "STARTED", "ENDED", "DURATION", "DECLARED BY", "ENDED BY"]);
+      // The two blanks after TEAMS OUT are the room the merge needs. Without
+      // them the merge swallowed STARTED and ENDED, and the block came out
+      // reading "# · TEAMS OUT · DURATION · DECLARED BY · ENDED BY" with two
+      // columns of times missing.
+      out.push(["#", "TEAMS OUT", "", "", "STARTED", "ENDED", "DURATION", "DECLARED BY", "ENDED BY"]);
       gaps.forEach((c, idx) => {
         coverageRows.push(out.length);
         coverageWideRows.push(out.length);
         out.push([
           idx + 1,
           (c.unitsOut || []).join(", "),
+          "",
+          "",
           clockStr(c.startedAt),
           c.endedAt ? clockStr(c.endedAt) : "STILL RUNNING",
           c.endedAt ? durationStr(c.startedAt, c.endedAt) : "",

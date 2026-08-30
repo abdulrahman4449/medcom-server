@@ -174,9 +174,15 @@ patch", that document is the target — do not start a fresh exploration.
 - **A cell cannot be wider than its column, so widen the CELL.**
   `mergeCoverageCells` — the NO COVERAGE block sits under a forty-four column
   call table and borrows its widths, so "MEDIC 1, MEDIC 2, MEDIC 3" landed in a
-  column sized for a ward name and was cut off. Widening the column would
-  widen it for the call table too, so the teams cell is merged across the two
-  columns beside it, which that block leaves empty.
+  column sized for a ward name and was cut off. Widening the column would widen
+  it for the call table too, so the teams cell is merged across two columns the
+  builder leaves BLANK for exactly that — merging over columns that carry
+  something swallows them, which is how STARTED and ENDED disappeared off the
+  block. A merged region is drawn from the borders of the cells under it, so the
+  anchor's style is copied across the span or the box comes out open on the
+  right; and `blankOutEmptyCells` skips anything inside a merge. `paintRows`
+  paints only cells that hold something, or a nine-column block shades all
+  forty-four.
 - **Every sheet in a workbook wears the same header band.** `paintHeaderRow`
   runs inside `autoFitSheet`, which every sheet already goes through, so a new
   one cannot be added without it. It used to live in `dressSheet`, which only
