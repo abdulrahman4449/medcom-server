@@ -2711,8 +2711,11 @@ export function App() {
                       from,
                       // Both shifts, not one: this button exports the whole
                       // operational day, and labelling it DAY or NIGHT would be
-                      // a plain untruth on half the rows.
-                      `${opDayLabel(from)} · 07:00 → 07:00 · day and night`
+                      // a plain untruth on half the rows. Named by the date the
+                      // day OPENED — a day runs 07:00 to 07:00 and files under
+                      // that date, so naming both ends of it asks a reader to
+                      // work out which one the file belongs to.
+                      `Operational day ${opDayLabel(from)} · day and night shift`
                     );
                   },
                 }

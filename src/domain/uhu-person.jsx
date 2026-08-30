@@ -5,7 +5,7 @@ import { ZAHRAWI_SHIFT_MS, coverageActor, isZahrawi } from "./coverage.jsx";
 import { stayWindow } from "./crew-stamps.jsx";
 import { STATIONS, stationLabel, stationOf } from "./live-sheet.jsx";
 import { clockStr, durationStr, otHoursStr } from "./messages.jsx";
-import { opDayEnd, opDayLabel, opDayStart } from "./op-day.jsx";
+import { opDayLabel, opDayStart } from "./op-day.jsx";
 import { REFUSAL_TIME_KEY } from "./outcomes.jsx";
 import { pcrAuthorStamp } from "./pcr-author.jsx";
 import { journeyLabel } from "./return-journeys.jsx";
@@ -653,7 +653,7 @@ export function bravoNameFor(req, unit) {
   return "";
 }
 
-export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage, dayStart) {
+export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage, dayStart, periodLabel) {
   // Section 1 as the sheet has it, with the two changes asked for: where the
   // patient is coming from leads the sheet rather than trailing it, and the call
   // category sits immediately after the category of call it qualifies.
@@ -911,9 +911,15 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
         : "Dispatch log — all stations",
     ],
     [
-      // Both shifts named, because both are in the file.
-      `${opDayLabel(dayOf)} 07:00 → ${opDayLabel(opDayEnd(dayOf))} 07:00 · ` +
-        `day and night shift · ${sorted.length} call${sorted.length === 1 ? "" : "s"}`,
+      // What this file covers, said once.
+      //
+      // The operational day is named by the date it OPENED — that is the whole
+      // point of `opDayStart`, and "29 Aug 07:00 → 30 Aug 07:00" made a reader
+      // work out which of the two dates the file was filed under. And a file
+      // covering ONE shift said "day and night shift" regardless: opening the
+      // 28th's night shift gave a sheet claiming to hold both.
+      `${periodLabel || `Operational day ${opDayLabel(dayOf)} · day and night shift`} · ` +
+        `${sorted.length} call${sorted.length === 1 ? "" : "s"}`,
     ],
     [],
   ];

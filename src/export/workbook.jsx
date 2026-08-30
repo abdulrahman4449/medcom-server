@@ -232,7 +232,7 @@ export async function exportAndShareLog(log, requests, units, scheduled, station
   // captions sit on the fifth row, under the title, the export stamp and the
   // line naming the two shift windows.
   const dispatchAoa = buildDispatchLogAOA(
-    requests, units, crewIndex, scheduled, exportedAt, station, coverage, dayStart
+    requests, units, crewIndex, scheduled, exportedAt, station, coverage, dayStart, periodLabel
   );
   const dispatchLogSheet = dressLogSheet(
     autoFitSheet(XLSX.utils.aoa_to_sheet(dispatchAoa), dispatchAoa.headerRowIndex || 4, dispatchAoa.coreColumns),
@@ -561,7 +561,10 @@ export async function exportArchivedDay(archive, liveRequests) {
     // A line at the top of each sheet saying what this book is and whether it
     // has changed since the day was closed.
     aoa.splice(1, 0, [
-      `OPERATIONAL DAY: ${opDayLabel(archive.dayStart)} 07:00 → ${opDayLabel(archive.dayEnd)} 07:00` +
+      // Named by the date it OPENED. A day runs 07:00 to 07:00 and files under
+      // the date it started on, so printing both ends of it asked a reader to
+      // work out which of the two dates the file is filed under.
+      `OPERATIONAL DAY: ${opDayLabel(archive.dayStart)} · 07:00 to 07:00` +
         (archive.reason === "live"
           ? ` · LIVE BOARD, taken ${gregDateTimeStr(archive.closedAt)} — this day is still running`
           : ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}`) +

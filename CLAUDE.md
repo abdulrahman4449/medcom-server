@@ -82,6 +82,13 @@ patch", that document is the target — do not start a fresh exploration.
   stations, both shifts) which is kept automatically once every call raised
   on it is closed — a night call still running at 08:00 holds its own day
   open rather than being archived half-written.
+  **An export is titled by the date the day OPENED, and by the period it
+  actually covers.** `buildDispatchLogAOA` takes a `periodLabel`: without one it
+  says `Operational day 29 Aug 2026 · day and night shift`, and with one it says
+  what that one says. Naming both ends — "29 Aug 07:00 → 30 Aug 07:00" — asks a
+  reader to work out which of the two dates the file is filed under, and a file
+  covering ONE shift used to say "day and night shift" regardless, so opening
+  the 28th's night shift gave a sheet claiming to hold both.
 - **Never key a crew stay by the word "day" or "night".** It repeats every
   24 hours, so one person's Tuesday and Thursday merge into a single stay
   that appears to run for two days and overlaps every call between them.
