@@ -981,6 +981,29 @@ export function run(D, t) {
       ).length, 1);
   }
 
+  // ---------- a night call is a night call whenever it finishes
+  //
+  // The shift a call belongs to is the shift it was RAISED in. One raised at
+  // 23:30 that finishes at 00:40, and one raised at 06:30 that finishes at
+  // 08:10, were both worked by the night crew and are shaded as night on the
+  // sheet — the clock time they happened to end at says nothing about whose
+  // shift they were.
+  {
+    const night = (h, m) => D.isNightCall({ createdAt: at(2026, 8, 28, h, m) });
+    t.is("night: 07:00 opens the day shift", night(7, 0), false);
+    t.is("night: midday is day", night(12, 0), false);
+    t.is("night: 18:59 is still day", night(18, 59), false);
+    t.is("night: 19:00 opens the night", night(19, 0), true);
+    t.is("night: 23:30 is night", night(23, 30), true);
+    t.is("night: 00:30 is night", night(0, 30), true);
+    t.is("night: 02:00 is night", night(2, 0), true);
+    t.is("night: 06:59 is the last minute of the night", night(6, 59), true);
+    // A call with no raised time cannot be filed under a shift at all, and must
+    // not be quietly called night because the epoch happens to fall there.
+    t.is("night: an unstamped call is not asserted either way",
+      D.isNightCall({ createdAt: 0 }), D.isNightCall({}));
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

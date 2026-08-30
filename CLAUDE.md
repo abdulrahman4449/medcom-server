@@ -82,8 +82,13 @@ patch", that document is the target — do not start a fresh exploration.
   stations, both shifts) which is kept automatically once every call raised
   on it is closed — a night call still running at 08:00 holds its own day
   open rather than being archived half-written.
-  **An export is titled by the date the day OPENED, and by the period it
-  actually covers.** `buildDispatchLogAOA` takes a `periodLabel`: without one it
+  **A call belongs to the shift it was RAISED in, whenever it finishes.**
+  `isNightCall` reads `createdAt`, so one raised at 23:30 that closes at 00:40
+  and one raised at 06:30 that closes at 08:10 are both the night crew's, and
+  both are shaded night grey on the sheet; a day row is painted white rather
+  than left unpainted, or the app's own gridlines show through the one part of
+  the table that has no fill. **An export is titled by the date the day OPENED,
+  and by the period it actually covers.** `buildDispatchLogAOA` takes a `periodLabel`: without one it
   says `Operational day 29 Aug 2026 · day and night shift`, and with one it says
   what that one says. Naming both ends — "29 Aug 07:00 → 30 Aug 07:00" — asks a
   reader to work out which of the two dates the file is filed under, and a file

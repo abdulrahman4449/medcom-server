@@ -612,10 +612,34 @@ export function shadeNightRows(sheet, aoa, offset) {
   // rows underneath it hard to read.
   paintRows(sheet, (aoa && aoa.coverageRows) || [], offset, "FFF4B6B6", "FF7F0000");
   const rows = (aoa && aoa.nightRows) || [];
-  if (!rows.length) return sheet;
   const ref = sheet["!ref"];
   if (!ref) return sheet;
   const range = XLSX.utils.decode_range(ref);
+
+  // Every other call row is white, deliberately.
+  //
+  // A day row used to carry no fill at all, which is not the same thing: the
+  // space around the tables is painted white to cover the application's own
+  // gridlines, so an unpainted row was the one part of the sheet those lines
+  // still showed through. The table now has one background per row, chosen.
+  const night = new Set(rows.map((r) => r + (offset || 0)));
+  const calls = (aoa && aoa.callRows instanceof Set) ? aoa.callRows : null;
+  if (calls) {
+    calls.forEach((r) => {
+      const rowIdx = r + (offset || 0);
+      if (night.has(rowIdx)) return;
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const cell = sheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
+        if (!cell) continue;
+        cell.s = {
+          ...(cell.s || {}),
+          fill: { patternType: "solid", fgColor: { rgb: "FFFFFFFF" } },
+        };
+      }
+    });
+  }
+
+  if (!rows.length) return sheet;
   rows.forEach((r) => {
     const rowIdx = r + (offset || 0);
     for (let c = range.s.c; c <= range.e.c; c++) {
@@ -653,7 +677,7 @@ export function bravoNameFor(req, unit) {
   return "";
 }
 
-export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage, dayStart, periodLabel) {
+export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, station, coverage, dayStart, periodLabel, periodNote) {
   // Section 1 as the sheet has it, with the two changes asked for: where the
   // patient is coming from leads the sheet rather than trailing it, and the call
   // category sits immediately after the category of call it qualifies.
@@ -919,7 +943,12 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       // covering ONE shift said "day and night shift" regardless: opening the
       // 28th's night shift gave a sheet claiming to hold both.
       `${periodLabel || `Operational day ${opDayLabel(dayOf)} · day and night shift`} · ` +
-        `${sorted.length} call${sorted.length === 1 ? "" : "s"}`,
+        `${sorted.length} call${sorted.length === 1 ? "" : "s"}` +
+        // When the day was kept, and whether it has moved since. It used to be
+        // a second title line above this one, which said the date and the hours
+        // over again — two lines saying one thing, and the reader had to read
+        // both to find the half that was new.
+        (periodNote ? ` · ${periodNote}` : ""),
     ],
     [],
   ];

@@ -553,23 +553,19 @@ export async function exportArchivedDay(archive, liveRequests) {
     // the archive a week later was titled with today's date and had its day and
     // night shifts worked out against today's 07:00 - the calls in it fall
     // under the wrong date, which is the one thing this sheet cannot do.
+    // Whether this day has moved since it was kept, said on the subtitle rather
+    // than on a second title line of its own. That line repeated the date and
+    // the hours the subtitle underneath it already carried — two lines saying
+    // one thing, and a reader had to read both to find the half that was new.
+    const note =
+      (archive.reason === "live"
+        ? `LIVE BOARD, taken ${gregDateTimeStr(archive.closedAt)} — this day is still running`
+        : `closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}`) +
+      (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : "");
     const aoa = buildDispatchLogAOA(
       stationRequests, stationUnits, crewIndex, stationScheduled, at, st.key, stationCoverage,
-      archive.dayStart
+      archive.dayStart, null, note
     );
-    const nightRows = aoa.nightRows || [];
-    // A line at the top of each sheet saying what this book is and whether it
-    // has changed since the day was closed.
-    aoa.splice(1, 0, [
-      // Named by the date it OPENED. A day runs 07:00 to 07:00 and files under
-      // the date it started on, so printing both ends of it asked a reader to
-      // work out which of the two dates the file is filed under.
-      `OPERATIONAL DAY: ${opDayLabel(archive.dayStart)} · 07:00 to 07:00` +
-        (archive.reason === "live"
-          ? ` · LIVE BOARD, taken ${gregDateTimeStr(archive.closedAt)} — this day is still running`
-          : ` · closed ${gregDateTimeStr(archive.closedAt)}${archive.closedBy ? ` by ${archive.closedBy}` : ""}`) +
-        (amended > 0 ? ` · AMENDED SINCE CLOSING (${amended} call${amended === 1 ? "" : "s"} updated)` : ""),
-    ]);
     const sheet = dressLogSheet(
       autoFitSheet(XLSX.utils.aoa_to_sheet(aoa), aoa.headerRowIndex || 4, aoa.coreColumns),
       aoa
