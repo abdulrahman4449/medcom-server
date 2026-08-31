@@ -32,6 +32,7 @@ import { PatientRecords } from "./PatientRecords.jsx";
 import { InventoryAdmin } from "./InventoryAdmin.jsx";
 import { issueClaimCode } from "../lib/auth.jsx";
 import { PasswordResets, TrackingConsentAdmin } from "./LocationConsents.jsx";
+import { pendingResets } from "./PasswordResets.jsx";
 import { OvertimePanel } from "./OvertimePanel.jsx";
 import { ChecklistAdmin, CoveragePanel, IndicatorBand, IssuesRaised, LiveCoverageBanner, SavedLogs, Statistics } from "./Statistics.jsx";
 import { AssistStatusLine, CallTimes, CallTypeTag, LoadedKmTag, NoTransportTag, PcrAuthorTag, StatusBoard } from "./StatusBoard.jsx";
@@ -493,6 +494,10 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   const [openCrew, setOpenCrew] = useState(false);
   const [openDisp, setOpenDisp] = useState(false);
   const [openAdm, setOpenAdm] = useState(false);
+  // The one banner the five account sections live behind. Held open while
+  // somebody is waiting for password help — they are standing at a tablet
+  // right now, and a closed drawer must not be able to hide them.
+  const [openAccounts, setOpenAccounts] = useState(false);
 
   const [newUnitName, setNewUnitName] = useState("");
   const [newUnitStation, setNewUnitStation] = useState(null);
@@ -919,6 +924,87 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
 
       {onPage("teams") && (
         <>
+      {/* The roster first. An administrator opens Teams to see who is on the
+          trucks; the account paperwork used to stand five banners deep above
+          it, so the page opened on a wall of drawers and the thing it is named
+          after began below the fold. Both stations, one under the other — the
+          only place the two are visible together. */}
+      {STATIONS.map((st) => {
+        const unitsHere = atStation(units, st.key);
+        const liveHere = atStation(requests, st.key).filter((r) => r.status !== "completed");
+        return (
+          <div key={st.key} style={{ marginTop: 18 }}>
+            <SectionBanner title={`${st.label.toUpperCase()} — TEAM ROSTER`} icon={<Users size={13} />}>
+              <span style={styles.stationCount}>
+                {unitsHere.length} {unitsHere.length === 1 ? "medic" : "medics"} ·{" "}
+                {liveHere.length} live {liveHere.length === 1 ? "call" : "calls"}
+              </span>
+            </SectionBanner>
+            <div style={styles.unitGrid}>
+              {unitsHere.map((u) => (
+                <UnitRosterCard
+                  key={u.id}
+                  unit={u}
+                  onRelieve={relieveSeat}
+                  onGrantOt={grantWholeShift}
+                  requests={requests}
+                  onRename={() => renameUnit(u)}
+                  onRemove={() => removeUnit(u)}
+                />
+              ))}
+            </div>
+            <div style={styles.addUnitRow}>
+              <input
+                style={{ ...styles.input, maxWidth: 220 }}
+                value={newUnitStation === st.key ? newUnitName : ""}
+                onFocus={() => setNewUnitStation(st.key)}
+                onChange={(e) => {
+                  setNewUnitStation(st.key);
+                  setNewUnitName(e.target.value);
+                }}
+                placeholder="New medic name, e.g. MEDIC 6"
+              />
+              <button
+                style={styles.primaryBtnSm}
+                disabled={newUnitStation !== st.key || !newUnitName.trim()}
+                onClick={() => addUnit(st.key)}
+              >
+                <Plus size={13} /> Add medic
+              </button>
+            </div>
+            {newUnitStation === st.key && unitError && (
+              <div style={styles.loginError}>{unitError}</div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Outside the accounts drawer, so a code just issued stays on screen
+          however the drawer is left. */}
+      <ClaimCodeBanner issued={issuedCodes} onDone={() => setIssuedCodes([])} />
+
+      {/* Every piece of account work behind one line: password help, lending
+          authority, and the three add-an-ID forms. Five separate banners here
+          were most of the page's height, for the part of the job an
+          administrator does once a month. Held open while a password reset is
+          waiting — that person is standing at a tablet right now. */}
+      <FoldingSection
+        title="ACCOUNTS & ACCESS"
+        count={pendingResets(passwordResets).length || accounts.length}
+        countLabel={pendingResets(passwordResets).length ? "waiting for password help" : "IDs on file"}
+        open={openAccounts || pendingResets(passwordResets).length > 0}
+        onToggle={() => setOpenAccounts((v) => !v)}
+      >
+      {/* Somebody who cannot sign in is standing at a tablet right now, so
+          this comes before the paperwork. */}
+      <PasswordResets
+        resets={passwordResets}
+        setResets={setPasswordResets}
+        user={user}
+        addLog={addLog}
+        onIssued={setIssuedCodes}
+      />
+
       {/* Above the three roster forms, because it is the one thing on this page
           that changes what somebody can do rather than who exists.
           Lending authority is never itself lendable: a delegate who could
@@ -1077,72 +1163,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         </InfoNote>
       </div>
       </FoldingSection>
-
-      <ClaimCodeBanner issued={issuedCodes} onDone={() => setIssuedCodes([])} />
-
-      {/* Somebody who cannot sign in is standing at a tablet right now, so this
-          sits with the accounts rather than on the statistics page. */}
-      <PasswordResets
-        resets={passwordResets}
-        setResets={setPasswordResets}
-        user={user}
-        addLog={addLog}
-        onIssued={setIssuedCodes}
-      />
-
-
-      {/* Both stations, one under the other, each with its own roster and its
-          own way of adding a truck. Administration is the only place the two
-          are visible together — everywhere else they are separate boards. */}
-      {STATIONS.map((st) => {
-        const unitsHere = atStation(units, st.key);
-        const liveHere = atStation(requests, st.key).filter((r) => r.status !== "completed");
-        return (
-          <div key={st.key} style={{ marginTop: 18 }}>
-            <SectionBanner title={`${st.label.toUpperCase()} — TEAM ROSTER`} icon={<Users size={13} />}>
-              <span style={styles.stationCount}>
-                {unitsHere.length} {unitsHere.length === 1 ? "medic" : "medics"} ·{" "}
-                {liveHere.length} live {liveHere.length === 1 ? "call" : "calls"}
-              </span>
-            </SectionBanner>
-            <div style={styles.unitGrid}>
-              {unitsHere.map((u) => (
-                <UnitRosterCard
-                  key={u.id}
-                  unit={u}
-                  onRelieve={relieveSeat}
-                  onGrantOt={grantWholeShift}
-                  requests={requests}
-                  onRename={() => renameUnit(u)}
-                  onRemove={() => removeUnit(u)}
-                />
-              ))}
-            </div>
-            <div style={styles.addUnitRow}>
-              <input
-                style={{ ...styles.input, maxWidth: 220 }}
-                value={newUnitStation === st.key ? newUnitName : ""}
-                onFocus={() => setNewUnitStation(st.key)}
-                onChange={(e) => {
-                  setNewUnitStation(st.key);
-                  setNewUnitName(e.target.value);
-                }}
-                placeholder="New medic name, e.g. MEDIC 6"
-              />
-              <button
-                style={styles.primaryBtnSm}
-                disabled={newUnitStation !== st.key || !newUnitName.trim()}
-                onClick={() => addUnit(st.key)}
-              >
-                <Plus size={13} /> Add medic
-              </button>
-            </div>
-            {newUnitStation === st.key && unitError && (
-              <div style={styles.loginError}>{unitError}</div>
-            )}
-          </div>
-        );
-      })}
+      </FoldingSection>
 
         </>
       )}

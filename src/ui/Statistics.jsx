@@ -1309,19 +1309,26 @@ export function CategoryMix({ requests, from, to }) {
               proportion, so a long list costs a few short rows and nothing
               else. */}
           <div style={styles.mixList}>
-            {rows.map((r) => (
-              <div key={r.name} style={r.n > 0 ? styles.mixRow : styles.mixRowNone}>
-                <span
-                  style={{
-                    ...styles.mixDot,
-                    background: r.n > 0 ? colourOf(r.name) : "var(--hair-2)",
-                  }}
-                />
+            {rows.filter((r) => r.n > 0).map((r) => (
+              <div key={r.name} style={styles.mixRow}>
+                <span style={{ ...styles.mixDot, background: colourOf(r.name) }} />
                 <span style={styles.mixName}>{r.name}</span>
                 <span style={styles.mixPct}>{r.pct.toFixed(0)}%</span>
                 <span style={styles.mixN}>{r.n}</span>
               </div>
             ))}
+            {/* Still every category — but a category at nought needs one short
+                chip, not a full row of columns. Eighteen zero-rows were most
+                of this panel's height, one under the other, on the page the
+                user called crowded; a wrapped cloud says the same "we were not
+                called for these" in four lines. */}
+            {rows.some((r) => r.n === 0) && (
+              <div style={styles.mixNoughtWrap}>
+                {rows.filter((r) => r.n === 0).map((r) => (
+                  <span key={r.name} style={styles.mixNoughtChip}>{r.name} · 0</span>
+                ))}
+              </div>
+            )}
             <div style={styles.formHint}>
               {total} call{total === 1 ? "" : "s"} in this period, across {ran} of{" "}
               {rows.length} categor{rows.length === 1 ? "y" : "ies"}. The rest are listed at nought

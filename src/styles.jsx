@@ -2320,7 +2320,14 @@ export const styles = {
   // A category nothing came in against. Listed, because absent reads as an
   // incomplete list rather than as a nought — but quieter than the ones that
   // actually happened.
-  mixRowNone: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5, opacity: 0.42 },
+  // A category nothing came in against: still on the list, but as one short
+  // chip in a wrapped cloud rather than a full row of columns — eighteen
+  // zero-rows one under the other were most of the panel's height.
+  mixNoughtWrap: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 },
+  mixNoughtChip: {
+    fontSize: 11, color: "var(--ink-4)", border: "1px solid var(--hair)",
+    borderRadius: 999, padding: "3px 9px", whiteSpace: "nowrap",
+  },
   mixDot: { width: 9, height: 9, borderRadius: 3, flex: "none" },
   mixName: { flex: 1, minWidth: 0, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   mixPct: { fontFamily: mono, fontWeight: 700, color: "var(--ink)", minWidth: 38, textAlign: "right" },
