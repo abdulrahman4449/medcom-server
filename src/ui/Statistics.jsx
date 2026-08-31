@@ -13,7 +13,7 @@ import { clockStr, durationStr, msDurationStr, shortDurationStr } from "../domai
 import { opDayKey, opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
 import { requestOutcomeKey, requestOutcomeLabel } from "../domain/second-ambulance.jsx";
-import { PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
+import { CALL_CATEGORIES, PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
 import { scheduledShiftKey, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWindow } from "../domain/stat-range.jsx";
 import { filedContribution, statsLog, statsRequests } from "../domain/stat-source.jsx";
@@ -1151,7 +1151,18 @@ export function categoryMixOf(requests, from, to) {
   return { rows, total };
 }
 
-export function CategoryMix({ requests, from, to }) {
+// Every category the department has, with what came in against each.
+//
+// The list used to be built from the calls alone, so a category with no calls
+// in the period was absent altogether — and absent reads as "this list is
+// incomplete", not as "none of those happened". A nought is an answer: it says
+// what the department was NOT called for this month, which is half of what
+// somebody opens this panel to find out.
+//
+// Anything the board holds that the vocabulary does not — an older category, or
+// "Not stated" for a call nobody coded — is kept too. The sheet's own list is
+// the starting point, never the limit.
+export function categoryMixRows(requests, from, to) {
   const counts = new Map();
   let total = 0;
   (requests || []).forEach((r) => {
@@ -1160,9 +1171,19 @@ export function CategoryMix({ requests, from, to }) {
     counts.set(c, (counts.get(c) || 0) + 1);
     total += 1;
   });
+  CALL_CATEGORIES.forEach((name) => {
+    if (name && !counts.has(name)) counts.set(name, 0);
+  });
   const rows = Array.from(counts.entries())
-    .map(([name, n]) => ({ name, n, pct: (n / total) * 100 }))
-    .sort((a, b) => b.n - a.n);
+    .map(([name, n]) => ({ name, n, pct: total > 0 ? (n / total) * 100 : 0 }))
+    // Busiest first, and the ones that never came up in their own order at the
+    // bottom rather than scattered through it.
+    .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  return { rows, total, ran: rows.filter((r) => r.n > 0).length };
+}
+
+export function CategoryMix({ requests, from, to }) {
+  const { rows, total, ran } = categoryMixRows(requests, from, to);
 
   const colourOf = (name) => {
     const f = CATEGORY_FILLS[name];
@@ -1197,16 +1218,22 @@ export function CategoryMix({ requests, from, to }) {
               else. */}
           <div style={styles.mixList}>
             {rows.map((r) => (
-              <div key={r.name} style={styles.mixRow}>
-                <span style={{ ...styles.mixDot, background: colourOf(r.name) }} />
+              <div key={r.name} style={r.n > 0 ? styles.mixRow : styles.mixRowNone}>
+                <span
+                  style={{
+                    ...styles.mixDot,
+                    background: r.n > 0 ? colourOf(r.name) : "var(--hair-2)",
+                  }}
+                />
                 <span style={styles.mixName}>{r.name}</span>
                 <span style={styles.mixPct}>{r.pct.toFixed(0)}%</span>
                 <span style={styles.mixN}>{r.n}</span>
               </div>
             ))}
             <div style={styles.formHint}>
-              {rows.length} categor{rows.length === 1 ? "y" : "ies"} · {total} call
-              {total === 1 ? "" : "s"} in this period.
+              {total} call{total === 1 ? "" : "s"} in this period, across {ran} of{" "}
+              {rows.length} categor{rows.length === 1 ? "y" : "ies"}. The rest are listed at nought
+              because nothing came in against them.
             </div>
           </div>
         </>

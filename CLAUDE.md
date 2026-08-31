@@ -150,6 +150,13 @@ patch", that document is the target — do not start a fresh exploration.
   Cancelling the arrangement also cancels the copy it has already thrown off for
   today, unless that copy has already been released — a released one is a live
   call and is cancelled from the board, where the crew can be told.
+- **The category mix lists every category, including the ones at nought.**
+  `categoryMixRows` seeds from `CALL_CATEGORIES` and then counts. Built from the
+  calls alone, a category nothing came in against was absent from the panel —
+  and absent reads as an incomplete list, not as a nought. What the department
+  was NOT called for is half of what somebody opens that panel to find out.
+  Anything the board holds that the vocabulary does not, "Not stated" included,
+  is kept alongside: the sheet's list is the starting point, never the limit.
 - **A call called off is an exclusion from the response figure, not a backlog.**
   `responseCompliance` returns `calledOff` and `pending` apart. They used to be
   one number under "not yet measurable — still running, or closed without

@@ -1044,6 +1044,40 @@ export function run(D, t) {
       D.responseCompliance([], win[0], win[1]).pct, null);
   }
 
+  // ---------- the mix lists every category, including the ones at nought
+  //
+  // Built from the calls alone, a category nothing came in against was absent
+  // from the panel — and absent reads as an incomplete list rather than as a
+  // nought. What the department was NOT called for is half of what somebody
+  // opens this panel to find out.
+  {
+    const win = [at(2026, 8, 1, 0), at(2026, 9, 1, 0)];
+    const call = (id, cat) => ({ id, createdAt: at(2026, 8, 5, 9), callCategory: cat });
+    const { rows, total, ran } = D.categoryMixRows(
+      [call("a", "ROUTINE"), call("b", "ROUTINE"), call("c", "DISCHARGE"), call("d", "")],
+      win[0],
+      win[1]
+    );
+    t.is("mix: every call is counted", total, 4);
+    t.is("mix: three categories actually came up", ran, 3);
+    t.ok("mix: and every category the department has is listed",
+      D.CALL_CATEGORIES.every((c) => rows.some((r) => r.name === c)));
+    t.ok("mix: a call nobody coded is its own line, not dropped",
+      rows.some((r) => r.name === "Not stated" && r.n === 1));
+    t.is("mix: busiest first", rows[0].name, "ROUTINE");
+    t.is("mix: and it is the share of the calls, not of the categories",
+      Math.round(rows[0].pct), 50);
+    t.ok("mix: the ones that never came up sit at the bottom at nought",
+      rows[rows.length - 1].n === 0);
+    // A period with nothing in it is still the whole list, at nought — not an
+    // empty panel that looks broken.
+    const empty = D.categoryMixRows([], win[0], win[1]);
+    t.is("mix: an empty period still lists every category", empty.rows.length, rows.length - 1);
+    t.is("mix: with nothing counted against any of them", empty.ran, 0);
+    t.ok("mix: and no percentage is invented from a zero total",
+      empty.rows.every((r) => r.pct === 0));
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

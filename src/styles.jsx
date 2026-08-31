@@ -2285,6 +2285,10 @@ export const styles = {
   },
   mixList: { marginTop: 11, display: "flex", flexDirection: "column", gap: 6 },
   mixRow: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5 },
+  // A category nothing came in against. Listed, because absent reads as an
+  // incomplete list rather than as a nought — but quieter than the ones that
+  // actually happened.
+  mixRowNone: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5, opacity: 0.42 },
   mixDot: { width: 9, height: 9, borderRadius: 3, flex: "none" },
   mixName: { flex: 1, minWidth: 0, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   mixPct: { fontFamily: mono, fontWeight: 700, color: "var(--ink)", minWidth: 38, textAlign: "right" },
