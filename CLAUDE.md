@@ -674,7 +674,18 @@ patch", that document is the target — do not start a fresh exploration.
   then resolves without making it runnable. Every web-made sound goes silent,
   including the speaker check, on a phone that is not muted. `playWhenAwake`
   takes the ref rather than the context so it can throw a dead one away and
-  build another. A context is cheap; a silent tablet is not.
+  build another. A context is cheap; a silent tablet is not. Two later
+  lessons of the same disease: the rebuild must happen SYNCHRONOUSLY, inside
+  the tap — going through `resume()`'s promise first costs the user gesture
+  on WebKit, and a context built outside a gesture starts suspended with
+  nothing entitled to resume it, dead until the app is relaunched. And the
+  SPEAKER CHECK must prove the path a dispatch actually takes: on a shell
+  that is the plugin's alarm stream (`soundSpeakerCheck` — alert, then stop
+  after two seconds), because checking page audio there tests a path a
+  dispatch never uses and goes silent after every real call. The volume
+  chip's preview and the arming taps stay on page audio on purpose — the
+  preview demonstrates the chosen loudness, and an arming tap exists to
+  unlock page audio itself.
 - **A colour written as a literal cannot follow a theme.** `alarmAckBtn` had
   `background: var(--ink-alt)` with a hard-coded `#FFFFFF` text — and
   `--ink-alt` is near-white in dark mode, which is what every crew tablet runs.

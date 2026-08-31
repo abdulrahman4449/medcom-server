@@ -1,7 +1,7 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, shellReport, soundCallAlert, standDownOutcome } from "../lib/dates.jsx";
+import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, shellReport, soundCallAlert, soundSpeakerCheck, standDownOutcome } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -38,7 +38,7 @@ export function AlertToneCheck({ audioCtxRef, priority, label, style }) {
           style={{ ...styles.toneCheckBtn, borderColor: "var(--hold)", color: "var(--hold-2)" }}
           onClick={() => {
             setSoundLevel("full");
-            soundCallAlert(audioCtxRef, priority || "routine");
+            soundSpeakerCheck(audioCtxRef, priority || "routine");
           }}
         >
           ▶ TURN SOUND BACK ON
@@ -60,7 +60,7 @@ export function AlertToneCheck({ audioCtxRef, priority, label, style }) {
             type="button"
             style={{ ...styles.toneCheckBtn, borderColor: meta.color, color: meta.color }}
             title={`Play the ${meta.label} alert tone`}
-            onClick={() => soundCallAlert(audioCtxRef, k)}
+            onClick={() => soundSpeakerCheck(audioCtxRef, k)}
           >
             ▶ {meta.label}
           </button>

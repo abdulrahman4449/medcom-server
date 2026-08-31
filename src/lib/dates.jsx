@@ -435,6 +435,16 @@ export function playWhenAwake(audioCtxRef, play) {
       attempt(ctx);
       return;
     }
+    // "Interrupted" never resumes, and the rebuild must happen NOW —
+    // synchronously, inside whatever tap brought us here. Going through
+    // resume()'s promise first cost the user gesture on WebKit, and a context
+    // built outside a gesture starts suspended with nothing entitled to
+    // resume it — which is how the speaker check stayed dead until the app
+    // was relaunched, on a phone that was not even muted.
+    if (ref && ctx.state === "interrupted") {
+      rebuild(2);
+      return;
+    }
     const resumed = ctx.resume && ctx.resume();
     if (resumed && typeof resumed.then === "function") {
       resumed
@@ -684,6 +694,49 @@ export function alarmOutcome() {
 let lastStandDownOutcome = "none yet";
 export function standDownOutcome() {
   return lastStandDownOutcome;
+}
+
+// The speaker check answers ONE question: will this device be heard when a
+// call lands on it? On a shell a dispatch goes out through the plugin on the
+// alarm stream, so that is the path the check has to prove. It used to test
+// the page-audio path instead — a path a dispatch on a shell never takes, and
+// the one WebKit interrupts every time the native alarm plays — so the check
+// went silent after every real call, on a device whose actual alarm was
+// perfectly healthy, and read as a broken speaker until the app was
+// relaunched. The tone is stopped after a couple of seconds because this is a
+// check, not an alert; if it ever collides with a real alarm, the alarm's own
+// 1.7-second repeat restarts the player the moment it finds it stopped.
+export function soundSpeakerCheck(audioCtxRef, priority) {
+  const plugin = nativeAlarm();
+  if (plugin && typeof plugin.stop === "function") {
+    try {
+      const answered = plugin.alert({ priority: String(priority || "routine") });
+      lastAlarmOutcome = "system alarm (check)";
+      if (answered && typeof answered.then === "function") {
+        answered.then(
+          (r) => {
+            const tone = r && r.tone ? String(r.tone).toUpperCase() : "?";
+            lastAlarmOutcome = `system alarm · ${tone} · ${(r && r.source) || "shell"} (check)`;
+          },
+          () => {
+            lastAlarmOutcome = "system alarm refused — page tone used for the check";
+            soundCallAlert(audioCtxRef, priority);
+          }
+        );
+      }
+      setTimeout(() => {
+        try {
+          plugin.stop();
+        } catch (e) {
+          // an alarm mid-flight owns the player; its repeat carries on
+        }
+      }, 2200);
+      return;
+    } catch (e) {
+      // an old shell without the method — the page tone is still an answer
+    }
+  }
+  soundCallAlert(audioCtxRef, priority);
 }
 
 export function soundCallAlert(audioCtxRef, priority, unmissable) {
