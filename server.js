@@ -918,7 +918,7 @@ function backupState() {
 // lib/restore-guard.cjs, under npm test; the window itself lives in
 // `settings`, not on the board — it is a permission, and permissions live
 // where the server checks them.
-const { RESTORE_OWNER, RESTORE_APPROVAL_TTL_MS, mayOpenRestoreWindow, mayRestore } = require("./lib/restore-guard.cjs");
+const { RESTORE_OWNER, RESTORE_APPROVAL_TTL_MS, mayOpenRestoreWindow, mayRestore, ownerAccountRefusal } = require("./lib/restore-guard.cjs");
 
 function restoreApproval() {
   const row = db.prepare("SELECT value FROM settings WHERE key = 'restore_approval'").get();
@@ -1480,6 +1480,34 @@ function seedAccounts() {
 }
 seedAccounts();
 
+// ---------- the owner's own way back in ----------
+//
+// Nobody else may clear the owner's password (ownerAccountRefusal) — which
+// means a forgotten owner password needs a path that does not run through
+// another administrator. This is it: set OWNER_RESCUE=1 in the environment
+// and restart, and a fresh one-time sign-in code for the owner account is
+// printed to the server log. Reaching the environment and the log takes the
+// hosting dashboard, which only the service operator holds — the same trust
+// the original bootstrap code rests on. Unset the variable afterwards; while
+// it is set, every restart prints (and replaces) a code.
+function ownerRescue() {
+  if (!process.env.OWNER_RESCUE) return;
+  const acct = findAccount(RESTORE_OWNER);
+  if (!acct) return;
+  db.prepare("UPDATE accounts SET pw_salt = NULL, pw_hash = NULL, legacy_hash = NULL WHERE id = ?").run(acct.id);
+  const code = issueClaimCode(acct.id);
+  console.log("");
+  console.log("  ┌──────────────────────────────────────────────────────────┐");
+  console.log("  │  OWNER RESCUE (OWNER_RESCUE is set)                      │");
+  console.log(`  │  Employee ID    ${RESTORE_OWNER}${" ".repeat(41 - RESTORE_OWNER.length)}│`);
+  console.log(`  │  Sign-in code   ${code}${" ".repeat(41 - code.length)}│`);
+  console.log("  │  The old password is cleared. Sign in, set a new one,    │");
+  console.log("  │  then REMOVE the OWNER_RESCUE variable.                  │");
+  console.log("  └──────────────────────────────────────────────────────────┘");
+  console.log("");
+}
+ownerRescue();
+
 // ---------- signing in ----------
 
 // ---------- delegated authority ----------
@@ -1826,6 +1854,10 @@ app.get("/api/accounts", requireArea("teams"), (req, res) => {
       ...publicAccount(r),
       codeIssued: !!r.claim_hash,
       codeExpires: r.claim_hash ? r.claim_expires || null : null,
+      // The roster draws the owner row without Remove or Clear password —
+      // the server refuses those regardless (ownerAccountRefusal), but a
+      // button that can only ever answer 403 is a button that lies.
+      ...(r.id === RESTORE_OWNER ? { isOwner: true } : {}),
     })),
   });
 });
@@ -1837,6 +1869,10 @@ app.post("/api/accounts", requireArea("teams"), (req, res) => {
   if (!["admin", "dispatcher", "crew"].includes(role)) {
     return res.status(400).json({ error: "Unknown role." });
   }
+  // The owner account answers only to itself, and can never stop being an
+  // administrator — see ownerAccountRefusal in lib/restore-guard.cjs.
+  const refusal = ownerAccountRefusal(req.user.id, key, role !== "admin" ? "demote" : "edit");
+  if (refusal) return res.status(403).json({ error: refusal });
   db.prepare(
     `INSERT INTO accounts (id, name, role, team, slot, station)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -1861,6 +1897,10 @@ app.delete("/api/accounts/:id", requireArea("teams"), (req, res) => {
   if (key === req.user.id) {
     return res.status(400).json({ error: "You cannot remove your own account." });
   }
+  // Deleting the owner would take the restore, sync-all and reset authority
+  // with it. Nobody removes that account, the owner included.
+  const refusal = ownerAccountRefusal(req.user.id, key, "delete");
+  if (refusal) return res.status(403).json({ error: refusal });
   db.prepare("DELETE FROM accounts WHERE id = ?").run(key);
   res.json({ ok: true });
 });
@@ -1875,6 +1915,12 @@ app.delete("/api/accounts/:id", requireArea("teams"), (req, res) => {
 app.post("/api/accounts/:id/clear-password", requireArea("teams"), (req, res) => {
   const key = String(req.params.id || "").trim().toUpperCase();
   if (!findAccount(key)) return res.status(404).json({ error: "No such account." });
+  // Clearing the owner's password hands back a sign-in code — which is the
+  // whole account, and with it restores and the reset. Only the owner may do
+  // that to themselves; a locked-out owner recovers through OWNER_RESCUE on
+  // the server, never through another administrator.
+  const refusal = ownerAccountRefusal(req.user.id, key, "clear-password");
+  if (refusal) return res.status(403).json({ error: refusal });
   db.prepare("UPDATE accounts SET pw_salt = NULL, pw_hash = NULL, legacy_hash = NULL WHERE id = ?").run(key);
   const code = issueClaimCode(key);
   res.json({ ok: true, code, expiresAt: Date.now() + CLAIM_TTL_MS });

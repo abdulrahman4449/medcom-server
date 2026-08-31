@@ -1158,6 +1158,29 @@ export function run(D, t) {
       D.mayOpenRestoreWindow({ id: "F1525518", fullAdmin: false }), false);
     t.ok("restore: the window closes on its own inside an hour",
       D.RESTORE_APPROVAL_TTL_MS <= 60 * 60 * 1000);
+
+    // The owner account cannot be taken over. Another administrator deleting
+    // it, demoting it, or clearing its password and pocketing the sign-in
+    // code would either destroy the restore authority or simply become the
+    // owner — found in the field as a Remove button on the owner's row.
+    t.ok("owner account: nobody deletes it, another admin included",
+      !!D.ownerAccountRefusal("F9999999", "F1525518", "delete"));
+    t.ok("owner account: the owner cannot delete it either",
+      !!D.ownerAccountRefusal("F1525518", "F1525518", "delete"));
+    t.ok("owner account: nobody demotes it below administrator",
+      !!D.ownerAccountRefusal("F1525518", "F1525518", "demote"));
+    t.ok("owner account: another admin cannot clear its password",
+      !!D.ownerAccountRefusal("F9999999", "F1525518", "clear-password"));
+    t.is("owner account: the owner may clear their own password",
+      D.ownerAccountRefusal("F1525518", "F1525518", "clear-password"), null);
+    t.is("owner account: the owner may edit their own row",
+      D.ownerAccountRefusal("F1525518", "F1525518", "edit"), null);
+    t.ok("owner account: another admin cannot edit it at all",
+      !!D.ownerAccountRefusal("F9999999", "F1525518", "edit"));
+    t.is("owner account: every other account is untouched by this rule",
+      D.ownerAccountRefusal("F9999999", "E1000", "delete"), null);
+    t.ok("owner account: the id is matched case-insensitively",
+      !!D.ownerAccountRefusal("F9999999", " f1525518 ", "delete"));
   }
 
   // ---------- a no-coverage gap ends when the station closes, not just when

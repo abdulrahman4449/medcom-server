@@ -254,8 +254,14 @@ export function ClaimCodeTag({ account }) {
 export function RemoveBtn({ account, user, adminAccounts, removingId, onRemove }) {
   const isSelf = user && user.accountId === account.id;
   const lastAdmin = account.role === "admin" && adminAccounts.length <= 1;
-  const blocked = isSelf || lastAdmin;
-  const title = isSelf
+  // The owner account anchors restores, sync-all and the reset. The server
+  // refuses to delete it whoever asks (ownerAccountRefusal); the roster says
+  // so instead of offering a button that can only answer 403.
+  const owner = !!account.isOwner;
+  const blocked = isSelf || lastAdmin || owner;
+  const title = owner
+    ? "This account anchors restores and resets and cannot be removed"
+    : isSelf
     ? "You can't remove the account you're signed in with"
     : lastAdmin
     ? "The only admin can't be removed"
@@ -699,6 +705,13 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
 
     if (isSelf) {
       setRemoveError({ role: account.role, message: "You can't remove the account you're signed in with." });
+      return;
+    }
+    if (account.isOwner) {
+      setRemoveError({
+        role: account.role,
+        message: "That account anchors restores, backups and the reset — it cannot be removed by anyone.",
+      });
       return;
     }
     if (lastAdmin) {

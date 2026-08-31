@@ -268,6 +268,19 @@ patch", that document is the target — do not start a fresh exploration.
   the board write commits and can never fail or slow one. iOS is deliberately
   not wired — no developer account, and past-the-silent-switch needs Apple's
   Critical Alert entitlement. Setup: `native/README.md` → "Push (FCM)".
+- **The owner account cannot be taken over, because it is the prize.** Every
+  owner power anchors to F1525518, so an admin who could delete that account,
+  demote it, or clear its password and pocket the sign-in code would destroy
+  the restore authority or simply BECOME the owner — and a regular admin was
+  in fact offered Remove on the owner's roster row. `ownerAccountRefusal` in
+  `lib/restore-guard.cjs` (under `npm test`) guards the three account routes:
+  nobody deletes the owner, nobody demotes it (the owner included — an owner
+  that is not an admin cannot open the restore window), and only the owner
+  edits it or clears its password. The `/api/accounts` listing marks the row
+  `isOwner` so the roster explains instead of offering a button that can only
+  answer 403. A forgotten owner password is recovered by setting
+  `OWNER_RESCUE=1` on the server and restarting — a one-time code prints to
+  the log, the same trust the bootstrap code rests on; unset it after use.
 - **Putting data back belongs to the owner; taking copies does not.**
   `lib/restore-guard.cjs`, under `npm test` like the merge and the delegation
   list. Anyone holding the archive area may take a backup whenever they like —

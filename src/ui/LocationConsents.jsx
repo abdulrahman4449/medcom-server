@@ -77,10 +77,11 @@ export function PasswordResets({ resets, setResets, user, addLog, onIssued }) {
     setBusy(row.id);
     try {
       const ok = await clearPasswordFor(row.accountId);
-      if (!ok) {
-        window.alert("That did not save — no signal to the server. Nothing has changed.");
-        return;
-      }
+      // A false answer has already told the administrator why, in the
+      // server's own words — a refusal (the owner's account, say) and a lost
+      // signal need different sentences, and clearPasswordFor said the right
+      // one. A second alert here claimed "no signal" over a 403.
+      if (!ok) return;
       if (ok && ok.code) {
         // Through the same banner the roster uses, not an alert.
         //
