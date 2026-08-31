@@ -44,11 +44,24 @@ export function PasswordResets({ resets, setResets, user, addLog, onIssued }) {
     if (pending.length > seenPending.current) setOpen(true);
     seenPending.current = pending.length;
   }, [pending.length]);
-  const recent = (Array.isArray(resets) ? resets : [])
-    // "open" is an older build's word for pending — still waiting, not handled.
-    .filter((r) => r && r.status !== "pending" && r.status !== "open")
-    .sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0))
-    .slice(0, 8);
+  const recent = (() => {
+    const done = (Array.isArray(resets) ? resets : [])
+      // "open" is an older build's word for pending — still waiting, not handled.
+      .filter((r) => r && r.status !== "pending" && r.status !== "open");
+    // One row per person here too. Deciding a request settles every duplicate
+    // row the old vocabulary split left behind — all stamped in the same
+    // second — and eight copies of one person would crowd everyone else out
+    // of an eight-row list.
+    const byAccount = new Map();
+    for (const r of done) {
+      const k = String(r.accountId || "").toUpperCase();
+      const seen = byAccount.get(k);
+      if (!seen || (r.decidedAt || 0) > (seen.decidedAt || 0)) byAccount.set(k, r);
+    }
+    return [...byAccount.values()]
+      .sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0))
+      .slice(0, 8);
+  })();
 
   async function clearIt(row) {
     if (

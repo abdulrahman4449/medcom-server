@@ -304,21 +304,56 @@ function requireFullAdmin(req, res, next) {
   });
 }
 
-// Guessing costs time. Ten wrong answers for one employee ID and that ID stops
-// answering for fifteen minutes, whoever is asking.
-const LOGIN_TRIES = new Map();
-const LOGIN_MAX = 10;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+// Guessing costs time, and so does flooding. ONE limiter implementation for
+// both unauthenticated doors — sign-in/claim and the forgot-password ask —
+// because the key is whatever a stranger typed, and an unbounded map keyed
+// by attacker-chosen strings is a slow out-of-memory on the box the dispatch
+// board runs on. Keys are cut to 64 characters, expired records are swept
+// once the map grows, and past a hard cap the oldest records go first — a
+// deliberate flood pays with its own early keys.
+function makeLimiter(max, windowMs) {
+  const tries = new Map();
+  const CAP = 4000;
+  const keyOf = (id) => String(id || "").slice(0, 64);
+  const sweep = () => {
+    const now = Date.now();
+    for (const [k, rec] of tries) {
+      if (now - rec.first > windowMs) tries.delete(k);
+    }
+    while (tries.size > CAP) tries.delete(tries.keys().next().value);
+  };
+  return {
+    blocked(id) {
+      const k = keyOf(id);
+      const rec = tries.get(k);
+      if (!rec) return false;
+      if (Date.now() - rec.first > windowMs) {
+        tries.delete(k);
+        return false;
+      }
+      return rec.count >= max;
+    },
+    failed(id) {
+      if (tries.size > CAP) sweep();
+      const k = keyOf(id);
+      const rec = tries.get(k);
+      if (!rec || Date.now() - rec.first > windowMs) tries.set(k, { first: Date.now(), count: 1 });
+      else rec.count++;
+    },
+    clear(id) {
+      tries.delete(keyOf(id));
+    },
+  };
+}
+
+// Ten wrong answers for one employee ID and that ID stops answering for
+// fifteen minutes, whoever is asking.
+const loginLimiter = makeLimiter(10, 15 * 60 * 1000);
 function loginBlocked(id) {
-  const rec = LOGIN_TRIES.get(id);
-  if (!rec) return false;
-  if (Date.now() - rec.first > LOGIN_WINDOW_MS) { LOGIN_TRIES.delete(id); return false; }
-  return rec.count >= LOGIN_MAX;
+  return loginLimiter.blocked(id);
 }
 function loginFailed(id) {
-  const rec = LOGIN_TRIES.get(id);
-  if (!rec || Date.now() - rec.first > LOGIN_WINDOW_MS) LOGIN_TRIES.set(id, { first: Date.now(), count: 1 });
-  else rec.count++;
+  loginLimiter.failed(id);
 }
 
 // Board keys only an administrator may write. These are the department's
@@ -1494,7 +1529,7 @@ app.post("/api/auth/login", (req, res) => {
     loginFailed(key);
     return res.status(401).json({ error: "That employee ID and password do not match." });
   }
-  LOGIN_TRIES.delete(key);
+  loginLimiter.clear(key);
   const fresh = findAccount(key);
   res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
 });
@@ -1635,7 +1670,7 @@ app.post("/api/auth/set-password", (req, res) => {
   if (!password || String(password).length < 4) {
     return res.status(400).json({ error: "Choose a password of at least four characters." });
   }
-  LOGIN_TRIES.delete(key);
+  loginLimiter.clear(key);
   setPassword(acct.id, password);
   // Spent. A code opens an account once.
   clearClaimCode(acct.id);
@@ -1661,30 +1696,22 @@ app.post("/api/accounts/:id/claim-code", requireArea("teams"), (req, res) => {
 // cannot sign in. It only ever records a request for an administrator to look
 // at; it changes nothing.
 //
-// Its own counter, apart from the login one. It used to share LOGIN_TRIES —
-// which meant pressing "Forgot password" burned sign-in attempts, and the
-// person who had just failed ten times (exactly who this route exists for)
-// was answered 429 and never recorded. A handful of asks per quarter hour is
-// plenty for a human and useless for a flood; the dedupe below caps the
-// damage at one row per real account regardless.
-const FORGOT_TRIES = new Map();
-function forgotBlocked(key) {
-  const now = Date.now();
-  const cur = FORGOT_TRIES.get(key);
-  if (cur && now > cur.until) FORGOT_TRIES.delete(key);
-  const row = FORGOT_TRIES.get(key) || { n: 0, until: now + 15 * 60 * 1000 };
-  row.n += 1;
-  FORGOT_TRIES.set(key, row);
-  return row.n > 5;
-}
+// Its own counter, apart from the login one — sharing meant pressing "Forgot
+// password" burned sign-in attempts, and the person who had just failed ten
+// times (exactly who this route exists for) was answered 429 and never
+// recorded. Same bounded implementation as the login limiter; a handful of
+// asks per quarter hour is plenty for a human and useless for a flood, and
+// the dedupe below caps the damage at one row per real account regardless.
+const forgotLimiter = makeLimiter(5, 15 * 60 * 1000);
 
 app.post("/api/auth/forgot", (req, res) => {
   const { id, name } = req.body || {};
   const key = String(id || "").trim().toUpperCase();
   if (!key) return res.status(400).json({ error: "Give your employee ID." });
-  if (forgotBlocked(key)) {
+  if (forgotLimiter.blocked(key)) {
     return res.status(429).json({ error: "Too many attempts. Wait a few minutes and try once." });
   }
+  forgotLimiter.failed(key);
   const acct = findAccount(key);
   // Answered IDENTICALLY whether or not the account exists, and whether or
   // not a request was already waiting. This route answers strangers, and
@@ -1711,7 +1738,10 @@ app.post("/api/auth/forgot", (req, res) => {
       list.unshift({
         id: `pwr_${now.toString(36)}_${crypto.randomBytes(3).toString("hex")}`,
         accountId: acct.id,
-        name: acct.name || String(name || ""),
+        // Bounded: this route answers strangers, and an account with no name
+        // of its own must not let a caller pour megabytes into a board key
+        // every admin device downloads on the cold poll.
+        name: acct.name || String(name || "").slice(0, 80),
         role: acct.role,
         ts: now,
         at: now,
