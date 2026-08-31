@@ -410,11 +410,51 @@ app.use(express.json({ limit: "25mb" }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-backup-token");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-backup-token, If-None-Match");
+  // ETag is not on the browser's cross-origin safelist, so the native shells
+  // (capacitor://localhost, http://localhost) cannot read it without this —
+  // and a client that cannot read the ETag downloads the whole archive on
+  // every cold poll, which is the exact cost the ETag exists to remove.
+  res.setHeader("Access-Control-Expose-Headers", "ETag");
   res.setHeader("Access-Control-Max-Age", "86400");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+
+// ---------- not re-sending what a device already holds ----------
+//
+// Every device cold-polls the whole archive and every filed submission every
+// thirty seconds — tens of megabytes that change roughly once a day. At one
+// desk that is invisible; at seventy devices it is over a hundred megabytes a
+// second of JSON being serialised and pushed through one Node process, and a
+// stress test at double the department's real load showed exactly that: cold
+// polls queuing up to ninety seconds and the three-second board poll stuck
+// behind them.
+//
+// So a read answers with an ETag and honours If-None-Match: a device that
+// already holds the current copy gets a bodiless 304 instead of the megabytes.
+// The tag is an in-memory per-key write counter — bumped by every route that
+// touches the board table, cleared whole by the bulk paths (reset, restore,
+// sync-all) — with the row's own updated_at + byte length as the fallback for
+// a key not written since this process started, so tags survive a restart.
+// scripts/restore.mjs edits the file offline (the server is down when it
+// runs), so an external edit the counter cannot see is not a live case.
+const BOOT_ID = crypto.randomBytes(4).toString("hex");
+const boardVersions = new Map();
+let boardWriteSeq = 0;
+let boardGen = 0;
+function bumpBoardKey(key) {
+  boardVersions.set(key, ++boardWriteSeq);
+}
+function bumpAllBoardKeys() {
+  boardGen += 1;
+  boardVersions.clear();
+}
+function boardEtagFor(key, row) {
+  const v = boardVersions.get(key);
+  if (v) return `"${BOOT_ID}:v${v}"`;
+  return `"g${boardGen}:${row.updated_at}:${Buffer.byteLength(row.value, "utf8")}"`;
+}
 
 app.get("/api/board", requireAuth, (req, res) => {
   const key = req.query.key;
@@ -425,8 +465,15 @@ app.get("/api/board", requireAuth, (req, res) => {
   // offline, so a key it must not have does not make a working board look
   // disconnected.
   if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
-  const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
-  res.json({ value: row ? JSON.parse(row.value) : null });
+  const row = db.prepare("SELECT value, updated_at FROM board WHERE key = ?").get(key);
+  if (!row) return res.json({ value: null });
+  const etag = boardEtagFor(key, row);
+  res.setHeader("ETag", etag);
+  if (req.headers["if-none-match"] === etag) return res.status(304).end();
+  // The stored value is already JSON — every write path stringifies before it
+  // lands. Parsing forty megabytes of archive only to stringify it straight
+  // back was most of what a cold poll cost this process; wrap the text as-is.
+  res.type("application/json").send(`{"value":${row.value}}`);
 });
 
 app.post("/api/board", requireAuth, (req, res) => {
@@ -453,6 +500,7 @@ app.post("/api/board", requireAuth, (req, res) => {
     `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).run(key, JSON.stringify(value ?? null));
+  bumpBoardKey(key);
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, value);
   res.json({ ok: true });
 });
@@ -605,6 +653,7 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   if (merged === "SHAPE") {
     return res.status(409).json({ error: "That key does not hold records of this shape.", shape: true });
   }
+  bumpBoardKey(key);
   // A call that just landed on a truck wakes that truck's phone, even locked —
   // fired after the write has committed, and never able to fail it.
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, merged);
@@ -963,6 +1012,7 @@ app.post("/api/reset-board", requireArea("archive"), (req, res) => {
     db.prepare("DELETE FROM push_tokens").run();
     db.prepare("DELETE FROM settings WHERE key = 'restore_approval'").run();
   })();
+  bumpAllBoardKeys();
   let backupsDeleted = 0;
   for (const dir of [BACKUP_DIR, BACKUP_DIR_2].filter(Boolean)) {
     try {
@@ -1301,6 +1351,7 @@ app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
   db.transaction((list) => {
     for (const w of list) put.run(w.key, w.value);
   })(work);
+  for (const w of work) bumpBoardKey(w.key);
 
   const total = report.reduce((n, r) => n + r.added, 0);
   console.log(
@@ -1363,6 +1414,7 @@ app.post("/api/backups/:name/restore", requireArea("archive"), async (req, res) 
   db.transaction((list) => {
     for (const v of list) put.run(v.key, v.row.value);
   })(values);
+  for (const k of keys) bumpBoardKey(k);
 
   console.log(
     `Restore: ${keys.join(", ")} put back from ${found.name} by ${req.user.id}` +
@@ -1751,6 +1803,7 @@ app.post("/api/auth/forgot", (req, res) => {
         `INSERT INTO board (key, value, updated_at) VALUES ('ems:passwordResets', ?, datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
       ).run(JSON.stringify(list.slice(0, 200)));
+      bumpBoardKey("ems:passwordResets");
     }
   }
   res.json({ ok: true });

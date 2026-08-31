@@ -155,15 +155,46 @@ export function mergePending(key, serverList) {
   return merged;
 }
 
+// ---------- not downloading what has not changed ----------
+//
+// The cold poll reads the whole archive and every filed submission, on every
+// device, every thirty seconds — and on a mature board that is tens of
+// megabytes that change roughly once a day. One tablet never notices; seventy
+// devices doing it at once is over a hundred megabytes a second of JSON asked
+// of one server, and a stress test at double the department's real load showed
+// the three-second board poll queuing minutes behind it.
+//
+// So each key remembers the ETag the server sent with it, asks with
+// If-None-Match, and a bodiless 304 means "what you already hold" — the cached
+// copy is used and nothing was downloaded. The cache holds the SERVER's copy;
+// the pending-write merge still runs on every read, exactly as it does on a
+// fresh download, so a held record is never hidden by a cache hit.
+const readCache = new Map(); // key -> { etag, value }
+
+async function fetchKeyValue(key) {
+  const cached = readCache.get(key);
+  const headers = authHeaders();
+  if (cached && cached.etag) headers["If-None-Match"] = cached.etag;
+  const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, { headers });
+  if (res.status === 304 && cached) return { status: 200, value: cached.value };
+  if (res.status === 401 || res.status === 403) return { status: res.status, value: null };
+  if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
+  const { value } = await res.json();
+  const etag = res.headers.get("ETag");
+  // A null answer means the key is gone (a fresh board, a reset) — dropping
+  // the entry is what stops a stale ETag resurrecting the old copy.
+  if (etag && value != null) readCache.set(key, { etag, value });
+  else readCache.delete(key);
+  return { status: 200, value };
+}
+
 export async function readKeyRaw(key) {
   try {
-    const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, {
-      headers: authHeaders(),
-    });
+    const got = await fetchKeyValue(key);
     // A token that has expired, or an account that has been removed. Not a
     // lost signal: holding the records and laying them over the server's copy
     // would show a board that looks right and is saving nothing.
-    if (res.status === 401) {
+    if (got.status === 401) {
       noteAuthLost();
       setConnectionOk(true);
       return null;
@@ -173,12 +204,11 @@ export async function readKeyRaw(key) {
     // its own administrator-only endpoint. A refusal means "nothing here for
     // you", not "no signal", and one forbidden key must not make a working
     // board look offline.
-    if (res.status === 403) {
+    if (got.status === 403) {
       setConnectionOk(true);
       return null;
     }
-    if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
-    const { value } = await res.json();
+    const value = got.value;
     setConnectionOk(true);
     if (value == null) return null;
     if (Array.isArray(value)) {
@@ -196,13 +226,11 @@ export async function readKeyRaw(key) {
 
 export async function readKey(key, fallback) {
   try {
-    const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, {
-      headers: authHeaders(),
-    });
+    const got = await fetchKeyValue(key);
     // A token that has expired, or an account that has been removed. Not a
     // lost signal: holding the records and laying them over the server's copy
     // would show a board that looks right and is saving nothing.
-    if (res.status === 401) {
+    if (got.status === 401) {
       noteAuthLost();
       setConnectionOk(true);
       return fallback;
@@ -212,7 +240,7 @@ export async function readKey(key, fallback) {
     // its own administrator-only endpoint. A refusal means "nothing here for
     // you", not "no signal", and one forbidden key must not make a working
     // board look offline.
-    if (res.status === 403) {
+    if (got.status === 403) {
       // The fallback, not null. This function is handed one precisely so a
       // caller always gets something usable, and a refusal is exactly that
       // case - returning null made `readKey(k, []).some(...)` throw on the very
@@ -220,8 +248,7 @@ export async function readKey(key, fallback) {
       setConnectionOk(true);
       return fallback;
     }
-    if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
-    const { value } = await res.json();
+    const value = got.value;
     setConnectionOk(true);
     if (value == null) return fallback;
     // Anything this device is still holding is laid over the server's copy

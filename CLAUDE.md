@@ -106,6 +106,21 @@ patch", that document is the target — do not start a fresh exploration.
   scanned PDFs is megabytes, so it is read only when that tab is opened.
   `GET /api/health` lists every key with its size; check there before
   putting anything new on the fast path.
+- **A poll answers 304 unless the key actually changed, and every board write
+  must say so.** A mature board's cold poll is tens of megabytes that change
+  once a day, and at seventy devices the old always-send-everything read was
+  measured flooding the server: cold polls queued to ninety seconds and the
+  3-second poll sat behind them. `GET /api/board` sends an ETag (an in-memory
+  per-key write counter, `bumpBoardKey` in `server.js`; the row's
+  `updated_at` + byte length as the cross-restart fallback) and honours
+  If-None-Match; `fetchKeyValue` in `src/lib/offline-queue.jsx` holds the
+  per-key cache, and the pending-write merge still runs on every read so a
+  cache hit can never hide a held record. **Any new route that writes the
+  board table must call `bumpBoardKey`** (bulk rewrites call
+  `bumpAllBoardKeys`) or devices holding the old tag are answered 304 for
+  ever. The read also sends the stored JSON text as-is — parsing forty
+  megabytes only to stringify it straight back was the other half of the
+  cost; never put `JSON.parse(row.value)` back into that route.
 - **A day's bookings are tiles, not a column.** `schedGrid` — a day with eight
   transfers was eight full-width cards and a scroll, and the desk could not read
   its own day. The tile says what the booking is, when, and whether it has a
