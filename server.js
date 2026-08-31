@@ -1614,6 +1614,33 @@ app.post("/api/auth/login", (req, res) => {
   res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
 });
 
+// Changing your own password, while signed in. The current password is the
+// proof — the token alone must not be enough, or a tablet left unlocked at
+// the station lets anyone quietly re-key an account they can already act as.
+// It runs under the same limiter as sign-in, so the current password cannot
+// be worked through from a signed-in device either. The token is not tied to
+// the hash, so the session carries on; other devices holding this account
+// stay signed in too, which is right — changing a password is not a sign-out.
+app.post("/api/auth/change-password", requireAuth, (req, res) => {
+  const { current, next } = req.body || {};
+  const key = req.user.id;
+  if (loginBlocked(key)) {
+    return res.status(429).json({ error: "Too many attempts. Try again in fifteen minutes." });
+  }
+  const acct = findAccount(key);
+  if (!acct) return res.status(401).json({ error: "That account no longer exists." });
+  if (!checkPassword(acct, current)) {
+    loginFailed(key);
+    return res.status(403).json({ error: "Your current password is not right." });
+  }
+  if (!next || String(next).length < 4) {
+    return res.status(400).json({ error: "Choose a new password of at least four characters." });
+  }
+  loginLimiter.clear(key);
+  setPassword(acct.id, next);
+  res.json({ ok: true });
+});
+
 // Who this device is signed in as, as the SERVER sees it right now.
 //
 // A session is written once, at sign-in, and then lives in localStorage for the

@@ -439,6 +439,12 @@ patch", that document is the target — do not start a fresh exploration.
   as a sign-out fires on a loop at the sign-in screen. `loadAll`/`loadCold`
   wait for a token before polling at all. An old unsalted SHA-256 hash is
   accepted once and replaced with a salted one on that sign-in.
+- **Changing your own password asks for the current one, signed in or not.**
+  `POST /api/auth/change-password` (the name chip in the masthead —
+  `AccountChip` in `Header.jsx`) — the token alone must not be enough, or a
+  tablet left unlocked at the station re-keys the account; wrong guesses burn
+  the same limiter as sign-in. The token is not tied to the hash, so nothing
+  signs out — changing a password is not a sign-out.
 - **An employee ID is printed on a badge, so it is not enough to claim an
   account.** An account with no password yet needs a **one-time code** an
   administrator issues (`claim_hash`, hashed and salted like a password, spent

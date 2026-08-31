@@ -3,6 +3,7 @@ import { msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.
 import { hhmm, overtimeMs, shiftMeta, shiftRemainingMs, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { SHIFTS, SHIFT_KEYS } from "../domain/shifts.jsx";
 import { areaLabel, areaSentence, isDelegatedAdmin } from "../domain/delegation.jsx";
+import { changeOwnPassword } from "../lib/auth.jsx";
 import { soundCallAlert } from "../lib/dates.jsx";
 import { Clock, LogOut, Volume2, VolumeX } from "../lib/icons.jsx";
 import { useState } from "../lib/react.jsx";
@@ -65,21 +66,129 @@ export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, the
           </button>
         </div>
         <div style={styles.headerBarGroup}>
-          <div style={styles.userBadge}>
-            <span style={{ color: "var(--ink-3)" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
-            <span style={{ color: "var(--ink)", fontWeight: 600 }}>{user.name}</span>
-            {/* What they have been lent, next to who they are.
-                Authority borrowed and authority held look identical on screen
-                otherwise, and the person working it is the one most entitled
-                to know which they are using — and which areas. */}
-            <DelegatedTag user={user} />
-          </div>
+          <AccountChip user={user} />
           <RoleSwitch user={user} onSwitchRole={onSwitchRole} />
           <button style={styles.iconBtn} onClick={onLogout} title="Sign out">
             <LogOut size={16} />
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// The name in the masthead is also the way to your own account: tapping it
+// opens the one thing everybody owns about themselves — the password.
+//
+// Changing it asks for the current password first, because the token alone
+// must not be enough on a tablet left unlocked at the station; the server
+// holds the same line. Nothing signs out afterwards — this device and any
+// other holding the account carry on, which is right: changing a password is
+// not a sign-out. The inputs are 16px like every field in the app, or iOS
+// zooms the whole board on focus and leaves it there.
+export function AccountChip({ user }) {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [fresh, setFresh] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null); // { ok, text }
+
+  function close() {
+    setOpen(false);
+    setCurrent("");
+    setFresh("");
+    setAgain("");
+    setNote(null);
+  }
+
+  async function submit() {
+    if (!current) return setNote({ ok: false, text: "Type your current password first." });
+    if (!fresh || fresh.length < 4) {
+      return setNote({ ok: false, text: "Choose a new password of at least four characters." });
+    }
+    if (fresh !== again) return setNote({ ok: false, text: "The two copies of the new password do not match." });
+    setBusy(true);
+    setNote(null);
+    try {
+      await changeOwnPassword(current, fresh);
+      setCurrent("");
+      setFresh("");
+      setAgain("");
+      setNote({ ok: true, text: "Password changed. You stay signed in — use the new one from your next sign-in." });
+    } catch (e) {
+      // The server's own sentence: a wrong current password, the sign-in
+      // limiter, or a lost signal all need different words and it says which.
+      setNote({ ok: false, text: (e && e.message) || "That could not be saved. Try again." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const pwInput = (value, set, placeholder) => (
+    <input
+      type="password"
+      autoComplete="off"
+      style={{ ...styles.input, marginTop: 6 }}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => set(e.target.value)}
+      disabled={busy}
+    />
+  );
+
+  return (
+    <div style={styles.shiftChipWrap}>
+      <button
+        style={{
+          ...styles.userBadge,
+          // A button wearing a badge's clothes: the browser's own button
+          // chrome would put a grey box around the name.
+          background: "transparent", border: "none", padding: 0,
+          font: "inherit", cursor: "pointer", alignItems: "flex-end",
+        }}
+        onClick={() => (open ? close() : setOpen(true))}
+        title="Your account — change your password"
+      >
+        <span style={{ color: "var(--ink-3)" }}>{user.role === "dispatcher" ? "DISPATCH" : user.role === "admin" ? "ADMIN" : "CREW"}</span>
+        <span style={{ color: "var(--ink)", fontWeight: 600 }}>{user.name}</span>
+        {/* What they have been lent, next to who they are.
+            Authority borrowed and authority held look identical on screen
+            otherwise, and the person working it is the one most entitled
+            to know which they are using — and which areas. */}
+        <DelegatedTag user={user} />
+      </button>
+
+      {open && (
+        <div style={styles.shiftMenu}>
+          <div style={styles.shiftMenuHead}>
+            CHANGE YOUR PASSWORD · {user.accountId || user.name}
+          </div>
+          {pwInput(current, setCurrent, "Current password")}
+          {pwInput(fresh, setFresh, "New password (4+ characters)")}
+          {pwInput(again, setAgain, "New password again")}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button style={styles.primaryBtnSm} disabled={busy} onClick={submit}>
+              {busy ? "…" : "Change password"}
+            </button>
+            <button style={styles.ghostBtnSm} disabled={busy} onClick={close}>
+              Close
+            </button>
+          </div>
+          {note && (
+            <div style={{ ...styles.formHint, marginTop: 8, color: note.ok ? "var(--ok)" : "var(--hold-2)" }}>
+              {note.text}
+            </div>
+          )}
+          {!note && (
+            <div style={styles.shiftMenuHint}>
+              Your current password is asked for on purpose — a screen someone
+              left open must not be enough to re-key the account. Forgotten it
+              entirely? Sign out and use “Forgot password” instead.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

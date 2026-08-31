@@ -168,6 +168,13 @@ export function requestPasswordHelp(id, name) {
   return post("/api/auth/forgot", { id, name });
 }
 
+// Changing your own password, signed in. The current password is the proof —
+// the token alone must not be enough on a tablet left unlocked. The session
+// keeps its token; nothing signs out.
+export function changeOwnPassword(current, next) {
+  return post("/api/auth/change-password", { current, next });
+}
+
 // ---------- the roster, for an administrator ----------
 
 export async function listAccounts() {
