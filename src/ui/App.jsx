@@ -268,7 +268,15 @@ export function App() {
   // anyone sign in again. It is still checked against the board once the data
   // arrives — see the two effects near the bottom of this component.
   const restoredSession = useRef(readSession());
-  const [user, setUser] = useState(() => (restoredSession.current ? restoredSession.current.user : null));
+  const [user, setUser] = useState(() => {
+    const u = restoredSession.current ? restoredSession.current.user : null;
+    // A session a released build left stuck in the server's vocabulary — role
+    // "crew", which nothing draws (see `RoleSwitch`). With a seat it is a team
+    // session and heals to one; without, there is nothing to restore it AS,
+    // and the sign-in screen is the honest place to land.
+    if (u && u.role === "crew") return u.unitId ? { ...u, role: "team" } : null;
+    return u;
+  });
   const [units, setUnits] = useState([]);
   const [requests, setRequests] = useState([]);
   // Requests booked for a future time. Held apart from `requests` so a booking
@@ -2462,7 +2470,13 @@ export function App() {
   function switchRole(next) {
     {
       const u = userRef.current;
-      if (!u || !Array.isArray(u.roles) || !u.roles.includes(next)) return;
+      // The account's role list says "crew"; the session's word for working a
+      // truck is "team", and "team" needs a seat to go back to. A role the
+      // app has no view for must be unreachable from here — a session set to
+      // "crew" drew an empty screen with nothing to press (see `RoleSwitch`).
+      const held = u && Array.isArray(u.roles) ? u.roles.map((r) => (r === "crew" ? "team" : r)) : [];
+      if (!u || !held.includes(next)) return;
+      if (next === "team" && !u.unitId) return;
       // Switching INTO administration on lent authority has to carry the areas
       // with it, exactly as signing in that way does.
       //

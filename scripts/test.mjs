@@ -42,6 +42,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/rush.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/shift-log.jsx")};
 export { dedupeById } from ${JSON.stringify(ROOT + "src/lib/helpers.jsx")};
 export { staffStatsFor, departmentUhu, categoryMixRows, responseNote } from ${JSON.stringify(ROOT + "src/ui/Statistics.jsx")};
+export { roleSwitchTarget } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
 export { CALL_CATEGORIES } from ${JSON.stringify(ROOT + "src/domain/sheet-vocabulary.jsx")};
 export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
 export { toneKeyFor } from ${JSON.stringify(ROOT + "src/lib/dates.jsx")};

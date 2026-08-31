@@ -1094,6 +1094,37 @@ export function run(D, t) {
       D.responseCompliance([], win[0], win[1]).pct, null);
   }
 
+  // ---------- the role switch translates before it compares
+  //
+  // The server's word for a crew member's role is "crew"; a session working a
+  // truck is role "team". Compared raw, every plain crew member appeared to
+  // hold a second role — their own, under its other name — and the header
+  // offered "My truck" as a switch into role "crew", which nothing in the app
+  // draws: an empty screen with nothing to press, on every crew phone.
+  {
+    t.is("roles: a plain crew member on their truck is offered nothing",
+      D.roleSwitchTarget({ role: "team", unitId: "m1", roles: ["crew"] }), null);
+    t.is("roles: a plain dispatcher is offered nothing",
+      D.roleSwitchTarget({ role: "dispatcher", roles: ["dispatcher"] }), null);
+    t.is("roles: a crew member lent an area is offered administration",
+      D.roleSwitchTarget({ role: "team", unitId: "m1", roles: ["crew", "admin"] }), "admin");
+    t.is("roles: and from the lent area the way back is their truck",
+      D.roleSwitchTarget({ role: "admin", unitId: "m1", roles: ["crew", "admin"] }), "team");
+    // A delegate who signed straight into the lent area never took a seat, so
+    // there is no truck to offer a way back to.
+    t.is("roles: no seat means no way 'back' to a truck",
+      D.roleSwitchTarget({ role: "admin", roles: ["crew", "admin"] }), null);
+    t.is("roles: an admin on the dispatch desk can go back to administration",
+      D.roleSwitchTarget({ role: "dispatcher", roles: ["admin"] }), "admin");
+    t.is("roles: a dispatcher lent an area is offered administration",
+      D.roleSwitchTarget({ role: "dispatcher", roles: ["dispatcher", "admin"] }), "admin");
+    // Whatever is offered, it is always the app's own vocabulary — "crew" is
+    // not a role any view is drawn for.
+    t.ok("roles: the server's word never reaches the app",
+      ["team", "dispatcher", "admin", null].includes(
+        D.roleSwitchTarget({ role: "team", unitId: "m1", roles: ["crew", "dispatcher"] })));
+  }
+
   // ---------- the mix lists every category, including the ones at nought
   //
   // Built from the calls alone, a category nothing came in against was absent

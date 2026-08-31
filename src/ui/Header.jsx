@@ -114,9 +114,23 @@ export function DelegatedTag({ user }) {
   );
 }
 
+// The account and the session speak two vocabularies for the same seat: the
+// server calls a crew member's role "crew", and a session working a truck is
+// role "team". Compared raw, every plain crew member appeared to hold a second
+// role — their own, under its other name — and was offered "My truck" as a
+// switch into role "crew", which nothing in the app draws: an empty screen
+// with nothing to press, on every crew phone. Translate before comparing, and
+// only ever hand the app its own word back. "My truck" is the way BACK for a
+// crew member working a lent area, so it also needs a seat to go back to —
+// a delegate who signed straight into the lent area never took one.
+export function roleSwitchTarget(user) {
+  const asSession = (r) => (r === "crew" ? "team" : r);
+  const roles = Array.isArray(user && user.roles) ? user.roles.map(asSession) : [];
+  return roles.find((r) => r && r !== user.role && (r !== "team" || user.unitId)) || null;
+}
+
 export function RoleSwitch({ user, onSwitchRole }) {
-  const roles = Array.isArray(user && user.roles) ? user.roles : [];
-  const other = roles.find((r) => r && r !== user.role);
+  const other = roleSwitchTarget(user);
   if (!other || !onSwitchRole) return null;
   const label = other === "admin" ? "Administration" : other === "dispatcher" ? "Dispatch desk" : "My truck";
   return (
