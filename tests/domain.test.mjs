@@ -1227,6 +1227,29 @@ export function run(D, t) {
       D.newAssignments(null, [req("a", { assignedUnitId: "m1" })]).length, 1);
   }
 
+  // ---------- one person locked out is one row, whatever the board holds
+  //
+  // The forgot-password request had two writers with two vocabularies: the
+  // server route wrote `status: "open"`, the app wrote `status: "pending"`,
+  // and each dedupe only knew its own word — so the same person appeared on
+  // the administrator's panel twice with two Clear password buttons. The
+  // panel now reads both words, keeps the newest row per account, and
+  // normalises the timestamp whichever build wrote it.
+  {
+    const rows = [
+      { id: "a", accountId: "D1111111", ts: 1000, status: "pending" },
+      { id: "b", accountId: "d1111111", at: 2000, status: "open" },
+      { id: "c", accountId: "F2002", ts: 500, status: "pending" },
+      { id: "d", accountId: "F2003", ts: 900, status: "cleared" },
+    ];
+    const pending = D.pendingResets(rows);
+    t.is("resets: one row per person, however many the board holds", pending.length, 2);
+    const khaled = pending.find((r) => String(r.accountId).toUpperCase() === "D1111111");
+    t.is("resets: the newest request wins, even under the old word", khaled.id, "b");
+    t.is("resets: and its timestamp is readable whichever build wrote it", khaled.ts, 2000);
+    t.is("resets: a decided request is not pending", pending.some((r) => r.id === "d"), false);
+  }
+
   // ---------- the role switch translates before it compares
   //
   // The server's word for a crew member's role is "crew"; a session working a

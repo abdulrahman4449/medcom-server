@@ -1,6 +1,5 @@
-import { clearAccountPassword } from "../lib/auth.jsx";
-import { uid } from "../lib/helpers.jsx";
-import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
+import { clearAccountPassword, requestPasswordHelp } from "../lib/auth.jsx";
+import { readKey, writeList } from "../lib/offline-queue.jsx";
 
 // ---------- forgotten passwords ----------
 //
@@ -22,32 +21,47 @@ import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
 export const PWRESET_KEY = "ems:passwordResets";
 export const PWRESET_CAP = 200;
 
+// A request still waiting for an administrator. "open" is the word an older
+// server build wrote for the same thing, so it is honoured here — a request
+// recorded under the old word must not be able to hide from the panel.
+// ONE ROW PER PERSON: the same account asking twice is still one person locked
+// out once, so only the newest request per account is returned — however many
+// rows a board accumulated before the two writers agreed on a vocabulary.
 export function pendingResets(list) {
-  return (Array.isArray(list) ? list : []).filter((r) => r && r.status === "pending");
+  const open = (Array.isArray(list) ? list : []).filter(
+    (r) => r && (r.status === "pending" || r.status === "open")
+  );
+  const byAccount = new Map();
+  for (const r of open) {
+    const key = String(r.accountId || "").toUpperCase();
+    const seen = byAccount.get(key);
+    if (!seen || (r.ts || r.at || 0) > (seen.ts || seen.at || 0)) byAccount.set(key, r);
+  }
+  // Normalised so the panel can read `ts` whichever build wrote the row.
+  return [...byAccount.values()].map((r) => (r.ts ? r : { ...r, ts: r.at || 0 }));
 }
 
-export function resetAlreadyOpen(list, accountId) {
-  const id = String(accountId || "").toUpperCase();
-  return pendingResets(list).some((r) => String(r.accountId || "").toUpperCase() === id);
-}
-
+// Asking goes through the SERVER route, never the board. The person asking
+// cannot sign in — that is the whole situation — so a board write from the
+// sign-in screen was refused with a 401, sat in this device's offline queue,
+// and went up later under whoever signed in next; and the duplicate check
+// read the board through the same 401 and saw an empty list every time, so
+// asking twice recorded twice. The route needs no token and dedupes on the
+// server where the list actually lives. It deliberately does NOT say whether
+// a request was already waiting — the route answers strangers, and "this ID
+// exists and is mid-reset" is not theirs to learn — so asking twice simply
+// reads as sent, which is also the truth: one request is waiting.
 export async function requestPasswordReset(account) {
   if (!account || !account.id) return false;
-  const existing = (await readKey(PWRESET_KEY, [])) || [];
-  // Asking twice is not two requests. A crew member who taps it again because
-  // nothing visibly happened should not fill an administrator's page.
-  if (resetAlreadyOpen(existing, account.id)) return "already";
-  const entry = {
-    id: uid("pwr"),
-    ts: Date.now(),
-    accountId: account.id,
-    name: account.name || "",
-    role: account.role || "",
-    status: "pending",
-  };
-  const next = [entry, ...existing].slice(0, PWRESET_CAP);
-  const sent = await writeList(PWRESET_KEY, next, existing, { prepend: true, cap: PWRESET_CAP });
-  return sent.ok ? sent.value || next : false;
+  try {
+    const res = await requestPasswordHelp(account.id, account.name || "");
+    return !!(res && res.ok);
+  } catch (e) {
+    // The route's own limiter, distinct from "no signal" — retrying is
+    // exactly what will not help.
+    if (e && e.status === 429) return "slow";
+    return false;
+  }
 }
 
 // Clearing it. The account stays; only the password goes, and the next sign-in
@@ -71,10 +85,18 @@ export async function clearPasswordFor(accountId) {
 
 export async function decideReset(row, status, by) {
   const existing = (await readKey(PWRESET_KEY, [])) || [];
+  // The decision answers the PERSON, not the row: every request still waiting
+  // from the same account is settled by the one press, so a board that
+  // accumulated duplicates before the vocabulary fix is cleaned by the first
+  // administrator who deals with it.
+  const acct = String(row.accountId || "").toUpperCase();
+  const settles = (r) =>
+    r &&
+    (r.id === row.id ||
+      ((r.status === "pending" || r.status === "open") &&
+        String(r.accountId || "").toUpperCase() === acct));
   const next = existing.map((r) =>
-    r && r.id === row.id
-      ? { ...r, status, decidedBy: by || "Administration", decidedAt: Date.now() }
-      : r
+    settles(r) ? { ...r, status, decidedBy: by || "Administration", decidedAt: Date.now() } : r
   );
   const sent = await writeList(PWRESET_KEY, next, existing, { prepend: true, cap: PWRESET_CAP });
   return sent.value || next;

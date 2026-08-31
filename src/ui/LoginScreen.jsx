@@ -358,12 +358,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
         return;
       }
       const res = await requestPasswordReset(found);
-      if (res === "already") {
-        window.alert(
-          `A request for ${found.name || found.id} is already waiting.\n\n` +
-            `Your administrator will clear it — nothing is lost in the meantime, and your ` +
-            `record stays exactly as it is.`
-        );
+      if (res === "slow") {
+        setError("Too many attempts — wait a few minutes, then press it once.");
         return;
       }
       if (!res) {
@@ -372,6 +368,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       }
       window.alert(
         `Sent to your administrator.\n\n` +
+          `If you had already asked, they still see one request — asking again loses nothing. ` +
           `Once they clear it, sign in with your ID and you will be asked to choose a new ` +
           `password. Your account is not deleted and nothing on your record is lost.`
       );

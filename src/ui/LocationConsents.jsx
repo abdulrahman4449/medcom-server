@@ -45,7 +45,8 @@ export function PasswordResets({ resets, setResets, user, addLog, onIssued }) {
     seenPending.current = pending.length;
   }, [pending.length]);
   const recent = (Array.isArray(resets) ? resets : [])
-    .filter((r) => r && r.status !== "pending")
+    // "open" is an older build's word for pending — still waiting, not handled.
+    .filter((r) => r && r.status !== "pending" && r.status !== "open")
     .sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0))
     .slice(0, 8);
 

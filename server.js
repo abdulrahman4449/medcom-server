@@ -1660,26 +1660,62 @@ app.post("/api/accounts/:id/claim-code", requireArea("teams"), (req, res) => {
 // The forgotten-password request, which by its nature is made by somebody who
 // cannot sign in. It only ever records a request for an administrator to look
 // at; it changes nothing.
+//
+// Its own counter, apart from the login one. It used to share LOGIN_TRIES —
+// which meant pressing "Forgot password" burned sign-in attempts, and the
+// person who had just failed ten times (exactly who this route exists for)
+// was answered 429 and never recorded. A handful of asks per quarter hour is
+// plenty for a human and useless for a flood; the dedupe below caps the
+// damage at one row per real account regardless.
+const FORGOT_TRIES = new Map();
+function forgotBlocked(key) {
+  const now = Date.now();
+  const cur = FORGOT_TRIES.get(key);
+  if (cur && now > cur.until) FORGOT_TRIES.delete(key);
+  const row = FORGOT_TRIES.get(key) || { n: 0, until: now + 15 * 60 * 1000 };
+  row.n += 1;
+  FORGOT_TRIES.set(key, row);
+  return row.n > 5;
+}
+
 app.post("/api/auth/forgot", (req, res) => {
   const { id, name } = req.body || {};
   const key = String(id || "").trim().toUpperCase();
   if (!key) return res.status(400).json({ error: "Give your employee ID." });
-  if (loginBlocked(key)) return res.status(429).json({ error: "Too many attempts. Try again later." });
-  loginFailed(key);
+  if (forgotBlocked(key)) {
+    return res.status(429).json({ error: "Too many attempts. Wait a few minutes and try once." });
+  }
   const acct = findAccount(key);
-  // Answered the same whether or not the account exists.
+  // Answered IDENTICALLY whether or not the account exists, and whether or
+  // not a request was already waiting. This route answers strangers, and
+  // either fact — the ID is real, or its owner is mid-reset and about to be
+  // handed a one-time code — is something a stranger must not learn here.
+  // The dedupe still happens; the panel simply never shows one person twice.
   if (acct) {
     const row = db.prepare("SELECT value FROM board WHERE key = 'ems:passwordResets'").get();
     const list = row ? JSON.parse(row.value) || [] : [];
-    const already = list.some((r) => r && r.accountId === acct.id && r.status === "open");
+    // ONE vocabulary. This route used to write `status: "open"` while the app
+    // wrote and read `status: "pending"` — two dedupe checks each blind to the
+    // other's word, and the panel showing both rows. "open" is still honoured
+    // on the way in so requests recorded by older builds cannot hide, and the
+    // id comparison matches the panel's: case-insensitively, because the key
+    // is board-writable and a mixed-case row must not defeat the check.
+    const already = list.some(
+      (r) =>
+        r &&
+        String(r.accountId || "").toUpperCase() === acct.id &&
+        (r.status === "pending" || r.status === "open")
+    );
     if (!already) {
+      const now = Date.now();
       list.unshift({
-        id: `pwr_${Date.now().toString(36)}`,
+        id: `pwr_${now.toString(36)}_${crypto.randomBytes(3).toString("hex")}`,
         accountId: acct.id,
         name: acct.name || String(name || ""),
         role: acct.role,
-        at: Date.now(),
-        status: "open",
+        ts: now,
+        at: now,
+        status: "pending",
       });
       db.prepare(
         `INSERT INTO board (key, value, updated_at) VALUES ('ems:passwordResets', ?, datetime('now'))
