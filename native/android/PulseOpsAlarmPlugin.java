@@ -19,6 +19,8 @@ import android.media.MediaPlayer;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -257,6 +259,13 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // page is frozen, which is exactly what is wanted. So a repeat is
             // now a no-op: start once, keep going until stop().
             if (player != null && player.isPlaying()) {
+                // Still re-assert the volume floor. A thumb on volume-down
+                // mid-alarm takes the alarm stream below it, and an alarm
+                // playing correctly into a lowered stream is the "it went
+                // quiet by itself" report. Acknowledging is how an alert goes
+                // quiet; the next repeat, 1.7 seconds later, brings the floor
+                // back. No player is touched here - that lesson is above.
+                raiseAlarmVolume();
                 call.resolve(status());
                 return;
             }
@@ -382,7 +391,12 @@ public class PulseOpsAlarmPlugin extends Plugin {
             int now = am.getStreamVolume(AudioManager.STREAM_ALARM);
             int want = (int) Math.ceil(max * MIN_ALARM_SHARE);
             if (now >= want) return;
-            volumeBefore = now;
+            // Keep the ORIGINAL setting, once. A re-raise mid-alarm - the
+            // repeat above, after a thumb on volume-down - must not overwrite
+            // what the owner actually had it on, or stop() "restores" the
+            // alarm stream to mid-alarm quiet and every alert after this one
+            // starts from there.
+            if (volumeBefore < 0) volumeBefore = now;
             am.setStreamVolume(AudioManager.STREAM_ALARM, want, 0);
         } catch (Exception ignored) {
             // Do Not Disturb can refuse this without the app holding policy
@@ -477,6 +491,19 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 return;
             }
             ensureChannel();
+            // The channel's sound plays on the alarm stream at whatever the
+            // slider happens to sit at - and this is exactly the path a phone
+            // woken from a pocket takes, so it gets the same floor the full
+            // alarm gets. Put back after the sound has had time to play,
+            // unless the full alarm has started underneath in the meantime -
+            // its own stop() owns the restore then.
+            raiseAlarmVolume();
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    if (player == null || !player.isPlaying()) restoreAlarmVolume();
+                } catch (Exception ignored) {
+                }
+            }, 20000);
             Intent open = getContext().getPackageManager()
                 .getLaunchIntentForPackage(getContext().getPackageName());
             PendingIntent tap = open == null ? null : PendingIntent.getActivity(

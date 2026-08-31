@@ -506,7 +506,13 @@ patch", that document is the target — do not start a fresh exploration.
   ask for that line before diagnosing "no tone". The alarm volume and audio
   focus are the two the plugin does handle: it raises the alarm stream to 70%
   for the length of an alert and puts it back, and takes transient focus so
-  navigation ducks.
+  navigation ducks. Three details of that floor, each a report once: `notify()`
+  raises it too — the channel sound is the path a phone woken from a pocket
+  takes, and it used to play at wherever the slider sat; the repeating
+  `alert()` no-op re-asserts it, or volume-down mid-alarm made the tone "go
+  quiet by itself" (acknowledging is how an alert goes quiet); and
+  `volumeBefore` records the owner's setting only once, or a mid-alarm
+  re-raise "restored" the stream to mid-alarm quiet for every alert after.
 - **The stand-down speaks; the repeat must not.** `speakStandDown` opens with
   `speechSynthesis.cancel()` — it has to, or a second stand-down queues behind
   the first. That is right when it is called once and wrong on a loop: a repeat
