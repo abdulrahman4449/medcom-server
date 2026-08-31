@@ -66,8 +66,17 @@ export function responseCompliance(requests, from, to) {
   const noTime = (requests || []).filter(
     (r) => isInternalEmergency(r) && r.createdAt >= from && r.createdAt < to && responseMsFor(r) === null
   );
-  const calledOff = noTime.filter((r) => callWasCancelled(r)).length;
-  const pending = noTime.length - calledOff;
+  // "Still open" must mean literally open on the board. A CLOSED call with no
+  // arrival time will never get one, whatever the reason it closed for — a
+  // refusal never reaches a destination, a timeline the desk closed unfinished
+  // has no stamp to read, and a call closed before the close-reason box existed
+  // carries no reason for the cancellation test to match. Every one of those
+  // used to read "still open" for ever, which dressed a pile of unmeasurable
+  // history up as a backlog of live emergencies.
+  const running = noTime.filter((r) => r.status !== "completed").length;
+  const closed = noTime.filter((r) => r.status === "completed");
+  const calledOff = closed.filter((r) => callWasCancelled(r)).length;
+  const closedNoTime = closed.length - calledOff;
   const pct = measured.length ? (within.length / measured.length) * 100 : null;
   const avg = measured.length
     ? measured.reduce((sum, r) => sum + responseMsFor(r), 0) / measured.length
@@ -77,8 +86,11 @@ export function responseCompliance(requests, from, to) {
     avg,
     total: measured.length,
     within: within.length,
+    running,
     calledOff,
-    pending,
+    closedNoTime,
+    // Everything excluded from the figure, as one number for one sentence.
+    notCounted: calledOff + closedNoTime,
     // Kept for anything still reading the old name.
     unmeasured: noTime.length,
   };

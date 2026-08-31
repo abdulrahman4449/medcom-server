@@ -1,4 +1,5 @@
 import { gregDateStr } from "../lib/dates.jsx";
+import { opDayStart } from "./op-day.jsx";
 import { shiftMeta, shiftWindowAt } from "./shift-helpers.jsx";
 import { SHIFT_MS } from "./shifts.jsx";
 
@@ -9,10 +10,22 @@ import { SHIFT_MS } from "./shifts.jsx";
 // arithmetic is where an off-by-one quietly retitles a report.
 export const STAT_RANGES = [
   { key: "shift", label: "This shift" },
+  { key: "week", label: "This week" },
   { key: "month", label: "This month" },
   { key: "quarter", label: "This quarter" },
   { key: "year", label: "This year" },
 ];
+
+// The operational week: Sunday 07:00 to the next Sunday 07:00. Anchored on the
+// same boundary as the operational day — before 07:00 the board is still
+// inside yesterday, so the small hours of Sunday morning belong to the week
+// that is ending, not the one about to start. Sunday because that is when the
+// department's week starts; the working days run Sunday to Thursday.
+export function statWeekStart(ts) {
+  const d = new Date(opDayStart(ts));
+  d.setDate(d.getDate() - d.getDay());
+  return d.getTime();
+}
 
 // A period, and what to call it.
 //
@@ -47,12 +60,40 @@ export function statRangeWindow(key, now) {
   const arg = statRangeArg(key);
   const d = new Date(now);
   if (base === "shift") {
-    const w = shiftWindowAt(now);
+    // "shift:1725000000000" — the window's own start, so a chosen shift stays
+    // chosen however the clock moves. A minute inside the window resolves it
+    // back through `shiftWindowAt`, the one place that knows where a shift's
+    // edges are.
+    const w = shiftWindowAt(arg ? Number(arg) + 60000 : now);
+    const current = w.start === shiftWindowAt(now).start;
+    const meta = shiftMeta(w.key);
     return {
       start: w.start,
       end: w.start + SHIFT_MS,
-      label: "this shift",
-      title: `${shiftMeta(w.key) ? shiftMeta(w.key).label : "Shift"} — ${gregDateStr(w.start)}`,
+      label: current
+        ? "this shift"
+        : `the ${meta ? meta.short.toLowerCase() : ""} shift of ${gregDateStr(w.start)}`,
+      title: `${meta ? meta.label : "Shift"} — ${gregDateStr(w.start)}`,
+    };
+  }
+  if (base === "week") {
+    // "week:2026-7-30" — year, month INDEX and day of the Sunday the week
+    // opened on, month index for the same reason as the month range. Resolved
+    // through `opDayStart` so the 07:00 boundary has exactly one definition.
+    const [wy, wm, wd] = arg.split("-").map(Number);
+    const start = arg
+      ? opDayStart(new Date(wy, wm, wd, 12, 0, 0, 0).getTime())
+      : statWeekStart(now);
+    const endD = new Date(start);
+    endD.setDate(endD.getDate() + 7);
+    const lastD = new Date(start);
+    lastD.setDate(lastD.getDate() + 6);
+    const current = start === statWeekStart(now);
+    return {
+      start,
+      end: endD.getTime(),
+      label: current ? "this week" : `the week of ${gregDateStr(start)}`,
+      title: `Week ${gregDateStr(start)} – ${gregDateStr(lastD.getTime())}`,
     };
   }
   if (base === "month") {
@@ -102,6 +143,38 @@ export function statPeriodOptions(key, now) {
   const base = statRangeBase(key);
   const d = new Date(now);
   const out = [];
+  if (base === "shift") {
+    // The last fortnight of shifts — twenty-eight of them, this one first.
+    // Stepping to the millisecond before a window's start lands inside the
+    // shift before it, so the walk backwards needs no idea of its own about
+    // where a day or a night begins.
+    let w = shiftWindowAt(now);
+    for (let i = 0; i < 28; i++) {
+      const meta = shiftMeta(w.key);
+      out.push({
+        key: `shift:${w.start}`,
+        label: `${meta ? meta.label : "SHIFT"} — ${gregDateStr(w.start)}` + (i === 0 ? " (this shift)" : ""),
+      });
+      w = shiftWindowAt(w.start - 1);
+    }
+    return out;
+  }
+  if (base === "week") {
+    // Half a year of weeks, each named by both ends — a week is the one period
+    // whose name alone ("week 35") nobody can place on a calendar.
+    const first = statWeekStart(now);
+    for (let i = 0; i < 26; i++) {
+      const s = new Date(first);
+      s.setDate(s.getDate() - i * 7);
+      const last = new Date(s);
+      last.setDate(last.getDate() + 6);
+      out.push({
+        key: `week:${s.getFullYear()}-${s.getMonth()}-${s.getDate()}`,
+        label: `${gregDateStr(s.getTime())} – ${gregDateStr(last.getTime())}` + (i === 0 ? " (this week)" : ""),
+      });
+    }
+    return out;
+  }
   if (base === "month") {
     for (let i = 0; i < 24; i++) {
       const m = new Date(d.getFullYear(), d.getMonth() - i, 1);

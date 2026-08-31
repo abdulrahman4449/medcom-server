@@ -162,7 +162,14 @@ patch", that document is the target — do not start a fresh exploration.
   profile. There is deliberately no sampled load log: a stored one would grow,
   need pruning and restoring, and add nothing the call intervals don't hold.
   Rush wears amber (`--hold`), never red — red is a critical call and NO
-  COVERAGE.
+  COVERAGE. **The number on a peak bar is CALLS, never fractional trucks** —
+  "0.2 ambulance" meant nothing to the person the chart is for, so the peak
+  prints `raised` and the caption says "N of M calls landed in this hour"; the
+  bars stay weighed by busy time. A peak can hold zero raised calls (a long
+  call merely ran through it), so the label and the caption's count are both
+  guarded — a "0" on the busiest bar reads as a broken chart. Trucks-out and
+  waiting-now belong to the LIVE meter on the board; the history cannot say
+  them, because nothing about rush is stored.
 - **The category mix lists every category, including the ones at nought.**
   `categoryMixRows` seeds from `CALL_CATEGORIES` and then counts. Built from the
   calls alone, a category nothing came in against was absent from the panel —
@@ -170,17 +177,30 @@ patch", that document is the target — do not start a fresh exploration.
   was NOT called for is half of what somebody opens that panel to find out.
   Anything the board holds that the vocabulary does not, "Not stated" included,
   is kept alongside: the sheet's list is the starting point, never the limit.
-- **A call called off is an exclusion from the response figure, not a backlog.**
-  `responseCompliance` returns `calledOff` and `pending` apart. They used to be
-  one number under "not yet measurable — still running, or closed without
-  arriving", and on a real month that read 52 against 34 measured: a department
-  apparently sitting on fifty-two open emergencies, when almost every one was a
-  call the desk stood down before the crew reached anybody. There is no response
-  time on those and there never will be, so the gauge names them as excluded.
-  The average response belongs on the gauge's face beside the percentage — a
-  percentage says how often ten minutes was made, the average says what a
-  patient actually waits.
-- **A call called off before the crew reached the patient needs no restock.**
+- **"Still running" on the response gauge means literally open on the board.**
+  `responseCompliance` — a CLOSED call with no arrival time will never get one,
+  whatever it closed for: a cancellation, a refusal (no destination was ever
+  reached), a timeline the desk closed unfinished, or a call closed before the
+  close-reason box existed and so carrying no reason for `callWasCancelled` to
+  match. Every one is an exclusion, folded into `notCounted` and said as
+  "closed without a response time, not counted"; `running` (status not yet
+  `completed`) is the only part anybody has to act on. Before the second split,
+  ten closed-for-weeks calls read as ten open emergencies — the same
+  dressing-history-as-backlog bug the calledOff/pending split had already fixed
+  once at 52-against-34. The average response belongs on the gauge's face
+  beside the percentage — a percentage says how often ten minutes was made, the
+  average says what a patient actually waits.
+- **The statistics period is one string, and every size can look backwards.**
+  `stat-range.jsx` — five sizes: shift, week, month, quarter, year, all on the
+  KPI band, and `StatPeriodPicker` chooses WHICH one of whatever size ("the
+  month — May"). The chosen period is written INTO the range key
+  (`month:2026-4`, `week:2026-7-23`, `shift:1725...` — a shift is pinned by its
+  window's own start), never held as second state beside it. The operational
+  week is Sunday 07:00 to the next Sunday 07:00, through `opDayStart` so the
+  07:00 boundary keeps its one definition — the small hours of Sunday belong to
+  the week that is ending — and a past shift or week is named by the date it
+  OPENED, like everything else on this board. The picker never offers a period
+  that has not happened.
   `restockNotNeeded`. Both halves are needed: a call stood down at the bedside
   may well have cost gloves and a blanket, and a call with no scene stamp is an
   unfinished timeline rather than a cancellation. So it comes off the list only

@@ -115,8 +115,8 @@ export function FiledNote({ filed }) {
 // which is how somebody asks the question out loud: "the month — May".
 export function StatPeriodPicker({ range, setRange, now }) {
   const base = statRangeBase(range);
-  if (base === "shift") return null;
   const options = statPeriodOptions(range, now);
+  if (!options.length) return null;
   const win = statRangeWindow(range, now);
   // The key as it will match an option: a bare "month" is this month.
   const current = options.find((o) => o.key === range)
@@ -1073,8 +1073,8 @@ crew reaches the destination. The department's standard is ten minutes.</p>
   <tr><td>Within ten minutes</td><td class="n">${resp.within}</td></tr>
   <tr><td>Compliance</td><td class="n">${resp.pct === null ? "—" : resp.pct.toFixed(1) + "%"}</td></tr>
   <tr><td>Average response</td><td class="n">${resp.avg === null ? "—" : msDurationStr(resp.avg)}</td></tr>
-  ${resp.pending ? `<tr><td>Still running or closed without arriving</td><td class="n">${resp.pending}</td></tr>` : ""}
-  ${resp.calledOff ? `<tr><td>Called off before the crew arrived — not counted</td><td class="n">${resp.calledOff}</td></tr>` : ""}
+  ${resp.running ? `<tr><td>Still running</td><td class="n">${resp.running}</td></tr>` : ""}
+  ${resp.notCounted ? `<tr><td>Closed without a response time — called off, refused, or timeline unfinished; not counted</td><td class="n">${resp.notCounted}</td></tr>` : ""}
 </table>
 
 </div>
@@ -1195,22 +1195,31 @@ export function categoryMixRows(requests, from, to) {
 // reads a day everywhere else.
 //
 // One hue, because this is one measure; the peak hours wear the board's busy
-// amber, which already means exactly that. The value is written on the peaks
-// alone — a number on all twenty-four bars is a table pretending to be a chart.
+// amber, which already means exactly that. The value written on the peaks is
+// the NUMBER OF CALLS that landed in that hour over the period — the bars are
+// still weighed by how long calls held trucks, but "0.2 ambulance" meant
+// nothing to anybody, and "34 calls" is a number a reader has instantly. A
+// number on all twenty-four bars would be a table pretending to be a chart.
 // The sentence under the chart — guarded, because a period whose calls carry
-// no usable times has a total but no peak, and a caption that assumes one is a
-// blank screen waiting to happen (`REQ_STATUS[status].color` taught that
-// lesson already).
+// no usable times has a total but no peak, and a peak hour can hold zero
+// RAISED calls when a long call merely ran through it, and a caption that
+// assumes otherwise is a blank screen waiting to happen
+// (`REQ_STATUS[status].color` taught that lesson already).
 function RushFoot({ p }) {
-  const peak = p.peaks.length ? p.rows.find((r) => r.hour === p.peaks[0]) : null;
+  const peakCalls = p.peaks.reduce((sum, h) => {
+    const row = p.rows.find((r) => r.hour === h);
+    return sum + (row ? row.raised : 0);
+  }, 0);
   return (
     <div style={styles.formHint}>
-      {peak
-        ? `Busiest ${rushHourRanges(p.peaks)} — on an ordinary day, ` +
-          `${peak.avg.toFixed(1)} ambulance${peak.avg >= 1.95 ? "s are" : " is"} tied up through the peak. `
+      {p.peaks.length
+        ? peakCalls > 0
+          ? `Busiest ${rushHourRanges(p.peaks)} — ${peakCalls} of ${p.total} call${p.total === 1 ? "" : "s"} ` +
+            `landed in ${p.peaks.length === 1 ? "this hour" : "these hours"}. `
+          : `Busiest ${rushHourRanges(p.peaks)}. `
         : ""}
-      Average ambulances on calls per hour of day, over {p.total} call
-      {p.total === 1 ? "" : "s"}; the seam after 19 is where the day shift hands to the night.
+      Bars weigh how long calls held trucks in each hour of the day; the seam
+      after 19 is where the day shift hands to the night.
     </div>
   );
 }
@@ -1236,9 +1245,13 @@ export function RushHours({ requests, from, to }) {
                 <div
                   key={r.hour}
                   style={styles.rushBarWrap}
-                  title={`${r.label}–${rushHourLabel((r.hour + 1) % 24)} — average ${r.avg.toFixed(1)} on calls · ${r.raised} raised`}
+                  title={`${r.label}–${rushHourLabel((r.hour + 1) % 24)} — ${r.raised} call${r.raised === 1 ? "" : "s"} · about ${Math.round(r.avg * 60)} min of truck time on an ordinary day`}
                 >
-                  {peak && <div style={styles.rushPeakVal}>{r.avg.toFixed(1)}</div>}
+                  {/* A peak hour can hold zero RAISED calls — a long call
+                      merely ran through it — and "0" on the busiest bar reads
+                      as a broken chart, so the count only prints when there is
+                      one. The tooltip still tells the whole story. */}
+                  {peak && r.raised > 0 && <div style={styles.rushPeakVal}>{r.raised}</div>}
                   <div style={{ ...(peak ? styles.rushBarPeak : styles.rushBar), height: h }} />
                 </div>
               );
@@ -1367,17 +1380,17 @@ export function pcrCompliance(requests, from, to) {
 
 // What the response figure could not measure, and why.
 //
-// One number under "not yet measurable — still running, or closed without
-// arriving" read as a backlog of open emergencies: fifty-two of them against
-// thirty-four measured. Almost every one was a call the desk stood down before
-// the crew reached anybody. Those are an exclusion, not an outstanding job, and
-// they are named as one; a call genuinely still running is the only part of
-// that number anybody has to act on.
+// "Still open" means literally open on the board — the only part of this
+// number anybody has to act on. Every CLOSED call with no response time is one
+// exclusion, whatever it closed for: called off, refused, timeline unfinished,
+// or closed before the reason box existed. Said as ten separate "still open"
+// calls it read as a backlog of live emergencies, and most of them had been
+// closed for weeks.
 export function responseNote(resp) {
   if (!resp) return null;
   const bits = [];
-  if (resp.pending > 0) bits.push(`${resp.pending} still open`);
-  if (resp.calledOff > 0) bits.push(`${resp.calledOff} called off before arrival, not counted`);
+  if (resp.running > 0) bits.push(`${resp.running} still running`);
+  if (resp.notCounted > 0) bits.push(`${resp.notCounted} closed without a response time, not counted`);
   return bits.length ? bits.join(" · ") : null;
 }
 
@@ -1412,7 +1425,9 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
       <div style={styles.bandHead}>
         <span style={styles.bandTitle}>PERFORMANCE</span>
         <div style={styles.bandPeriods}>
-          {STAT_RANGES.filter((r) => r.key !== "shift").map((r) => (
+          {/* All five sizes, shift included — the KPIs are read per shift as
+              much as per month, and the picker below chooses WHICH one. */}
+          {STAT_RANGES.map((r) => (
             <button
               key={r.key}
               style={r.key === statRangeBase(range) ? styles.bandPeriodOn : styles.bandPeriod}
@@ -1683,10 +1698,11 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
           ["Within 10 minutes", resp.within],
           ["Compliance %", resp.pct === null ? "—" : Number(resp.pct.toFixed(1))],
           ["Average response", resp.avg === null ? "—" : msDurationStr(resp.avg)],
-          ["Still running or closed without arriving", resp.pending],
-          // Not a measurement the department owes: the call was stood down
-          // before anybody was reached, so there is no response time to have.
-          ["Called off before the crew arrived — not counted", resp.calledOff],
+          ["Still running", resp.running],
+          // Not a measurement the department owes: the call closed without a
+          // response time — called off, refused, or the timeline was never
+          // finished — so there is no response time to have, and never will be.
+          ["Closed without a response time — not counted", resp.notCounted],
         ]),
         1
       ),

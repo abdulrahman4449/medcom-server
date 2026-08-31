@@ -566,9 +566,31 @@ export function run(D, t) {
     t.is("stats: a chosen year is the whole year", lastYear.start, at(2025, 1, 1, 0));
     t.is("stats: and stops at the next one", lastYear.end, at(2026, 1, 1, 0));
 
-    // A shift ignores any period appended to it: there is only one shift being
-    // worked, and it is the one running now.
-    t.is("stats: a shift is still the shift", D.statRangeWindow("shift", now).label, "this shift");
+    // A bare shift is the one running now; a chosen one is pinned by its own
+    // start, and a night shift is named by the date it OPENED.
+    t.is("stats: a bare shift is the shift running now", D.statRangeWindow("shift", now).label, "this shift");
+    t.is("stats: at 16:00 that is the day shift from 07:00",
+      D.statRangeWindow("shift", now).start, at(2026, 8, 27, 7));
+    const lastNight = D.statRangeWindow(`shift:${at(2026, 8, 26, 19)}`, now);
+    t.is("stats: a chosen shift starts where its window does", lastNight.start, at(2026, 8, 26, 19));
+    t.is("stats: and is twelve hours long", lastNight.end, at(2026, 8, 27, 7));
+    t.ok("stats: a past night shift is named by the date it opened",
+      /night shift of 26 Aug 2026/.test(lastNight.label));
+
+    // The operational week: Sunday 07:00 to the next Sunday 07:00. 27 August
+    // 2026 is a Thursday, so its week opened on Sunday the 23rd.
+    const thisWeek = D.statRangeWindow("week", now);
+    t.is("stats: this week opened on Sunday at 07:00", thisWeek.start, at(2026, 8, 23, 7));
+    t.is("stats: and runs to the next Sunday at 07:00", thisWeek.end, at(2026, 8, 30, 7));
+    t.is("stats: and reads as 'this week' on screen", thisWeek.label, "this week");
+    // 03:00 on Sunday morning is still inside the night that Saturday's day
+    // opened — the week boundary is the operational day's, not midnight's.
+    t.is("stats: the small hours of Sunday belong to the week that is ending",
+      D.statRangeWindow("week", at(2026, 8, 30, 3)).start, at(2026, 8, 23, 7));
+    const chosenWeek = D.statRangeWindow("week:2026-7-16", now);
+    t.is("stats: a chosen week opens on its own Sunday", chosenWeek.start, at(2026, 8, 16, 7));
+    t.is("stats: and closes a week later", chosenWeek.end, at(2026, 8, 23, 7));
+    t.ok("stats: and is named by the day it opened", /week of 16 Aug 2026/.test(chosenWeek.label));
 
     // The picker never offers a period that has not happened.
     const months = D.statPeriodOptions("month", now);
@@ -589,9 +611,24 @@ export function run(D, t) {
     t.ok("stats: never a year ahead",
       years.every((o) => D.statRangeWindow(o.key, now).start <= now));
 
+    const weeks = D.statPeriodOptions("week", now);
+    t.is("stats: the week picker opens on this week", weeks[0].key, "week:2026-7-23");
+    t.is("stats: and offers half a year back", weeks.length, 26);
+    t.ok("stats: each option steps back exactly a week",
+      weeks.every((o, i) => D.statRangeWindow(o.key, now).start === thisWeek.start - i * 7 * 86400000));
+
+    const shifts = D.statPeriodOptions("shift", now);
+    t.is("stats: the shift picker opens on the shift running now",
+      shifts[0].key, `shift:${at(2026, 8, 27, 7)}`);
+    t.is("stats: the one before it is the night that opened yesterday",
+      shifts[1].key, `shift:${at(2026, 8, 26, 19)}`);
+    t.ok("stats: and the night is labelled with the date it opened",
+      /NIGHT SHIFT — 26 Aug 2026/.test(shifts[1].label));
+    t.is("stats: a fortnight of shifts is offered", shifts.length, 28);
+
     // Every option the picker offers has to survive being read back.
     t.ok("stats: every offered period parses to its own title",
-      [...months, ...quarters, ...years].every((o) => {
+      [...months, ...quarters, ...years, ...weeks, ...shifts].every((o) => {
         const w = D.statRangeWindow(o.key, now);
         return w.end > w.start && !!w.title;
       }));
@@ -1025,7 +1062,16 @@ export function run(D, t) {
       em("c", at(2026, 8, 5, 9), at(2026, 8, 5, 9, 16)),       // 16 min — outside
       em("d", at(2026, 8, 6, 9), null, "Cancelled before the team arrived"),
       em("e", at(2026, 8, 7, 9), null, "Team stood down en route"),
-      em("f", at(2026, 8, 8, 9), null),                        // genuinely open
+      // Genuinely open on the board — the only one anybody has to act on.
+      { id: "f", callCategory: "EMERGENCY (INTERNAL)", status: "enroute",
+        createdAt: at(2026, 8, 8, 9), times: {} },
+      // Closed with no arrival time and no cancellation on it: a refusal, a
+      // timeline the desk closed unfinished, or a call closed before the
+      // close-reason box existed. No response time will ever exist, so it is
+      // an exclusion — never "still open".
+      em("g", at(2026, 8, 9, 9), null, "Patient refused transport"),
+      { id: "h", callCategory: "EMERGENCY (INTERNAL)", status: "completed",
+        createdAt: at(2026, 8, 10, 9), times: {} },
     ];
     const r = D.responseCompliance(rows, win[0], win[1]);
     t.is("response: only calls that arrived are measured", r.total, 3);
@@ -1034,7 +1080,11 @@ export function run(D, t) {
     // 6 + 8 + 16 = 30 minutes over three calls.
     t.is("response: and the average is ten minutes", Math.round(r.avg / 60000), 10);
     t.is("response: a stood-down call is counted apart, not as a backlog", r.calledOff, 2);
-    t.is("response: only the genuinely open one is still outstanding", r.pending, 1);
+    t.is("response: still running means literally open on the board", r.running, 1);
+    t.is("response: a closed call with no time is an exclusion, whatever it closed for",
+      r.closedNoTime, 2);
+    t.is("response: the not-counted line folds every closed no-time call together",
+      r.notCounted, 4);
     // A cancelled call must never move the figure itself.
     const without = D.responseCompliance(rows.filter((x) => !["d", "e"].includes(x.id)), win[0], win[1]);
     t.is("response: excluding the stood-down calls changes nothing", Math.round(without.pct), Math.round(r.pct));
