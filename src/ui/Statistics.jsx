@@ -9,7 +9,7 @@ import { medicCrewIndex, stayWindow } from "../domain/crew-stamps.jsx";
 import { escalatedCalls, escalationIsOpen } from "../domain/escalations.jsx";
 import { isStaffed } from "../domain/in-service.jsx";
 import { STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
-import { clockStr, durationStr, msDurationStr } from "../domain/messages.jsx";
+import { clockStr, durationStr, msDurationStr, shortDurationStr } from "../domain/messages.jsx";
 import { opDayKey, opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
 import { requestOutcomeKey, requestOutcomeLabel } from "../domain/second-ambulance.jsx";
@@ -846,7 +846,7 @@ export function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units
 // service running at 85% has no capacity left for the call it has not had yet.
 // Painted by the same rule as the others it read bright green at 85% and red at
 // 20%, which is precisely backwards on the one dial that warns about workload.
-export function Gauge({ label, pct, caption, good = 90, unmeasured, lowerIsBetter }) {
+export function Gauge({ label, pct, caption, good = 90, note, lowerIsBetter }) {
   const size = 132;
   const stroke = 11;
   const r = (size - stroke) / 2 - 2;
@@ -914,11 +914,7 @@ export function Gauge({ label, pct, caption, good = 90, unmeasured, lowerIsBette
         </div>
       </div>
       {caption && <div style={styles.gaugeCaption}>{caption}</div>}
-      {unmeasured > 0 && (
-        <div style={styles.gaugeNote}>
-          {unmeasured} not yet measurable — still running, or closed without arriving
-        </div>
-      )}
+      {note && <div style={styles.gaugeNote}>{note}</div>}
     </div>
   );
 }
@@ -1076,7 +1072,8 @@ crew reaches the destination. The department's standard is ten minutes.</p>
   <tr><td>Within ten minutes</td><td class="n">${resp.within}</td></tr>
   <tr><td>Compliance</td><td class="n">${resp.pct === null ? "—" : resp.pct.toFixed(1) + "%"}</td></tr>
   <tr><td>Average response</td><td class="n">${resp.avg === null ? "—" : msDurationStr(resp.avg)}</td></tr>
-  ${resp.unmeasured ? `<tr><td>Not yet measurable</td><td class="n">${resp.unmeasured}</td></tr>` : ""}
+  ${resp.pending ? `<tr><td>Still running or closed without arriving</td><td class="n">${resp.pending}</td></tr>` : ""}
+  ${resp.calledOff ? `<tr><td>Called off before the crew arrived — not counted</td><td class="n">${resp.calledOff}</td></tr>` : ""}
 </table>
 
 </div>
@@ -1262,6 +1259,22 @@ export function pcrCompliance(requests, from, to) {
   };
 }
 
+// What the response figure could not measure, and why.
+//
+// One number under "not yet measurable — still running, or closed without
+// arriving" read as a backlog of open emergencies: fifty-two of them against
+// thirty-four measured. Almost every one was a call the desk stood down before
+// the crew reached anybody. Those are an exclusion, not an outstanding job, and
+// they are named as one; a call genuinely still running is the only part of
+// that number anybody has to act on.
+export function responseNote(resp) {
+  if (!resp) return null;
+  const bits = [];
+  if (resp.pending > 0) bits.push(`${resp.pending} still open`);
+  if (resp.calledOff > 0) bits.push(`${resp.calledOff} called off before arrival, not counted`);
+  return bits.length ? bits.join(" · ") : null;
+}
+
 export function IndicatorBand({ requests: liveRequests, units, log: liveLog, checklistRuns, submissions, archives, range, setRange }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
@@ -1320,10 +1333,18 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
           label="Emergency response"
           pct={resp.pct}
           good={RESPONSE_GOOD}
+          // The average belongs on the face of this one. A percentage says how
+          // often the department made ten minutes; the average says what a
+          // patient actually waits, and it is the figure people ask for.
           caption={
-            resp.total ? `${resp.within} of ${resp.total} within 10 min` : "none yet this period"
+            resp.total
+              ? `${resp.within} of ${resp.total} within 10 min · average ${shortDurationStr(resp.avg)}`
+              : "none yet this period"
           }
-          unmeasured={resp.unmeasured}
+          // A stood-down call has no response time and never will have one; it
+          // is not a measurement the department still owes. Said as an
+          // exclusion, not as a backlog — see `responseCompliance`.
+          note={responseNote(resp)}
         />
         <Gauge
           label="Department UHU"
@@ -1554,7 +1575,10 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
           ["Within 10 minutes", resp.within],
           ["Compliance %", resp.pct === null ? "—" : Number(resp.pct.toFixed(1))],
           ["Average response", resp.avg === null ? "—" : msDurationStr(resp.avg)],
-          ["Not yet measurable", resp.unmeasured],
+          ["Still running or closed without arriving", resp.pending],
+          // Not a measurement the department owes: the call was stood down
+          // before anybody was reached, so there is no response time to have.
+          ["Called off before the crew arrived — not counted", resp.calledOff],
         ]),
         1
       ),

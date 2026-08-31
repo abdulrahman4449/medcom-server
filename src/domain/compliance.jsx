@@ -1,3 +1,4 @@
+import { callWasCancelled } from "./close-reasons.jsx";
 
 // ---------- emergency response compliance ----------
 //
@@ -50,15 +51,35 @@ export function responseCompliance(requests, from, to) {
       responseMsFor(r) !== null
   );
   const within = measured.filter((r) => responseMsFor(r) <= RESPONSE_TARGET_MS);
-  // Calls still running, or closed without ever arriving, are counted as
-  // outstanding rather than quietly dropped — a figure that ignores the calls
-  // it could not measure is not a compliance figure.
-  const unmeasured = (requests || []).filter(
+  // Calls with no response time on them, split by WHY they have none.
+  //
+  // They used to be one number under one sentence — "not yet measurable, still
+  // running or closed without arriving" — and on a real month that number was
+  // fifty-two against thirty-four measured, which reads as a department with a
+  // huge backlog of open emergencies. It is not. Almost all of them are calls
+  // the desk stood down before the crew reached anybody: there is no response
+  // time, there never will be one, and nothing is outstanding.
+  //
+  // A call called off is not a call waiting, so the two are counted apart. A
+  // stood-down call is excluded from the figure with no apology; one still
+  // running is genuinely not measured YET and is the only one worth a line.
+  const noTime = (requests || []).filter(
     (r) => isInternalEmergency(r) && r.createdAt >= from && r.createdAt < to && responseMsFor(r) === null
-  ).length;
+  );
+  const calledOff = noTime.filter((r) => callWasCancelled(r)).length;
+  const pending = noTime.length - calledOff;
   const pct = measured.length ? (within.length / measured.length) * 100 : null;
   const avg = measured.length
     ? measured.reduce((sum, r) => sum + responseMsFor(r), 0) / measured.length
     : null;
-  return { pct, avg, total: measured.length, within: within.length, unmeasured };
+  return {
+    pct,
+    avg,
+    total: measured.length,
+    within: within.length,
+    calledOff,
+    pending,
+    // Kept for anything still reading the old name.
+    unmeasured: noTime.length,
+  };
 }

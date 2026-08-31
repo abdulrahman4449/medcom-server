@@ -1004,6 +1004,46 @@ export function run(D, t) {
       D.isNightCall({ createdAt: 0 }), D.isNightCall({}));
   }
 
+  // ---------- a call called off has no response time, and is not a backlog
+  //
+  // The two were one number under one sentence — "not yet measurable, still
+  // running or closed without arriving" — and on a real month that read 52
+  // against 34 measured, which looks like a department sitting on fifty-two
+  // open emergencies. Almost every one was a call the desk stood down before
+  // the crew reached anybody: there is no response time, there never will be
+  // one, and nothing is outstanding.
+  {
+    const win = [at(2026, 8, 1, 0), at(2026, 9, 1, 0)];
+    const em = (id, raised, arrived, closeReason) => ({
+      id, callCategory: "EMERGENCY (INTERNAL)", status: "completed", createdAt: raised,
+      closeReason: closeReason || "Call completed — patient delivered",
+      times: arrived ? { arrivalDestination: arrived } : {},
+    });
+    const rows = [
+      em("a", at(2026, 8, 3, 9), at(2026, 8, 3, 9, 6)),        // 6 min — inside
+      em("b", at(2026, 8, 4, 9), at(2026, 8, 4, 9, 8)),        // 8 min — inside
+      em("c", at(2026, 8, 5, 9), at(2026, 8, 5, 9, 16)),       // 16 min — outside
+      em("d", at(2026, 8, 6, 9), null, "Cancelled before the team arrived"),
+      em("e", at(2026, 8, 7, 9), null, "Team stood down en route"),
+      em("f", at(2026, 8, 8, 9), null),                        // genuinely open
+    ];
+    const r = D.responseCompliance(rows, win[0], win[1]);
+    t.is("response: only calls that arrived are measured", r.total, 3);
+    t.is("response: two of the three made ten minutes", r.within, 2);
+    t.is("response: so compliance is 67%", Math.round(r.pct), 67);
+    // 6 + 8 + 16 = 30 minutes over three calls.
+    t.is("response: and the average is ten minutes", Math.round(r.avg / 60000), 10);
+    t.is("response: a stood-down call is counted apart, not as a backlog", r.calledOff, 2);
+    t.is("response: only the genuinely open one is still outstanding", r.pending, 1);
+    // A cancelled call must never move the figure itself.
+    const without = D.responseCompliance(rows.filter((x) => !["d", "e"].includes(x.id)), win[0], win[1]);
+    t.is("response: excluding the stood-down calls changes nothing", Math.round(without.pct), Math.round(r.pct));
+    t.is("response: nor the average", Math.round(without.avg), Math.round(r.avg));
+    // Nothing at all is not 0% compliance, it is no measurement.
+    t.is("response: a period with no emergencies has no percentage",
+      D.responseCompliance([], win[0], win[1]).pct, null);
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

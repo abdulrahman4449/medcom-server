@@ -150,6 +150,16 @@ patch", that document is the target — do not start a fresh exploration.
   Cancelling the arrangement also cancels the copy it has already thrown off for
   today, unless that copy has already been released — a released one is a live
   call and is cancelled from the board, where the crew can be told.
+- **A call called off is an exclusion from the response figure, not a backlog.**
+  `responseCompliance` returns `calledOff` and `pending` apart. They used to be
+  one number under "not yet measurable — still running, or closed without
+  arriving", and on a real month that read 52 against 34 measured: a department
+  apparently sitting on fifty-two open emergencies, when almost every one was a
+  call the desk stood down before the crew reached anybody. There is no response
+  time on those and there never will be, so the gauge names them as excluded.
+  The average response belongs on the gauge's face beside the percentage — a
+  percentage says how often ten minutes was made, the average says what a
+  patient actually waits.
 - **A call called off before the crew reached the patient needs no restock.**
   `restockNotNeeded`. Both halves are needed: a call stood down at the bedside
   may well have cost gloves and a blanket, and a call with no scene stamp is an

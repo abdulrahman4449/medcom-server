@@ -24,6 +24,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/uhu.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/checklist.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/restock.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/close-reasons.jsx")};
+export { responseCompliance, responseMsFor, isInternalEmergency, RESPONSE_TARGET_MS } from ${JSON.stringify(ROOT + "src/domain/compliance.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/return-journeys.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/messages.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/uhu-person.jsx")};
