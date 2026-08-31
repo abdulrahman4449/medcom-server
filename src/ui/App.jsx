@@ -30,6 +30,7 @@ import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Radio } from "../lib/icons.jsx";
 import { alertsSupported, notifyBookingReleased, registerAlertWorker, requestAlertPermission, requestNativeNotifications } from "../lib/notify.jsx";
 import { connectionListeners, connectionOk, lastWriteError, loadPendingWrites, pushPendingWrites, readKey, readKeyRaw, totalPendingCount, writeInFlight, writeKey, writeList } from "../lib/offline-queue.jsx";
+import { registerPushSeat, unregisterPushSeat } from "../lib/push.jsx";
 import { useCallback, useEffect, useRef, useState } from "../lib/react.jsx";
 import { SESSION_VERSION, clearSession, patchSession, readSession, writeSession } from "../lib/session.jsx";
 import { styles } from "../styles.jsx";
@@ -973,6 +974,17 @@ export function App() {
     // value and opened the form the moment they signed in.
     setNewCallSignal(0);
   }, [user && user.accountId]);
+
+  // The push follows the seat. While a crew member holds a truck, this
+  // phone's token is registered against it, so the server can wake a locked
+  // phone the moment a call lands there. Re-run when the truck changes — a
+  // crew moved mid-shift must be woken for the truck they are ON. A build
+  // with no push plugin returns quietly and the poll stays the whole story.
+  // Deliberately crew only: the desk and administration are awake screens.
+  useEffect(() => {
+    if (!user || user.role !== "team" || !user.unitId) return;
+    registerPushSeat(user.unitId, user.station);
+  }, [user && user.accountId, user && user.role, user && user.unitId]);
 
   useEffect(() => {
     if (!user) return;
@@ -1929,6 +1941,10 @@ export function App() {
     signingOutRef.current = true;
     try {
       await recordSignOut();
+      // While the auth token is still held: a phone whose crew has gone home
+      // must not go on being woken for that truck all night. Best effort — a
+      // token two months silent is pruned server-side anyway.
+      await unregisterPushSeat();
     } finally {
       signingOutRef.current = false;
     }

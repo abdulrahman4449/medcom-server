@@ -95,6 +95,8 @@ try {
     // Who may put a backup's data back onto the board — the server's rule,
     // held here the way the merge and the delegation list are.
     ...require_(join(ROOT, "lib/restore-guard.cjs")),
+    // When a board write wakes a phone.
+    ...require_(join(ROOT, "lib/push-triggers.cjs")),
     // Namespaced, because the app has a list of the same areas for its screens
     // and the point of the test is that the two agree.
     serverDelegation: require_(join(ROOT, "lib/delegation.cjs")),

@@ -403,10 +403,22 @@ app.post("/api/board", requireAuth, (req, res) => {
   if (!mayWriteKey(req.user, key)) {
     return res.status(403).json({ error: "Only an administrator can change that." });
   }
+  // What the requests held before this write, so the push trigger can see
+  // which trucks were just handed a call. Read only for that one key.
+  let prevRequests = null;
+  if (key === "ems:requests") {
+    try {
+      const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
+      prevRequests = row ? JSON.parse(row.value) : null;
+    } catch (e) {
+      prevRequests = null;
+    }
+  }
   db.prepare(
     `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).run(key, JSON.stringify(value ?? null));
+  if (key === "ems:requests") pushForRequestsWrite(prevRequests, value);
   res.json({ ok: true });
 });
 
@@ -430,6 +442,90 @@ app.post("/api/board", requireAuth, (req, res) => {
 const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
 const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
 
+// ---------- waking a locked phone ----------
+//
+// A locked Android phone freezes the WebView, the poll stops, and no alarm in
+// the app can sound about a call the app never learned of. The server sees
+// every write, so the server sends the wake-up: a HIGH-priority FCM push onto
+// the dispatch channel, which sounds on the alarm stream through silent. Needs
+// FIREBASE_SERVICE_ACCOUNT set (see native/README.md); without it every part
+// of this is a no-op and the board behaves exactly as before.
+const { newAssignments } = require("./lib/push-triggers.cjs");
+const { pushConfigured, sendCallAlert } = require("./lib/push-fcm.cjs");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_tokens (
+    token TEXT PRIMARY KEY,
+    account_id TEXT,
+    unit_id TEXT,
+    station TEXT,
+    platform TEXT,
+    updated_at INTEGER
+  )
+`);
+
+// Which phone is riding which truck. Written by the app at sign-on, so the
+// push follows the SEAT, not the person's history - a phone whose crew moved
+// truck mid-shift re-registers under the new one.
+app.post("/api/push/register", requireAuth, (req, res) => {
+  const { token, unitId, station, platform } = req.body || {};
+  const t = String(token || "").trim();
+  if (!t || t.length > 4096) return res.status(400).json({ error: "A device token is required." });
+  db.prepare(
+    `INSERT INTO push_tokens (token, account_id, unit_id, station, platform, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(token) DO UPDATE SET account_id = excluded.account_id,
+       unit_id = excluded.unit_id, station = excluded.station,
+       platform = excluded.platform, updated_at = excluded.updated_at`
+  ).run(t, req.user.id, String(unitId || ""), String(station || ""), String(platform || ""), Date.now());
+  // A token not renewed in two months belongs to a phone that is gone.
+  db.prepare("DELETE FROM push_tokens WHERE updated_at < ?").run(Date.now() - 60 * 86400000);
+  res.json({ ok: true, pushConfigured: pushConfigured() });
+});
+
+app.post("/api/push/unregister", requireAuth, (req, res) => {
+  db.prepare("DELETE FROM push_tokens WHERE token = ?").run(String((req.body || {}).token || ""));
+  res.json({ ok: true });
+});
+
+// Fired after a requests write commits, never inside it - a push that fails
+// must not be able to fail a board write, and a push that is slow must not
+// hold one up. PRIVACY: the message names no patient and no route; an MRN on
+// a lock screen, relayed through Google, is a disclosure. The details are on
+// the board, behind the sign-in, where they belong.
+function pushForRequestsWrite(prevList, nextList) {
+  if (!pushConfigured()) return;
+  let hits;
+  try {
+    hits = newAssignments(prevList, nextList);
+  } catch (e) {
+    return;
+  }
+  if (!hits.length) return;
+  setImmediate(async () => {
+    for (const hit of hits) {
+      let rows = [];
+      try {
+        rows = db.prepare("SELECT token FROM push_tokens WHERE unit_id = ?").all(hit.unitId);
+      } catch (e) {
+        rows = [];
+      }
+      for (const { token } of rows) {
+        try {
+          const r = await sendCallAlert(token, {
+            title: "NEW CALL",
+            body: "Your truck has been dispatched. Open the app and acknowledge.",
+            data: { kind: "assigned", requestId: hit.requestId, priority: hit.priority },
+          });
+          if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+        } catch (e) {
+          // never let a push problem near the board
+        }
+      }
+    }
+  });
+}
+
 app.post("/api/board/records", requireAuth, (req, res) => {
   const { key } = req.body || {};
   if (typeof key !== "string") return res.status(400).json({ error: "Missing key" });
@@ -448,10 +544,12 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   // serialise here rather than one of them reading before the other has
   // written — which would be the whole-board bug again, in miniature.
   let merged;
+  let prevRequests = null;
   try {
     merged = db.transaction(() => {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
       const current = row ? JSON.parse(row.value) : null;
+      if (key === "ems:requests") prevRequests = current;
       // A key that holds a list cannot be merged with a map, or the other way
       // round. The client is told so and falls back to writing the key whole.
       if (current !== null && current !== undefined) {
@@ -472,6 +570,9 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   if (merged === "SHAPE") {
     return res.status(409).json({ error: "That key does not hold records of this shape.", shape: true });
   }
+  // A call that just landed on a truck wakes that truck's phone, even locked —
+  // fired after the write has committed, and never able to fail it.
+  if (key === "ems:requests") pushForRequestsWrite(prevRequests, merged);
   // The merged board goes back, so the device that wrote adopts what everybody
   // else has done in the same breath rather than waiting for the next poll.
   res.json({ ok: true, value: merged });

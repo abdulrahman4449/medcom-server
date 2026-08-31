@@ -210,6 +210,24 @@ patch", that document is the target — do not start a fresh exploration.
   are always listed, zeros included, in the order it says them; anything else
   the board holds is kept alongside. Both mixes fold closed on the KPI band —
   the count line stays readable without the column.
+- **A locked phone is woken by the SERVER, and the push names no patient.**
+  The WebView freezes when a phone locks, the poll stops, and no alarm in the
+  app can sound about a call it never learned of — so the server sends the
+  wake-up. `lib/push-triggers.cjs` (`newAssignments`, under `npm test`)
+  decides what fires: a truck is woken when a call it did not have becomes
+  assigned to it, once — re-saving the same assignment wakes nobody, and a
+  completed call never does. `lib/push-fcm.cjs` sends it, dependency-free,
+  over FCM v1 with `FIREBASE_SERVICE_ACCOUNT` (a server credential like
+  `AUTH_SECRET`; without it every push path is a no-op). The message is a
+  notification-type FCM carrying the dispatch channel id, so ANDROID displays
+  it — alarm stream, through silent, app killed — with no app code running.
+  The body is "NEW CALL … open the app": it crosses Google and sits on a lock
+  screen, and an MRN in either place is a disclosure. Tokens follow the SEAT
+  (`src/lib/push.jsx` registers at sign-on against the truck, unregisters at
+  sign-out, and the server prunes two months' silence); the push fires after
+  the board write commits and can never fail or slow one. iOS is deliberately
+  not wired — no developer account, and past-the-silent-switch needs Apple's
+  Critical Alert entitlement. Setup: `native/README.md` → "Push (FCM)".
 - **Putting data back belongs to the owner; taking copies does not.**
   `lib/restore-guard.cjs`, under `npm test` like the merge and the delegation
   list. Anyone holding the archive area may take a backup whenever they like —

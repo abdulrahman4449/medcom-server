@@ -1160,6 +1160,41 @@ export function run(D, t) {
       D.RESTORE_APPROVAL_TTL_MS <= 60 * 60 * 1000);
   }
 
+  // ---------- a board write wakes a phone once, and only for a new assignment
+  //
+  // The server pushes to a truck's phones the moment a call LANDS on it. The
+  // board is written on every small change, so the trigger has to see the
+  // difference between "this truck was just handed a call" and "the same call
+  // was saved again" — a phone buzzed sixty times per call is a phone whose
+  // owner turns notifications off, which is the failure push exists to fix.
+  {
+    const req = (id, extra) => ({ id, status: "assigned", ...extra });
+    t.is("push: a fresh dispatch wakes the truck",
+      D.newAssignments([], [req("a", { assignedUnitId: "m1" })]),
+      [{ unitId: "m1", requestId: "a", priority: "" }]);
+    t.is("push: re-saving the same assignment wakes nobody",
+      D.newAssignments(
+        [req("a", { assignedUnitId: "m1" })],
+        [req("a", { assignedUnitId: "m1", times: { enroute: 5 } })]
+      ), []);
+    t.is("push: a call moved to another truck wakes the NEW truck",
+      D.newAssignments(
+        [req("a", { assignedUnitId: "m1" })],
+        [req("a", { assignedUnitId: "m2" })]
+      ), [{ unitId: "m2", requestId: "a", priority: "" }]);
+    t.is("push: a pending call with no truck wakes nobody",
+      D.newAssignments([], [req("a", { assignedUnitId: null })]), []);
+    t.is("push: a completed call wakes nobody, whatever changed on it",
+      D.newAssignments([], [req("a", { assignedUnitId: "m1", status: "completed" })]), []);
+    t.is("push: assigning a call that existed unassigned wakes the truck",
+      D.newAssignments(
+        [req("a", { assignedUnitId: "" })],
+        [req("a", { assignedUnitId: "m1", priority: "als" })]
+      ), [{ unitId: "m1", requestId: "a", priority: "als" }]);
+    t.is("push: a broken previous list is treated as empty, never thrown on",
+      D.newAssignments(null, [req("a", { assignedUnitId: "m1" })]).length, 1);
+  }
+
   // ---------- the role switch translates before it compares
   //
   // The server's word for a crew member's role is "crew"; a session working a

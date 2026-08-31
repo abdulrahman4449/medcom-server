@@ -153,27 +153,79 @@ bypass changes** — it is the only way to hand somebody a corrected channel.
 
 ## Going further: the two things that would cover a locked phone
 
-Neither is in this build, and both cost something. They are here so the choice
-is made deliberately rather than discovered on a shift.
+**Push (FCM) is now built — see the next section.** The foreground-service
+alternative is kept here so the choice stays on record: a persistent
+notification and a process the system will not freeze would also work, but
+from Android 14 it needs a declared `foregroundServiceType` and **a Google
+Play justification form**, burns battery all shift, and still dies with a
+force-quit. FCM covers more and declares nothing, which is why it is the one
+that got built.
 
-**1. A foreground service.** The standard Android answer to "my app must keep
-running": a persistent notification and a process the system will not freeze.
-It would make a locked, pocketed phone behave like an on-screen one. The cost:
-from Android 14 a `foregroundServiceType` must be declared, the honest one here
-is `specialUse`, and **Google Play asks you to justify it in a review form**.
-Given the standing instruction to avoid anything needing a Play declaration,
-this is a decision to take on purpose.
+## Push (FCM) — waking the locked phone
 
-**2. Push notifications (FCM).** The real answer for an app that is not
-running at all. A high-priority FCM message wakes the app even in Doze and even
-after a force-quit, which is the one case nothing else covers. The cost: a
-Firebase project, a server-side send from `server.js`, and device tokens on the
-board. It is the right long-term answer and it is not a Friday-afternoon change.
+The whole path is in the repo: the server watches every board write and, the
+moment a call lands on a truck, sends a HIGH-priority FCM message to the
+phones signed on to that truck. The message carries the dispatch channel's id
+(`pulseops_dispatch_v2`), so **Android itself** shows it with the channel's
+sound — alarm stream, through silent, phone locked, dozing, or the app swiped
+away — with no app code running. The web layer registers this phone's token
+against the truck at sign-on and takes it back at sign-out
+(`src/lib/push.jsx`); the server side is `lib/push-triggers.cjs` (what fires,
+under `npm test`) and `lib/push-fcm.cjs` (the send, dependency-free).
 
-Until one of those is in, say this to the crews plainly: **the alert is reliable
-while the app is on screen, and a phone locked in a pocket can still miss a
-call.** That is the truth, and it is better than a crew trusting a tablet that
-is going to let them down at three in the morning.
+**Privacy is part of the design: the push names no patient.** It says "NEW
+CALL — open the app and acknowledge" and nothing else. It travels through
+Google and sits on a lock screen; an MRN in either place is a disclosure.
+
+### One-time setup
+
+**Firebase (free, ~10 minutes):**
+1. console.firebase.google.com → Add project (name it anything; Analytics off).
+2. Add an **Android app** with your applicationId (open `android/app/build.gradle`
+   and copy it exactly). Download **google-services.json** into `android/app/`.
+3. Project settings → Service accounts → **Generate new private key**. This
+   JSON is a server credential — treat it like `AUTH_SECRET`, never commit it.
+
+**Render:** add an environment variable `FIREBASE_SERVICE_ACCOUNT` and paste
+the service-account JSON in whole. Redeploy. Without it every push path is a
+no-op and nothing else changes.
+
+**Android project:**
+1. Copy `PulseOpsPushPlugin.java` and `PulseOpsPushService.java` from this
+   folder next to the alarm plugin, fixing the `package` line the same way.
+2. In `MainActivity.java`, beside the existing line:
+   `registerPlugin(PulseOpsPushPlugin.class);`
+3. Root `build.gradle`, inside `buildscript { dependencies { … } }`:
+   `classpath 'com.google.gms:google-services:4.4.2'`
+4. `android/app/build.gradle`: at the very bottom add
+   `apply plugin: 'com.google.gms.google-services'`
+   and inside `dependencies { … }`:
+   `implementation platform('com.google.firebase:firebase-bom:33.7.0')`
+   `implementation 'com.google.firebase:firebase-messaging'`
+5. `AndroidManifest.xml`, inside `<application>`:
+   ```xml
+   <service
+       android:name=".PulseOpsPushService"
+       android:exported="false">
+       <intent-filter>
+           <action android:name="com.google.firebase.MESSAGING_EVENT" />
+       </intent-filter>
+   </service>
+   ```
+6. Rebuild, reinstall, sign a crew member on to a truck once (that registers
+   the token), then lock the phone, leave it untouched, and raise a call for
+   that truck from the desk. It should sound within a few seconds.
+
+**What it still cannot do:** nothing reaches a phone whose owner force-stopped
+the app from system settings (rare — a swipe-away is fine), turned the
+channel's notifications off, or has no Google services. `BackgroundAlertNotice`
+already names the notification settings; the rest is the truth to tell crews.
+
+**iOS is deliberately not wired.** APNs needs a paid Apple developer account,
+and getting past the silent switch needs the Critical Alerts entitlement on
+top. The day the account exists, the server half here is reusable — an `apns`
+block beside the `android` one — and the shell needs a real push
+registration; until then an iPhone's story is unchanged.
 
 ## Capacitor 6 and later: the registration that is easy to miss
 
