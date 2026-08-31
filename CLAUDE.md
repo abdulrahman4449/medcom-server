@@ -201,6 +201,28 @@ patch", that document is the target — do not start a fresh exploration.
   the week that is ending — and a past shift or week is named by the date it
   OPENED, like everything else on this board. The picker never offers a period
   that has not happened.
+- **The service mix never assumes a level.** `serviceMixRows` — CCT, ALS and
+  BLS as shares of every call the period received, read the way the sheet's
+  Svc column reads them: the category decides (`serviceTypeFor`), an explicit
+  priority is honoured on a call not yet coded (the EMERGENCY buttons set one
+  first), and a call with neither is "Not stated" — never quietly counted as
+  BLS the way `priorityKeyOf`'s fallback would. The three the department runs
+  are always listed, zeros included, in the order it says them; anything else
+  the board holds is kept alongside. Both mixes fold closed on the KPI band —
+  the count line stays readable without the column.
+- **Putting data back belongs to the owner; taking copies does not.**
+  `lib/restore-guard.cjs`, under `npm test` like the merge and the delegation
+  list. Anyone holding the archive area may take a backup whenever they like —
+  it writes nothing anybody works on. Restore and sync-all rewrite the record,
+  so they answer only to `RESTORE_OWNER` (F1525518, the bootstrap account) or
+  to a delegate inside a 30-minute window the owner has opened
+  (`POST /api/backups/allow-restore`; `{stop:true}` closes it early). Another
+  FULL admin is still not the owner. The window lives in the `settings` table,
+  never on the board — it is a permission, and permissions live where the
+  server checks them. `RestoreWindow` in `BackupPanel.jsx` draws the switch
+  for the owner and the explanation for everyone else; the server enforces it
+  either way.
+- **A call called off before the crew reached the patient needs no restock.**
   `restockNotNeeded`. Both halves are needed: a call stood down at the bedside
   may well have cost gloves and a blanket, and a call with no scene stamp is an
   unfinished timeline rather than a cancellation. So it comes off the list only

@@ -3,7 +3,7 @@ import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
 import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { CHECKLIST_KEY, CHECKLIST_PARTS, UNSORTED_CHECK, checklistCategories, checklistDoneByPerson, checklistFlags, checklistItems, checklistRunFor, checklistTree, emptyChecklists, isWriteItem, shiftKeyFor } from "../domain/checklist.jsx";
 import { CHECKLIST_GOOD, PCR_GOOD, RESPONSE_GOOD, RESPONSE_TARGET_MS, UHU_HEADROOM, UHU_TARGET, isInternalEmergency, responseCompliance, responseMsFor } from "../domain/compliance.jsx";
-import { REQ_STATUS } from "../domain/constants.jsx";
+import { REQ_STATUS, priorityKeyOf } from "../domain/constants.jsx";
 import { submissionGaps } from "../domain/coverage.jsx";
 import { medicCrewIndex, stayWindow } from "../domain/crew-stamps.jsx";
 import { escalatedCalls, escalationIsOpen } from "../domain/escalations.jsx";
@@ -1274,7 +1274,92 @@ export function RushHours({ requests, from, to }) {
   );
 }
 
+// ---------- the service mix: CCT, ALS, BLS ----------
+//
+// What LEVEL of work the period's calls were, as shares of every call
+// received. The level is read the way the sheet's Svc column reads it —
+// `serviceTypeFor`, the category deciding — honouring an explicit priority on
+// a call not yet coded (the EMERGENCY buttons set one before anybody has had
+// time to code). A call with neither is "Not stated", never quietly called
+// BLS: a percentage built on an assumption is a percentage nobody can defend.
+function serviceOf(r) {
+  const s = serviceTypeFor(r);
+  if (s) return s;
+  if (!(r && r.priority)) return "";
+  const k = priorityKeyOf(r);
+  return k === "als" ? "ALS" : k === "cct" ? "CCT" : "BLS";
+}
+
+export function serviceMixRows(requests, from, to) {
+  const inWin = (requests || []).filter((r) => r && r.createdAt >= from && r.createdAt < to);
+  const counts = new Map();
+  inWin.forEach((r) => {
+    const s = serviceOf(r) || "Not stated";
+    counts.set(s, (counts.get(s) || 0) + 1);
+  });
+  const total = inWin.length;
+  // The three the department runs, in the order it says them — always listed,
+  // zeros included, like the category mix. Anything else the board holds
+  // ("NA", "Not stated") is kept alongside: the list is the starting point,
+  // never the limit.
+  const names = ["CCT", "ALS", "BLS"];
+  counts.forEach((_, name) => { if (!names.includes(name)) names.push(name); });
+  const rows = names.map((name) => ({
+    name,
+    n: counts.get(name) || 0,
+    pct: total ? ((counts.get(name) || 0) / total) * 100 : 0,
+  }));
+  return { rows, total };
+}
+
+const SERVICE_COLOURS = { ALS: "var(--crit)", CCT: "var(--hold)", BLS: "var(--flow)" };
+
+export function ServiceMix({ requests, from, to }) {
+  const [open, setOpen] = useState(false);
+  const { rows, total } = serviceMixRows(requests, from, to);
+  return (
+    <FoldingSection
+      title="SERVICE TYPES — CCT · ALS · BLS"
+      count={total}
+      countLabel={total === 1 ? "call" : "calls"}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      {total === 0 ? (
+        <div style={styles.emptyState}>No calls in this period.</div>
+      ) : (
+        <>
+          <div style={styles.mixBar}>
+            {rows.filter((r) => r.n > 0).map((r) => (
+              <span
+                key={r.name}
+                title={`${r.name} — ${r.n} (${r.pct.toFixed(0)}%)`}
+                style={{ width: `${r.pct}%`, background: SERVICE_COLOURS[r.name] || "var(--ink-4)", display: "block", height: "100%" }}
+              />
+            ))}
+          </div>
+          <div style={styles.mixList}>
+            {rows.map((r) => (
+              <div key={r.name} style={styles.mixRow}>
+                <span style={{ ...styles.mixDot, background: r.n > 0 ? SERVICE_COLOURS[r.name] || "var(--ink-4)" : "var(--hair-2)" }} />
+                <span style={styles.mixName}>{r.name}</span>
+                <span style={styles.mixPct}>{r.pct.toFixed(0)}%</span>
+                <span style={styles.mixN}>{r.n}</span>
+              </div>
+            ))}
+            <div style={styles.formHint}>
+              Share of the {total} call{total === 1 ? "" : "s"} received in this period, by level
+              of care — the same rule as the sheet's Svc column.
+            </div>
+          </div>
+        </>
+      )}
+    </FoldingSection>
+  );
+}
+
 export function CategoryMix({ requests, from, to }) {
+  const [open, setOpen] = useState(false);
   const { rows, total, ran } = categoryMixRows(requests, from, to);
 
   const colourOf = (name) => {
@@ -1283,8 +1368,13 @@ export function CategoryMix({ requests, from, to }) {
   };
 
   return (
-    <div style={styles.mixCard}>
-      <div style={styles.gaugeLabel}>What we are called for</div>
+    <FoldingSection
+      title="WHAT WE ARE CALLED FOR"
+      count={total}
+      countLabel={`calls · ${ran} of ${rows.length} categories`}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
       {total === 0 ? (
         <div style={styles.emptyState}>No calls in this period.</div>
       ) : (
@@ -1337,7 +1427,7 @@ export function CategoryMix({ requests, from, to }) {
           </div>
         </>
       )}
-    </div>
+    </FoldingSection>
   );
 }
 
@@ -1521,6 +1611,8 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
       <RushHours requests={requests} from={win.start} to={win.end} />
 
       <CategoryMix requests={requests} from={win.start} to={win.end} />
+      {/* The level of the work, beside what the work was for. */}
+      <ServiceMix requests={requests} from={win.start} to={win.end} />
 
       {resp.avg !== null && (
         <div style={styles.bandFoot}>

@@ -4,6 +4,7 @@ import { connectionListeners, connectionOk, lastSyncedAt, lastWriteError, notify
 import { API_BASE } from "../lib/board-api.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
+import { hhmm } from "../domain/shift-helpers.jsx";
 import { bytesStr, keyName } from "./storage-banner.jsx";
 import { styles } from "../styles.jsx";
 import { FoldingSection } from "./AdminView.jsx";
@@ -388,6 +389,74 @@ function RestoreFromCopy({ copies, onDone }) {
 // this panel is the archive's. Reading the role instead meant the one person
 // who had been asked to look after the backups was the one person who could
 // not see them.
+// ---------- the restore window ----------
+//
+// Taking a copy is anyone's, with the archive area; PUTTING ONE BACK is the
+// owner's alone — a delegate restores only inside a window the owner has
+// opened, and it closes on its own after half an hour. The server enforces
+// every bit of this (lib/restore-guard.cjs); this row only says which of the
+// two this session is, shows the window while one is open, and gives the
+// owner the one button that opens or closes it.
+function RestoreWindow({ restore, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!restore) return null;
+  const w = restore.window;
+  const until = w ? hhmm(Number(w.expiresAt)) : null;
+
+  async function setWindow(stop) {
+    setBusy(true);
+    try {
+      await fetch(`${API_BASE}/api/backups/allow-restore`, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(stop ? { stop: true } : {}),
+      });
+    } catch (e) {
+      /* the reload below shows whatever the server now says */
+    }
+    setBusy(false);
+    if (onChanged) await onChanged();
+  }
+
+  return (
+    <div style={styles.restoreBox}>
+      <div style={styles.restoreHead}>PUTTING DATA BACK</div>
+      {restore.isOwner ? (
+        w ? (
+          <>
+            <div style={{ ...styles.formHint, color: "var(--hold-2)" }}>
+              Restores are OPEN until {until}. Until then, anyone holding the archive area can
+              put data back onto the board. It closes by itself.
+            </div>
+            <button style={styles.dangerBtnSm} disabled={busy} onClick={() => setWindow(true)}>
+              Close the window now
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={styles.formHint}>
+              Restores are yours alone. A delegate holding the archive can take copies any
+              time, but can only put one back while you have this open.
+            </div>
+            <button style={styles.primaryBtnSm} disabled={busy} onClick={() => setWindow(false)}>
+              Allow restores for 30 minutes
+            </button>
+          </>
+        )
+      ) : w ? (
+        <div style={{ ...styles.formHint, color: "var(--hold-2)" }}>
+          Restores are open until {until} — allowed by {w.openedBy || restore.owner}.
+        </div>
+      ) : (
+        <div style={styles.formHint}>
+          Taking a copy is yours any time. Putting one back belongs to {restore.owner} — ask
+          them to open the restore window, and the buttons below will work until it closes.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BackupPanel({ user }) {
   const role = user && user.role;
   const [open, setOpen] = useState(false);
@@ -470,6 +539,8 @@ export function BackupPanel({ user }) {
     >
       {/* First thing in the panel: this device, before anything about copies. */}
       <SyncStatus />
+      {/* Who may put data back, and the owner's switch for it. */}
+      <RestoreWindow restore={b.restore} onChanged={load} />
 
       {b.unreachable ? (
         <div style={styles.storageBanner}>

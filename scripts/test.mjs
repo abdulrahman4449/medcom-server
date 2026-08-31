@@ -41,7 +41,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/stat-source.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/rush.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/shift-log.jsx")};
 export { dedupeById } from ${JSON.stringify(ROOT + "src/lib/helpers.jsx")};
-export { staffStatsFor, departmentUhu, categoryMixRows, responseNote } from ${JSON.stringify(ROOT + "src/ui/Statistics.jsx")};
+export { staffStatsFor, departmentUhu, categoryMixRows, serviceMixRows, responseNote } from ${JSON.stringify(ROOT + "src/ui/Statistics.jsx")};
 export { roleSwitchTarget } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
 export { CALL_CATEGORIES } from ${JSON.stringify(ROOT + "src/domain/sheet-vocabulary.jsx")};
 export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
@@ -92,6 +92,9 @@ try {
   const D = {
     ...bundled,
     ...require_(join(ROOT, "lib/merge-records.cjs")),
+    // Who may put a backup's data back onto the board — the server's rule,
+    // held here the way the merge and the delegation list are.
+    ...require_(join(ROOT, "lib/restore-guard.cjs")),
     // Namespaced, because the app has a list of the same areas for its screens
     // and the point of the test is that the two agree.
     serverDelegation: require_(join(ROOT, "lib/delegation.cjs")),

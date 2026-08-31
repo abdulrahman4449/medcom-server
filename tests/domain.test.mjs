@@ -1094,6 +1094,72 @@ export function run(D, t) {
       D.responseCompliance([], win[0], win[1]).pct, null);
   }
 
+  // ---------- the service mix: CCT, ALS, BLS, honestly
+  //
+  // Shares of every call the period received, read the way the sheet's Svc
+  // column reads them: the category decides, an explicit priority is honoured
+  // on a call not yet coded, and a call with neither is "Not stated" — never
+  // quietly counted as BLS, because a percentage built on an assumption is a
+  // percentage nobody can defend.
+  {
+    const win = [at(2026, 8, 1, 0), at(2026, 9, 1, 0)];
+    const call = (id, extra) => ({ id, createdAt: at(2026, 8, 5, 9), ...extra });
+    const { rows, total } = D.serviceMixRows(
+      [
+        call("a", { callType: "C" }),               // CCT by category
+        call("b", { callType: "A" }),               // ALS by category
+        call("c", { callType: "B" }),               // BLS by category
+        call("d", { callType: "D" }),               // D is BLS work
+        call("e", { priority: "als" }),             // not coded yet — priority speaks
+        call("f", {}),                              // neither — Not stated
+      ],
+      win[0], win[1]
+    );
+    t.is("svc: six calls counted", total, 6);
+    const by = Object.fromEntries(rows.map((r) => [r.name, r.n]));
+    t.is("svc: the category decides CCT", by.CCT, 1);
+    t.is("svc: an uncoded call's explicit priority is honoured", by.ALS, 2);
+    t.is("svc: B and D are both basic life support", by.BLS, 2);
+    t.is("svc: a call with neither is Not stated, never assumed BLS", by["Not stated"], 1);
+    t.is("svc: the three the department runs come first, in its own order",
+      rows.slice(0, 3).map((r) => r.name), ["CCT", "ALS", "BLS"]);
+    // Always all three, zeros included — same rule as the category mix.
+    const none = D.serviceMixRows([call("z", { callType: "A" })], win[0], win[1]);
+    t.is("svc: a level nothing came in against is listed at nought",
+      none.rows.find((r) => r.name === "CCT").n, 0);
+    t.ok("svc: and the shares are of the total received",
+      Math.round(rows.find((r) => r.name === "ALS").pct) === 33);
+  }
+
+  // ---------- putting data back belongs to the owner
+  //
+  // Taking a copy is safe and stays with anyone holding the archive area.
+  // Putting one back rewrites the department's record, so it belongs to
+  // F1525518 alone — a delegate restores only inside a window the owner has
+  // opened, and the window closes on its own clock.
+  {
+    const now = 1000000;
+    const owner = { id: "F1525518", fullAdmin: true };
+    const delegate = { id: "F2001", fullAdmin: false };
+    const otherAdmin = { id: "F9999", fullAdmin: true };
+    t.is("restore: the owner may always put data back", D.mayRestore(owner, null, now), true);
+    t.is("restore: a delegate with no window may not", D.mayRestore(delegate, null, now), false);
+    t.is("restore: another full admin is still not the owner",
+      D.mayRestore(otherAdmin, null, now), false);
+    const live = { expiresAt: now + 60000 };
+    t.is("restore: an open window lets the delegate through", D.mayRestore(delegate, live, now), true);
+    t.is("restore: an expired window refuses on its own",
+      D.mayRestore(delegate, { expiresAt: now - 1 }, now), false);
+    t.is("restore: only the owner opens the window", D.mayOpenRestoreWindow(delegate), false);
+    t.is("restore: a delegate ACTING as admin is still not the owner",
+      D.mayOpenRestoreWindow({ id: "F2001", fullAdmin: false }), false);
+    t.is("restore: the owner's own session opens it", D.mayOpenRestoreWindow(owner), true);
+    t.is("restore: an impostor with the owner's id but not the admin role cannot",
+      D.mayOpenRestoreWindow({ id: "F1525518", fullAdmin: false }), false);
+    t.ok("restore: the window closes on its own inside an hour",
+      D.RESTORE_APPROVAL_TTL_MS <= 60 * 60 * 1000);
+  }
+
   // ---------- the role switch translates before it compares
   //
   // The server's word for a crew member's role is "crew"; a session working a

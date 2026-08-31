@@ -724,11 +724,64 @@ function backupState() {
   };
 }
 
+// ---------- the restore window ----------
+//
+// Taking a copy is safe and stays open to anyone holding the archive area.
+// Putting one BACK rewrites the department's record, and that belongs to the
+// owner account alone: a delegate restores only inside a window the owner has
+// opened, and the window closes on its own. The policy is in
+// lib/restore-guard.cjs, under npm test; the window itself lives in
+// `settings`, not on the board — it is a permission, and permissions live
+// where the server checks them.
+const { RESTORE_OWNER, RESTORE_APPROVAL_TTL_MS, mayOpenRestoreWindow, mayRestore } = require("./lib/restore-guard.cjs");
+
+function restoreApproval() {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'restore_approval'").get();
+  if (!row) return null;
+  try {
+    const a = JSON.parse(row.value);
+    return a && Number(a.expiresAt) > Date.now() ? a : null;
+  } catch (e) {
+    return null;
+  }
+}
+function setRestoreApproval(a) {
+  db.prepare("DELETE FROM settings WHERE key = 'restore_approval'").run();
+  if (a) db.prepare("INSERT INTO settings (key, value) VALUES ('restore_approval', ?)").run(JSON.stringify(a));
+}
+function restoreStatusFor(user) {
+  const a = restoreApproval();
+  return {
+    owner: RESTORE_OWNER,
+    isOwner: mayOpenRestoreWindow(user),
+    allowed: mayRestore(user, a, Date.now()),
+    window: a ? { expiresAt: a.expiresAt, openedBy: a.openedBy } : null,
+  };
+}
+
+// Only the owner opens or closes the window. `stop` closes it early —
+// revocation should never have to wait out its own timer.
+app.post("/api/backups/allow-restore", requireArea("archive"), (req, res) => {
+  if (!mayOpenRestoreWindow(req.user)) {
+    return res.status(403).json({ error: `Only ${RESTORE_OWNER} can open or close the restore window.` });
+  }
+  if ((req.body || {}).stop) {
+    setRestoreApproval(null);
+  } else {
+    setRestoreApproval({
+      openedBy: req.user.id,
+      openedAt: Date.now(),
+      expiresAt: Date.now() + RESTORE_APPROVAL_TTL_MS,
+    });
+  }
+  res.json({ ok: true, restore: restoreStatusFor(req.user) });
+});
+
 // Administrators only, both of them. The listing names the copies, and those
 // names are what the restore routes are addressed by; the other lets anyone
 // who can reach the server fill its disk with snapshots.
 app.get("/api/backups", requireArea("archive"), (req, res) => {
-  res.json({ ok: true, ...backupState(), copies: listBackups(BACKUP_DIR) });
+  res.json({ ok: true, ...backupState(), copies: listBackups(BACKUP_DIR), restore: restoreStatusFor(req.user) });
 });
 
 app.post("/api/backups", requireArea("archive"), async (req, res) => {
@@ -971,6 +1024,13 @@ function collectMissing(file, live, have, filed, found) {
 // is added once, and anything a finalised submission already contains is left
 // where it is. Running it again when nothing is missing writes nothing at all.
 app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
+  // Additive, but still a write to the record from copies — inside the
+  // restore window like any other put-back.
+  if (!mayRestore(req.user, restoreApproval(), Date.now())) {
+    return res.status(403).json({
+      error: `Putting data back belongs to ${RESTORE_OWNER}. Taking copies is yours any time; ask them to open the restore window and try again.`,
+    });
+  }
   const copies = listBackups(BACKUP_DIR)
     .slice()
     // Oldest first, so a record that appears in several keeps the newest copy
@@ -1050,6 +1110,13 @@ app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
 });
 
 app.post("/api/backups/:name/restore", requireArea("archive"), async (req, res) => {
+  // The one route that rewrites the record from a copy. Owner, or a delegate
+  // inside the window the owner opened — see lib/restore-guard.cjs.
+  if (!mayRestore(req.user, restoreApproval(), Date.now())) {
+    return res.status(403).json({
+      error: `Putting data back belongs to ${RESTORE_OWNER}. Taking copies is yours any time; ask them to open the restore window and try again.`,
+    });
+  }
   const found = backupFileFor(req.params.name);
   if (found.error) return res.status(404).json({ error: found.error });
   const asked = Array.isArray((req.body || {}).keys) ? req.body.keys : [];
