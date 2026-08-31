@@ -38,6 +38,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/stat-range.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/crew-roster.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/return-journeys.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/stat-source.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/rush.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/shift-log.jsx")};
 export { dedupeById } from ${JSON.stringify(ROOT + "src/lib/helpers.jsx")};
 export { staffStatsFor, departmentUhu, categoryMixRows, responseNote } from ${JSON.stringify(ROOT + "src/ui/Statistics.jsx")};

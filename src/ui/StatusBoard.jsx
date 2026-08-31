@@ -9,6 +9,7 @@ import { NO_TRANSPORT, REFUSAL_TIME_KEY, REFUSAL_TIME_LABEL } from "../domain/ou
 import { pcrAuthorOf, pcrAuthorText } from "../domain/pcr-author.jsx";
 import { assistOf, assistTeams, isNoTransport } from "../domain/second-ambulance.jsx";
 import { CALL_TYPES, LOADED_KM, LOADED_KM_COLOR, callTypeMeta, callTypeOf, loadedKmOf, suggestedCallType } from "../domain/sheet-vocabulary.jsx";
+import { rushMeta, rushNow } from "../domain/rush.jsx";
 import { uhuWindowStart } from "../domain/uhu.jsx";
 import { Ambulance, Ban, CircleSlash, FileSignature, HandRaised, Ruler, Tag } from "../lib/icons.jsx";
 import { styles } from "../styles.jsx";
@@ -69,7 +70,19 @@ export function StatusBoard({ units, requests, station }) {
   // progress rather than by growing or flashing.
   const freeColor = free === 0 ? "var(--crit)" : "var(--ok)";
 
+  // How hard the room is being worked, as one word. Demand against capacity,
+  // from the same derived statuses as the counts above it — see domain/rush.jsx.
+  const rush = rushNow(units, requests, station, now);
+  const rushLevel = rushMeta(rush.level);
+  const rushText =
+    (rush.live === 0 ? "no calls running" : `${rush.live} running`) +
+    (rush.waiting > 0 ? ` · ${rush.waiting} waiting` : "") +
+    (rush.staffed > 0
+      ? ` · ${rush.busy} of ${rush.staffed} truck${rush.staffed === 1 ? "" : "s"} out`
+      : " · no crew signed on");
+
   return (
+    <React.Fragment>
     <div style={styles.roomState}>
       <div style={styles.roomCell}>
         <span style={{ ...styles.roomFigure, color: freeColor }}>{free}</span>
@@ -95,6 +108,13 @@ export function StatusBoard({ units, requests, station }) {
         </div>
       )}
     </div>
+    <div style={styles.rushRow}>
+      <span style={{ ...styles.rushChip, color: rushLevel.color, borderColor: rushLevel.color }}>
+        {rushLevel.label}
+      </span>
+      <span style={styles.rushText}>{rushText}</span>
+    </div>
+    </React.Fragment>
   );
 }
 

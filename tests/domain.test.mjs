@@ -1078,6 +1078,84 @@ export function run(D, t) {
       empty.rows.every((r) => r.pct === 0));
   }
 
+  // ---------- rush is demand against capacity, not calls per hour
+  //
+  // Two trucks busy is a rush when two are staffed and a quiet spell when five
+  // are. And a call waiting with nothing free to send is a rush whatever the
+  // arithmetic says — the next call has nowhere to go.
+  {
+    const u = (id, on, status) => ({ id, name: id, station: "main", status: status || "available",
+      alpha: on ? { name: "A", accountId: "F1" } : null, bravo: null });
+    const live = (id, unitId) => ({ id, station: "main", status: "assigned", assignedUnitId: unitId,
+      createdAt: at(2026, 8, 29, 9) });
+    const waiting = (id) => ({ id, station: "main", status: "pending", createdAt: at(2026, 8, 29, 9) });
+
+    t.is("rush: an empty board is quiet",
+      D.rushNow([u("m1", true), u("m2", true)], [], "main").level, "quiet");
+    t.is("rush: one of three out is steady",
+      D.rushNow([u("m1", true), u("m2", true), u("m3", true)],
+        [live("c1", "m1")], "main").level, "steady");
+    t.is("rush: half the fleet out is busy",
+      D.rushNow([u("m1", true), u("m2", true)], [live("c1", "m1")], "main").level, "busy");
+    t.is("rush: every staffed truck out is a rush",
+      D.rushNow([u("m1", true), u("m2", true)],
+        [live("c1", "m1"), live("c2", "m2")], "main").level, "rush");
+    t.is("rush: a call waiting with nothing free is a rush whatever the count says",
+      D.rushNow([u("m1", true)], [live("c1", "m1"), waiting("c2")], "main").level, "rush");
+    t.is("rush: a call waiting WITH a truck free is not yet a rush",
+      D.rushNow([u("m1", true), u("m2", true)], [waiting("c1")], "main").waiting, 1);
+    // An unstaffed truck is not capacity. Two trucks on the roster with one
+    // crew signed on is a one-truck fleet.
+    t.is("rush: capacity is staffed trucks, not the roster",
+      D.rushNow([u("m1", true), u("m2", false)], [live("c1", "m1")], "main").level, "rush");
+    // A stale stored status must not fake capacity — same rule as the counts.
+    t.is("rush: a stale available on an empty truck is not a free truck",
+      D.rushNow([u("m1", true), u("m2", false, "available")],
+        [live("c1", "m1"), waiting("c2")], "main").level, "rush");
+    // Stations are counted apart.
+    const both = [u("m1", true), { ...u("c9", true), station: "ccc" }];
+    t.is("rush: one station's rush is not the other's",
+      D.rushNow(both, [live("x", "m1")], "ccc").level, "quiet");
+  }
+
+  // ---------- the rush profile reads in operational-day order
+  {
+    t.is("rush hours: the axis starts where the day starts", D.RUSH_HOURS[0], 7);
+    t.is("rush hours: and ends on the last hour of the night", D.RUSH_HOURS[23], 6);
+
+    // Ten days, one call every morning 09:40 - 11:10: hour 9 gets 20 minutes,
+    // hour 10 the whole hour, hour 11 ten minutes.
+    const calls = [];
+    for (let d = 1; d <= 10; d++) {
+      calls.push({ id: "r" + d, status: "completed", createdAt: at(2026, 8, d, 9, 40),
+        times: { backInService: at(2026, 8, d, 11, 10) } });
+    }
+    const p = D.rushHourProfile(calls, at(2026, 8, 1, 0), at(2026, 8, 11, 0), at(2026, 8, 20, 0));
+    const byHour = Object.fromEntries(p.rows.map((r) => [r.hour, r]));
+    t.is("rush hours: a 09:40 start gives hour nine its twenty minutes",
+      Number(byHour[9].avg.toFixed(2)), 0.33);
+    t.is("rush hours: hour ten is fully loaded", Number(byHour[10].avg.toFixed(2)), 1);
+    t.is("rush hours: hour eleven gets its ten minutes", Number(byHour[11].avg.toFixed(2)), 0.17);
+    t.is("rush hours: an hour nothing ran in is nought", byHour[3].avg, 0);
+    t.is("rush hours: ten calls were raised, all in hour nine", byHour[9].raised, 10);
+    t.is("rush hours: the peak is the loaded hour", p.peaks.includes(10), true);
+
+    // A call that crosses midnight loads the night hours of the same
+    // operational day, not a phantom morning.
+    const night = [{ id: "n", status: "completed", createdAt: at(2026, 8, 5, 23, 30),
+      times: { backInService: at(2026, 8, 6, 0, 30) } }];
+    const np = D.rushHourProfile(night, at(2026, 8, 1, 0), at(2026, 8, 11, 0), at(2026, 8, 20, 0));
+    const nBy = Object.fromEntries(np.rows.map((r) => [r.hour, r]));
+    t.ok("rush hours: a midnight-crossing call loads 23 and 00, half each",
+      Number((nBy[23].avg * 10).toFixed(1)) === 0.5 && Number((nBy[0].avg * 10).toFixed(1)) === 0.5);
+
+    // Consecutive peaks fold into a range, in the day's own order.
+    t.is("rush hours: peaks read as ranges", D.rushHourRanges([9, 10, 19]),
+      "09:00\u201311:00 and 19:00\u201320:00");
+    t.is("rush hours: the last hour of the night closes at 07:00",
+      D.rushHourRanges([6]), "06:00\u201307:00");
+  }
+
   // ---------- a device with an old copy of the board cannot erase it
   //
   // The bug this replaced: every save sent the whole list, so a tablet holding

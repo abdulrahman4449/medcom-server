@@ -150,6 +150,19 @@ patch", that document is the target — do not start a fresh exploration.
   Cancelling the arrangement also cancels the copy it has already thrown off for
   today, unless that copy has already been released — a released one is a live
   call and is cancelled from the board, where the crew can be told.
+- **Rush is demand against capacity, and nothing about it is stored.**
+  `src/domain/rush.jsx` — the live meter under the room counts reads calls
+  running against trucks STAFFED (by `effectiveStatus`, like the counts beside
+  it), and turns RUSH the moment everything staffed is out or a call is waiting
+  with nothing free. The history is `rushHourProfile`: call intervals cut into
+  hour-of-day buckets, averaged over the period's days, anchored at 07:00 so
+  the chart reads day-then-night like every sheet. It uses `callStartTs`/
+  `callEndTs`, so the one-shift cap on an abandoned call applies here too, and
+  it is fed the statistics corpus — board plus archive — so filed months have a
+  profile. There is deliberately no sampled load log: a stored one would grow,
+  need pruning and restoring, and add nothing the call intervals don't hold.
+  Rush wears amber (`--hold`), never red — red is a critical call and NO
+  COVERAGE.
 - **The category mix lists every category, including the ones at nought.**
   `categoryMixRows` seeds from `CALL_CATEGORIES` and then counts. Built from the
   calls alone, a category nothing came in against was absent from the panel —

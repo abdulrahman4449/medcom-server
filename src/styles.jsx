@@ -2273,6 +2273,38 @@ export const styles = {
     display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15,
   },
 
+  // ---------- rush ----------
+  // The live meter under the room counts: one word in a chip, then the
+  // arithmetic behind it in plain text. It reads as annotation to the counts
+  // above, not as a fifth figure competing with them.
+  rushRow: {
+    display: "flex", alignItems: "center", gap: 9, marginTop: 8,
+    padding: "7px 11px", background: "var(--raised)",
+    border: "1px solid var(--hair)", borderRadius: 12,
+  },
+  rushChip: {
+    fontFamily: display, fontWeight: 800, fontSize: 11, letterSpacing: 1.1,
+    border: "1.5px solid", borderRadius: 999, padding: "2px 9px", flex: "none",
+  },
+  rushText: { fontSize: 12.5, color: "var(--ink-2)", minWidth: 0 },
+
+  // The hour-of-day profile on the statistics page. One hue — this is a
+  // magnitude, not a set of categories — with the peak hours in the board's
+  // busy amber, which already means exactly that. Bars are anchored to a common
+  // baseline; the value sits on the peaks only.
+  rushChart: {
+    display: "flex", alignItems: "flex-end", gap: 2, height: 96, marginTop: 12,
+  },
+  rushBarWrap: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "stretch", height: "100%", justifyContent: "flex-end" },
+  rushBar: { borderRadius: "3px 3px 0 0", background: "var(--flow)", minHeight: 2 },
+  rushBarPeak: { borderRadius: "3px 3px 0 0", background: "var(--hold)", minHeight: 2 },
+  rushAxis: { display: "flex", gap: 2, marginTop: 5 },
+  rushAxisCell: { flex: 1, minWidth: 0, textAlign: "center", fontSize: 9.5, fontFamily: mono, color: "var(--ink-4)" },
+  rushPeakVal: { textAlign: "center", fontSize: 9.5, fontFamily: mono, fontWeight: 700, color: "var(--hold-2)", marginBottom: 2 },
+  // The seam where the day shift hands to the night, drawn as a gap in the
+  // axis rather than a line through the data.
+  rushNightMark: { borderLeft: "1px solid var(--hair-2)" },
+
   mixCard: {
     background: "linear-gradient(180deg, var(--raised), var(--panel))",
     border: "1px solid var(--hair)",

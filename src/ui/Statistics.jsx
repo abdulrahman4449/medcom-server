@@ -15,6 +15,7 @@ import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
 import { requestOutcomeKey, requestOutcomeLabel } from "../domain/second-ambulance.jsx";
 import { CALL_CATEGORIES, PATIENT_ORIGINS } from "../domain/sheet-vocabulary.jsx";
 import { scheduledShiftKey, shiftWindowAt } from "../domain/shift-helpers.jsx";
+import { RUSH_HOURS, rushHourLabel, rushHourProfile, rushHourRanges } from "../domain/rush.jsx";
 import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWindow } from "../domain/stat-range.jsx";
 import { filedContribution, statsLog, statsRequests } from "../domain/stat-source.jsx";
 import { SHIFT_MS } from "../domain/shifts.jsx";
@@ -1182,6 +1183,84 @@ export function categoryMixRows(requests, from, to) {
   return { rows, total, ran: rows.filter((r) => r.n > 0).length };
 }
 
+// ---------- rush hours ----------
+//
+// Which hours of the day actually run hot, over the period the page is set to.
+//
+// Each bar is the average number of ambulances tied up through that hour of
+// day, worked out from the calls themselves — the same merged corpus as every
+// figure above it, so a month that lives in the archive has a rush profile the
+// day this ships. The bars are anchored at 07:00, day shift on the left and
+// the night that follows it on the right, because that is how the department
+// reads a day everywhere else.
+//
+// One hue, because this is one measure; the peak hours wear the board's busy
+// amber, which already means exactly that. The value is written on the peaks
+// alone — a number on all twenty-four bars is a table pretending to be a chart.
+// The sentence under the chart — guarded, because a period whose calls carry
+// no usable times has a total but no peak, and a caption that assumes one is a
+// blank screen waiting to happen (`REQ_STATUS[status].color` taught that
+// lesson already).
+function RushFoot({ p }) {
+  const peak = p.peaks.length ? p.rows.find((r) => r.hour === p.peaks[0]) : null;
+  return (
+    <div style={styles.formHint}>
+      {peak
+        ? `Busiest ${rushHourRanges(p.peaks)} — on an ordinary day, ` +
+          `${peak.avg.toFixed(1)} ambulance${peak.avg >= 1.95 ? "s are" : " is"} tied up through the peak. `
+        : ""}
+      Average ambulances on calls per hour of day, over {p.total} call
+      {p.total === 1 ? "" : "s"}; the seam after 19 is where the day shift hands to the night.
+    </div>
+  );
+}
+
+export function RushHours({ requests, from, to }) {
+  const p = rushHourProfile(requests, from, to);
+  const peakSet = new Set(p.peaks);
+  // Labels every third hour, so the axis is readable at two columns wide on a
+  // phone. The 19:00 cell carries the day/night seam.
+  const labelled = new Set([7, 10, 13, 16, 19, 22, 1, 4]);
+  return (
+    <div style={styles.mixCard}>
+      <div style={styles.gaugeLabel}>Rush hours</div>
+      {p.total === 0 ? (
+        <div style={styles.emptyState}>No calls in this period.</div>
+      ) : (
+        <React.Fragment>
+          <div style={styles.rushChart}>
+            {p.rows.map((r) => {
+              const h = p.max > 0 ? Math.max(2, (r.avg / p.max) * 78) : 2;
+              const peak = peakSet.has(r.hour);
+              return (
+                <div
+                  key={r.hour}
+                  style={styles.rushBarWrap}
+                  title={`${r.label}–${rushHourLabel((r.hour + 1) % 24)} — average ${r.avg.toFixed(1)} on calls · ${r.raised} raised`}
+                >
+                  {peak && <div style={styles.rushPeakVal}>{r.avg.toFixed(1)}</div>}
+                  <div style={{ ...(peak ? styles.rushBarPeak : styles.rushBar), height: h }} />
+                </div>
+              );
+            })}
+          </div>
+          <div style={styles.rushAxis}>
+            {p.rows.map((r) => (
+              <span
+                key={r.hour}
+                style={{ ...styles.rushAxisCell, ...(r.hour === 19 ? styles.rushNightMark : null) }}
+              >
+                {labelled.has(r.hour) ? String(r.hour).padStart(2, "0") : ""}
+              </span>
+            ))}
+          </div>
+          <RushFoot p={p} />
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
 export function CategoryMix({ requests, from, to }) {
   const { rows, total, ran } = categoryMixRows(requests, from, to);
 
@@ -1416,6 +1495,8 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
           caption={shiftsWorked ? `${listsFiled} filed over ${shiftsWorked} shifts` : "no shifts worked"}
         />
       </div>
+
+      <RushHours requests={requests} from={win.start} to={win.end} />
 
       <CategoryMix requests={requests} from={win.start} to={win.end} />
 
