@@ -53,6 +53,7 @@ export const MessageSquare = makeIcon("💬");
 export const Reply = makeIcon("↩");
 export const Search = makeIcon("🔎");
 export const RotateCcw = makeIcon("↺");
+export const Save = makeIcon("💾");
 export function Circle({ size = 8, fill, color, style, ...rest }) {
   return (
     <span

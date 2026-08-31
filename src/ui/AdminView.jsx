@@ -5,6 +5,56 @@ import { styles } from "../styles.jsx";
 
 export const ROLE_LABELS = { crew: "team member", dispatcher: "dispatcher", admin: "admin" };
 
+// ---------- the section launcher ----------
+//
+// The admin pages used to stack every section one under the other — the
+// statistics page was the KPIs and then five departments of the job in a
+// column, and Teams opened on a wall of account drawers. The launcher draws
+// one tile per section, the way a person actually asks for one — "the
+// overtime", "the backups" — and opening a tile shows that section alone with
+// the way back at the top. Tiles wear the card contract like everything else;
+// the icon is the working blue, never red — red is a critical call and NO
+// COVERAGE, not "our archive". A tile that needs somebody now (a password
+// reset waiting) says so in amber on its own line.
+export function SectionTile({ title, icon, note, tone, onClick }) {
+  return (
+    <button style={styles.sectionTile} onClick={onClick}>
+      <span style={styles.sectionTileTitle}>{title}</span>
+      <span style={styles.sectionTileIcon}>{icon}</span>
+      {note ? (
+        <span style={{ ...styles.sectionTileNote, ...(tone ? { color: tone, fontWeight: 700 } : null) }}>
+          {note}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+// `tiles` may hold falsy entries so callers can gate each tile on `canArea`
+// inline — a delegate sees only the tiles of the areas they hold.
+export function SectionHub({ tiles, onOpen }) {
+  return (
+    <div style={styles.sectionTileGrid}>
+      {(tiles || []).filter(Boolean).map((t) => (
+        <SectionTile key={t.key} title={t.title} icon={t.icon} note={t.note} tone={t.tone} onClick={() => onOpen(t.key)} />
+      ))}
+    </div>
+  );
+}
+
+// One open section, alone, with the way back where the tiles were.
+export function SectionScreen({ onBack, children }) {
+  return (
+    <div>
+      <button style={styles.sectionBackRow} onClick={onBack}>
+        <ChevronRight size={13} style={{ transform: "rotate(180deg)", marginRight: 6 }} />
+        ALL SECTIONS
+      </button>
+      {children}
+    </div>
+  );
+}
+
 // The kept days, newest first. This is where a supervisor goes back to a night
 // three weeks ago — the calls, the crews, both stations, in one workbook.
 // Account admin is set up once and then rarely touched, but it sat open above

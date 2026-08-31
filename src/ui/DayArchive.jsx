@@ -14,11 +14,11 @@ import { exportArchivedDay } from "../export/workbook.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
-import { CalendarClock, HandRaised, Plus, Trash, Users } from "../lib/icons.jsx";
+import { Archive, BookOpen, CalendarClock, ClipboardList, Clock, FileSignature, HandRaised, MapPin, Plus, Save, Search, ShieldAlert, Trash, Users } from "../lib/icons.jsx";
 import { readKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
-import { FoldingSection, ROLE_LABELS, SectionBanner } from "./AdminView.jsx";
+import { FoldingSection, ROLE_LABELS, SectionBanner, SectionHub, SectionScreen } from "./AdminView.jsx";
 import { BackupPanel } from "./BackupPanel.jsx";
 import { AssistanceTasks, CallRoute, FleetRow, InfoNote, PendingCallCard } from "./AssistanceTasks.jsx";
 import { UnitRosterCard } from "./ChatDock.jsx";
@@ -494,10 +494,12 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   const [openCrew, setOpenCrew] = useState(false);
   const [openDisp, setOpenDisp] = useState(false);
   const [openAdm, setOpenAdm] = useState(false);
-  // The one banner the five account sections live behind. Held open while
-  // somebody is waiting for password help — they are standing at a tablet
-  // right now, and a closed drawer must not be able to hide them.
-  const [openAccounts, setOpenAccounts] = useState(false);
+  // Which section of the current page is open on its own screen — null is the
+  // launcher. Reset when the page changes, or Teams' open section would still
+  // be "open" when somebody came back from Statistics and landed on a section
+  // they never chose.
+  const [openPanel, setOpenPanel] = useState(null);
+  useEffect(() => { setOpenPanel(null); }, [page]);
 
   const [newUnitName, setNewUnitName] = useState("");
   const [newUnitStation, setNewUnitStation] = useState(null);
@@ -785,40 +787,92 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           something about it. */}
       {onPage("log") && (
         <>
-          <DayArchive
-            archives={archives}
-            requests={requests}
-            units={units}
-            log={log}
-            scheduled={scheduled}
-          />
-          <SavedLogs submissions={submissions} requests={requests} coverage={coverage} />
+          {/* The launcher. Seven departments of history stacked one under the
+              other made the page a scroll to nowhere; a person comes here for
+              ONE of them — "the backups", "that Tuesday" — and a tile is how
+              that is asked for. */}
+          {!openPanel && (
+            <SectionHub
+              onOpen={setOpenPanel}
+              tiles={[
+                { key: "days", title: "Operational days", icon: <Archive size={26} />,
+                  note: `${(archives || []).length} kept` },
+                { key: "logs", title: "Shift logs", icon: <BookOpen size={26} />,
+                  note: `${(submissions || []).length} filed` },
+                { key: "checks", title: "Filed checklists", icon: <ClipboardList size={26} />,
+                  note: `${(checklistRuns || []).length} kept` },
+                { key: "pastcall", title: "Add a call the board missed", icon: <FileSignature size={26} />,
+                  note: "write up an outage" },
+                { key: "patients", title: "Patient records", icon: <Search size={26} />,
+                  note: "every patient, one list" },
+                canArea(user, "archive") && { key: "backups", title: "Backups", icon: <Save size={26} />,
+                  note: "copies & restore" },
+                { key: "issues", title: "Resolved issues", icon: <HandRaised size={26} />,
+                  note: "the standing record" },
+              ]}
+            />
+          )}
+          {openPanel === "days" && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <DayArchive
+                archives={archives}
+                requests={requests}
+                units={units}
+                log={log}
+                scheduled={scheduled}
+              />
+            </SectionScreen>
+          )}
+          {openPanel === "logs" && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <SavedLogs submissions={submissions} requests={requests} coverage={coverage} />
+            </SectionScreen>
+          )}
           {/* The checks themselves, kept. The statistics page answers whether
               today's have been done; this is where somebody goes back to what a
               truck's check actually said three months ago. */}
-          <FiledChecklists checklistRuns={checklistRuns} checklists={checklists} />
+          {openPanel === "checks" && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <FiledChecklists checklistRuns={checklistRuns} checklists={checklists} />
+            </SectionScreen>
+          )}
           {/* An administrator can write up an outage too — often they are the
               one holding the paper log afterwards. */}
-          <PastCallSection
-            user={user}
-            units={units}
-            log={log}
-            saveRequests={saveRequests}
-            addLog={addLog}
-          />
-
+          {openPanel === "pastcall" && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <PastCallSection
+                user={user}
+                units={units}
+                log={log}
+                saveRequests={saveRequests}
+                addLog={addLog}
+              />
+            </SectionScreen>
+          )}
           {/* The same record the desk reads, on the page an administrator goes
               back through. One list, two doors. */}
-          <PatientRecords
-            requests={requests}
-            scheduled={scheduled}
-            archives={archives}
-            units={units}
-          />
+          {openPanel === "patients" && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <PatientRecords
+                requests={requests}
+                scheduled={scheduled}
+                archives={archives}
+                units={units}
+              />
+            </SectionScreen>
+          )}
           {/* Sits with the archive because it is the same question: what of
               this survives, and where is it kept. */}
-          <BackupPanel user={user} />
-          <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
+          {openPanel === "backups" && canArea(user, "archive") && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <BackupPanel user={user} />
+            </SectionScreen>
+          )}
+          {openPanel === "issues" && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
+            </SectionScreen>
+          )}
         </>
       )}
 
@@ -843,8 +897,10 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
 
       {onPage("stats") && (
         <>
-      {/* Always open, at the head of the page. */}
-      {canArea(user, "stats") && (
+      {/* The KPI band stays on the launcher — it IS the statistics page; the
+          five departments of the job behind it become tiles. Stacked, they
+          made the page a column of everything at once. */}
+      {!openPanel && canArea(user, "stats") && (
       <IndicatorBand
         requests={requests}
         units={units}
@@ -856,62 +912,84 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         setRange={setStatRange}
       />
       )}
-
-      {/* Overtime sits above coverage on the statistics page: it is the thing
-          with a deadline on it — a pay period closes — and coverage is a thing
-          you read. */}
-      {canArea(user, "overtime") && (
-      <OvertimePanel
-        log={log}
-        requests={requests}
-        submissions={submissions}
-        archives={archives}
-        units={units}
-        user={user}
-        addLog={addLog}
-        decisions={overtimeDecisions}
-        setDecisions={setOvertimeDecisions}
-        sent={overtimeSent}
-        setSent={setOvertimeSent}
-      />
+      {!openPanel && (
+        <SectionHub
+          onOpen={setOpenPanel}
+          tiles={[
+            // Overtime first: it is the thing with a deadline on it — a pay
+            // period closes — and everything else here is a thing you read.
+            canArea(user, "overtime") && { key: "overtime", title: "Overtime", icon: <Clock size={26} />,
+              note: "claims & decisions" },
+            canArea(user, "stats") && { key: "staff", title: "Staff statistics", icon: <Users size={26} />,
+              note: "per-person figures & report" },
+            canArea(user, "checklists") && { key: "checklists", title: "Vehicle checklists", icon: <ClipboardList size={26} />,
+              note: "lists & today's runs" },
+            canArea(user, "stats") && { key: "coverage", title: "No coverage — record", icon: <ShieldAlert size={26} />,
+              note: "every gap, kept" },
+            canArea(user, "stats") && { key: "consent", title: "Location consent", icon: <MapPin size={26} />,
+              note: "tracking answers" },
+          ]}
+        />
       )}
-
-      {canArea(user, "stats") && (
-        <>
+      {openPanel === "overtime" && canArea(user, "overtime") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
+          <OvertimePanel
+            log={log}
+            requests={requests}
+            submissions={submissions}
+            archives={archives}
+            units={units}
+            user={user}
+            addLog={addLog}
+            decisions={overtimeDecisions}
+            setDecisions={setOvertimeDecisions}
+            sent={overtimeSent}
+            setSent={setOvertimeSent}
+          />
+        </SectionScreen>
+      )}
+      {openPanel === "consent" && canArea(user, "stats") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
           <TrackingConsentAdmin
             consents={trackingConsents}
             user={user}
             setConsents={setTrackingConsents}
             addLog={addLog}
           />
+        </SectionScreen>
+      )}
+      {openPanel === "coverage" && canArea(user, "stats") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
           <CoveragePanel coverage={coverage} units={units} requests={requests} />
-        </>
+        </SectionScreen>
       )}
-
       {/* What is on each list, and what came back today. */}
-      {canArea(user, "checklists") && (
-      <ChecklistAdmin
-        checklists={checklists}
-        setChecklists={setChecklists}
-        checklistRuns={checklistRuns}
-        units={units}
-        addLog={addLog}
-        user={user}
-      />
+      {openPanel === "checklists" && canArea(user, "checklists") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
+          <ChecklistAdmin
+            checklists={checklists}
+            setChecklists={setChecklists}
+            checklistRuns={checklistRuns}
+            units={units}
+            addLog={addLog}
+            user={user}
+          />
+        </SectionScreen>
       )}
-
       {/* Per-person UHU and the month's patient-origin table. */}
-      {canArea(user, "stats") && (
-      <Statistics
-        log={log}
-        requests={requests}
-        units={units}
-        checklistRuns={checklistRuns}
-        submissions={submissions}
-        archives={archives}
-        range={statRange}
-        setRange={setStatRange}
-      />
+      {openPanel === "staff" && canArea(user, "stats") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
+          <Statistics
+            log={log}
+            requests={requests}
+            units={units}
+            checklistRuns={checklistRuns}
+            submissions={submissions}
+            archives={archives}
+            range={statRange}
+            setRange={setStatRange}
+          />
+        </SectionScreen>
       )}
 
       {/* One place for issues, not two.
@@ -929,7 +1007,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           it, so the page opened on a wall of drawers and the thing it is named
           after began below the fold. Both stations, one under the other — the
           only place the two are visible together. */}
-      {STATIONS.map((st) => {
+      {!openPanel && STATIONS.map((st) => {
         const unitsHere = atStation(units, st.key);
         const liveHere = atStation(requests, st.key).filter((r) => r.status !== "completed");
         return (
@@ -979,22 +1057,45 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         );
       })}
 
-      {/* Outside the accounts drawer, so a code just issued stays on screen
-          however the drawer is left. */}
+      {/* On both the launcher and the accounts screen, so a code just issued
+          stays visible wherever the person goes next. */}
       <ClaimCodeBanner issued={issuedCodes} onDone={() => setIssuedCodes([])} />
 
-      {/* Every piece of account work behind one line: password help, lending
-          authority, and the three add-an-ID forms. Five separate banners here
-          were most of the page's height, for the part of the job an
-          administrator does once a month. Held open while a password reset is
-          waiting — that person is standing at a tablet right now. */}
-      <FoldingSection
-        title="ACCOUNTS & ACCESS"
-        count={pendingResets(passwordResets).length || accounts.length}
-        countLabel={pendingResets(passwordResets).length ? "waiting for password help" : "IDs on file"}
-        open={openAccounts || pendingResets(passwordResets).length > 0}
-        onToggle={() => setOpenAccounts((v) => !v)}
-      >
+      {/* The two tiles behind the rosters: the diary, and every piece of
+          account work — password help, lending authority, the three
+          add-an-ID forms. Five separate banners here were most of the page's
+          height, for the part of the job an administrator does once a month.
+          A password reset waiting turns the accounts tile amber: that person
+          is standing at a tablet right now. */}
+      {!openPanel && (
+        <SectionHub
+          onOpen={setOpenPanel}
+          tiles={[
+            { key: "scheduled", title: "Scheduled requests", icon: <CalendarClock size={26} />,
+              note: "bookings & repeating" },
+            { key: "accounts", title: "Accounts & access", icon: <Users size={26} />,
+              note: pendingResets(passwordResets).length
+                ? `${pendingResets(passwordResets).length} waiting for password help`
+                : `${accounts.length} IDs on file`,
+              tone: pendingResets(passwordResets).length ? "var(--hold-2)" : null },
+          ]}
+        />
+      )}
+      {openPanel === "scheduled" && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
+          <ScheduledRequests
+            user={user}
+            units={units}
+            requests={requests}
+            scheduled={scheduled}
+            saveScheduled={saveScheduled}
+            addLog={addLog}
+            audioCtxRef={audioCtxRef}
+          />
+        </SectionScreen>
+      )}
+      {openPanel === "accounts" && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
       {/* Somebody who cannot sign in is standing at a tablet right now, so
           this comes before the paperwork. */}
       <PasswordResets
@@ -1163,7 +1264,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         </InfoNote>
       </div>
       </FoldingSection>
-      </FoldingSection>
+        </SectionScreen>
+      )}
 
         </>
       )}
@@ -1342,18 +1444,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         </>
       )}
 
-      {/* Bookings sit with the teams they are for. */}
-      {onPage("teams") && (
-        <ScheduledRequests
-          user={user}
-          units={units}
-          requests={requests}
-          scheduled={scheduled}
-          saveScheduled={saveScheduled}
-          addLog={addLog}
-          audioCtxRef={audioCtxRef}
-        />
-      )}
+      {/* Bookings sit with the teams they are for — behind the Scheduled
+          requests tile on that page's launcher. */}
 
       {/* An administrator has no History tab of their own — the whole record is
           reached from the Archive and the statistics — so the closed calls stay

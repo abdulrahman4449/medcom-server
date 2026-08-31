@@ -2320,6 +2320,30 @@ export const styles = {
   // A category nothing came in against. Listed, because absent reads as an
   // incomplete list rather than as a nought — but quieter than the ones that
   // actually happened.
+  // The admin section launcher — one tile per section, on the card contract:
+  // 16px radius, hairline border, the standard lift, on the raised surface.
+  sectionTileGrid: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+    gap: 10, marginTop: 14,
+  },
+  sectionTile: {
+    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+    gap: 10, minHeight: 122, padding: "16px 12px 14px",
+    borderRadius: 16, border: "1px solid var(--hair)",
+    background: "var(--raised)", boxShadow: "0 6px 18px var(--lift)",
+    color: "var(--ink)", cursor: "pointer", textAlign: "center",
+    fontFamily: "inherit",
+  },
+  sectionTileTitle: { fontSize: 13.5, fontWeight: 700, letterSpacing: 0.2, lineHeight: 1.25 },
+  sectionTileIcon: { display: "flex", color: "var(--flow)" },
+  sectionTileNote: { fontSize: 11.5, color: "var(--ink-3)" },
+  sectionBackRow: {
+    display: "flex", alignItems: "center", padding: "10px 0", marginTop: 4,
+    background: "none", border: "none", cursor: "pointer",
+    fontFamily: "inherit", fontSize: 12, fontWeight: 800, letterSpacing: 0.6,
+    color: "var(--ink-2)",
+  },
+
   // A category nothing came in against: still on the list, but as one short
   // chip in a wrapped cloud rather than a full row of columns — eighteen
   // zero-rows one under the other were most of the panel's height.
