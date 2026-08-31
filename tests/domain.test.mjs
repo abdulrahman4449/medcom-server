@@ -1160,6 +1160,38 @@ export function run(D, t) {
       D.RESTORE_APPROVAL_TTL_MS <= 60 * 60 * 1000);
   }
 
+  // ---------- a no-coverage gap ends when the station closes, not just when
+  // a team comes back
+  //
+  // The opening pass has always known that a station with nobody signed on is
+  // CLOSED, not uncovered. The closing pass did not — so a gap declared in the
+  // afternoon was held open all night by an empty station, and the morning
+  // board read "NO COVERAGE — 19:25:27" over a team standing ready.
+  {
+    const staffed = (id, station, extra) => ({
+      id, name: id.toUpperCase(), station, alpha: { name: "A", accountId: "F1" }, ...extra,
+    });
+    const onCall = [{ id: "r1", status: "enroute", assignedUnitId: "m1", createdAt: 1 }];
+    t.is("coverage: a staffed team standing free ends the gap",
+      D.coverageGapCloseReason([staffed("m1", "main")], [], "main"),
+      "First team back in service");
+    t.is("coverage: every staffed team out keeps it open",
+      D.coverageGapCloseReason([staffed("m1", "main")], onCall, "main"), null);
+    t.is("coverage: the last team signing off ends it — the station is closed",
+      D.coverageGapCloseReason([{ id: "m1", name: "MEDIC 1", station: "main" }], [], "main"),
+      "Every team signed off — station closed");
+    t.is("coverage: an empty units list reads as a closed station too",
+      D.coverageGapCloseReason([], [], "main"), "Every team signed off — station closed");
+    // Zahrawi is not coverage — a station holding only Zahrawi is closed for
+    // coverage purposes, exactly as the opening pass has always treated it.
+    t.is("coverage: Zahrawi alone does not hold a gap open",
+      D.coverageGapCloseReason([staffed("z1", "ccc", { name: "ZAHRAWI" })], [], "ccc"),
+      "Every team signed off — station closed");
+    t.is("coverage: another station's teams decide nothing here",
+      D.coverageGapCloseReason([staffed("m1", "main")], [], "ccc"),
+      "Every team signed off — station closed");
+  }
+
   // ---------- a board write wakes a phone once, and only for a new assignment
   //
   // The server pushes to a truck's phones the moment a call LANDS on it. The

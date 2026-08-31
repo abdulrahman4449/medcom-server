@@ -82,6 +82,10 @@ try {
   globalThis.React = {
     useState() {}, useEffect() {}, useRef: () => ({ current: null }),
     useCallback: (f) => f,
+    // Enough context for the launcher's flatten flag: outside a renderer the
+    // default value is the only value there is.
+    createContext: (v) => ({ Provider: () => null, _default: v }),
+    useContext: (c) => (c ? c._default : undefined),
   };
 
   const bundled = await import(pathToFileURL(outFile).href);

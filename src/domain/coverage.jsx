@@ -128,7 +128,22 @@ export async function openCoverageGapIfStuck({ units, requests, list, addLog }) 
   return opened;
 }
 
-// Closed by the board, not by a person: the first team back in service ends it.
+// Why an open gap should end NOW, if it should. Two endings, and both are the
+// board's own: the first team back in service, and the LAST team signing off.
+// The opening pass has always known that a station with nobody signed on is
+// closed, not uncovered — "recording a gap for it every night would bury the
+// real ones" — but the closing pass never learned the same thing, so a gap
+// declared in the afternoon was held open all night by an empty station and
+// the morning board read "NO COVERAGE — 19:25:27" over a team standing ready.
+// The station closing ends the gap for the same reason it would never have
+// opened one.
+export function coverageGapCloseReason(units, requests, station) {
+  if (!coverageUnits(units, station).length) return "Every team signed off — station closed";
+  if (stationHasCoverage(units, requests, station)) return "First team back in service";
+  return null;
+}
+
+// Closed by the board, not by a person.
 export async function closeCoverageGapIfClear({ units, requests, list, addLog }) {
   const existing = (await readKey(COVERAGE_KEY, list)) || [];
   const open = existing.filter((c) => c && !c.endedAt);
@@ -137,16 +152,21 @@ export async function closeCoverageGapIfClear({ units, requests, list, addLog })
   let closed = 0;
   const next = existing.map((c) => {
     if (!c || c.endedAt) return c;
-    if (!stationHasCoverage(units, requests, c.station)) return c;
+    const why = coverageGapCloseReason(units, requests, c.station);
+    if (!why) return c;
     closed += 1;
-    return { ...c, endedAt: now, endedBy: "First team back in service" };
+    return { ...c, endedAt: now, endedBy: why };
   });
   if (!closed) return 0;
   await writeKey(COVERAGE_KEY, next);
   for (const c of next.filter((x) => x && x.endedAt === now)) {
+    const stationClosed = /signed off/.test(c.endedBy || "");
     await addLog(
-      `Coverage restored at ${stationLabel(c.station)} after ` +
-        `${msDurationStr(c.endedAt - c.startedAt)} with no ambulance available`,
+      stationClosed
+        ? `NO COVERAGE at ${stationLabel(c.station)} ended after ` +
+            `${msDurationStr(c.endedAt - c.startedAt)} — every team signed off, so the station is closed rather than uncovered`
+        : `Coverage restored at ${stationLabel(c.station)} after ` +
+            `${msDurationStr(c.endedAt - c.startedAt)} with no ambulance available`,
       "status"
     );
   }

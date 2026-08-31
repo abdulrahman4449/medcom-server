@@ -457,6 +457,75 @@ function RestoreWindow({ restore, onChanged }) {
   );
 }
 
+// ---------- the fresh start ----------
+//
+// Drawn for the owner alone — the server refuses everyone else regardless, and
+// a button only one person may press should only be on that one person's
+// screen. Erases everything worked and every backup; keeps accounts,
+// policies, checklists, inventory and the fleet's names. The typed word is
+// the second lock: RESET, in capitals, or the button stays dead.
+function FreshStart({ restore, onDone }) {
+  const [word, setWord] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState("");
+  if (!restore || !restore.isOwner) return null;
+
+  async function wipe() {
+    setBusy(true);
+    setSaid("");
+    try {
+      const res = await fetch(`${API_BASE}/api/reset-board`, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: word }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setSaid(body.error || "The server refused the reset.");
+      } else {
+        setSaid(
+          `Done. ${body.removedKeys} board key${body.removedKeys === 1 ? "" : "s"} erased · ` +
+            `${body.backupsDeleted} backup${body.backupsDeleted === 1 ? "" : "s"} deleted · ` +
+            `${body.fleetKept} truck${body.fleetKept === 1 ? "" : "s"} kept as names. ` +
+            "Accounts, passwords, policies, checklists and inventory are untouched. " +
+            "Everyone's screen empties within a few seconds."
+        );
+        setWord("");
+        if (onDone) await onDone();
+      }
+    } catch (e) {
+      setSaid("Could not reach the server. Nothing was erased.");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div style={styles.restoreBox}>
+      <div style={styles.restoreHead}>FRESH START — ERASE THE BOARD</div>
+      <div style={styles.formHint}>
+        For the day the pilot starts, and again for the day it goes live. Erases every call,
+        log, archive, filed shift and message, AND every backup — the copies hold the trial's
+        patient data, and the sync button would otherwise drag it back. Keeps the accounts and
+        passwords, the policies, the checklists, the inventory, and the trucks as names. Yours
+        alone; it cannot be delegated. Type RESET to arm the button.
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+        <input
+          style={{ ...styles.input, maxWidth: 160 }}
+          value={word}
+          onChange={(e) => setWord(e.target.value)}
+          placeholder="Type RESET"
+          aria-label="Type RESET to confirm"
+        />
+        <button style={styles.dangerBtnSm} disabled={busy || word !== "RESET"} onClick={wipe}>
+          {busy ? "…" : "Erase the board and the backups"}
+        </button>
+      </div>
+      {said && <div style={{ ...styles.formHint, marginTop: 8 }}>{said}</div>}
+    </div>
+  );
+}
+
 export function BackupPanel({ user }) {
   const role = user && user.role;
   const [open, setOpen] = useState(false);
@@ -541,6 +610,8 @@ export function BackupPanel({ user }) {
       <SyncStatus />
       {/* Who may put data back, and the owner's switch for it. */}
       <RestoreWindow restore={b.restore} onChanged={load} />
+      {/* The owner's clean-slate button, for the pilot and for go-live. */}
+      <FreshStart restore={b.restore} onDone={load} />
 
       {b.unreachable ? (
         <div style={styles.storageBanner}>

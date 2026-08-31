@@ -1095,7 +1095,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         </SectionScreen>
       )}
       {openPanel === "accounts" && (
-        <SectionScreen onBack={() => setOpenPanel(null)}>
+        <SectionScreen flat={false} onBack={() => setOpenPanel(null)}>
       {/* Somebody who cannot sign in is standing at a tablet right now, so
           this comes before the paperwork. */}
       <PasswordResets

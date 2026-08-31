@@ -1,5 +1,14 @@
 import { ChevronRight } from "../lib/icons.jsx";
+import { createContext, useContext } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
+
+// True inside an opened launcher tile. Somebody who chose a section from the
+// tiles has already said "show me this" — a second, collapsed drawer inside
+// the screen they chose is a door behind a door. Under this flag a
+// FoldingSection renders as a plain title banner with its body open; the five
+// account drawers opt out (SectionScreen flat={false}) because there they ARE
+// the content, five siblings, not the chosen section repeated.
+export const FlatSections = createContext(false);
 
 // ---------- admin view ----------
 
@@ -42,15 +51,18 @@ export function SectionHub({ tiles, onOpen }) {
   );
 }
 
-// One open section, alone, with the way back where the tiles were.
-export function SectionScreen({ onBack, children }) {
+// One open section, alone, with the way back where the tiles were. `flat`
+// (the default) turns the section's own drawer into a plain title with its
+// body open — the tile was the press; pass flat={false} where the screen
+// holds several sibling drawers that are the content themselves.
+export function SectionScreen({ onBack, flat, children }) {
   return (
     <div>
       <button style={styles.sectionBackRow} onClick={onBack}>
         <ChevronRight size={13} style={{ transform: "rotate(180deg)", marginRight: 6 }} />
         ALL SECTIONS
       </button>
-      {children}
+      <FlatSections.Provider value={flat !== false}>{children}</FlatSections.Provider>
     </div>
   );
 }
@@ -69,6 +81,20 @@ export function SectionScreen({ onBack, children }) {
 // first; not folding put a year of kept days on the page. What stays out is
 // what is still happening.
 export function FoldingSection({ title, count, countLabel, open, onToggle, always, children }) {
+  // Inside an opened tile the fold flattens: title banner, body open, nothing
+  // to press. See `FlatSections` above.
+  const flat = useContext(FlatSections);
+  if (flat) {
+    return (
+      <div style={{ marginTop: 14 }}>
+        <SectionBanner title={title} count={count} countLabel={countLabel} />
+        <div style={styles.foldBody}>
+          {always}
+          {children}
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={{ marginTop: 14 }}>
       <button style={styles.foldHeader} onClick={onToggle}>

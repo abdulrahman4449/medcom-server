@@ -878,6 +878,79 @@ app.post("/api/backups/allow-restore", requireArea("archive"), (req, res) => {
   res.json({ ok: true, restore: restoreStatusFor(req.user) });
 });
 
+// ---------- the fresh start ----------
+//
+// Two moments need a clean slate: the day the pilot starts, and the day it
+// goes live. Everything WORKED is erased — calls, logs, archives, filed
+// shifts, overtime, messages, the coverage record — and every backup with it,
+// because the copies hold the trial's patient MRNs and sync-all would drag
+// them straight back. Everything CONFIGURED survives: accounts and passwords
+// (their own table, untouched), policies, checklists, the inventory
+// definitions, and the fleet as names — trucks and stations are setup, but
+// seats, statuses and assigned calls are the trial's data.
+//
+// Owner only, like restores, and NOT delegable — mayOpenRestoreWindow is the
+// same test the restore window uses, and no delegate passes it. The typed
+// word is the second lock: a button this destructive must not be one
+// mis-tap from firing.
+app.post("/api/reset-board", requireArea("archive"), (req, res) => {
+  if (!mayOpenRestoreWindow(req.user)) {
+    return res.status(403).json({ error: `Only ${RESTORE_OWNER} can reset the board, and it cannot be delegated.` });
+  }
+  if (String((req.body || {}).confirm || "") !== "RESET") {
+    return res.status(400).json({ error: "Type RESET in capitals to confirm — this erases the board and every backup." });
+  }
+  const KEEP = new Set(["ems:policies", "ems:checklists", "ems:inventory", "ems:fleetSeeded", "ems:units"]);
+  let removedKeys = 0;
+  let fleetKept = 0;
+  db.transaction(() => {
+    for (const row of db.prepare("SELECT key FROM board").all()) {
+      if (KEEP.has(row.key)) continue;
+      db.prepare("DELETE FROM board WHERE key = ?").run(row.key);
+      removedKeys += 1;
+    }
+    const urow = db.prepare("SELECT value FROM board WHERE key = 'ems:units'").get();
+    if (urow) {
+      try {
+        const units = JSON.parse(urow.value);
+        const clean = (Array.isArray(units) ? units : [])
+          .filter((u) => u && u.id)
+          .map((u) => ({ id: u.id, name: u.name || "", station: u.station || null, status: "oos" }));
+        fleetKept = clean.length;
+        db.prepare("UPDATE board SET value = ?, updated_at = datetime('now') WHERE key = 'ems:units'")
+          .run(JSON.stringify(clean));
+      } catch (e) {
+        // An unreadable fleet is removed rather than kept broken.
+        db.prepare("DELETE FROM board WHERE key = 'ems:units'").run();
+      }
+    }
+    // Trial phones re-register the next time somebody signs on.
+    db.prepare("DELETE FROM push_tokens").run();
+    db.prepare("DELETE FROM settings WHERE key = 'restore_approval'").run();
+  })();
+  let backupsDeleted = 0;
+  for (const dir of [BACKUP_DIR, BACKUP_DIR_2].filter(Boolean)) {
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!/^(board-|before-restore-).*\.db$/.test(f)) continue;
+        try {
+          fs.unlinkSync(path.join(dir, f));
+          backupsDeleted += 1;
+        } catch (e) {
+          /* a copy that will not delete is reported by the count */
+        }
+      }
+    } catch (e) {
+      /* the second dir may be an unplugged drive */
+    }
+  }
+  console.log(
+    `BOARD RESET by ${req.user.id}: ${removedKeys} keys erased, ` +
+      `fleet kept as names (${fleetKept} trucks), ${backupsDeleted} backup file(s) deleted`
+  );
+  res.json({ ok: true, removedKeys, fleetKept, backupsDeleted, kept: [...KEEP] });
+});
+
 // Administrators only, both of them. The listing names the copies, and those
 // names are what the restore routes are addressed by; the other lets anyone
 // who can reach the server fill its disk with snapshots.

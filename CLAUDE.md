@@ -210,6 +210,31 @@ patch", that document is the target — do not start a fresh exploration.
   are always listed, zeros included, in the order it says them; anything else
   the board holds is kept alongside. Both mixes fold closed on the KPI band —
   the count line stays readable without the column.
+- **A no-coverage gap has TWO endings, and both are the board's own.** The
+  first team back in service, and the LAST team signing off —
+  `coverageGapCloseReason` in `domain/coverage.jsx`, under `npm test`. The
+  opening pass has always known that a station with nobody signed on is
+  CLOSED, not uncovered; the closing pass did not, so a gap declared in the
+  afternoon was held open all night by an empty station and the morning board
+  read "NO COVERAGE — 19:25:27" over a team standing ready. Zahrawi alone
+  does not hold a gap open — it is not coverage, exactly as when opening.
+- **The fresh start is the owner's, cannot be delegated, and keeps what was
+  configured.** `POST /api/reset-board` — for the day the pilot starts and
+  the day it goes live. Gated by the same `mayOpenRestoreWindow` test as
+  restores (only F1525518's own full-admin session passes) plus a typed
+  `RESET`. It erases every worked key AND every backup file — the copies hold
+  the trial's MRNs and sync-all would drag them back — and keeps accounts
+  (their own table), `ems:policies`, `ems:checklists`, `ems:inventory`,
+  `ems:fleetSeeded`, and the fleet as names only (id, name, station; seats
+  and statuses stripped). `FreshStart` in `BackupPanel.jsx` draws it for the
+  owner alone.
+- **Inside an opened launcher tile, a section is a title, not a drawer.**
+  `FlatSections` in `AdminView.jsx` — the tile was the press, so a second,
+  collapsed FoldingSection inside the screen somebody chose is a door behind
+  a door: under the flag it renders as a plain banner with its body open.
+  The accounts screen opts out (`SectionScreen flat={false}`) because its
+  five drawers ARE the content, siblings, not the chosen section repeated;
+  the KPI band's two mixes are outside any tile and keep their folds.
 - **A locked phone is woken by the SERVER, and the push names no patient.**
   The WebView freezes when a phone locks, the poll stops, and no alarm in the
   app can sound about a call it never learned of — so the server sends the
