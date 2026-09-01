@@ -983,11 +983,17 @@ export function App() {
   // phone the moment a call lands there. Re-run when the truck changes — a
   // crew moved mid-shift must be woken for the truck they are ON. A build
   // with no push plugin returns quietly and the poll stays the whole story.
-  // Deliberately crew only: the desk and administration are awake screens.
+  // Deliberately crew only — with ONE exception: the OWNER's session
+  // registers whatever they signed in as, because the System page's alerts
+  // (a silent truck on a live call, a failed self-test) go to the owner,
+  // and a token is the only address a locked phone has. An owner token
+  // carries no unit, so it is never woken for a call — only for notices.
   useEffect(() => {
-    if (!user || user.role !== "team" || !user.unitId) return;
-    registerPushSeat(user.unitId, user.station);
-  }, [user && user.accountId, user && user.role, user && user.unitId]);
+    if (!user) return;
+    const crewSeat = user.role === "team" && user.unitId;
+    if (!crewSeat && !user.isOwner) return;
+    registerPushSeat(crewSeat ? user.unitId : "", crewSeat ? user.station : "");
+  }, [user && user.accountId, user && user.role, user && user.unitId, user && user.isOwner]);
 
   useEffect(() => {
     if (!user) return;
