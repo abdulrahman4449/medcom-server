@@ -102,6 +102,8 @@ try {
     ...require_(join(ROOT, "lib/restore-guard.cjs")),
     ...require_(join(ROOT, "lib/system-health.cjs")),
     ...require_(join(ROOT, "lib/reset-requests.cjs")),
+    // The two backup tiers: what a verified daily may clear, and what it may not.
+    ...require_(join(ROOT, "lib/backup-tiers.cjs")),
     // When a board write wakes a phone.
     ...require_(join(ROOT, "lib/push-triggers.cjs")),
     // Namespaced, because the app has a list of the same areas for its screens

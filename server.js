@@ -644,20 +644,15 @@ async function runSelfTest(reason) {
     const verifyNewest = () => {
       const newest = listBackups(BACKUP_DIR)[0];
       if (!newest) return { ok: false, note: "no backup file found" };
-      const copy = new Database(path.join(BACKUP_DIR, newest.name), { readonly: true });
-      try {
-        const q = copy.prepare("PRAGMA quick_check").get();
-        const n = copy.prepare("SELECT COUNT(*) AS n FROM board").get().n;
-        // Judged against the LIVE board: an empty copy of an empty board is
-        // a fresh deployment, not a fault; an empty copy of a working board
-        // is exactly the disaster this check exists to find early.
-        const live = db.prepare("SELECT COUNT(*) AS n FROM board").get().n;
-        return {
-          ok: !!(q && q.quick_check === "ok" && (n > 0 || live === 0)),
-          empty: n === 0 && live > 0,
-          note: `${newest.name} · ${n} keys (board holds ${live})`,
-        };
-      } finally { copy.close(); }
+      // Judged against the LIVE board: an empty copy of an empty board is
+      // a fresh deployment, not a fault; an empty copy of a working board
+      // is exactly the disaster this check exists to find early.
+      const v = verifyBackupFile(path.join(BACKUP_DIR, newest.name));
+      return {
+        ok: v.ok,
+        empty: v.empty,
+        note: v.error ? `${newest.name} · ${v.error}` : `${newest.name} · ${v.keys} keys (board holds ${v.live})`,
+      };
     };
     let v = verifyNewest();
     if (!v.ok && v.empty) {
@@ -1051,8 +1046,16 @@ function dbFileBytes() {
 // SQLite's own online backup, which takes a consistent snapshot while the app
 // keeps serving, and that is what runs here.
 const BACKUP_EVERY_MS = 24 * 60 * 60 * 1000;
-const BACKUP_KEEP_DAILY = Number(process.env.BACKUP_KEEP_DAILY || 30);
-const BACKUP_KEEP_WEEKLY = Number(process.env.BACKUP_KEEP_WEEKLY || 12);
+// Every copy is kept as a daily for the whole window — the weekly thinning
+// tier is gone. Ninety days of dailies replaces 30 daily + 12 weekly.
+const BACKUP_KEEP_DAYS = Number(process.env.BACKUP_KEEP_DAYS || process.env.BACKUP_KEEP_DAILY || 90);
+// The daily runs just after the 07:00 operational boundary (04:00 UTC), so
+// the copy always holds a complete, closed operational day.
+const BACKUP_DAILY_UTC_HOUR = Number(process.env.BACKUP_DAILY_UTC_HOUR || 4);
+const {
+  TEMP_EVERY_MS, TEMP_CAP, tempName, isTempName, tempsToClear, tempsOverCap,
+  backupClearsTemps, backupsBeyondDays, nextDailyAt,
+} = require("./lib/backup-tiers.cjs");
 
 // Where copies go. BACKUP_DIR sits beside the database on the persistent disk.
 // BACKUP_DIR_2 is the second, separate destination - on a server you own, that
@@ -1115,10 +1118,10 @@ function listBackups(dir) {
   }
 }
 
-// Keep every backup for BACKUP_KEEP_DAILY days, then one per week for
-// BACKUP_KEEP_WEEKLY weeks. Deleting the rest keeps a year of history in a
-// couple of hundred MB rather than letting copies fill the disk we just added
-// a warning for.
+// Keep every backup, as a daily, for BACKUP_KEEP_DAYS days. There is no
+// weekly thinning any more — the department chose a shorter window of full
+// dailies over a longer one that degrades, and the year-end archive (not the
+// backup folder) is where long history belongs.
 function pruneBackups(dir) {
   // Sidecars left beside a backup by an older build, or by something reading
   // one. They are not backups and they confuse both the list and anybody
@@ -1132,16 +1135,13 @@ function pruneBackups(dir) {
   } catch (e) {
     // the directory will be made on the next write
   }
-  const now = Date.now();
-  const dailyCut = now - BACKUP_KEEP_DAILY * 24 * 60 * 60 * 1000;
-  const weeklyCut = now - BACKUP_KEEP_WEEKLY * 7 * 24 * 60 * 60 * 1000;
-  const weekSeen = new Set();
-  for (const b of listBackups(dir)) {
-    const t = new Date(b.at).getTime();
-    if (t >= dailyCut) continue;
-    const week = Math.floor(t / (7 * 24 * 60 * 60 * 1000));
-    if (t >= weeklyCut && !weekSeen.has(week)) { weekSeen.add(week); continue; }
-    try { fs.unlinkSync(path.join(dir, b.name)); } catch (e) { /* already gone */ }
+  const stale = backupsBeyondDays(
+    listBackups(dir).map((b) => ({ name: b.name, at: new Date(b.at).getTime() })),
+    BACKUP_KEEP_DAYS,
+    Date.now()
+  );
+  for (const name of stale) {
+    try { fs.unlinkSync(path.join(dir, name)); } catch (e) { /* already gone */ }
   }
 }
 
@@ -1157,6 +1157,93 @@ function settleBackupFile(file) {
     }
   } catch (e) {
     console.log(`Backup ${path.basename(file)} could not be settled: ${e.message}`);
+  }
+}
+
+// A copy is judged by opening it: integrity, and a board that is not empty
+// while the live one has keys. Shared by the daily self-test and by the
+// verified-daily gate that clears the temporary tier.
+function verifyBackupFile(file) {
+  try {
+    const copy = new Database(file, { readonly: true });
+    try {
+      const q = copy.prepare("PRAGMA quick_check").get();
+      const n = copy.prepare("SELECT COUNT(*) AS n FROM board").get().n;
+      const live = db.prepare("SELECT COUNT(*) AS n FROM board").get().n;
+      return { ok: !!(q && q.quick_check === "ok" && (n > 0 || live === 0)), empty: n === 0 && live > 0, keys: n, live };
+    } finally {
+      copy.close();
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------- the temporary tier ----------
+//
+// A copy every thirty minutes, so a midday disaster costs half an hour, not a
+// day. Temps live in their own folder under their own `temp-` prefix, so the
+// restore picker, the download route and sync-all — all of which match
+// `board-` — can never see one. They are deleted ONLY by a daily copy that
+// verifyBackupFile has judged healthy; the rules are lib/backup-tiers.cjs,
+// under npm test.
+const TEMP_DIR = path.join(BACKUP_DIR, "temp");
+
+function listTemps() {
+  try {
+    return fs
+      .readdirSync(TEMP_DIR)
+      .filter(isTempName)
+      .map((f) => {
+        const st = fs.statSync(path.join(TEMP_DIR, f));
+        return { name: f, at: st.mtimeMs, bytes: st.size };
+      })
+      .sort((a, b) => b.at - a.at);
+  } catch (e) {
+    return [];
+  }
+}
+
+function clearTempsThrough(verifiedAt) {
+  for (const name of tempsToClear(listTemps(), verifiedAt)) {
+    try { fs.unlinkSync(path.join(TEMP_DIR, name)); } catch (e) { /* already gone */ }
+  }
+}
+
+let lastTempBackup = null;
+
+async function runTempBackup() {
+  try {
+    // A full disk is the one way this tier could hurt the live app, so the
+    // tier is what yields first — and says so where the owner looks.
+    const d = diskUsage();
+    if (d.measured && d.warning) {
+      noteFinding("backup", "Temporary backup skipped: disk usage is over the warning threshold");
+      return null;
+    }
+    const at = Date.now();
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+    let name = tempName(at);
+    for (let n = 2; fs.existsSync(path.join(TEMP_DIR, name)); n++) {
+      name = tempName(at).replace(/\.db$/, `-${n}.db`);
+    }
+    const dest = path.join(TEMP_DIR, name);
+    await db.backup(dest);
+    settleBackupFile(dest);
+    lastTempBackup = { name, at: new Date(at).toISOString() };
+    // The cap only fills while dailies keep failing to verify — worth a
+    // finding of its own, on top of the self-test's stale-backup alarm.
+    const over = tempsOverCap(listTemps(), TEMP_CAP);
+    if (over.length) {
+      noteFinding("backup", "Temporary backups are over their cap — the daily backup may be failing");
+      for (const n of over) {
+        try { fs.unlinkSync(path.join(TEMP_DIR, n)); } catch (e) { /* already gone */ }
+      }
+    }
+    return lastTempBackup;
+  } catch (e) {
+    noteFinding("backup", `Temporary backup failed: ${String(e.message || e)}`);
+    return null;
   }
 }
 
@@ -1203,9 +1290,24 @@ async function runBackup(reason) {
       failed.push({ dir: BACKUP_DIR_2, error: String(e.message || e) });
     }
   }
+  // The temporary tier is cleared ONLY here, and only by a copy that has been
+  // opened and judged healthy — a corrupt daily must not delete the very
+  // copies that could still save the day. The safety copies taken before a
+  // restore or a sync never clear temps: they precede a rewrite of the board,
+  // and the temps beside them are the record of what is about to be rewritten.
+  let verified = false;
+  if (written.length) {
+    const v = verifyBackupFile(path.join(BACKUP_DIR, name));
+    verified = !!v.ok;
+    if (!verified) {
+      noteFinding("backup", `Backup ${name} failed verification — temporary copies kept`);
+    } else if (backupClearsTemps(reason)) {
+      clearTempsThrough(at);
+    }
+  }
   let bytes = 0;
   try { bytes = fs.statSync(path.join(BACKUP_DIR, name)).size; } catch (e) { /* first copy failed */ }
-  lastBackup = { name, at: new Date(at).toISOString(), reason, bytes, written, failed };
+  lastBackup = { name, at: new Date(at).toISOString(), reason, bytes, written, failed, verified };
   console.log(
     `Backup ${failed.length && !written.length ? "FAILED" : "written"}: ${name}` +
     ` -> ${written.join(", ") || "nowhere"}` +
@@ -1230,8 +1332,16 @@ function backupState() {
                newest: copies[0] || null, totalBytes: copies.reduce((n, b) => n + b.bytes, 0) },
     second,
     downloadEnabled: !!BACKUP_TOKEN,
-    keepDaily: BACKUP_KEEP_DAILY,
-    keepWeekly: BACKUP_KEEP_WEEKLY,
+    keepDays: BACKUP_KEEP_DAYS,
+    temp: (() => {
+      const temps = listTemps();
+      return {
+        count: temps.length,
+        totalBytes: temps.reduce((n, t) => n + t.bytes, 0),
+        last: lastTempBackup,
+        everyMs: TEMP_EVERY_MS,
+      };
+    })(),
   };
 }
 
@@ -1354,6 +1464,18 @@ app.post("/api/reset-board", requireArea("archive"), (req, res) => {
     } catch (e) {
       /* the second dir may be an unplugged drive */
     }
+  }
+  // The temporary tier holds the same MRNs as any backup and goes with them.
+  try {
+    for (const f of fs.readdirSync(TEMP_DIR)) {
+      if (!isTempName(f)) continue;
+      try {
+        fs.unlinkSync(path.join(TEMP_DIR, f));
+        backupsDeleted += 1;
+      } catch (e) { /* reported by the count */ }
+    }
+  } catch (e) {
+    /* no temp folder yet */
   }
   console.log(
     `BOARD RESET by ${req.user.id}: ${removedKeys} keys erased, ` +
@@ -2566,15 +2688,25 @@ app.listen(PORT, () => {
   console.log(`Backups: ${BACKUP_DIR}${BACKUP_DIR_2 ? ` and ${BACKUP_DIR_2}` : ""}` +
     `${BACKUP_TOKEN ? "" : " · download disabled (no BACKUP_TOKEN set)"}`);
   // One on boot, so a server that is restarted daily still has yesterday, and
-  // so a fresh deployment is never sitting there with no copy at all. Then
-  // every 24 hours for as long as it stays up.
+  // so a fresh deployment is never sitting there with no copy at all. The
+  // scheduled daily fires just after the 07:00 operational boundary
+  // (BACKUP_DAILY_UTC_HOUR), so each copy holds a complete, closed day.
   runBackup("startup").catch((e) => console.error("Backup on startup failed:", e));
-  const timer = setInterval(
-    () => runBackup("scheduled").catch((e) => console.error("Scheduled backup failed:", e)),
-    BACKUP_EVERY_MS
+  const scheduleDaily = () => {
+    const t = setTimeout(() => {
+      runBackup("scheduled").catch((e) => console.error("Scheduled backup failed:", e));
+      scheduleDaily();
+    }, Math.max(60 * 1000, nextDailyAt(Date.now(), BACKUP_DAILY_UTC_HOUR) - Date.now()));
+    if (t.unref) t.unref();
+  };
+  scheduleDaily();
+  // The temporary tier: a copy every thirty minutes, cleared by each verified
+  // daily. Never hold the process open for the sake of a backup timer.
+  const tempTimer = setInterval(
+    () => runTempBackup().catch((e) => console.error("Temporary backup failed:", e)),
+    TEMP_EVERY_MS
   );
-  // Never hold the process open for the sake of the backup timer.
-  if (timer.unref) timer.unref();
+  if (tempTimer.unref) tempTimer.unref();
   console.log(`Chosen from: ${DB_SOURCE}`);
 
   // The failure this guards against is a silent one: the board works perfectly

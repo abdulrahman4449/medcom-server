@@ -1684,4 +1684,51 @@ export function run(D, t) {
     t.ok("delegation: and every area the app draws is one the server knows",
       D.DELEGATION_AREAS.every((a) => server.cleanScopes([a.key]).length === 1));
   }
+
+  // ---------- the two backup tiers ----------
+  //
+  // A copy every thirty minutes guards the day that is still running; the
+  // daily ladder is the permanent record. The one rule everything hangs on:
+  // temps are deleted ONLY by a daily copy that was opened and judged
+  // healthy, and never by the safety copies taken before a restore or sync.
+  {
+    const T = (name, at) => ({ name, at });
+    const day = 24 * 60 * 60 * 1000;
+
+    t.ok("backups: a temp copy never wears the backup prefix",
+      D.isTempName(D.tempName(Date.now())) &&
+      D.tempName(Date.now()).startsWith("temp-") &&
+      !D.tempName(Date.now()).startsWith("board-"));
+    t.ok("backups: a collision suffix is still a temp, and a real backup never is",
+      D.isTempName("temp-20260901-133000-2.db") &&
+      !D.isTempName("board-20260901-133000.db"));
+
+    const temps = [T("a", 100), T("b", 200), T("c", 300)];
+    t.is("backups: a verified daily clears only the temps it covers",
+      D.tempsToClear(temps, 200), ["a", "b"]);
+    t.is("backups: no verified moment, nothing cleared",
+      D.tempsToClear(temps, NaN), []);
+    t.is("backups: the cap sheds the OLDEST temps — the newest are the rescue",
+      D.tempsOverCap([T("new", 3), T("old", 1), T("mid", 2)], 2), ["old"]);
+    t.ok("backups: the cap holds three days of half-hour copies",
+      D.TEMP_CAP * D.TEMP_EVERY_MS === 3 * day);
+
+    t.ok("backups: a safety copy before a restore or a sync never clears temps",
+      !D.backupClearsTemps("before a restore") &&
+      !D.backupClearsTemps("before a sync") &&
+      D.backupClearsTemps("scheduled") &&
+      D.backupClearsTemps("startup") &&
+      D.backupClearsTemps("on demand"));
+
+    t.is("backups: retention keeps every daily inside the window — no weekly thinning",
+      D.backupsBeyondDays(
+        [T("fresh", 89 * day), T("edge", 1 * day), T("older", 0.5 * day), T("stale", 0)],
+        90, 91 * day),
+      ["older", "stale"]);
+
+    t.is("backups: the daily lands just after the 07:00 boundary",
+      D.nextDailyAt(Date.UTC(2026, 8, 1, 3, 0, 0), 4), Date.UTC(2026, 8, 1, 4, 5, 0));
+    t.is("backups: a boundary already passed books tomorrow's",
+      D.nextDailyAt(Date.UTC(2026, 8, 1, 4, 5, 0), 4), Date.UTC(2026, 8, 2, 4, 5, 0));
+  }
 }

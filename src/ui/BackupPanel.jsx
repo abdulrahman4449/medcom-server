@@ -645,7 +645,10 @@ export function BackupPanel({ user }) {
               <span style={styles.backupValue}>{b.primary ? b.primary.count : 0} copies</span>
               <span style={styles.backupNote}>
                 {b.primary && b.primary.totalBytes ? bytesStr(b.primary.totalBytes) : "nothing yet"}
-                {b.keepDaily ? ` · every day for ${b.keepDaily} days, then weekly for ${b.keepWeekly} weeks` : ""}
+                {b.keepDays ? ` · one copy per day, kept ${b.keepDays} days` : ""}
+                {b.temp && b.temp.count
+                  ? ` · plus ${b.temp.count} half-hour ${b.temp.count === 1 ? "copy" : "copies"} of today, cleared by each verified daily`
+                  : ""}
               </span>
             </div>
             <div style={styles.backupCell}>

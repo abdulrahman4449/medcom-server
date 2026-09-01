@@ -468,10 +468,28 @@ patch", that document is the target — do not start a fresh exploration.
   file is made, so a day pulled out of the archive a week later was titled with
   today's date and had its shifts worked out against today's 07:00.
 - **Backups are the server's job, and a live SQLite file cannot be copied.**
-  `db.backup()` in `server.js`, on start-up and every 24 hours, to `BACKUP_DIR`
-  and — if set — `BACKUP_DIR_2` as well. Downloading one hands over every
-  patient MRN on the board, so the route does not exist unless `BACKUP_TOKEN`
-  is set.
+  `db.backup()` in `server.js`, on start-up and daily just after the 07:00
+  operational boundary (`BACKUP_DAILY_UTC_HOUR`, 04:00 UTC), to `BACKUP_DIR`
+  and — if set — `BACKUP_DIR_2` as well. Retention is ALL-DAILY: every copy
+  kept `BACKUP_KEEP_DAYS` (90) days, no weekly thinning — long history belongs
+  to the year-end archive, not the backup folder. Downloading one hands over
+  every patient MRN on the board, so the route does not exist unless
+  `BACKUP_TOKEN` is set.
+- **The temporary tier guards the day that is still running, and only a
+  VERIFIED daily may clear it.** `lib/backup-tiers.cjs`, under `npm test` — a
+  copy every 30 minutes into `BACKUP_DIR/temp` under its own `temp-` prefix,
+  so the restore picker, the download route and sync-all (all matching
+  `board-`) can never see one. `runBackup` opens the copy it just wrote
+  (`verifyBackupFile`) and clears only temps taken at or before it — a daily
+  that fails verification deletes NOTHING and files a finding, because the
+  temps it would have covered are exactly the copies that day still needs.
+  The safety copies taken `before a restore`/`before a sync` never clear
+  temps (`backupClearsTemps`): they precede a rewrite of the board, and the
+  temps beside them are the record of what is being rewritten. Temps are
+  capped at three days (`TEMP_CAP` — filling up means dailies are failing,
+  itself a finding), skipped when the disk is over its warning threshold, and
+  erased by the owner's board reset like every other copy — they hold the
+  same MRNs.
 - **Nothing reaches `/api/board` without a token, and passwords are never
   handled on the device.** Accounts live in their own `accounts` table, not on
   the board — `ems:accounts` is refused outright by the board API. Sign-in is
