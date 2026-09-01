@@ -16,7 +16,7 @@ import { InfoNote } from "./AssistanceTasks.jsx";
 // silent is a crew that will miss a call, and silence is a thing only the
 // server can see. Read when the page is OPENED, never on a poll: watching
 // the system must not become a load on the system.
-export function SystemPanel({ requests, accounts }) {
+export function SystemPanel({ requests, accounts, onOpenCall }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -252,6 +252,20 @@ export function SystemPanel({ requests, accounts }) {
 
           {head("THE RECORD — WHAT IS INCOMPLETE")}
           {row("Completed calls missing sheet data", String(shortCalls.length), shortCalls.length ? "var(--hold-2)" : undefined)}
+          {shortCalls.slice(0, 6).map((r) => (
+            <div key={r.id} style={{ ...styles.invMoveRow, alignItems: "center" }}>
+              <span style={styles.invMoveItem}>
+                · {gregDateTimeStr(r.createdAt)} · {r.from || "?"} → {r.to || "?"} — missing{" "}
+                {missingLogFields(r).map((f) => f.label).slice(0, 3).join(", ")}
+                {missingLogFields(r).length > 3 ? "…" : ""}
+              </span>
+              {onOpenCall && (
+                <button style={styles.ghostBtnSm} onClick={() => onOpenCall(r)}>
+                  Find on the board
+                </button>
+              )}
+            </div>
+          ))}
           {row("Accounts with an EXPIRED sign-in code", String(expiredCodes.length), expiredCodes.length ? "var(--hold-2)" : undefined)}
           {expiredCodes.slice(0, 5).map((a) => (
             <div key={a.id} style={{ ...styles.invMoveRow, alignItems: "center" }}>
@@ -317,6 +331,38 @@ export function SystemPanel({ requests, accounts }) {
           )}
 
           {head("DAY BY DAY — ONE LINE PER SELF-TEST")}
+          {(data.history || []).length >= 2 && (() => {
+            // Board p95 by day, as bars. One series, one calm hue; a day
+            // whose self-test failed wears the critical red instead — red
+            // already means "act" everywhere on this board. Labels only
+            // where they earn their place: the peak and the latest day.
+            const hist = (data.history || []).slice(-30);
+            const max = Math.max(1, ...hist.map((h) => h.boardP95 || 0));
+            const peakI = hist.reduce((bi, h, i) => ((h.boardP95 || 0) > (hist[bi].boardP95 || 0) ? i : bi), 0);
+            return (
+              <div style={{ margin: "6px 0 10px" }}>
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 64,
+                  borderBottom: "1px solid var(--hair-2)", paddingBottom: 1 }}>
+                  {hist.map((h, i) => (
+                    <div key={h.day} title={`${h.day} · board p95 ${h.boardP95} ms`}
+                      style={{ flex: 1, minWidth: 3, borderRadius: "2px 2px 0 0",
+                        height: `${Math.max(3, Math.round(((h.boardP95 || 0) / max) * 100))}%`,
+                        background: h.selfTest === false ? "var(--crit)" : "var(--flow)",
+                        position: "relative" }}>
+                      {(i === peakI || i === hist.length - 1) && (h.boardP95 || 0) > 0 && (
+                        <span style={{ position: "absolute", top: -14, left: "50%",
+                          transform: "translateX(-50%)", fontSize: 9, color: "var(--ink-3)",
+                          whiteSpace: "nowrap" }}>{h.boardP95}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style={styles.formHint}>
+                  Board reads, 95th percentile ms by day · a red bar is a day whose self-test failed
+                </div>
+              </div>
+            );
+          })()}
           {(data.history || []).length === 0 ? (
             <div style={styles.formHint}>
               The first row is written by the first self-test; one small row per day after that, so

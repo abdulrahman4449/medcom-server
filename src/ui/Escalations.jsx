@@ -654,7 +654,7 @@ export function callSearchText(req, units, escalations) {
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
-export function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect }) {
+export function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect, focusSignal }) {
   const [open, setOpen] = useState(!!shiftWindow);
   // Folded, with the count still on the header. The number is the part that
   // needs to be seen; the list of which calls is what you open it for.
@@ -755,6 +755,19 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
   // A crew's list is their current shift by default, because that is what they
   // want nine times in ten. This is the door out of it.
   const [allHistory, setAllHistory] = useState(false);
+
+  // Sent here from another page — the System page's "find this call". The
+  // fold opens, every filter clears, and the search box carries the call's
+  // own MRN, so the tap lands on the call and not on a page of controls.
+  useEffect(() => {
+    if (!focusSignal || !focusSignal.ts) return;
+    setOpen(true);
+    setQuery(String(focusSignal.q || ""));
+    setDay("");
+    setEscOnly(false);
+    setCancelledOnly(false);
+    setAllHistory(true);
+  }, [focusSignal && focusSignal.ts]);
 
   const q = query.trim().toLowerCase();
   const filtering = !!q || !!day || escOnly || cancelledOnly;

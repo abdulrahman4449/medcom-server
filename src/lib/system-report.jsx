@@ -1,5 +1,6 @@
 import { API_BASE } from "./board-api.jsx";
 import { authHeaders, getToken } from "./auth.jsx";
+import { nativeBackgroundStatus, shellReport } from "./dates.jsx";
 import { pendingWrites, totalPendingCount } from "./offline-queue.jsx";
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 
@@ -58,7 +59,7 @@ async function post(path, body) {
 // the crew screen's diagnostic line, readable without holding the phone.
 // Everything is read defensively — a diagnostic that throws is a fault, and
 // short — it crosses the network and sits in a bounded store.
-function gatherDiagnostics() {
+async function gatherDiagnostics() {
   const d = {};
   try { d.notifications = typeof window.Notification !== "undefined" ? window.Notification.permission : "unsupported (native shell)"; } catch (e) { d.notifications = "unreadable"; }
   try { d.alertsArmed = window.localStorage.getItem("ems:alertsArmed") ? "yes" : "no"; } catch (e) { d.alertsArmed = "storage unreadable"; }
@@ -72,6 +73,24 @@ function gatherDiagnostics() {
     d.alarmPlugin = plugins.PulseOpsAlarm ? "present" : "absent";
     d.pushPlugin = plugins.PulseOpsPush ? "present" : "absent";
   } catch (e) { d.alarmPlugin = "unreadable"; }
+  // The shell's own verdict on itself, and the four Android settings that
+  // silence an alert — the exact lines the crew screen shows, readable here
+  // without holding the phone. A browser has neither and says so.
+  try { d.shell = shellReport(); } catch (e) { d.shell = "unreadable"; }
+  try {
+    const bg = await Promise.race([
+      Promise.resolve(nativeBackgroundStatus()),
+      new Promise((r) => setTimeout(() => r(null), 3000)),
+    ]);
+    if (bg) {
+      d.appNotifications = bg.notificationsEnabled ? "enabled" : "TURNED OFF for this app";
+      d.dispatchChannel = bg.channelSilenced ? "SILENCED by the owner" : "sounding";
+      d.alarmVolume = `${bg.alarmVolumePct != null ? bg.alarmVolumePct : "?"}%${(bg.alarmVolumePct || 0) < 30 ? " — LOW" : ""}`;
+      d.batteryOptimisation = bg.batteryOptimised ? "ON — Android may freeze the app" : "off";
+    }
+  } catch (e) {
+    /* a shell without the method simply reports the web-side facts */
+  }
   try { d.online = window.navigator.onLine ? "yes" : "no"; } catch (e) {}
   try { d.language = window.navigator.language || ""; } catch (e) {}
   try { d.userAgent = String(window.navigator.userAgent || "").slice(0, 110); } catch (e) {}
@@ -176,11 +195,11 @@ export function systemHello() {
       heldWrites,
       heldOldestMs,
     };
-    post("/api/system/hello", hello).then((answer) => {
+    post("/api/system/hello", hello).then(async (answer) => {
       // The owner asked this device for its diagnostics: answer once, now,
       // outside the throttle — they are sitting at the page waiting.
       if (answer && answer.sendDiagnostics) {
-        post("/api/system/hello", { ...hello, diagnostics: gatherDiagnostics() });
+        post("/api/system/hello", { ...hello, diagnostics: await gatherDiagnostics() });
       }
     });
   } catch (e) {

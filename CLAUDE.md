@@ -317,7 +317,11 @@ patch", that document is the target — do not start a fresh exploration.
   a live call has been silent past three minutes, and never in the first
   minutes after boot. Test-push (`/api/system/test-push`) goes down the
   REAL dispatch channel on purpose. Device diagnostics are pull-only: the
-  owner asks, the device answers on its next heartbeat, nothing streams. `isOwner` is stamped on the login,
+  owner asks, the device answers on its next heartbeat, nothing streams —
+  and the answer includes `shellReport` and the four Android settings from
+  `nativeBackgroundStatus`. A short call's "Find on the board" jumps tabs
+  via `onGoToPage` and a one-shot `focusSignal` that CompletedCalls consumes
+  (opens the fold, clears filters, prefills the search with the MRN). `isOwner` is stamped on the login,
   set-password, act and me answers — never on `publicAccount`, which
   `/api/auth/lookup` serves to anybody.
 - **Putting data back belongs to the owner; taking copies does not.**

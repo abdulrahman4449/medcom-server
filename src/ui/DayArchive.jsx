@@ -392,7 +392,7 @@ function ClaimCodeBanner({ issued, onDone }) {
   );
 }
 
-export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents }) {
+export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents, onGoToPage }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -506,6 +506,9 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   // be "open" when somebody came back from Statistics and landed on a section
   // they never chose.
   const [openPanel, setOpenPanel] = useState(null);
+  // "Find this call" sent from the System page: jump to the board tab with
+  // the completed-calls fold open and the search carrying the call's MRN.
+  const [focusCall, setFocusCall] = useState(null);
   useEffect(() => { setOpenPanel(null); }, [page]);
 
   const [newUnitName, setNewUnitName] = useState("");
@@ -893,7 +896,14 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           )}
           {openPanel === "system" && !!(user && user.isOwner) && (
             <SectionScreen onBack={() => setOpenPanel(null)}>
-              <SystemPanel requests={requests} accounts={accounts} />
+              <SystemPanel
+                requests={requests}
+                accounts={accounts}
+                onOpenCall={(req) => {
+                  setFocusCall({ q: (req && (req.mrn || req.id)) || "", ts: Date.now() });
+                  if (onGoToPage) onGoToPage("board");
+                }}
+              />
             </SectionScreen>
           )}
         </>
@@ -1482,6 +1492,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           viewer={escViewer}
           user={user}
           canCorrect
+          focusSignal={focusCall}
         />
       )}
     </div>

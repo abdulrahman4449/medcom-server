@@ -2648,6 +2648,7 @@ export function App() {
           {!onSharedPage && user.role === "admin" && (
             <AdminView
               page={navTab}
+              onGoToPage={(t) => setNavTab(t)}
               archives={archives}
               passwordResets={passwordResets}
               setPasswordResets={setPasswordResets}
