@@ -1255,6 +1255,36 @@ export function run(D, t) {
       !D.scrubText("MRN 1234567 typed as an id", 100).includes("1234567"));
     for (let i = 0; i < 300; i++) fnd = D.addFinding(fnd, "k" + i, "m", i);
     t.ok("findings: the list is capped", fnd.length <= D.FINDING_LIST_CAP);
+
+    // The watchdog: a silent truck on a LIVE call is the one condition worth
+    // waking the owner for — judged on the whole crew, because one dead
+    // phone with a live partner is the partner's to mention, not an alarm.
+    const seen = new Map([["F90", 1000 - 30000], ["F91", 1000 - 400000], ["F92", 1000 - 400000]]);
+    const trucks = [
+      { id: "m1", name: "MEDIC 1", assignedRequestId: "r1", alpha: { accountId: "F90" }, bravo: { accountId: "F91" } },
+      { id: "m2", name: "MEDIC 2", assignedRequestId: "r2", alpha: { accountId: "F92" } },
+      { id: "m3", name: "MEDIC 3", alpha: { accountId: "F93" } },
+    ];
+    const silent = D.silentActiveTrucks(trucks, seen, 1000, 180000);
+    t.ok("watchdog: a truck whose WHOLE crew is silent on a call is flagged",
+      silent.some((x) => x.unit === "MEDIC 2"));
+    t.ok("watchdog: one silent phone with a live partner is not an alarm",
+      !silent.some((x) => x.unit === "MEDIC 1"));
+    t.ok("watchdog: a truck not on a call is nobody's emergency",
+      !silent.some((x) => x.unit === "MEDIC 3"));
+
+    // One small history row per day, hard-bounded.
+    let hist = D.historyAppend([], { day: "2026-09-01", requests: 10 });
+    hist = D.historyAppend(hist, { day: "2026-09-01", requests: 99 });
+    t.is("history: one row per day — the later write replaces", hist.length, 1);
+    t.is("history: ...and carries the newer figures", hist[0].requests, 99);
+    for (let i = 0; i < 200; i++) hist = D.historyAppend(hist, { day: "d" + String(i).padStart(3, "0") });
+    t.ok("history: capped at ninety days", hist.length <= D.HISTORY_CAP);
+
+    t.ok("burst: five errors in ten minutes is a burst",
+      D.errorBurst([1, 2, 3, 4, 5], 6, 600000, 5));
+    t.ok("burst: five errors across a day is not",
+      !D.errorBurst([1, 2, 3, 4, 5].map((n) => n * 3600000), 86400000, 600000, 5));
   }
 
   // ---------- a no-coverage gap ends when the station closes, not just when

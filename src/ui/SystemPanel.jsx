@@ -1,4 +1,4 @@
-import { authHeaders } from "../lib/auth.jsx";
+import { authHeaders, issueClaimCode } from "../lib/auth.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -21,6 +21,20 @@ export function SystemPanel({ requests, accounts }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [readAt, setReadAt] = useState(0);
+  const [openDevice, setOpenDevice] = useState(null);
+  const [testNote, setTestNote] = useState("");
+  const [issued, setIssued] = useState({}); // accountId -> code
+
+  async function act(path, body) {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body || {}),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || `The server answered ${res.status}.`);
+    return out;
+  }
 
   async function readNow() {
     setBusy(true);
@@ -95,6 +109,33 @@ export function SystemPanel({ requests, accounts }) {
 
       {data && (
         <div style={styles.invMovesWrap}>
+          {head("SELF-TEST — THE SERVER CHECKS ITSELF NIGHTLY")}
+          {data.selfTest ? (
+            <>
+              <div style={styles.formHint}>
+                Last run {gregDateTimeStr(data.selfTest.at)} ({data.selfTest.reason}) ·{" "}
+                {data.selfTest.checks.filter((c) => c.ok).length} of {data.selfTest.checks.length} passed
+              </div>
+              {data.selfTest.checks.map((c) =>
+                row(c.name, (c.ok ? "OK" : "FAILED") + (c.note ? ` · ${c.note}` : ""), c.ok ? undefined : "var(--crit)")
+              )}
+            </>
+          ) : (
+            <div style={styles.formHint}>Not run yet — it runs shortly after every start, then daily.</div>
+          )}
+          <button
+            style={{ ...styles.ghostBtnSm, marginTop: 6 }}
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try { await act("/api/system/self-test"); await readNow(); }
+              catch (e) { setError(e.message); }
+              finally { setBusy(false); }
+            }}
+          >
+            Run the self-test now
+          </button>
+
           {head("ERRORS DEVICES REPORTED")}
           {(data.reports || []).length === 0 ? (
             <div style={styles.formHint}>Nothing reported. Errors caught on any signed-in device land here by themselves.</div>
@@ -151,15 +192,58 @@ export function SystemPanel({ requests, accounts }) {
               minutes once they run this build.
             </div>
           ) : (
-            (data.devices || []).map((d, i) =>
-              row(
-                `${d.name} · ${(d.role || "?").toUpperCase()}${d.unit ? ` · ${d.unit}` : ""}`,
-                (d.stale ? `SILENT ${ago(d.silentMs)}` : ago(d.silentMs)) +
-                  ` · build ${d.build || "?"}` +
-                  (d.heldWrites ? ` · HOLDING ${d.heldWrites} unsent` : ""),
-                d.stale ? "var(--crit)" : d.heldWrites ? "var(--hold-2)" : undefined
-              )
-            )
+            (data.devices || []).map((d) => {
+              const open = openDevice === d.deviceId || openDevice === d.accountId + d.lastSeen;
+              const key = d.deviceId || d.accountId + d.lastSeen;
+              return (
+                <div key={key}>
+                  <button
+                    style={{ background: "transparent", border: "none", padding: 0, width: "100%", cursor: "pointer", textAlign: "inherit", font: "inherit" }}
+                    onClick={() => { setOpenDevice(open ? null : key); setTestNote(""); }}
+                  >
+                    {row(
+                      `${open ? "▾ " : "▸ "}${d.name} · ${(d.role || "?").toUpperCase()}${d.unit ? ` · ${d.unit}` : ""}`,
+                      (d.stale ? `SILENT ${ago(d.silentMs)}` : ago(d.silentMs)) +
+                        ` · build ${d.build || "?"}` +
+                        (d.heldWrites ? ` · HOLDING ${d.heldWrites} unsent` : ""),
+                      d.stale ? "var(--crit)" : d.heldWrites ? "var(--hold-2)" : undefined
+                    )}
+                  </button>
+                  {open && (
+                    <div style={{ padding: "4px 0 10px 14px" }}>
+                      {d.diagnostics ? (
+                        Object.entries(d.diagnostics).map(([k, v]) => row(k, String(v),
+                          /NOT|absent|denied|no$/.test(String(v)) ? "var(--hold-2)" : undefined))
+                      ) : (
+                        <div style={styles.formHint}>
+                          No diagnostics from this device yet. Ask below — the phone answers on its
+                          own next heartbeat, usually inside a minute; press Read again after.
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                        <button style={styles.ghostBtnSm} disabled={busy}
+                          onClick={async () => {
+                            try { await act("/api/system/ask-diagnostics", { deviceId: d.deviceId }); setTestNote("Asked. The device answers on its next heartbeat — read again in a minute."); }
+                            catch (e) { setTestNote(e.message); }
+                          }}>
+                          Ask for diagnostics
+                        </button>
+                        <button style={styles.ghostBtnSm} disabled={busy}
+                          onClick={async () => {
+                            try {
+                              const r = await act("/api/system/test-push", { deviceId: d.deviceId });
+                              setTestNote(r.note || `Test sent down the real dispatch path to ${r.sent} of ${r.tokens} token(s)${r.dead ? ` · ${r.dead} dead token(s) pruned` : ""}. The phone should sound like a call.`);
+                            } catch (e) { setTestNote(e.message); }
+                          }}>
+                          Test the alert path
+                        </button>
+                      </div>
+                      {testNote && <div style={{ ...styles.formHint, marginTop: 6 }}>{testNote}</div>}
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
           <div style={styles.formHint}>
             {(data.accountsSeen || []).filter((a) => !a.stale).length} account(s) active in the last
@@ -169,7 +253,29 @@ export function SystemPanel({ requests, accounts }) {
           {head("THE RECORD — WHAT IS INCOMPLETE")}
           {row("Completed calls missing sheet data", String(shortCalls.length), shortCalls.length ? "var(--hold-2)" : undefined)}
           {row("Accounts with an EXPIRED sign-in code", String(expiredCodes.length), expiredCodes.length ? "var(--hold-2)" : undefined)}
-          {expiredCodes.slice(0, 5).map((a) => row(`· ${a.name || a.id}`, "issue a new code from the roster"))}
+          {expiredCodes.slice(0, 5).map((a) => (
+            <div key={a.id} style={{ ...styles.invMoveRow, alignItems: "center" }}>
+              <span style={styles.invMoveItem}>· {a.name || a.id}</span>
+              {issued[a.id] ? (
+                <span style={{ ...styles.invMoveWho, fontFamily: "monospace" }}>
+                  {issued[a.id]}{" "}
+                  <button style={styles.ghostBtnSm} onClick={() => {
+                    try { window.navigator.clipboard.writeText(issued[a.id]); } catch (e) {}
+                  }}>Copy</button>
+                </span>
+              ) : (
+                <button style={styles.ghostBtnSm} disabled={busy}
+                  onClick={async () => {
+                    try {
+                      const r = await issueClaimCode(a.id);
+                      if (r && r.code) setIssued((m) => ({ ...m, [a.id]: r.code }));
+                    } catch (e) { window.alert(e.message || "Could not issue a code."); }
+                  }}>
+                  New code
+                </button>
+              )}
+            </div>
+          ))}
           {row("Accounts never signed into, no code out", String(neverClaimed.length))}
 
           {head("TRAFFIC — HOW FAST THE SERVER ANSWERS")}
@@ -197,6 +303,34 @@ export function SystemPanel({ requests, accounts }) {
             data.backups && data.backups.stale ? "var(--crit)" : undefined)}
           {row("Push alerts", data.server.pushConfigured ? `configured · ${data.server.pushTokens} device token(s)` : "NOT configured — locked phones are not woken",
             data.server.pushConfigured ? undefined : "var(--hold-2)")}
+          {data.server.pushTokensStale > 0 && (
+            <div style={{ ...styles.invMoveRow, alignItems: "center" }}>
+              <span style={styles.invMoveItem}>· {data.server.pushTokensStale} token(s) silent for two months</span>
+              <button style={styles.ghostBtnSm} disabled={busy}
+                onClick={async () => {
+                  try { const r = await act("/api/system/prune-tokens"); setError(""); await readNow(); window.alert(`Pruned ${r.pruned} stale token(s). A live phone re-registers at its next sign-on.`); }
+                  catch (e) { setError(e.message); }
+                }}>
+                Prune
+              </button>
+            </div>
+          )}
+
+          {head("DAY BY DAY — ONE LINE PER SELF-TEST")}
+          {(data.history || []).length === 0 ? (
+            <div style={styles.formHint}>
+              The first row is written by the first self-test; one small row per day after that, so
+              a slow week reads as a slope instead of a feeling.
+            </div>
+          ) : (
+            (data.history || []).slice(-14).reverse().map((h) =>
+              row(
+                `${h.day}${h.selfTest === false ? " · SELF-TEST FAILED" : ""}`,
+                `${h.requests} req · board p95 ${h.boardP95}ms · ${h.serverErrors} failed · ${h.devices} device(s) · DB ${h.dbMb} MB`,
+                h.selfTest === false ? "var(--crit)" : h.boardP95 > 5000 ? "var(--hold-2)" : undefined
+              )
+            )
+          )}
 
           {head("THE PROCESS")}
           {row("Up since", `${gregDateTimeStr(data.server.startedAt)} (${msDurationStr(data.server.uptimeMs)})`)}

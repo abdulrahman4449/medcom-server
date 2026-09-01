@@ -302,7 +302,22 @@ patch", that document is the target — do not start a fresh exploration.
   name employee IDs on purpose (that IS the answer the page exists for) and
   are length-capped, but any STRANGER-typed text a finding quotes must go
   through `scrubText` at the call site — the limiter's does. Add a guard
-  anywhere in `server.js` and add its `noteFinding` in the same breath. `isOwner` is stamped on the login,
+  anywhere in `server.js` and add its `noteFinding` in the same breath.
+  **The server also tests itself** (`runSelfTest`: shortly after boot, then
+  daily, and on the page's button): DB integrity, every board key parses,
+  backup freshness AND the newest copy opened and judged against the live
+  board (an empty copy of an empty board is a fresh deployment — it retries
+  one fresh backup before alarming), the push credential (`pushProbe` mints
+  a token without sending), disk headroom. Each run appends ONE history row
+  (`historyAppend`, capped at 90 days). The few conditions that cannot wait
+  are pushed to the OWNER's phone via `alertOwner` — `sendOwnerNotice`
+  deliberately carries no channel_id so a disk warning never sounds like a
+  call — rate-limited to one per condition per hour; the watchdog
+  (`silentActiveTrucks`) pages only when EVERY seated phone on a truck with
+  a live call has been silent past three minutes, and never in the first
+  minutes after boot. Test-push (`/api/system/test-push`) goes down the
+  REAL dispatch channel on purpose. Device diagnostics are pull-only: the
+  owner asks, the device answers on its next heartbeat, nothing streams. `isOwner` is stamped on the login,
   set-password, act and me answers — never on `publicAccount`, which
   `/api/auth/lookup` serves to anybody.
 - **Putting data back belongs to the owner; taking copies does not.**

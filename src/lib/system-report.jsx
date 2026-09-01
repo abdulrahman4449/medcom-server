@@ -40,16 +40,42 @@ export function systemDeviceId() {
 
 async function post(path, body) {
   try {
-    if (!getToken()) return;
-    await fetch(`${API_BASE}${path}`, {
+    if (!getToken()) return null;
+    const res = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
+    return await res.json().catch(() => null);
   } catch (e) {
     // No signal, or the server is the thing that is down. Either way the
     // report is not worth a retry loop; the fleet table's silence says it.
+    return null;
   }
+}
+
+// The fuller self-check the owner can ask a device for from the System page:
+// the crew screen's diagnostic line, readable without holding the phone.
+// Everything is read defensively — a diagnostic that throws is a fault, and
+// short — it crosses the network and sits in a bounded store.
+function gatherDiagnostics() {
+  const d = {};
+  try { d.notifications = typeof window.Notification !== "undefined" ? window.Notification.permission : "unsupported (native shell)"; } catch (e) { d.notifications = "unreadable"; }
+  try { d.alertsArmed = window.localStorage.getItem("ems:alertsArmed") ? "yes" : "no"; } catch (e) { d.alertsArmed = "storage unreadable"; }
+  try {
+    window.localStorage.setItem("ems:diagProbe", "1");
+    window.localStorage.removeItem("ems:diagProbe");
+    d.storage = "working";
+  } catch (e) { d.storage = "NOT WRITABLE"; }
+  try {
+    const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+    d.alarmPlugin = plugins.PulseOpsAlarm ? "present" : "absent";
+    d.pushPlugin = plugins.PulseOpsPush ? "present" : "absent";
+  } catch (e) { d.alarmPlugin = "unreadable"; }
+  try { d.online = window.navigator.onLine ? "yes" : "no"; } catch (e) {}
+  try { d.language = window.navigator.language || ""; } catch (e) {}
+  try { d.userAgent = String(window.navigator.userAgent || "").slice(0, 110); } catch (e) {}
+  return d;
 }
 
 export function reportFault(message, stack, screen) {
@@ -141,7 +167,7 @@ export function systemHello() {
     } catch (e) {
       /* the heartbeat goes out with or without the queue detail */
     }
-    post("/api/system/hello", {
+    const hello = {
       deviceId: systemDeviceId(),
       role: ctx.role || "",
       unit: ctx.unit || "",
@@ -149,6 +175,13 @@ export function systemHello() {
       platform: ctx.platform || platformOf(),
       heldWrites,
       heldOldestMs,
+    };
+    post("/api/system/hello", hello).then((answer) => {
+      // The owner asked this device for its diagnostics: answer once, now,
+      // outside the throttle — they are sitting at the page waiting.
+      if (answer && answer.sendDiagnostics) {
+        post("/api/system/hello", { ...hello, diagnostics: gatherDiagnostics() });
+      }
     });
   } catch (e) {
     /* never at the poll's expense */

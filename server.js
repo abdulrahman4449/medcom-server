@@ -469,7 +469,10 @@ function boardEtagFor(key, row) {
 // routes it is watching. Only the device error reports persist (settings
 // table): a crash that takes the process down is precisely the error worth
 // keeping.
-const { cleanReport, addReport, addFinding, scrubText, latencyStats, fleetRow, FLEET_STALE_MS } = require("./lib/system-health.cjs");
+const {
+  cleanReport, addReport, addFinding, scrubText, latencyStats, fleetRow,
+  silentActiveTrucks, historyAppend, errorBurst, FLEET_STALE_MS,
+} = require("./lib/system-health.cjs");
 const SYS_START = Date.now();
 const PERF_RING = 400;
 const perf = new Map(); // group -> { durs: [], n, s304, s5xx }
@@ -536,6 +539,188 @@ function noteFinding(kind, message) {
     /* a finding must never break the request it describes */
   }
 }
+
+// ---------- the page that comes to you ----------
+//
+// A fault at 02:00 used to wait until the owner opened the System page. The
+// few conditions that cannot wait are pushed to the owner's own phone — a
+// quiet notification, never the dispatch alarm: a disk warning must not
+// sound like a call. Strictly rate-limited per condition, because an owner
+// channel that cries wolf gets muted like any other.
+const OWNER_ALERT_GAP_MS = 60 * 60 * 1000;
+const ownerAlertLast = new Map(); // kind -> ts
+function alertOwner(kind, title, body) {
+  try {
+    if (!pushConfigured()) return;
+    const last = ownerAlertLast.get(kind) || 0;
+    if (Date.now() - last < OWNER_ALERT_GAP_MS) return;
+    ownerAlertLast.set(kind, Date.now());
+    const rows = db.prepare("SELECT token FROM push_tokens WHERE account_id = ?").all(RESTORE_OWNER);
+    setImmediate(async () => {
+      for (const { token } of rows) {
+        try {
+          const r = await sendOwnerNotice(token, { title, body });
+          if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+        } catch (e) {
+          /* a notice must never become a fault of its own */
+        }
+      }
+    });
+  } catch (e) {
+    /* never at a request's expense */
+  }
+}
+
+// A burst of device errors — a deploy gone wrong echoes on every screen at
+// once, and that is worth one notice even though each report is listed.
+const recentReportTimes = [];
+function noteReportTime() {
+  recentReportTimes.push(Date.now());
+  if (recentReportTimes.length > 200) recentReportTimes.shift();
+  if (errorBurst(recentReportTimes, Date.now(), 10 * 60 * 1000, 5)) {
+    noteFinding("error-burst", "Five or more device errors inside ten minutes — a bad deploy or a server fault echoing on every screen.");
+    alertOwner("error-burst", "PulseOps — error burst", "5+ device errors in 10 minutes. Open Archive → System.");
+  }
+}
+
+// The watchdog: a silent truck on a live call is the one condition worth
+// waking the owner for — a crew that will not hear the stand-down or the
+// next message, visible only from the server's side.
+const WATCHDOG_EVERY_MS = 60 * 1000;
+const WATCHDOG_SILENT_MS = 3 * 60 * 1000;
+setInterval(() => {
+  try {
+    // Not in the first minutes after boot: every account looks silent until
+    // its first poll lands, and a restart must not page the owner.
+    if (Date.now() - SYS_START < 3 * 60 * 1000) return;
+    const row = db.prepare("SELECT value FROM board WHERE key = 'ems:units'").get();
+    if (!row) return;
+    const units = JSON.parse(row.value);
+    for (const hit of silentActiveTrucks(units, fleetSeen, Date.now(), WATCHDOG_SILENT_MS)) {
+      noteFinding("silent-truck", `${hit.unit} is on a call and EVERY seated crew phone has been silent for over ${Math.round(hit.silentMs / 60000)} minutes (${hit.seats.join(", ")}).`);
+      alertOwner(`silent-truck:${hit.unit}`, "PulseOps — silent truck on a call", `${hit.unit}'s crew phones have gone quiet during an active call.`);
+    }
+  } catch (e) {
+    /* the watchdog itself must never bite */
+  }
+}, WATCHDOG_EVERY_MS).unref();
+
+// ---------- the server tests itself every night ----------
+//
+// The page reports what HAPPENED; the self-test files findings for what is
+// about to. A corrupt backup should be discovered the day it is written,
+// not the day it is needed; a revoked push credential before the 03:00 call
+// nobody hears. Results are kept so the page can say "passed, this morning"
+// — and each run appends the one small history row per day that lets a
+// slow week be seen as a slope instead of a feeling.
+let lastSelfTest = null;
+try {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'system_selftest'").get();
+  lastSelfTest = row ? JSON.parse(row.value) : null;
+} catch (e) { lastSelfTest = null; }
+let systemHistory = [];
+try {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'system_history'").get();
+  systemHistory = row ? JSON.parse(row.value) || [] : [];
+} catch (e) { systemHistory = []; }
+
+async function runSelfTest(reason) {
+  const checks = [];
+  const check = (name, ok, note) => checks.push({ name, ok: !!ok, note: note || "" });
+  try {
+    const r = db.prepare("PRAGMA quick_check").get();
+    check("Database integrity", r && (r.quick_check === "ok" || r.integrity_check === "ok"), r && (r.quick_check || r.integrity_check));
+  } catch (e) { check("Database integrity", false, e.message); }
+  try {
+    const bad = [];
+    for (const row of db.prepare("SELECT key, value FROM board").all()) {
+      try { JSON.parse(row.value); } catch (e) { bad.push(row.key); }
+    }
+    check("Every board key parses", bad.length === 0, bad.join(", "));
+  } catch (e) { check("Every board key parses", false, e.message); }
+  try {
+    const st = backupState();
+    check("Backups are fresh", !st.stale, st.ageMs != null ? `last ${Math.round(st.ageMs / 3600000)}h ago` : "never written");
+    const verifyNewest = () => {
+      const newest = listBackups(BACKUP_DIR)[0];
+      if (!newest) return { ok: false, note: "no backup file found" };
+      const copy = new Database(path.join(BACKUP_DIR, newest.name), { readonly: true });
+      try {
+        const q = copy.prepare("PRAGMA quick_check").get();
+        const n = copy.prepare("SELECT COUNT(*) AS n FROM board").get().n;
+        // Judged against the LIVE board: an empty copy of an empty board is
+        // a fresh deployment, not a fault; an empty copy of a working board
+        // is exactly the disaster this check exists to find early.
+        const live = db.prepare("SELECT COUNT(*) AS n FROM board").get().n;
+        return {
+          ok: !!(q && q.quick_check === "ok" && (n > 0 || live === 0)),
+          empty: n === 0 && live > 0,
+          note: `${newest.name} · ${n} keys (board holds ${live})`,
+        };
+      } finally { copy.close(); }
+    };
+    let v = verifyNewest();
+    if (!v.ok && v.empty) {
+      // The one honest benign case: the boot backup ran before the board's
+      // first key was written (a brand-new deployment's first day). Take a
+      // fresh copy and judge THAT — if the backup machinery is genuinely
+      // broken, the refreshed copy fails too and the alarm stands.
+      await runBackup("self-test refresh");
+      v = verifyNewest();
+    }
+    check("Newest backup opens and holds the board", v.ok, v.note);
+  } catch (e) { check("Newest backup opens and holds the board", false, e.message); }
+  if (pushConfigured()) {
+    const p = await pushProbe();
+    check("Push credential still authenticates", p.ok, p.reason || "");
+  } else {
+    check("Push credential still authenticates", true, "push not configured — skipped");
+  }
+  try {
+    const d = diskUsage();
+    check("Disk has headroom", !(d.measured && d.warning), d.measured ? `${d.usedPct}% used` : "not measurable");
+  } catch (e) { check("Disk has headroom", false, e.message); }
+
+  lastSelfTest = { at: Date.now(), reason: reason || "scheduled", checks };
+  try {
+    db.prepare("DELETE FROM settings WHERE key = 'system_selftest'").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('system_selftest', ?)").run(JSON.stringify(lastSelfTest));
+  } catch (e) {}
+  const failed = checks.filter((c) => !c.ok);
+  for (const f of failed) noteFinding("self-test", `Self-test failed: ${f.name}${f.note ? ` (${f.note})` : ""}`);
+  if (failed.length) {
+    alertOwner("self-test", "PulseOps — self-test failed", failed.map((f) => f.name).join(" · "));
+  }
+
+  // The day's history row, appended whenever the daily test runs.
+  try {
+    const board = perf.get("board read");
+    const totalReq = [...perf.values()].reduce((n, e) => n + e.n, 0);
+    const total5xx = [...perf.values()].reduce((n, e) => n + e.s5xx, 0);
+    const d = new Date();
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    systemHistory = historyAppend(systemHistory, {
+      day,
+      requests: totalReq,
+      boardP50: board ? latencyStats(board.durs).p50 : 0,
+      boardP95: board ? latencyStats(board.durs).p95 : 0,
+      serverErrors: total5xx,
+      devices: fleetDevices.size,
+      dbMb: Math.round(dbFileBytes() / 1048576),
+      selfTest: failed.length === 0,
+    });
+    db.prepare("DELETE FROM settings WHERE key = 'system_history'").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('system_history', ?)").run(JSON.stringify(systemHistory));
+  } catch (e) {}
+  return lastSelfTest;
+}
+// Shortly after boot (not ON boot — start-up must stay fast), then daily.
+setTimeout(() => { runSelfTest("startup").catch(() => {}); }, 90 * 1000).unref();
+setInterval(() => { runSelfTest("scheduled").catch(() => {}); }, 24 * 3600 * 1000).unref();
+
+// Devices the owner has asked to send a fuller diagnostic on their next
+// heartbeat — the crew screen's self-checks, readable without the phone.
+const diagWanted = new Set();
 
 app.use((req, res, next) => {
   const t0 = Date.now();
@@ -658,7 +843,7 @@ const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSente
 // FIREBASE_SERVICE_ACCOUNT set (see native/README.md); without it every part
 // of this is a no-op and the board behaves exactly as before.
 const { newAssignments } = require("./lib/push-triggers.cjs");
-const { pushConfigured, sendCallAlert } = require("./lib/push-fcm.cjs");
+const { pushConfigured, sendCallAlert, pushProbe, sendOwnerNotice } = require("./lib/push-fcm.cjs");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS push_tokens (
@@ -2147,10 +2332,23 @@ app.post("/api/system/hello", requireAuth, (req, res) => {
       platform: String(b.platform || "web").slice(0, 20),
       heldWrites,
       heldOldestMs,
+      // A fuller self-check the owner asked this device for, kept as sent
+      // (bounded) until the next hello replaces it.
+      ...(b.diagnostics && typeof b.diagnostics === "object"
+        ? { diagnostics: JSON.parse(JSON.stringify(b.diagnostics, (k, v) =>
+            typeof v === "string" ? String(v).slice(0, 120) : v).slice(0, 2000)) }
+        : (fleetDevices.get(deviceId) || {}).diagnostics
+        ? { diagnostics: fleetDevices.get(deviceId).diagnostics }
+        : {}),
       lastSeen: Date.now(),
     });
     if (heldWrites > 0 && heldOldestMs > 60 * 60 * 1000) {
       noteFinding("stuck-queue", `${req.user.id}'s device has been holding ${heldWrites} unsent record(s) for over an hour — it is fighting the board or cannot reach it.`);
+    }
+    // The owner asked this device for its diagnostics: tell it once.
+    if (diagWanted.has(deviceId) && !(b.diagnostics && typeof b.diagnostics === "object")) {
+      diagWanted.delete(deviceId);
+      return res.json({ ok: true, sendDiagnostics: true });
     }
     if (fleetDevices.size > 300) {
       const oldest = [...fleetDevices.entries()].sort((a, b2) => a[1].lastSeen - b2[1].lastSeen)[0];
@@ -2173,6 +2371,7 @@ app.post("/api/system/report", requireAuth, (req, res) => {
     rep.by = req.user.id;
     systemReports = addReport(systemReports, rep);
     saveSystemReports();
+    noteReportTime();
   }
   res.json({ ok: true });
 });
@@ -2182,8 +2381,8 @@ app.get("/api/system", requireOwner, (req, res) => {
   const names = new Map(
     db.prepare("SELECT id, name FROM accounts").all().map((r) => [r.id, r.name])
   );
-  const devices = [...fleetDevices.values()]
-    .map((d) => fleetRow({ ...d, name: names.get(d.accountId) || d.accountId }, now))
+  const devices = [...fleetDevices.entries()]
+    .map(([deviceId, d]) => fleetRow({ deviceId, ...d, name: names.get(d.accountId) || d.accountId }, now))
     .sort((a, b) => a.silentMs - b.silentMs);
   const accountsSeen = [...fleetSeen.entries()]
     .map(([id, ts]) => fleetRow({ accountId: id, name: names.get(id) || id, lastSeen: ts }, now))
@@ -2192,7 +2391,11 @@ app.get("/api/system", requireOwner, (req, res) => {
     group, requests: e.n, notModified: e.s304, serverErrors: e.s5xx, ...latencyStats(e.durs),
   })).sort((a, b) => b.requests - a.requests);
   let pushTokens = 0;
-  try { pushTokens = db.prepare("SELECT COUNT(*) AS n FROM push_tokens").get().n; } catch (e) {}
+  let pushTokensStale = 0;
+  try {
+    pushTokens = db.prepare("SELECT COUNT(*) AS n FROM push_tokens").get().n;
+    pushTokensStale = db.prepare("SELECT COUNT(*) AS n FROM push_tokens WHERE updated_at < ?").get(Date.now() - 60 * 86400000).n;
+  } catch (e) {}
   const keys = db.prepare("SELECT key, length(value) AS bytes, updated_at FROM board ORDER BY length(value) DESC").all();
   res.json({
     ok: true,
@@ -2204,7 +2407,10 @@ app.get("/api/system", requireOwner, (req, res) => {
       memoryMb: Math.round(process.memoryUsage().rss / 1048576),
       pushConfigured: pushConfigured(),
       pushTokens,
+      pushTokensStale,
     },
+    selfTest: lastSelfTest,
+    history: systemHistory,
     database: { path: DB_PATH, survivesRedeploy: DB_IS_PERSISTENT, fileBytes: dbFileBytes() },
     disk: diskUsage(),
     backups: backupState(),
@@ -2219,6 +2425,61 @@ app.get("/api/system", requireOwner, (req, res) => {
     accountsSeen,
     staleAfterMs: FLEET_STALE_MS,
   });
+});
+
+// Run the nightly checks right now — after fixing something, waiting until
+// tomorrow to know is silly.
+app.post("/api/system/self-test", requireOwner, async (req, res) => {
+  try {
+    res.json({ ok: true, selfTest: await runSelfTest("on demand") });
+  } catch (e) {
+    res.status(500).json({ error: `The self-test itself failed: ${e.message}` });
+  }
+});
+
+// The fix-it half of the token row: tokens not renewed in two months belong
+// to phones that are gone, and pruning them is always safe — a live phone
+// re-registers at its next sign-on.
+app.post("/api/system/prune-tokens", requireOwner, (req, res) => {
+  const gone = db.prepare("DELETE FROM push_tokens WHERE updated_at < ?").run(Date.now() - 60 * 86400000).changes;
+  res.json({ ok: true, pruned: gone });
+});
+
+// Ask one device to include its fuller self-check in its next heartbeat —
+// the crew screen's diagnostics, readable without holding the phone.
+app.post("/api/system/ask-diagnostics", requireOwner, (req, res) => {
+  const deviceId = String((req.body || {}).deviceId || "").slice(0, 40);
+  if (!deviceId || !fleetDevices.has(deviceId)) {
+    return res.status(404).json({ error: "No device by that id has said hello." });
+  }
+  diagWanted.add(deviceId);
+  res.json({ ok: true });
+});
+
+// Send a REAL dispatch-path push to one device's account, so "will the
+// alarm actually fire tonight" is a button, not a hope. It goes down the
+// same channel a call does — that is the point — and names no patient.
+app.post("/api/system/test-push", requireOwner, async (req, res) => {
+  const deviceId = String((req.body || {}).deviceId || "").slice(0, 40);
+  const dev = fleetDevices.get(deviceId);
+  if (!dev) return res.status(404).json({ error: "No device by that id has said hello." });
+  const rows = db.prepare("SELECT token FROM push_tokens WHERE account_id = ?").all(dev.accountId);
+  if (!rows.length) {
+    return res.json({ ok: true, sent: 0, note: "That account has no push token registered — the phone has not signed onto a truck since push went live, or runs an old build." });
+  }
+  let sent = 0, dead = 0;
+  for (const { token } of rows) {
+    try {
+      const r = await sendCallAlert(token, {
+        title: "ALERT PATH TEST",
+        body: "Test from the System page. If you saw and heard this, the alert path works.",
+        data: { kind: "test" },
+      });
+      if (r.ok) sent += 1;
+      if (r.dead) { dead += 1; db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token); }
+    } catch (e) { /* counted by omission */ }
+  }
+  res.json({ ok: true, sent, dead, tokens: rows.length });
 });
 
 // Dealt with. Clearing is the owner saying "everything on this list has been
