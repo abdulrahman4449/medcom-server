@@ -470,6 +470,16 @@ patch", that document is the target — do not start a fresh exploration.
   and every code after it is handed out from Teams. Clearing a password issues
   the replacement code in the same call, because clearing without one leaves the
   person unable to set a new password and with nothing to say why.
+- **A settled password request stays settled; only `/api/auth/forgot`
+  creates one.** `settledResetsHold` in `lib/reset-requests.cjs` (under
+  `npm test`), applied to BOTH board write paths for `ems:passwordResets` —
+  a phone on an old build queued its ask as a board write at the sign-in
+  screen (401), then replayed it on every later sign-in, and a held record
+  wins the merge: the admin's Dismiss at 20:17 was back as "pending" by
+  20:28, from a device nobody could see. Board writes may settle a request,
+  never create one and never flip a settled one back to waiting. The
+  accepted cost: an ask from a not-yet-rebuilt shell no longer lands — the
+  rebuild is the fix that shell needs anyway.
 - **Nothing in the app can deliver a sign-in code to the person it belongs to.**
   They have not signed in, so they have no seat and nowhere for a message to
   land, and there is no email or SMS anywhere in this app. The last step is

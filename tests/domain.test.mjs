@@ -1205,6 +1205,34 @@ export function run(D, t) {
       D.fleetRow({ lastSeen: 0 }, D.FLEET_STALE_MS + 1).stale);
     t.ok("system: a device just heard from is not",
       !D.fleetRow({ lastSeen: 1000 }, 1500).stale);
+
+    // A settled password request stays settled. An old build queued its ask
+    // as a board write and replayed it on every sign-in, flipping the
+    // administrator's Dismiss back to pending from a device nobody could
+    // see. Board writes may settle a request; only /api/auth/forgot creates.
+    const cur = [
+      { id: "pw1", accountId: "D11", status: "declined", decidedAt: 5 },
+      { id: "pw2", accountId: "F90", status: "pending", ts: 1 },
+    ];
+    const replay = D.settledResetsHold(cur, [
+      { id: "pw1", accountId: "D11", status: "pending", ts: 9 }, // the ghost
+      { id: "pw2", accountId: "F90", status: "pending", ts: 1 },
+      { id: "pw3", accountId: "D11", status: "pending", ts: 9 }, // created by a board write
+    ]);
+    t.is("resets: a dismissed request cannot be flipped back to waiting",
+      replay.find((r) => r.id === "pw1").status, "declined");
+    t.ok("resets: a still-waiting request passes through untouched",
+      replay.find((r) => r.id === "pw2").status === "pending");
+    t.ok("resets: a board write cannot CREATE a request",
+      !replay.find((r) => r.id === "pw3"));
+    const settle = D.settledResetsHold(cur, [
+      { id: "pw2", accountId: "F90", status: "cleared", decidedAt: 9 },
+      { id: "pw1", accountId: "D11", status: "declined", decidedAt: 5 },
+    ]);
+    t.is("resets: settling a waiting request still works",
+      settle.find((r) => r.id === "pw2").status, "cleared");
+    t.ok("resets: the old vocabulary ('open') is held to the same rule",
+      !D.settledResetsHold([], [{ id: "x", status: "open" }]).length);
   }
 
   // ---------- a no-coverage gap ends when the station closes, not just when

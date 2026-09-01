@@ -578,10 +578,21 @@ app.post("/api/board", requireAuth, (req, res) => {
       prevRequests = null;
     }
   }
+  let stored = value ?? null;
+  // A settled password request stays settled, whatever a stale device
+  // replays — see lib/reset-requests.cjs.
+  if (key === "ems:passwordResets" && Array.isArray(stored)) {
+    try {
+      const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
+      stored = settledResetsHold(row ? JSON.parse(row.value) : [], stored);
+    } catch (e) {
+      /* an unreadable current list falls back to storing what was sent */
+    }
+  }
   db.prepare(
     `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-  ).run(key, JSON.stringify(value ?? null));
+  ).run(key, JSON.stringify(stored));
   bumpBoardKey(key);
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, value);
   res.json({ ok: true });
@@ -605,6 +616,7 @@ app.post("/api/board", requireAuth, (req, res) => {
 // that genuinely replace a whole key: pruning the board when it outgrows the
 // server, and the handful of keys that are not records at all.
 const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
+const { settledResetsHold } = require("./lib/reset-requests.cjs");
 const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
 
 // ---------- waking a locked phone ----------
@@ -721,8 +733,13 @@ app.post("/api/board/records", requireAuth, (req, res) => {
         if (wantsList && !Array.isArray(current)) return "SHAPE";
         if (wantsMap && (Array.isArray(current) || typeof current !== "object")) return "SHAPE";
       }
-      const next = mergeRecordsInto(current, body);
+      let next = mergeRecordsInto(current, body);
       if (next === null) return "SHAPE";
+      // A settled password request stays settled, whatever a stale device
+      // replays — see lib/reset-requests.cjs.
+      if (key === "ems:passwordResets" && Array.isArray(next)) {
+        next = settledResetsHold(Array.isArray(current) ? current : [], next);
+      }
       db.prepare(
         `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`

@@ -101,6 +101,7 @@ try {
     // held here the way the merge and the delegation list are.
     ...require_(join(ROOT, "lib/restore-guard.cjs")),
     ...require_(join(ROOT, "lib/system-health.cjs")),
+    ...require_(join(ROOT, "lib/reset-requests.cjs")),
     // When a board write wakes a phone.
     ...require_(join(ROOT, "lib/push-triggers.cjs")),
     // Namespaced, because the app has a list of the same areas for its screens
