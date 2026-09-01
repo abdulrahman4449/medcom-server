@@ -117,6 +117,24 @@ export function SystemPanel({ requests, accounts }) {
             </>
           )}
 
+          {head("WHAT THE SERVER REFUSED OR CORRECTED")}
+          {(data.findings || []).length === 0 ? (
+            <div style={styles.formHint}>
+              Nothing to report. When a guard fires — a stale device replaying a settled record, a
+              write refused for shape or authority, the sign-in limiter tripping — it is listed
+              here instead of happening silently.
+            </div>
+          ) : (
+            (data.findings || []).slice(0, 20).map((f, i) => (
+              <div key={i} style={{ marginBottom: 8 }}>
+                <div style={{ ...styles.invMoveItem, color: "var(--hold-2)" }}>
+                  {f.message} {f.count > 1 ? `· ×${f.count}` : ""}
+                </div>
+                <div style={styles.formHint}>{f.kind} · last {gregDateTimeStr(f.ts)}</div>
+              </div>
+            ))
+          )}
+
           {head("SERVER FAULTS (5xx ANSWERS)")}
           {(data.recent5xx || []).length === 0 ? (
             <div style={styles.formHint}>None since the server started ({gregDateTimeStr(data.server.startedAt)}).</div>
@@ -136,8 +154,10 @@ export function SystemPanel({ requests, accounts }) {
             (data.devices || []).map((d, i) =>
               row(
                 `${d.name} · ${(d.role || "?").toUpperCase()}${d.unit ? ` · ${d.unit}` : ""}`,
-                d.stale ? `SILENT ${ago(d.silentMs)} · build ${d.build || "?"}` : `${ago(d.silentMs)} · build ${d.build || "?"}`,
-                d.stale ? "var(--crit)" : undefined
+                (d.stale ? `SILENT ${ago(d.silentMs)}` : ago(d.silentMs)) +
+                  ` · build ${d.build || "?"}` +
+                  (d.heldWrites ? ` · HOLDING ${d.heldWrites} unsent` : ""),
+                d.stale ? "var(--crit)" : d.heldWrites ? "var(--hold-2)" : undefined
               )
             )
           )}

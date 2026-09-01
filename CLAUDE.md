@@ -294,7 +294,15 @@ patch", that document is the target — do not start a fresh exploration.
   deduped by message+build, capped at 100, and persisted in `settings` so a
   crash that kills the process is still on the page after the restart.
   Perf/fleet counters are in-memory on purpose (like the rush meter); the
-  page is read on OPEN, never on a poll. `isOwner` is stamped on the login,
+  page is read on OPEN, never on a poll. **A guard that fires silently is
+  how the ghost hid**: every server-side refusal or correction is a FINDING
+  (`noteFinding` → `addFinding`, persisted like reports) — the reset-replay
+  guard, shape-mismatch answers, refused board writes, sign-in limiter
+  trips, and a device hello reporting a queue held over an hour. Findings
+  name employee IDs on purpose (that IS the answer the page exists for) and
+  are length-capped, but any STRANGER-typed text a finding quotes must go
+  through `scrubText` at the call site — the limiter's does. Add a guard
+  anywhere in `server.js` and add its `noteFinding` in the same breath. `isOwner` is stamped on the login,
   set-password, act and me answers — never on `publicAccount`, which
   `/api/auth/lookup` serves to anybody.
 - **Putting data back belongs to the owner; taking copies does not.**

@@ -469,7 +469,7 @@ function boardEtagFor(key, row) {
 // routes it is watching. Only the device error reports persist (settings
 // table): a crash that takes the process down is precisely the error worth
 // keeping.
-const { cleanReport, addReport, latencyStats, fleetRow, FLEET_STALE_MS } = require("./lib/system-health.cjs");
+const { cleanReport, addReport, addFinding, scrubText, latencyStats, fleetRow, FLEET_STALE_MS } = require("./lib/system-health.cjs");
 const SYS_START = Date.now();
 const PERF_RING = 400;
 const perf = new Map(); // group -> { durs: [], n, s304, s5xx }
@@ -513,6 +513,27 @@ function saveSystemReports() {
     db.prepare("INSERT INTO settings (key, value) VALUES ('system_reports', ?)").run(JSON.stringify(systemReports));
   } catch (e) {
     /* the reports feed must never break a request */
+  }
+}
+// Findings: what the server refused or quietly corrected. The ghost-reset
+// bug taught this — the worst faults do not error, they are writes the
+// server says no to, and it used to say no silently. Every guard that fires
+// leaves a note here now, so the System page catches the CLASS, not just
+// the instance somebody already debugged.
+let systemFindings = [];
+try {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'system_findings'").get();
+  systemFindings = row ? JSON.parse(row.value) || [] : [];
+} catch (e) {
+  systemFindings = [];
+}
+function noteFinding(kind, message) {
+  try {
+    systemFindings = addFinding(systemFindings, kind, message, Date.now());
+    db.prepare("DELETE FROM settings WHERE key = 'system_findings'").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('system_findings', ?)").run(JSON.stringify(systemFindings));
+  } catch (e) {
+    /* a finding must never break the request it describes */
   }
 }
 
@@ -565,6 +586,9 @@ app.post("/api/board", requireAuth, (req, res) => {
   }
   if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
   if (!mayWriteKey(req.user, key)) {
+    // A screen that offers what the server refuses is a screen that lies —
+    // and a refusal here is either that bug, or somebody probing. Say so.
+    noteFinding("refused-write", `${req.user.id} tried to write ${key} without the authority for it.`);
     return res.status(403).json({ error: "Only an administrator can change that." });
   }
   // What the requests held before this write, so the push trigger can see
@@ -580,11 +604,17 @@ app.post("/api/board", requireAuth, (req, res) => {
   }
   let stored = value ?? null;
   // A settled password request stays settled, whatever a stale device
-  // replays — see lib/reset-requests.cjs.
+  // replays — see lib/reset-requests.cjs. When the guard fires, it SAYS so
+  // on the System page: a silent correction is how the last ghost hid.
   if (key === "ems:passwordResets" && Array.isArray(stored)) {
     try {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
-      stored = settledResetsHold(row ? JSON.parse(row.value) : [], stored);
+      const current = row ? JSON.parse(row.value) : [];
+      const refused = resetReplayCount(current, stored);
+      stored = settledResetsHold(current, stored);
+      if (refused) {
+        noteFinding("stale-device", `A device signed in as ${req.user.id} replayed a password request the board had settled — refused. That device is likely on an old app build and needs the update.`);
+      }
     } catch (e) {
       /* an unreadable current list falls back to storing what was sent */
     }
@@ -616,7 +646,7 @@ app.post("/api/board", requireAuth, (req, res) => {
 // that genuinely replace a whole key: pruning the board when it outgrows the
 // server, and the handful of keys that are not records at all.
 const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
-const { settledResetsHold } = require("./lib/reset-requests.cjs");
+const { settledResetsHold, resetReplayCount } = require("./lib/reset-requests.cjs");
 const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
 
 // ---------- waking a locked phone ----------
@@ -708,6 +738,9 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   if (typeof key !== "string") return res.status(400).json({ error: "Missing key" });
   if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
   if (!mayWriteKey(req.user, key)) {
+    // A screen that offers what the server refuses is a screen that lies —
+    // and a refusal here is either that bug, or somebody probing. Say so.
+    noteFinding("refused-write", `${req.user.id} tried to write ${key} without the authority for it.`);
     return res.status(403).json({ error: "Only an administrator can change that." });
   }
   const body = req.body || {};
@@ -736,9 +769,15 @@ app.post("/api/board/records", requireAuth, (req, res) => {
       let next = mergeRecordsInto(current, body);
       if (next === null) return "SHAPE";
       // A settled password request stays settled, whatever a stale device
-      // replays — see lib/reset-requests.cjs.
+      // replays — see lib/reset-requests.cjs. The guard reports itself: a
+      // silent correction is how the last ghost hid.
       if (key === "ems:passwordResets" && Array.isArray(next)) {
-        next = settledResetsHold(Array.isArray(current) ? current : [], next);
+        const cur = Array.isArray(current) ? current : [];
+        const refused = resetReplayCount(cur, next);
+        next = settledResetsHold(cur, next);
+        if (refused) {
+          noteFinding("stale-device", `A device signed in as ${req.user.id} replayed a password request the board had settled — refused. That device is likely on an old app build and needs the update.`);
+        }
       }
       db.prepare(
         `INSERT INTO board (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -750,6 +789,9 @@ app.post("/api/board/records", requireAuth, (req, res) => {
     return res.status(500).json({ error: `That could not be saved: ${e.message}` });
   }
   if (merged === "SHAPE") {
+    // A client and the board disagreeing on a key's shape is a version
+    // mismatch talking — usually a device on an old build.
+    noteFinding("shape-mismatch", `${req.user.id} sent a ${key} write in a shape the board refused — a device on an old build?`);
     return res.status(409).json({ error: "That key does not hold records of this shape.", shape: true });
   }
   bumpBoardKey(key);
@@ -1699,6 +1741,11 @@ app.post("/api/auth/login", (req, res) => {
   const { id, password } = req.body || {};
   const key = String(id || "").trim().toUpperCase();
   if (loginBlocked(key)) {
+    // Ten wrong guesses in fifteen minutes is either a forgotten password
+    // or somebody working through IDs. Either way the owner should know it
+    // happened without reading the deploy log. The ID is a stranger's typed
+    // text — bounded before it is kept.
+    noteFinding("sign-in-limiter", `The sign-in limiter tripped for ID "${scrubText(key, 20)}" — ten wrong tries in fifteen minutes.`);
     return res.status(429).json({ error: "Too many attempts. Try again in fifteen minutes." });
   }
   const acct = findAccount(key);
@@ -2088,14 +2135,23 @@ app.post("/api/system/hello", requireAuth, (req, res) => {
   const b = req.body || {};
   const deviceId = String(b.deviceId || "").slice(0, 40);
   if (deviceId) {
+    // What the device is still holding unsent. The ghost lived in exactly
+    // this queue — a record held for hours is a device fighting the board.
+    const heldWrites = Math.max(0, Math.min(9999, Number(b.heldWrites) || 0));
+    const heldOldestMs = Math.max(0, Number(b.heldOldestMs) || 0);
     fleetDevices.set(deviceId, {
       accountId: req.user.id,
       role: String(b.role || req.user.role || "").slice(0, 20),
       unit: String(b.unit || "").slice(0, 40),
       build: String(b.build || "").slice(0, 40),
       platform: String(b.platform || "web").slice(0, 20),
+      heldWrites,
+      heldOldestMs,
       lastSeen: Date.now(),
     });
+    if (heldWrites > 0 && heldOldestMs > 60 * 60 * 1000) {
+      noteFinding("stuck-queue", `${req.user.id}'s device has been holding ${heldWrites} unsent record(s) for over an hour — it is fighting the board or cannot reach it.`);
+    }
     if (fleetDevices.size > 300) {
       const oldest = [...fleetDevices.entries()].sort((a, b2) => a[1].lastSeen - b2[1].lastSeen)[0];
       if (oldest) fleetDevices.delete(oldest[0]);
@@ -2158,6 +2214,7 @@ app.get("/api/system", requireOwner, (req, res) => {
     traffic,
     recent5xx,
     reports: systemReports,
+    findings: systemFindings,
     devices,
     accountsSeen,
     staleAfterMs: FLEET_STALE_MS,
@@ -2169,6 +2226,10 @@ app.get("/api/system", requireOwner, (req, res) => {
 app.post("/api/system/clear-reports", requireOwner, (req, res) => {
   systemReports = [];
   saveSystemReports();
+  systemFindings = [];
+  try {
+    db.prepare("DELETE FROM settings WHERE key = 'system_findings'").run();
+  } catch (e) {}
   res.json({ ok: true });
 });
 

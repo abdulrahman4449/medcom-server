@@ -1,5 +1,6 @@
 import { API_BASE } from "./board-api.jsx";
 import { authHeaders, getToken } from "./auth.jsx";
+import { pendingWrites, totalPendingCount } from "./offline-queue.jsx";
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 
 // ---------- the app reporting its own faults ----------
@@ -121,12 +122,33 @@ export function systemHello() {
     if (now - lastHello < 5 * 60 * 1000) return;
     lastHello = now;
     const ctx = safeContext();
+    // What this device is still holding unsent — the offline queue is where
+    // the ghost-reset bug lived, and a record held for hours is a device
+    // fighting the board. The fleet table shows it from the server's side.
+    let heldWrites = 0;
+    let heldOldestMs = 0;
+    try {
+      heldWrites = totalPendingCount();
+      if (heldWrites) {
+        let oldest = Infinity;
+        for (const key of Object.keys(pendingWrites)) {
+          for (const rec of Object.values(pendingWrites[key] || {})) {
+            if (rec && rec.__queuedAt && rec.__queuedAt < oldest) oldest = rec.__queuedAt;
+          }
+        }
+        if (Number.isFinite(oldest)) heldOldestMs = now - oldest;
+      }
+    } catch (e) {
+      /* the heartbeat goes out with or without the queue detail */
+    }
     post("/api/system/hello", {
       deviceId: systemDeviceId(),
       role: ctx.role || "",
       unit: ctx.unit || "",
       build: BUILD_STAMP,
       platform: ctx.platform || platformOf(),
+      heldWrites,
+      heldOldestMs,
     });
   } catch (e) {
     /* never at the poll's expense */

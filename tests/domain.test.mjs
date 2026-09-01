@@ -1233,6 +1233,28 @@ export function run(D, t) {
       settle.find((r) => r.id === "pw2").status, "cleared");
     t.ok("resets: the old vocabulary ('open') is held to the same rule",
       !D.settledResetsHold([], [{ id: "x", status: "open" }]).length);
+    t.is("resets: the guard counts what it refused, so the page can say so",
+      D.resetReplayCount(cur, [
+        { id: "pw1", accountId: "D11", status: "pending", ts: 9 },
+        { id: "pw3", accountId: "D11", status: "pending", ts: 9 },
+      ]), 2);
+    t.is("resets: a clean settle counts nothing",
+      D.resetReplayCount(cur, [{ id: "pw2", accountId: "F90", status: "cleared" }]), 0);
+
+    // Findings: a guard that fires silently is how the last ghost hid.
+    let fnd = D.addFinding([], "stale-device", "replayed a settled request", 1);
+    fnd = D.addFinding(fnd, "stale-device", "replayed a settled request", 2);
+    t.is("findings: the same finding twice is one row counted twice", fnd.length, 1);
+    t.is("findings: ...and carries the count", fnd[0].count, 2);
+    fnd = D.addFinding(fnd, "sign-in-limiter", "tripped for ID X", 3);
+    t.is("findings: a different kind is its own row", fnd.length, 2);
+    t.ok("findings: a finding is bounded, and an EMPLOYEE ID survives it whole",
+      D.addFinding([], "k", "device of D11111111 " + "y".repeat(999), 1)[0].message.includes("D11111111") &&
+      D.addFinding([], "k", "y".repeat(999), 1)[0].message.length <= 240);
+    t.ok("findings: a stranger's quoted text is scrubbed by the caller's scrubText",
+      !D.scrubText("MRN 1234567 typed as an id", 100).includes("1234567"));
+    for (let i = 0; i < 300; i++) fnd = D.addFinding(fnd, "k" + i, "m", i);
+    t.ok("findings: the list is capped", fnd.length <= D.FINDING_LIST_CAP);
   }
 
   // ---------- a no-coverage gap ends when the station closes, not just when
