@@ -268,6 +268,9 @@ function requireAuth(req, res, next) {
     // does not carry an administrator's reach around with them.
     scopes: acting === "admin" && live.role !== "admin" && del ? del.scopes : [],
   };
+  // The System page's "who has the server heard from" — free, because every
+  // request already passes through here.
+  try { noteSeen(live.id); } catch (e) { /* never at a request's expense */ }
   next();
 }
 
@@ -455,6 +458,85 @@ function boardEtagFor(key, row) {
   if (v) return `"${BOOT_ID}:v${v}"`;
   return `"g${boardGen}:${row.updated_at}:${Buffer.byteLength(row.value, "utf8")}"`;
 }
+
+// ---------- the system watching itself ----------
+//
+// The owner's System page (GET /api/system) shows what this process knows
+// about its own health: how fast each family of request is being answered,
+// which devices it has heard from and when, the errors devices reported, and
+// the 5xx answers it gave. Counters live in memory on purpose — a restart
+// resets them, exactly like the rush meter, and nothing here may cost the
+// routes it is watching. Only the device error reports persist (settings
+// table): a crash that takes the process down is precisely the error worth
+// keeping.
+const { cleanReport, addReport, latencyStats, fleetRow, FLEET_STALE_MS } = require("./lib/system-health.cjs");
+const SYS_START = Date.now();
+const PERF_RING = 400;
+const perf = new Map(); // group -> { durs: [], n, s304, s5xx }
+function perfGroupOf(req) {
+  const p = req.path || "";
+  if (p === "/api/board" && req.method === "GET") return "board read";
+  if (p.startsWith("/api/board")) return "board write";
+  if (p.startsWith("/api/auth")) return "sign-in & session";
+  if (p.startsWith("/api/")) return "other API";
+  return "app & pages";
+}
+const recent5xx = [];
+function record5xx(req, status) {
+  recent5xx.unshift({ ts: Date.now(), method: req.method, path: String(req.path || "").slice(0, 80), status });
+  if (recent5xx.length > 50) recent5xx.pop();
+}
+// Who the server has heard from. Keyed by account (every authed request) and
+// by device (the app says hello with its build stamp every few minutes) — the
+// two together answer "is MEDIC 2's phone alive, and on which build".
+const fleetSeen = new Map(); // accountId -> ts
+const fleetDevices = new Map(); // deviceId -> { accountId, role, unit, build, platform, lastSeen }
+function noteSeen(accountId) {
+  fleetSeen.set(accountId, Date.now());
+  if (fleetSeen.size > 500) {
+    const oldest = [...fleetSeen.entries()].sort((a, b) => a[1] - b[1])[0];
+    if (oldest) fleetSeen.delete(oldest[0]);
+  }
+}
+// Device error reports, persisted so a crash that kills the process is still
+// on the page after the restart that follows it.
+let systemReports = [];
+try {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'system_reports'").get();
+  systemReports = row ? JSON.parse(row.value) || [] : [];
+} catch (e) {
+  systemReports = [];
+}
+function saveSystemReports() {
+  try {
+    db.prepare("DELETE FROM settings WHERE key = 'system_reports'").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('system_reports', ?)").run(JSON.stringify(systemReports));
+  } catch (e) {
+    /* the reports feed must never break a request */
+  }
+}
+
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on("finish", () => {
+    try {
+      const g = perfGroupOf(req);
+      let e = perf.get(g);
+      if (!e) perf.set(g, (e = { durs: [], n: 0, s304: 0, s5xx: 0 }));
+      e.n += 1;
+      if (res.statusCode === 304) e.s304 += 1;
+      if (res.statusCode >= 500) {
+        e.s5xx += 1;
+        record5xx(req, res.statusCode);
+      }
+      e.durs.push(Date.now() - t0);
+      if (e.durs.length > PERF_RING) e.durs.shift();
+    } catch (err) {
+      /* watching must never cost the watched */
+    }
+  });
+  next();
+});
 
 app.get("/api/board", requireAuth, (req, res) => {
   const key = req.query.key;
@@ -1611,7 +1693,14 @@ app.post("/api/auth/login", (req, res) => {
   }
   loginLimiter.clear(key);
   const fresh = findAccount(key);
-  res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
+  // isOwner is stamped here and on /api/auth/me — NOT on publicAccount, which
+  // /api/auth/lookup serves to anybody. The session uses it to draw the
+  // owner's System tile; the server still refuses everyone else regardless.
+  res.json({
+    ok: true,
+    token: issueToken(fresh),
+    account: { ...publicAccount(fresh), ...(fresh.id === RESTORE_OWNER ? { isOwner: true } : {}) },
+  });
 });
 
 // Changing your own password, while signed in. The current password is the
@@ -1658,7 +1747,7 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   if (!live) return res.status(401).json({ error: "That account no longer exists." });
   res.json({
     ok: true,
-    account: publicAccount(live),
+    account: { ...publicAccount(live), ...(live.id === RESTORE_OWNER ? { isOwner: true } : {}) },
     acting: req.user.act || live.role,
     scopes: req.user.scopes || [],
   });
@@ -1687,7 +1776,7 @@ app.post("/api/auth/act", requireAuth, (req, res) => {
     // What they may actually touch, so the app can draw only those areas
     // rather than a full administrator's screen with everything refused.
     scopes: want === "admin" && live.role !== "admin" && del ? del.scopes : [],
-    account: publicAccount(live),
+    account: { ...publicAccount(live), ...(live.id === RESTORE_OWNER ? { isOwner: true } : {}) },
   });
 });
 
@@ -1782,7 +1871,14 @@ app.post("/api/auth/set-password", (req, res) => {
   // Spent. A code opens an account once.
   clearClaimCode(acct.id);
   const fresh = findAccount(acct.id);
-  res.json({ ok: true, token: issueToken(fresh), account: publicAccount(fresh) });
+  res.json({
+    ok: true,
+    token: issueToken(fresh),
+    // The same owner mark the login answer carries — claiming the bootstrap
+    // account IS the owner's first sign-in, and a session built here must
+    // draw the System tile like any other.
+    account: { ...publicAccount(fresh), ...(fresh.id === RESTORE_OWNER ? { isOwner: true } : {}) },
+  });
 });
 
 // An administrator hands one out. Shown once, here, and never again — only its
@@ -1953,6 +2049,112 @@ app.post("/api/accounts/:id/clear-password", requireArea("teams"), (req, res) =>
   res.json({ ok: true, code, expiresAt: Date.now() + CLAIM_TTL_MS });
 });
 
+// ---------- the owner's System page ----------
+//
+// Owner only, like the reset — this maps the fleet, lists every fault a
+// device reported, and shows how the server is coping. It is read when the
+// page is OPENED, never on a poll: watching the system must not be a load on
+// the system.
+function requireOwner(req, res, next) {
+  requireAuth(req, res, () => {
+    if (!mayOpenRestoreWindow(req.user)) {
+      return res.status(403).json({ error: `That page belongs to ${RESTORE_OWNER} alone.` });
+    }
+    next();
+  });
+}
+
+// Any signed-in device may say hello — it is how the fleet table learns which
+// build a phone runs and which truck it rides. The app sends one every few
+// minutes; the map is capped so a churn of devices cannot grow it forever.
+app.post("/api/system/hello", requireAuth, (req, res) => {
+  const b = req.body || {};
+  const deviceId = String(b.deviceId || "").slice(0, 40);
+  if (deviceId) {
+    fleetDevices.set(deviceId, {
+      accountId: req.user.id,
+      role: String(b.role || req.user.role || "").slice(0, 20),
+      unit: String(b.unit || "").slice(0, 40),
+      build: String(b.build || "").slice(0, 40),
+      platform: String(b.platform || "web").slice(0, 20),
+      lastSeen: Date.now(),
+    });
+    if (fleetDevices.size > 300) {
+      const oldest = [...fleetDevices.entries()].sort((a, b2) => a[1].lastSeen - b2[1].lastSeen)[0];
+      if (oldest) fleetDevices.delete(oldest[0]);
+    }
+  }
+  res.json({ ok: true });
+});
+
+// A device reporting its own fault. Rate-limited per account so a looping
+// page cannot flood, scrubbed and capped before it is kept (system-health.cjs),
+// and persisted — a crash that takes the process down is exactly the error
+// worth still having after the restart.
+const reportLimiter = makeLimiter(15, 10 * 60 * 1000);
+app.post("/api/system/report", requireAuth, (req, res) => {
+  if (reportLimiter.blocked(req.user.id)) return res.json({ ok: true, held: true });
+  reportLimiter.failed(req.user.id);
+  const rep = cleanReport(req.body, Date.now());
+  if (rep) {
+    rep.by = req.user.id;
+    systemReports = addReport(systemReports, rep);
+    saveSystemReports();
+  }
+  res.json({ ok: true });
+});
+
+app.get("/api/system", requireOwner, (req, res) => {
+  const now = Date.now();
+  const names = new Map(
+    db.prepare("SELECT id, name FROM accounts").all().map((r) => [r.id, r.name])
+  );
+  const devices = [...fleetDevices.values()]
+    .map((d) => fleetRow({ ...d, name: names.get(d.accountId) || d.accountId }, now))
+    .sort((a, b) => a.silentMs - b.silentMs);
+  const accountsSeen = [...fleetSeen.entries()]
+    .map(([id, ts]) => fleetRow({ accountId: id, name: names.get(id) || id, lastSeen: ts }, now))
+    .sort((a, b) => a.silentMs - b.silentMs);
+  const traffic = [...perf.entries()].map(([group, e]) => ({
+    group, requests: e.n, notModified: e.s304, serverErrors: e.s5xx, ...latencyStats(e.durs),
+  })).sort((a, b) => b.requests - a.requests);
+  let pushTokens = 0;
+  try { pushTokens = db.prepare("SELECT COUNT(*) AS n FROM push_tokens").get().n; } catch (e) {}
+  const keys = db.prepare("SELECT key, length(value) AS bytes, updated_at FROM board ORDER BY length(value) DESC").all();
+  res.json({
+    ok: true,
+    now,
+    server: {
+      startedAt: SYS_START,
+      uptimeMs: now - SYS_START,
+      node: process.version,
+      memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+      pushConfigured: pushConfigured(),
+      pushTokens,
+    },
+    database: { path: DB_PATH, survivesRedeploy: DB_IS_PERSISTENT, fileBytes: dbFileBytes() },
+    disk: diskUsage(),
+    backups: backupState(),
+    boardKeys: keys.slice(0, 12),
+    boardBytes: keys.reduce((n, k) => n + (k.bytes || 0), 0),
+    restore: restoreStatusFor(req.user),
+    traffic,
+    recent5xx,
+    reports: systemReports,
+    devices,
+    accountsSeen,
+    staleAfterMs: FLEET_STALE_MS,
+  });
+});
+
+// Dealt with. Clearing is the owner saying "everything on this list has been
+// read"; the next fault starts the list again.
+app.post("/api/system/clear-reports", requireOwner, (req, res) => {
+  systemReports = [];
+  saveSystemReports();
+  res.json({ ok: true });
+});
+
 app.get("/api/health", (req, res) => {
   const keys = db
     .prepare("SELECT key, length(value) AS bytes, updated_at FROM board ORDER BY key")
@@ -2005,6 +2207,18 @@ app.use(express.static(path.join(__dirname, "public")));
 // current app file directly, e.g. to re-check what's actually deployed.
 app.get("/download", (req, res) => {
   res.download(path.join(__dirname, "public", "index.html"), "pulseops.html");
+});
+
+// A route that throws used to answer with Express's default HTML error page
+// and vanish from every record but the deploy log. It lands on the owner's
+// System page now, alongside the 5xx counters the finish-hook keeps.
+app.use((err, req, res, next) => {
+  try {
+    record5xx(req, 500);
+    console.error("Route error:", req.method, req.path, err && err.message);
+  } catch (e) { /* the reporter must never be the second fault */ }
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "The server hit a fault answering that. It has been recorded." });
 });
 
 app.listen(PORT, () => {

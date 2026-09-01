@@ -1181,6 +1181,30 @@ export function run(D, t) {
       D.ownerAccountRefusal("F9999999", "E1000", "delete"), null);
     t.ok("owner account: the id is matched case-insensitively",
       !!D.ownerAccountRefusal("F9999999", " f1525518 ", "delete"));
+
+    // The System page's own rules: a device's error report is bounded and
+    // scrubbed before it is kept, a looping fault is one row not a hundred,
+    // and a run of digits — the shape an MRN takes — never survives into the
+    // owner's error store.
+    const rep = D.cleanReport({ message: "save failed for MRN 123456 on ward", stack: "x".repeat(5000) }, 1000);
+    t.ok("system: digit runs are masked out of reports", !rep.message.includes("123456"));
+    t.ok("system: a stack is capped, not kept whole", rep.stack.length <= 900);
+    t.is("system: a report with no message is nothing", D.cleanReport({ stack: "s" }, 0), null);
+    let list = D.addReport([], D.cleanReport({ message: "boom", build: "b1" }, 1));
+    list = D.addReport(list, D.cleanReport({ message: "boom", build: "b1" }, 2));
+    t.is("system: the same fault twice is one row", list.length, 1);
+    t.is("system: ...counted twice", list[0].count, 2);
+    list = D.addReport(list, D.cleanReport({ message: "boom", build: "b2" }, 3));
+    t.is("system: the same fault on a NEW build is a new row", list.length, 2);
+    for (let i = 0; i < 300; i++) list = D.addReport(list, D.cleanReport({ message: "m" + i, build: "b" }, i));
+    t.ok("system: the report list is capped", list.length <= D.REPORT_LIST_CAP);
+    const stats = D.latencyStats([5, 1, 3, 100, 2]);
+    t.is("system: latency p50 is the middle, not the mean", stats.p50, 3);
+    t.is("system: latency max is the outlier itself", stats.max, 100);
+    t.ok("system: a silent device is called stale after two minutes",
+      D.fleetRow({ lastSeen: 0 }, D.FLEET_STALE_MS + 1).stale);
+    t.ok("system: a device just heard from is not",
+      !D.fleetRow({ lastSeen: 1000 }, 1500).stale);
   }
 
   // ---------- a no-coverage gap ends when the station closes, not just when

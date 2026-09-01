@@ -154,6 +154,9 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // is the role they actually are, so switching back knows where back is.
   const authorityOf = (account) => ({
     ownRole: (account && account.role) || null,
+    // The owner's mark, from the server — it draws the System tile and
+    // nothing else; every owner route re-checks the account regardless.
+    isOwner: !!(account && account.isOwner),
     roles: Array.isArray(account && account.roles) ? account.roles : [],
     delegation:
       account && account.delegation && Array.isArray(account.delegation.scopes)

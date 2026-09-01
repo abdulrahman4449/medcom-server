@@ -19,6 +19,7 @@ import { readKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { FoldingSection, ROLE_LABELS, SectionBanner, SectionHub, SectionScreen } from "./AdminView.jsx";
+import { SystemPanel } from "./SystemPanel.jsx";
 import { BackupPanel } from "./BackupPanel.jsx";
 import { AssistanceTasks, CallRoute, FleetRow, InfoNote, PendingCallCard } from "./AssistanceTasks.jsx";
 import { UnitRosterCard } from "./ChatDock.jsx";
@@ -822,6 +823,10 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   note: "copies & restore" },
                 { key: "issues", title: "Resolved issues", icon: <HandRaised size={26} />,
                   note: "the standing record" },
+                // The owner's System page. Drawn for the owner alone — the
+                // server refuses everyone else regardless (requireOwner).
+                !!(user && user.isOwner) && { key: "system", title: "System", icon: <ShieldAlert size={26} />,
+                  note: "owner's eyes only" },
               ]}
             />
           )}
@@ -884,6 +889,11 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           {openPanel === "issues" && (
             <SectionScreen onBack={() => setOpenPanel(null)}>
               <IssuesRaised requests={requests} viewer={escViewer} only="resolved" />
+            </SectionScreen>
+          )}
+          {openPanel === "system" && !!(user && user.isOwner) && (
+            <SectionScreen onBack={() => setOpenPanel(null)}>
+              <SystemPanel requests={requests} accounts={accounts} />
             </SectionScreen>
           )}
         </>

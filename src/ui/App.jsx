@@ -1,4 +1,5 @@
 import { markAlertsArmed } from "../lib/sound.jsx";
+import { installSystemReporting, systemHello } from "../lib/system-report.jsx";
 import { clearToken, fetchMe, getToken, listAccounts, onAuthLost, removeAccount, saveAccount } from "../lib/auth.jsx";
 import { BrandLockup, COLD_POLL_MS, HOUSEKEEPING_MS, LOG_CAP, POLL_MS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
@@ -434,7 +435,8 @@ export function App() {
       const same =
         JSON.stringify(roles) === JSON.stringify(cur.roles || []) &&
         JSON.stringify(del) === JSON.stringify(cur.delegation || null) &&
-        (acct.role || null) === (cur.ownRole || null);
+        (acct.role || null) === (cur.ownRole || null) &&
+        !!acct.isOwner === !!cur.isOwner;
       if (same) return;
       // An area taken back has to close the screen it was open on as well as
       // remove the chip: a delegate sitting in administration when the
@@ -444,6 +446,7 @@ export function App() {
       const wasBorrowed = !!cur.delegatedScopes;
       updateSession({
         ownRole: acct.role || cur.ownRole || null,
+        isOwner: !!acct.isOwner,
         roles,
         delegation: del,
         ...(wasBorrowed ? { delegatedScopes: stillLent } : {}),
@@ -1293,10 +1296,22 @@ export function App() {
     const poll = setInterval(loadAll, POLL_MS);
     const cold = setInterval(loadCold, COLD_POLL_MS);
     const clk = setInterval(() => setClock(nowTime()), 1000);
+    // The app watches itself: uncaught errors are reported to the server for
+    // the owner's System page, and a throttled hello rides the cold poll so
+    // the fleet table knows this device's build and truck. Installed once —
+    // the listeners read the session through a ref, so they never go stale
+    // and never need re-adding.
+    installSystemReporting(() => {
+      const u = userRef.current || {};
+      return { role: u.role || "", unit: u.unitName || u.unitId || "" };
+    });
+    const hello = setInterval(systemHello, 60 * 1000);
+    systemHello();
     return () => {
       clearInterval(poll);
       clearInterval(cold);
       clearInterval(clk);
+      clearInterval(hello);
     };
   }, [loadAll, loadCold]);
 

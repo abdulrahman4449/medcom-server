@@ -281,6 +281,22 @@ patch", that document is the target — do not start a fresh exploration.
   answer 403. A forgotten owner password is recovered by setting
   `OWNER_RESCUE=1` on the server and restarting — a one-time code prints to
   the log, the same trust the bootstrap code rests on; unset it after use.
+- **The System page is the owner's, and watching must never cost the
+  watched.** Archive → System (`SystemPanel.jsx`, `GET /api/system` behind
+  `requireOwner`) — devices report their own uncaught errors
+  (`src/lib/system-report.jsx`: install-once listeners, one report per fault
+  per 10 min, never signed out, never throws) and say hello with their build
+  and truck every few minutes, so the owner sees faults with the build stamp
+  that says whether the phone was even current, and sees a signed-on phone
+  that has gone SILENT — a crew that will miss a call. Reports are scrubbed
+  before they are kept (`lib/system-health.cjs`, under `npm test`: digit
+  runs ≥5 are masked — an MRN must not ride a stack trace into the store),
+  deduped by message+build, capped at 100, and persisted in `settings` so a
+  crash that kills the process is still on the page after the restart.
+  Perf/fleet counters are in-memory on purpose (like the rush meter); the
+  page is read on OPEN, never on a poll. `isOwner` is stamped on the login,
+  set-password, act and me answers — never on `publicAccount`, which
+  `/api/auth/lookup` serves to anybody.
 - **Putting data back belongs to the owner; taking copies does not.**
   `lib/restore-guard.cjs`, under `npm test` like the merge and the delegation
   list. Anyone holding the archive area may take a backup whenever they like —
