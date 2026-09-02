@@ -2682,7 +2682,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "The server hit a fault answering that. It has been recorded." });
 });
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`PulseOps server listening on port ${PORT}`);
   console.log(`Database file: ${DB_PATH}`);
   console.log(`Backups: ${BACKUP_DIR}${BACKUP_DIR_2 ? ` and ${BACKUP_DIR_2}` : ""}` +
@@ -2736,3 +2736,11 @@ app.listen(PORT, () => {
   console.warn("*".repeat(width));
   console.warn("");
 });
+
+// A kept-alive socket the server closes at Node's default five idle seconds
+// races the client that reuses it in the same instant — the stress test's only
+// errors (a handful of ECONNRESET in the opening burst, none after) were
+// exactly this. The window is outlived instead: longer than any client's
+// keep-alive reuse, and headers a second past it so the two never invert.
+httpServer.keepAliveTimeout = 65 * 1000;
+httpServer.headersTimeout = 66 * 1000;
