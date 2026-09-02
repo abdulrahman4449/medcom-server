@@ -22,7 +22,7 @@
 // app goes to real devices or the App Store, change this back to your real,
 // always-on server URL (Render, etc.) — "localhost" only means anything on
 // the same Mac the server is running on.
-export const LIVE_SITE = "https://medcom-server.onrender.com";
+export const LIVE_SITE = "https://pulseops-ems.com";
 export const IS_NATIVE_SHELL =
   (typeof window !== "undefined" &&
     !!window.Capacitor &&
