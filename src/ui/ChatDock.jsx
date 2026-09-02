@@ -1191,6 +1191,9 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
           <div key={`ho-${u.id}-${slot}`} style={styles.oosAsk}>
             <div style={styles.oosAskHead}>
               {r.name} is waiting to take over {u[slot].name}'s seat — {u.name} · {seatLabel(slot)}
+              <span style={{ marginLeft: 8, fontWeight: 800, color: liveRequestFor(u, requests) ? "var(--crit)" : "var(--ok)" }}>
+                {liveRequestFor(u, requests) ? "● ON A CALL" : "○ not on a call"}
+              </span>
             </div>
             <div style={styles.oosAskWhy}>
               Asked at {clockStr(r.queuedAt)} · {u[slot].name} has not answered on their phone.

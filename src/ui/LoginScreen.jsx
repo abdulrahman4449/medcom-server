@@ -4,7 +4,8 @@ import { APP_NAME } from "../brand/brand.jsx";
 import { areaSentence } from "../domain/delegation.jsx";
 import { reliefSituationFor, seatShiftIsOver } from "../domain/crew-relief.jsx";
 import { handoverKind, handoverRequest, queueHandover } from "../domain/seat-handover.jsx";
-import { ON_CALL_STATUSES } from "../domain/in-service.jsx";
+import { ON_CALL_STATUSES, effectiveStatusMeta, liveRequestFor } from "../domain/in-service.jsx";
+import { callRoute } from "../domain/call-locations.jsx";
 import { DEFAULT_STATION, STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
 import { clockStr, msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { crewShiftSummary, overtimeMs, scheduledShiftKey, seatLabel, shiftAssignment, shiftMeta, shiftPhrase } from "../domain/shift-helpers.jsx";
@@ -144,6 +145,23 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   const [claimCode, setClaimCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Whether the truck being signed into is out on a call RIGHT NOW. The seat
+  // card has to say so in so many words: it decides whether choosing a held
+  // seat asks its holder or queues behind a running call, and a crew member
+  // reading "Held by Ali" cannot be expected to know which. Read while the
+  // seat picker is open, every few seconds, and nowhere else.
+  const [seatRequests, setSeatRequests] = useState([]);
+  useEffect(() => {
+    if (stage !== "chooseSeat") return;
+    let alive = true;
+    const pull = async () => {
+      const r = await readKey("ems:requests", []);
+      if (alive) setSeatRequests(Array.isArray(r) ? r : []);
+    };
+    pull();
+    const t = setInterval(pull, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [stage]);
 
   // Dispatchers and admins get an extra step after their password: keep their
   // own view, or join a team as crew for this shift. Crew go straight on to
@@ -1304,6 +1322,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     const waitingHere = seatUnit ? handoverRequest(seatUnit, seat) : null;
                     const waitingIsMe = !!waitingHere && waitingHere.accountId === foundAccount.id;
                     const holderGone = !!holder && seatShiftIsOver(holder, Date.now());
+                    const liveCall = holder && seatUnit ? liveRequestFor(seatUnit, seatRequests) : null;
+                    const truckStatus = seatUnit ? effectiveStatusMeta(seatUnit, seatRequests) : null;
                     return (
                       <button
                         key={seat}
@@ -1321,6 +1341,18 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                       >
                         <div style={{ textAlign: "left" }}>
                           <div style={styles.roleBtnTitle}>{seatLabel(seat)}</div>
+                          {holder && holder.accountId !== foundAccount.id && (
+                            <div
+                              style={{
+                                fontSize: 12, fontWeight: 800, letterSpacing: 0.4, marginBottom: 3,
+                                color: liveCall ? (truckStatus && truckStatus.color) || "var(--crit)" : "var(--ok)",
+                              }}
+                            >
+                              {liveCall
+                                ? `● ON A CALL${truckStatus ? ` — ${truckStatus.label}` : ""} · ${liveCall.nature || "call"}${callRoute(liveCall) ? ` · ${callRoute(liveCall)}` : ""}`
+                                : "○ NOT ON A CALL"}
+                            </div>
+                          )}
                           <div style={styles.roleBtnSub}>
                             {!holder
                               ? "Available"
@@ -1332,7 +1364,11 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                                 (holderMeta ? ` · ${holderMeta.short}` : "") +
                                 (holderOt > 0 ? ` · ${shortDurationStr(holderOt)} overtime` : "") +
                                 (waitingHere && !waitingIsMe ? ` · ${waitingHere.name} is waiting` : "") +
-                                (holderGone ? " — shift ended, take over" : " — ask to take over")}
+                                (liveCall
+                                  ? " — queue: the seat is yours when they clear"
+                                  : holderGone
+                                  ? " — shift ended, take over"
+                                  : " — ask to take over")}
                           </div>
                         </div>
                         <ChevronRight size={18} color="var(--ink-3)" />
