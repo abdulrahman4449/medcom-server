@@ -2528,7 +2528,10 @@ export function App() {
       // desk and back is not a delegate.
       const lent = u.delegation && Array.isArray(u.delegation.scopes) ? u.delegation.scopes : null;
       const borrowed = next === "admin" && u.role !== "admin" && lent;
-      setSession({
+      // updateSession, not setSession: switching hats mid-shift is not a
+      // sign-in, and setSession clears the stored overtimeWindow marker - so
+      // a reload after a switch logged the same overtime crossing twice.
+      updateSession({
         ...u,
         role: next,
         ...(borrowed ? { delegated: true, delegatedScopes: lent } : {}),

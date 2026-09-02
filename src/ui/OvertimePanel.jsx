@@ -240,11 +240,11 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
       <div style={styles.otRange}>
         <label style={styles.otRangeField}>
           <span style={styles.otRangeLabel}>FROM</span>
-          <input style={styles.otDate} type="date" value={fromStr} onChange={(e) => setFromStr(e.target.value)} />
+          <input style={styles.otDate} type="date" lang="en-GB" value={fromStr} onChange={(e) => setFromStr(e.target.value)} />
         </label>
         <label style={styles.otRangeField}>
           <span style={styles.otRangeLabel}>TO</span>
-          <input style={styles.otDate} type="date" value={toStr} onChange={(e) => setToStr(e.target.value)} />
+          <input style={styles.otDate} type="date" lang="en-GB" value={toStr} onChange={(e) => setToStr(e.target.value)} />
         </label>
         <button style={styles.primaryBtnSm} onClick={download} disabled={!validRange || busy}>
           {busy ? "Building…" : "Excel sheet"}

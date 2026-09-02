@@ -1,4 +1,4 @@
-import { PRIORITY, REQ_STATUS, priorityKeyOf } from "../domain/constants.jsx";
+import { PRIORITY, REQ_STATUS, priorityKeyOf, reqStatusMeta } from "../domain/constants.jsx";
 import { openCoverageGap } from "../domain/coverage.jsx";
 import { queuedReliefFor } from "../domain/crew-relief.jsx";
 import { escalationViewer } from "../domain/escalations.jsx";
@@ -1436,7 +1436,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
               </div>
               <div style={styles.callCardMeta}>
                 <CallRoute req={req} />
-                <span style={{ ...styles.pill, background: REQ_STATUS[req.status].color }}>{REQ_STATUS[req.status].label}</span>
+                <span style={{ ...styles.pill, background: reqStatusMeta(req.status).color }}>{reqStatusMeta(req.status).label}</span>
                 {unit && <span style={styles.assignedTag}>{unit.name}</span>}
                 <NoTransportTag req={req} />
                 <PcrAuthorTag req={req} />

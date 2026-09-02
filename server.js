@@ -208,6 +208,26 @@ function checkPassword(account, password) {
 }
 
 const TOKEN_TTL_MS = 16 * 60 * 60 * 1000; // longer than the longest shift
+// Human-facing dates are stamped in the department's own timezone, never the
+// host's. An Alibaba Cloud image ships on UTC+8, so from 19:00 Riyadh the
+// System page's history row read as TOMORROW. OPS_TZ overrides; the daily
+// backup hour (BACKUP_DAILY_UTC_HOUR) is UTC and untouched by this.
+const OPS_TZ = process.env.OPS_TZ || "Asia/Riyadh";
+function opsParts(at) {
+  const d = new Date(at);
+  try {
+    const f = new Intl.DateTimeFormat("en-GB", {
+      timeZone: OPS_TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(d);
+    const get = (t) => (f.find((p) => p.type === t) || {}).value || "00";
+    return { y: get("year"), mo: get("month"), d: get("day"), h: get("hour"), mi: get("minute"), s: get("second") };
+  } catch (e) {
+    const p2 = (n) => String(n).padStart(2, "0");
+    return { y: String(d.getFullYear()), mo: p2(d.getMonth() + 1), d: p2(d.getDate()), h: p2(d.getHours()), mi: p2(d.getMinutes()), s: p2(d.getSeconds()) };
+  }
+}
+
 const b64 = (buf) => Buffer.from(buf).toString("base64url");
 
 function issueToken(account, actingRole) {
@@ -276,7 +296,10 @@ function requireAuth(req, res, next) {
 
 function requireAdmin(req, res, next) {
   requireAuth(req, res, () => {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Administrators only." });
+    if (req.user.role !== "admin") {
+      noteFinding("refused-role", `${req.user.id} (${req.user.role}) was refused ${req.method} ${req.path} — administrators only.`);
+      return res.status(403).json({ error: "Administrators only." });
+    }
     next();
   });
 }
@@ -287,6 +310,7 @@ function requireArea(scope) {
   return (req, res, next) =>
     requireAdmin(req, res, () => {
       if (req.user.fullAdmin || (req.user.scopes || []).includes(scope)) return next();
+      noteFinding("refused-role", `${req.user.id} was refused ${req.method} ${req.path} — the ${scope} area is not one they hold.`);
       return res.status(403).json({
         error: "That is not one of the areas you have been given.",
       });
@@ -299,6 +323,7 @@ function requireArea(scope) {
 function requireFullAdmin(req, res, next) {
   requireAuth(req, res, () => {
     if (!req.user.fullAdmin) {
+      noteFinding("refused-role", `${req.user.id} (a delegate) was refused ${req.method} ${req.path} — full administrators only.`);
       return res.status(403).json({
         error: "Only an administrator in their own right can do that.",
       });
@@ -414,6 +439,12 @@ app.use(express.json({ limit: "25mb" }));
 // download. Max-Age so the permission check is not repeated before every
 // single call on the three-second poll.
 app.use((req, res, next) => {
+  // Hardening headers (pentest HDR-01): no MIME sniffing, no framing by other
+  // origins, no referrer leaking a board URL. HSTS belongs on nginx, which is
+  // where TLS ends.
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-backup-token, If-None-Match");
@@ -542,6 +573,20 @@ function noteFinding(kind, message) {
     /* a finding must never break the request it describes */
   }
 }
+
+// A rejection nobody caught used to END THE PROCESS - Node exits on one - and
+// systemd's restart disguised it as a few seconds of "offline" on every phone,
+// with nothing on the System page to say why. Record it where the owner looks
+// and carry on. A genuinely unrecoverable throw is recorded too, then exits
+// so systemd hands back a clean process rather than one in an unknown state.
+process.on("unhandledRejection", (err) => {
+  try { noteFinding("server-fault", `Unhandled rejection: ${scrubText(String((err && err.stack) || err), 300)}`); } catch (e) {}
+});
+process.on("uncaughtException", (err) => {
+  try { noteFinding("server-fault", `Uncaught exception (process restarting): ${scrubText(String((err && err.stack) || err), 300)}`); } catch (e) {}
+  try { console.error("Uncaught exception:", err); } catch (e) {}
+  process.exit(1);
+});
 
 // ---------- the page that comes to you ----------
 //
@@ -695,8 +740,8 @@ async function runSelfTest(reason) {
     const board = perf.get("board read");
     const totalReq = [...perf.values()].reduce((n, e) => n + e.n, 0);
     const total5xx = [...perf.values()].reduce((n, e) => n + e.s5xx, 0);
-    const d = new Date();
-    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const t = opsParts(Date.now());
+    const day = `${t.y}-${t.mo}-${t.d}`;
     systemHistory = historyAppend(systemHistory, {
       day,
       requests: totalReq,
@@ -750,7 +795,10 @@ app.get("/api/board", requireAuth, (req, res) => {
   // The app reads a 403 as "nothing here for you" rather than as being
   // offline, so a key it must not have does not make a working board look
   // disconnected.
-  if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
+  if (FORBIDDEN_KEYS.has(key)) {
+    noteFinding("probe", `${req.user.id} asked for ${scrubText(key, 40)} through the board API — refused.`);
+    return res.status(403).json({ error: "Not available through the board." });
+  }
   const row = db.prepare("SELECT value, updated_at FROM board WHERE key = ?").get(key);
   if (!row) return res.json({ value: null });
   const etag = boardEtagFor(key, row);
@@ -767,7 +815,10 @@ app.post("/api/board", requireAuth, (req, res) => {
   if (typeof key !== "string") {
     return res.status(400).json({ error: "Missing key" });
   }
-  if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
+  if (FORBIDDEN_KEYS.has(key)) {
+    noteFinding("probe", `${req.user.id} asked for ${scrubText(key, 40)} through the board API — refused.`);
+    return res.status(403).json({ error: "Not available through the board." });
+  }
   if (!mayWriteKey(req.user, key)) {
     // A screen that offers what the server refuses is a screen that lies —
     // and a refusal here is either that bug, or somebody probing. Say so.
@@ -919,7 +970,10 @@ function pushForRequestsWrite(prevList, nextList) {
 app.post("/api/board/records", requireAuth, (req, res) => {
   const { key } = req.body || {};
   if (typeof key !== "string") return res.status(400).json({ error: "Missing key" });
-  if (FORBIDDEN_KEYS.has(key)) return res.status(403).json({ error: "Not available through the board." });
+  if (FORBIDDEN_KEYS.has(key)) {
+    noteFinding("probe", `${req.user.id} asked for ${scrubText(key, 40)} through the board API — refused.`);
+    return res.status(403).json({ error: "Not available through the board." });
+  }
   if (!mayWriteKey(req.user, key)) {
     // A screen that offers what the server refuses is a screen that lies —
     // and a refusal here is either that bug, or somebody probing. Say so.
@@ -1091,11 +1145,8 @@ const BACKUP_TOKEN = process.env.BACKUP_TOKEN || "";
 // So the name is checked against the disk and given a suffix if it is taken.
 // A backup must never be able to destroy another backup.
 function backupName(at, dir) {
-  const d = new Date(at);
-  const p2 = (n) => String(n).padStart(2, "0");
-  const stem =
-    `board-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}` +
-    `-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  const t = opsParts(at);
+  const stem = `board-${t.y}${t.mo}${t.d}-${t.h}${t.mi}${t.s}`;
   let name = `${stem}.db`;
   if (!dir) return name;
   try {
@@ -1387,6 +1438,7 @@ function restoreStatusFor(user) {
 // revocation should never have to wait out its own timer.
 app.post("/api/backups/allow-restore", requireArea("archive"), (req, res) => {
   if (!mayOpenRestoreWindow(req.user)) {
+    noteFinding("owner-power", `${req.user.id} tried to open or close the restore window — only ${RESTORE_OWNER} may.`);
     return res.status(403).json({ error: `Only ${RESTORE_OWNER} can open or close the restore window.` });
   }
   if ((req.body || {}).stop) {
@@ -1418,6 +1470,7 @@ app.post("/api/backups/allow-restore", requireArea("archive"), (req, res) => {
 // mis-tap from firing.
 app.post("/api/reset-board", requireArea("archive"), (req, res) => {
   if (!mayOpenRestoreWindow(req.user)) {
+    noteFinding("owner-power", `${req.user.id} tried to RESET THE BOARD — only ${RESTORE_OWNER} may.`);
     return res.status(403).json({ error: `Only ${RESTORE_OWNER} can reset the board, and it cannot be delegated.` });
   }
   if (String((req.body || {}).confirm || "") !== "RESET") {
@@ -1495,22 +1548,73 @@ app.get("/api/backups", requireArea("archive"), (req, res) => {
 });
 
 app.post("/api/backups", requireArea("archive"), async (req, res) => {
-  const state = await runBackup("on demand");
-  res.json({ ok: !!state.written.length, ...state });
+  try {
+    const state = await runBackup("on demand");
+    res.json({ ok: !!state.written.length, ...state });
+  } catch (e) {
+    // A full disk or a lost mount must be a recorded refusal, not a crash.
+    noteFinding("backup", `An on-demand backup failed: ${scrubText(String((e && e.message) || e), 200)}`);
+    res.status(500).json({ error: "The backup could not be written. It has been recorded." });
+  }
 });
 
 // Deliberately token-gated, and absent entirely when no token is set. This
 // route hands over every patient record the department holds.
+// A download link cannot carry a header, so the panel used to put the token in
+// the URL - and a long-lived secret in a URL is a secret in the access log,
+// where anyone who can read nginx's log holds the key to every MRN on the
+// board. (Pentest FILE-03.) The panel now asks for a TICKET first, sending
+// the token in a POST body: sixty seconds, one use, one named file, minted
+// only for somebody who holds the archive area AND the token - the same two
+// things the download always needed. pull-backup.mjs keeps sending the header.
+const downloadTickets = new Map();
+function mintDownloadTicket(name) {
+  for (const [t, v] of downloadTickets) if (v.exp < Date.now()) downloadTickets.delete(t);
+  const t = crypto.randomBytes(24).toString("base64url");
+  downloadTickets.set(t, { name, exp: Date.now() + 60 * 1000 });
+  return t;
+}
+function spendDownloadTicket(t, name) {
+  const key = String(t || "");
+  const v = downloadTickets.get(key);
+  if (!v) return false;
+  downloadTickets.delete(key);
+  return v.exp >= Date.now() && v.name === name;
+}
+// Constant-time, like every other secret this file compares.
+function backupTokenMatches(given) {
+  const a = Buffer.from(String(given || "")); const b = Buffer.from(BACKUP_TOKEN);
+  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+// A copy's name is taken apart and rebuilt rather than trusted - "../../etc/
+// passwd" is a path, not a backup - and a same-second collision suffix
+// (backupName's "-2") is a valid name too.
+const BACKUP_NAME_RE = /^board-\d{8}-\d{4,6}(-\d+)?\.db$/;
+
+app.post("/api/backups/:name/ticket", requireArea("archive"), (req, res) => {
+  if (!BACKUP_TOKEN) return res.status(404).json({ error: "Backup download is not enabled on this server." });
+  if (!backupTokenMatches((req.body || {}).token)) {
+    noteFinding("probe", `${req.user.id} asked for a backup download ticket with a wrong or missing token.`);
+    return res.status(403).json({ error: "Wrong or missing backup token." });
+  }
+  const name = path.basename(String(req.params.name));
+  if (!BACKUP_NAME_RE.test(name)) return res.status(400).json({ error: "Not a backup name." });
+  if (!fs.existsSync(path.join(BACKUP_DIR, name))) return res.status(404).json({ error: "No such backup." });
+  res.json({ ok: true, ticket: mintDownloadTicket(name), expiresInMs: 60 * 1000 });
+});
+
 app.get("/api/backups/:name", (req, res) => {
   if (!BACKUP_TOKEN) {
     return res.status(404).json({ error: "Backup download is not enabled on this server." });
   }
-  const given = req.get("x-backup-token") || req.query.token || "";
-  if (given !== BACKUP_TOKEN) return res.status(403).json({ error: "Wrong or missing backup token." });
-  // Name comes from the URL, so it is taken apart and rebuilt rather than
-  // trusted - "../../etc/passwd" is a path, not a backup.
   const name = path.basename(String(req.params.name));
-  if (!/^board-\d{8}-\d{4,6}\.db$/.test(name)) return res.status(400).json({ error: "Not a backup name." });
+  if (!BACKUP_NAME_RE.test(name)) return res.status(400).json({ error: "Not a backup name." });
+  const byHeader = backupTokenMatches(req.get("x-backup-token"));
+  const byTicket = !byHeader && spendDownloadTicket(req.query.ticket, name);
+  if (!byHeader && !byTicket) {
+    noteFinding("probe", `A download of ${scrubText(name, 40)} was refused — wrong or missing token or ticket.`);
+    return res.status(403).json({ error: "Wrong or missing backup token." });
+  }
   const file = path.join(BACKUP_DIR, name);
   if (!fs.existsSync(file)) return res.status(404).json({ error: "No such backup." });
   res.download(file, name);
@@ -1529,7 +1633,7 @@ app.get("/api/backups/:name", (req, res) => {
 // there was is not.
 function backupFileFor(rawName) {
   const name = path.basename(String(rawName || ""));
-  if (!/^board-\d{8}-\d{4,6}\.db$/.test(name) && !/^before-restore-[0-9]{8,}\.db$/.test(name)) {
+  if (!BACKUP_NAME_RE.test(name) && !/^before-restore-[0-9]{8,}\.db$/.test(name)) {
     return { error: "Not a backup name." };
   }
   const file = path.join(BACKUP_DIR, name);
@@ -1737,6 +1841,7 @@ app.post("/api/backups/sync-all", requireArea("archive"), async (req, res) => {
   // Additive, but still a write to the record from copies — inside the
   // restore window like any other put-back.
   if (!mayRestore(req.user, restoreApproval(), Date.now())) {
+    noteFinding("owner-power", `${req.user.id} tried ${req.method} ${req.path} without the restore window open — refused.`);
     return res.status(403).json({
       error: `Putting data back belongs to ${RESTORE_OWNER}. Taking copies is yours any time; ask them to open the restore window and try again.`,
     });
@@ -1824,6 +1929,7 @@ app.post("/api/backups/:name/restore", requireArea("archive"), async (req, res) 
   // The one route that rewrites the record from a copy. Owner, or a delegate
   // inside the window the owner opened — see lib/restore-guard.cjs.
   if (!mayRestore(req.user, restoreApproval(), Date.now())) {
+    noteFinding("owner-power", `${req.user.id} tried ${req.method} ${req.path} without the restore window open — refused.`);
     return res.status(403).json({
       error: `Putting data back belongs to ${RESTORE_OWNER}. Taking copies is yours any time; ask them to open the restore window and try again.`,
     });
@@ -2140,6 +2246,7 @@ app.post("/api/auth/act", requireAuth, (req, res) => {
   if (!live) return res.status(401).json({ error: "That account no longer exists." });
   const allowed = allowedRoles(live);
   if (!allowed.includes(want)) {
+    noteFinding("refused-role", `${req.user.id} asked to act as "${scrubText(want, 20)}" — a role they do not hold.`);
     return res.status(403).json({ error: "You do not hold that role." });
   }
   const del = liveDelegation(live);
@@ -2369,7 +2476,10 @@ app.post("/api/accounts", requireArea("teams"), (req, res) => {
   // The owner account answers only to itself, and can never stop being an
   // administrator — see ownerAccountRefusal in lib/restore-guard.cjs.
   const refusal = ownerAccountRefusal(req.user.id, key, role !== "admin" ? "demote" : "edit");
-  if (refusal) return res.status(403).json({ error: refusal });
+  if (refusal) {
+    noteFinding("owner-power", `${req.user.id}: ${refusal}`);
+    return res.status(403).json({ error: refusal });
+  }
   db.prepare(
     `INSERT INTO accounts (id, name, role, team, slot, station)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -2397,7 +2507,10 @@ app.delete("/api/accounts/:id", requireArea("teams"), (req, res) => {
   // Deleting the owner would take the restore, sync-all and reset authority
   // with it. Nobody removes that account, the owner included.
   const refusal = ownerAccountRefusal(req.user.id, key, "delete");
-  if (refusal) return res.status(403).json({ error: refusal });
+  if (refusal) {
+    noteFinding("owner-power", `${req.user.id}: ${refusal}`);
+    return res.status(403).json({ error: refusal });
+  }
   db.prepare("DELETE FROM accounts WHERE id = ?").run(key);
   res.json({ ok: true });
 });
@@ -2417,7 +2530,10 @@ app.post("/api/accounts/:id/clear-password", requireArea("teams"), (req, res) =>
   // that to themselves; a locked-out owner recovers through OWNER_RESCUE on
   // the server, never through another administrator.
   const refusal = ownerAccountRefusal(req.user.id, key, "clear-password");
-  if (refusal) return res.status(403).json({ error: refusal });
+  if (refusal) {
+    noteFinding("owner-power", `${req.user.id}: ${refusal}`);
+    return res.status(403).json({ error: refusal });
+  }
   db.prepare("UPDATE accounts SET pw_salt = NULL, pw_hash = NULL, legacy_hash = NULL WHERE id = ?").run(key);
   const code = issueClaimCode(key);
   res.json({ ok: true, code, expiresAt: Date.now() + CLAIM_TTL_MS });
@@ -2432,6 +2548,7 @@ app.post("/api/accounts/:id/clear-password", requireArea("teams"), (req, res) =>
 function requireOwner(req, res, next) {
   requireAuth(req, res, () => {
     if (!mayOpenRestoreWindow(req.user)) {
+      noteFinding("owner-power", `${req.user.id} tried to open the System page — it belongs to ${RESTORE_OWNER} alone.`);
       return res.status(403).json({ error: `That page belongs to ${RESTORE_OWNER} alone.` });
     }
     next();

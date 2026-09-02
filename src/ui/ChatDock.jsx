@@ -1,6 +1,6 @@
 import { callRoute } from "../domain/call-locations.jsx";
 import { CALL_CLOSE_REASONS, CALL_CLOSE_REASON_MAX } from "../domain/close-reasons.jsx";
-import { PRIORITY, PRIORITY_CHOICES, REQUIREMENTS, REQ_STATUS, applyCallEditsTo, priorityKeyOf, reqLabels, verifyCallEditOn } from "../domain/constants.jsx";
+import { PRIORITY, PRIORITY_CHOICES, REQUIREMENTS, REQ_STATUS, reqStatusMeta, applyCallEditsTo, priorityKeyOf, reqLabels, verifyCallEditOn } from "../domain/constants.jsx";
 import { COVERAGE_KEY, coverageUnits, openCoverageGap, startCoverageGap, stationHasCoverage } from "../domain/coverage.jsx";
 import { queuedReliefFor, reliefSituationFor } from "../domain/crew-relief.jsx";
 import { assignableNote, assignableUnits, effectiveStatusMeta, idleStatusFor, isOnCall, isStaffed, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
@@ -1529,7 +1529,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
               <div style={styles.callCardMeta}>
                 <CallRoute req={req} />
                 <span style={styles.callCardMetaItem}><Clock size={12} /> {hhmm(req.createdAt)}</span>
-                <span style={{ ...styles.pill, background: REQ_STATUS[req.status].color }}>{REQ_STATUS[req.status].label}</span>
+                <span style={{ ...styles.pill, background: reqStatusMeta(req.status).color }}>{reqStatusMeta(req.status).label}</span>
                 <NoTransportTag req={req} />
                 <PcrAuthorTag req={req} />
                 <CallTypeTag req={req} />

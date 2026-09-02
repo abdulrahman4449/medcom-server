@@ -733,12 +733,28 @@ export function BackupPanel({ user }) {
                   <button
                     style={styles.ghostBtn}
                     disabled={!token || !b.primary || !b.primary.newest}
-                    onClick={() => {
+                    onClick={async () => {
                       const name = pickToTake || b.primary.newest.name;
-                      window.open(
-                        `${API_BASE}/api/backups/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}`,
-                        "_blank"
-                      );
+                      // The tab is opened INSIDE the tap - one opened after an
+                      // await has no user gesture behind it and iOS blocks it -
+                      // and then pointed at a one-use ticket URL. The token
+                      // itself goes in a POST body, never in a URL a log keeps.
+                      const tab = window.open("", "_blank");
+                      try {
+                        const r = await fetch(`${API_BASE}/api/backups/${encodeURIComponent(name)}/ticket`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", ...authHeaders() },
+                          body: JSON.stringify({ token }),
+                        });
+                        const j = await r.json().catch(() => ({}));
+                        if (!r.ok || !j.ticket) throw new Error(j.error || "no ticket");
+                        const url = `${API_BASE}/api/backups/${encodeURIComponent(name)}?ticket=${encodeURIComponent(j.ticket)}`;
+                        if (tab) tab.location = url;
+                        else window.open(url, "_blank");
+                      } catch (e) {
+                        if (tab) tab.close();
+                        setNote(`Download refused: ${e.message}`);
+                      }
                     }}
                   >
                     Download
