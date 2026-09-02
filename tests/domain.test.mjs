@@ -1766,5 +1766,24 @@ export function run(D, t) {
     t.is("handover push: a still-out relief is not an ask", D.newHandoverAsks([unit], [stillOut]), []);
     t.is("handover push: an ask on an EMPTY seat has nobody to wake", D.newHandoverAsks([unit], [D.queueHandover(unit, "bravo", badr, now, true)]), []);
   }
+
+  // ---------- the desk's change to a live call is starred until the crew have seen it
+  {
+    const t0 = at(2026, 9, 3, 10);
+    const req = { id: "c1", createdAt: t0 - 3600000, times: { assigned: t0 }, edits: [
+      { id: "e0", field: "mrn", from: "1", to: "2", by: "Desk", byRole: "dispatcher", status: "applied", at: t0 - 60000 },
+      { id: "e1", field: "locationTo", from: "ED", to: "CT", by: "Desk", byRole: "dispatcher", status: "applied", at: t0 + 120000 },
+      { id: "e2", field: "nature", from: "a", to: "b", by: "Crew", byRole: "crew", status: "pending", at: t0 + 130000 },
+      { id: "e3", field: "callType", from: "", to: "B", by: "Crew", byRole: "crew", status: "applied", verifiedBy: "Desk", at: t0 + 140000 },
+    ] };
+    t.is("desk change: only the desk's APPLIED edits count", D.dispatchEditsOf(req).map((e) => e.id), ["e0", "e1"]);
+    t.is("desk change: nothing from before the call was handed over is starred",
+      [...D.changedFieldsSince(req, D.seenBaselineFor(req))], ["locationTo"]);
+    t.ok("desk change: the crew's own proposal, even once accepted, is not a desk change", !D.changedFieldsSince(req, 0).has("callType"));
+    t.is("desk change: seen clears it", D.unseenDispatchEdits(req, t0 + 120000).length, 0);
+    t.is("desk change: the newest desk edit is what the tone keys on", D.newestDispatchEditAt(req), t0 + 120000);
+    t.is("desk change: a call with no edits has none", D.newestDispatchEditAt({ id: "x" }), 0);
+    t.is("desk change: a call never assigned falls back to when it was raised", D.seenBaselineFor({ createdAt: 5 }), 5);
+  }
   }
 }

@@ -18,6 +18,8 @@ import { overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
 import { soundCallAlert, soundReminderTone, soundStandDownTone, speakStandDown } from "../lib/dates.jsx";
+import { changedFieldsSince, newestDispatchEditAt, seenBaselineFor, unseenDispatchEdits } from "../domain/call-changes.jsx";
+import { markEditsSeen, readEditsSeen } from "../lib/edits-seen.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Ambulance, Ban, CalendarClock, CheckCircle2, ChevronRight, Circle, Clock, FileSignature, HandRaised, PencilLine, PhoneIncoming, Radio, Users } from "../lib/icons.jsx";
 import { notifyAssignedCall } from "../lib/notify.jsx";
@@ -49,6 +51,39 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   // completed one left behind by a stale pointer must not resurface here — and
   // certainly must not restart the alarm.
   const myRequest = liveRequestFor(myUnit, requests);
+
+  // Dispatch changed the call while the crew were on it (domain/call-changes).
+  // A tone when a new desk edit lands, a red star on each changed line, and
+  // both stay until the crew tap Seen. Per device, per call.
+  const [editsSeenAt, setEditsSeenAt] = useState(0);
+  const editsToneRef = useRef(null);
+  useEffect(() => {
+    editsToneRef.current = null;
+    if (!myRequest) return;
+    setEditsSeenAt(readEditsSeen(myRequest.id) || seenBaselineFor(myRequest));
+  }, [myRequest && myRequest.id]);
+  const newestDeskEdit = myRequest ? newestDispatchEditAt(myRequest) : 0;
+  useEffect(() => {
+    if (!myRequest) return;
+    if (editsToneRef.current !== null && newestDeskEdit > editsToneRef.current) {
+      // Forced, like a message from the desk: a change to the destination
+      // that arrives under a lowered volume chip is a change nobody heard.
+      soundReminderTone(audioCtxRef, true);
+      buzz([180, 90, 180]);
+    }
+    editsToneRef.current = newestDeskEdit;
+  }, [newestDeskEdit, myRequest && myRequest.id]);
+  const unseenEdits = myRequest ? unseenDispatchEdits(myRequest, editsSeenAt) : [];
+  const changedFields = myRequest ? changedFieldsSince(myRequest, editsSeenAt) : new Set();
+  const Star = ({ field }) =>
+    changedFields.has(field) ? (
+      <span title="Changed by Dispatch" style={{ color: "var(--crit)", fontWeight: 800, marginRight: 5 }}>★</span>
+    ) : null;
+  function markChangesSeen() {
+    if (!myRequest) return;
+    markEditsSeen(myRequest.id, newestDeskEdit);
+    setEditsSeenAt(newestDeskEdit);
+  }
   // A call this team was sent to as the second ambulance, rather than one that
   // is theirs to run. The team that owns the call keeps the timeline; an
   // assisting team's job is to turn up, help, and clear when they're done.
@@ -1713,7 +1748,7 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
       ) : (
         <div style={{ ...styles.callCard, borderLeftColor: PRIORITY[priorityKeyOf(myRequest)].color, animation: "slide-in 0.25s ease" }}>
           <div style={styles.callCardTop}>
-            <div style={styles.callCardNature}>{myRequest.nature}</div>
+            <div style={styles.callCardNature}><Star field="nature" />{myRequest.nature}</div>
             <div style={styles.callCardTopRight}>
               {/* The escalation banner. It sits in the corner of the call all
                   the way through it — a crew who hit a problem at the door of
@@ -1732,7 +1767,10 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
             </div>
           </div>
           <div style={styles.callCardMeta}>
-            <CallRoute req={myRequest} />
+            <span style={{ display: "inline-flex", alignItems: "center" }}>
+              <Star field="locationFrom" /><Star field="locationTo" />
+              <CallRoute req={myRequest} />
+            </span>
             {/* Guarded like every other reader of this table. A status the
                 board can write and this table does not know is a blank screen
                 on the crew's own call card, which is the worst place in the
@@ -1756,7 +1794,7 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
               </span>
             )}
           </div>
-          {myRequest.mrn && <div style={styles.mrnRow}>MRN: {myRequest.mrn}</div>}
+          {myRequest.mrn && <div style={styles.mrnRow}><Star field="mrn" />MRN: {myRequest.mrn}</div>}
           {myRequest.notes && <div style={styles.mrnRow}>{myRequest.notes}</div>}
           {myRequest.requirements && myRequest.requirements.length > 0 && (
             <div style={styles.checklistRow}>
@@ -1769,6 +1807,24 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
           {/* Corrections. A crew can say the details are wrong; only the desk can
               make that stick. Anything already sent shows here so the same crew
               doesn't report it twice while they wait. */}
+          {/* What the desk changed, in full, until the crew say they have
+              seen it. The stars above mark WHERE; this says WHAT it was and
+              what it is now, because "the destination changed" is not enough
+              to act on. */}
+          {unseenEdits.length > 0 && (
+            <div style={{ marginTop: 10, border: "1px solid var(--crit)", background: "color-mix(in srgb, var(--crit) 10%, var(--panel))", borderRadius: 10, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: 0.6, color: "var(--crit-2)" }}>★ DISPATCH CHANGED THIS CALL</div>
+              {unseenEdits.map((e) => (
+                <div key={e.id} style={{ fontSize: 13.5, color: "var(--ink)" }}>
+                  <strong>{editFieldLabel(e.field)}</strong>: {editValueText(e.from, e.field) || "—"} → <strong>{editValueText(e.to, e.field)}</strong>
+                  <span style={{ color: "var(--ink-3)" }}> · {e.by} · {clockStr(e.at)}</span>
+                </div>
+              ))}
+              <button style={{ ...styles.ghostBtnSm, alignSelf: "flex-start" }} onClick={markChangesSeen}>
+                Seen — clear the stars
+              </button>
+            </div>
+          )}
           {!assisting && (
             <div style={styles.editCrewBlock}>
               {pendingCallEdits(myRequest).length > 0 && (

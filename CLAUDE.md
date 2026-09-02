@@ -1065,6 +1065,16 @@ patch", that document is the target — do not start a fresh exploration.
   closes the reliever's own short stay; the effect exempts a reliever whose
   ask is still on the seat.
 
+- **A change the desk makes to a live call reaches the crew with a tone and a
+  red star.** `src/domain/call-changes.jsx`, under `npm test`. Only the desk's
+  APPLIED edits count (`byRole: "dispatcher"`, `status: "applied"`) — a
+  correction the crew proposed themselves is theirs already — and nothing
+  from before `times.assigned` is starred. `TeamView` keys the tone on
+  `newestDispatchEditAt` (forced, like a message from the desk), stars each
+  changed line (`Star`), and lists what it was and what it is now until the
+  crew tap Seen; "seen" is a per-device timestamp in `lib/edits-seen.jsx`, so
+  a phone that was locked while the desk edited catches up on its next read.
+
 ## Checking your work
 
 Two commands, and both must pass before you build.
