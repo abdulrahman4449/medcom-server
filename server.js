@@ -394,6 +394,9 @@ const app = express();
 // The screen therefore looked right while nothing was actually being saved.
 // 25 MB is far more than this board will ever be and leaves no room for that
 // failure to come back as the department's history grows.
+// Do not advertise the framework in a response header — it hands a scanner a
+// free hint and gains nothing. (Pentest INFO-01.)
+app.disable("x-powered-by");
 app.use(express.json({ limit: "25mb" }));
 
 // CORS: the native iOS/Android app calls this from a different origin
@@ -2674,11 +2677,21 @@ app.get("/download", (req, res) => {
 // and vanish from every record but the deploy log. It lands on the owner's
 // System page now, alongside the 5xx counters the finish-hook keeps.
 app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  // A body the parser rejected is the caller's fault, not a server fault: answer
+  // 413 (too large) or 400 (malformed) rather than a blanket 500, which reads as
+  // a crash to a scanner and to the caller — and must NOT be counted as a 5xx
+  // fault on the System page. (Pentest INJ-02/INJ-03.)
+  if (err && (err.type === "entity.too.large" || err.status === 413)) {
+    return res.status(413).json({ error: "That request was too large." });
+  }
+  if (err && (err.type === "entity.parse.failed" || err.status === 400 || err instanceof SyntaxError)) {
+    return res.status(400).json({ error: "That request was not valid JSON." });
+  }
   try {
     record5xx(req, 500);
     console.error("Route error:", req.method, req.path, err && err.message);
   } catch (e) { /* the reporter must never be the second fault */ }
-  if (res.headersSent) return next(err);
   res.status(500).json({ error: "The server hit a fault answering that. It has been recorded." });
 });
 
