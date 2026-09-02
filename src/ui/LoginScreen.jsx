@@ -1155,9 +1155,6 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     >
                       <div style={{ textAlign: "left" }}>
                         <div style={styles.roleBtnTitle}>Take the Dispatch Desk</div>
-                        <div style={styles.roleBtnSub}>
-                          Work this shift as a dispatcher, under your own name
-                        </div>
                       </div>
                       <ChevronRight size={18} color="var(--ink-3)" />
                     </button>
