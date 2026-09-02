@@ -988,6 +988,44 @@ patch", that document is the target — do not start a fresh exploration.
 - **`SHOW_LOGOS` and `ORG_NAME`** near the top of the app switch the crests
   and the organisation's name back on. Both are deliberately off/empty.
 
+- **A guard that refuses must file a finding — every one does now.** The
+  September pentest held 39 of 39 and the owner's System page showed NOTHING:
+  the role/area/full-admin middleware, the forbidden board keys, the owner-only
+  restore window, reset, restore and sync-all, the System page, the
+  owner-account edits and the role `act` route all refused silently. Each now
+  calls `noteFinding` (`refused-role`, `owner-power`, `probe`); `addFinding`
+  merges identical messages with a count, so a UI bug hammering a route is one
+  row, not a hundred. A backup download refused for a wrong token or ticket is a
+  `probe` too. `process.on("unhandledRejection")` records a `server-fault`
+  rather than letting Node exit — a rejection nobody caught used to be a few
+  seconds of "offline" on every phone with nothing anywhere saying why.
+- **The self-test must never pull the board into the JS heap.** "Every board
+  key parses" was `JSON.parse` over `SELECT key, value FROM board` — on a
+  year-scale board (131 MB) that is 70 MB of JSON on the main thread, measured
+  under load as RSS at 2.2 GB and a **50-second p95 on every phone's poll**.
+  It is `SELECT key FROM board WHERE json_valid(value) = 0` now, judged inside
+  SQLite. The daily run is at `SELF_TEST_UTC_HOUR` (01:00 UTC = 04:00 Riyadh),
+  through `nextDailyAt` like the backup, not "24 hours after boot", which
+  could be shift change. The startup run at boot+90s stays.
+- **Human-facing dates are stamped in `OPS_TZ`, never the host's zone.** An
+  Alibaba Cloud image ships on UTC+8, so from 19:00 Riyadh the System page's
+  history row was dated TOMORROW. `opsParts(at)` (default `Asia/Riyadh`)
+  feeds the history day key and backup filenames; the backup HOUR stays UTC.
+- **The backup token never rides in a URL.** The panel's download link used
+  to carry `?token=` — a long-lived secret in nginx's access log, holding the
+  key to every MRN. `POST /api/backups/:name/ticket` takes the token in a
+  body (archive area AND token, the same two things a download always
+  needed) and mints a 60-second single-use ticket bound to that one file;
+  the tab is opened inside the tap and pointed at `?ticket=` afterwards, or
+  iOS blocks it. `pull-backup.mjs` keeps the header. Compare with
+  `backupTokenMatches` — constant-time, like every other secret here — and
+  `BACKUP_NAME_RE` accepts the `-2` collision suffix `backupName` can emit.
+- **Two sign-in date pickers and two `REQ_STATUS[...]` reads escaped their
+  rules.** `OvertimePanel`'s range inputs had no `lang="en-GB"`; `DayArchive`
+  and `ChatDock` read `REQ_STATUS[req.status].color` unguarded. Both rules are
+  above; both were found by grepping for the pattern, which is the check to
+  run when adding a date field or a status pill.
+
 ## Checking your work
 
 Two commands, and both must pass before you build.

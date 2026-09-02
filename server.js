@@ -680,10 +680,11 @@ async function runSelfTest(reason) {
     check("Database integrity", r && (r.quick_check === "ok" || r.integrity_check === "ok"), r && (r.quick_check || r.integrity_check));
   } catch (e) { check("Database integrity", false, e.message); }
   try {
-    const bad = [];
-    for (const row of db.prepare("SELECT key, value FROM board").all()) {
-      try { JSON.parse(row.value); } catch (e) { bad.push(row.key); }
-    }
+    // Judged INSIDE SQLite (json_valid), never by JSON.parse in this process:
+    // pulling a year's archive into the JS heap to prove it parses took the
+    // main thread away for seconds and spiked memory to 2 GB — measured under
+    // load as a 50-second stall on every phone's poll. Same verdict, no heap.
+    const bad = db.prepare("SELECT key FROM board WHERE json_valid(value) = 0").all().map((r) => r.key);
     check("Every board key parses", bad.length === 0, bad.join(", "));
   } catch (e) { check("Every board key parses", false, e.message); }
   try {
@@ -759,7 +760,17 @@ async function runSelfTest(reason) {
 }
 // Shortly after boot (not ON boot — start-up must stay fast), then daily.
 setTimeout(() => { runSelfTest("startup").catch(() => {}); }, 90 * 1000).unref();
-setInterval(() => { runSelfTest("scheduled").catch(() => {}); }, 24 * 3600 * 1000).unref();
+// Daily at a QUIET hour, not "24 hours after whenever the process last
+// started" — that landed the run at an arbitrary time of day, shift change
+// included. 01:00 UTC is 04:00 Riyadh, the emptiest hour the board has.
+const SELF_TEST_UTC_HOUR = Number(process.env.SELF_TEST_UTC_HOUR || 1);
+const scheduleSelfTest = () => {
+  setTimeout(() => {
+    runSelfTest("scheduled").catch(() => {});
+    scheduleSelfTest();
+  }, Math.max(60 * 1000, nextDailyAt(Date.now(), SELF_TEST_UTC_HOUR) - Date.now())).unref();
+};
+setTimeout(scheduleSelfTest, 0).unref();
 
 // Devices the owner has asked to send a fuller diagnostic on their next
 // heartbeat — the crew screen's self-checks, readable without the phone.
