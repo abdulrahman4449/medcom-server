@@ -38,7 +38,12 @@ export function reliefSituationFor(unit, slot, requests, now) {
   return "on-shift";
 }
 
+// The one the sign-out transfer honours. A still-out relief always; an ASK
+// (seat-handover.jsx) while it is pending or once approved — never after the
+// holder declined it, or the seat would change hands on a "no".
 export function queuedReliefFor(unit, slot) {
   const r = unit && unit.relief ? unit.relief[slot] : null;
-  return r && r.accountId ? r : null;
+  if (!r || !r.accountId) return null;
+  if (r.needsApproval && r.status && r.status !== "pending" && r.status !== "approved") return null;
+  return r;
 }

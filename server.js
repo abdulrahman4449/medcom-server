@@ -137,6 +137,9 @@ function hashPassword(password, salt) {
 // here rather than in the CREATE above, which only runs on an empty database.
 for (const col of [
   "claim_salt TEXT", "claim_hash TEXT", "claim_expires INTEGER",
+  // One phone at a time. The device session that signed in last is the only
+  // one the account answers to; see startDeviceSession.
+  "active_sid TEXT",
   // Delegated authority: an administrator lending part of their own standing to
   // somebody who does not have it. Kept on the account rather than on the board
   // because it is a permission, and permissions are checked here.
@@ -230,17 +233,35 @@ function opsParts(at) {
 
 const b64 = (buf) => Buffer.from(buf).toString("base64url");
 
-function issueToken(account, actingRole) {
+function issueToken(account, actingRole, sid) {
   const payload = b64(JSON.stringify({
     id: account.id,
     role: account.role,
     // Which of the roles they hold they are working as. Recorded, never
     // trusted: `requireAuth` checks it against the live account every time.
     act: actingRole || account.role,
+    // Which DEVICE this is. An account answers to one device session at a
+    // time (startDeviceSession); a token from the phone before this one is
+    // refused on its next request.
+    sid: sid || null,
     exp: Date.now() + TOKEN_TTL_MS,
   }));
   const sig = b64(crypto.createHmac("sha256", authSecret()).update(payload).digest());
   return `${payload}.${sig}`;
+}
+
+// One phone at a time. Signing in mints a new device session and makes it the
+// only one the account answers to, so the phone that signed in before this one
+// is signed out on its very next request — told why (X-Auth-Reason) rather
+// than left guessing. Nothing on the BOARD moves: the seat, the shift and the
+// hours are the person's, not the phone's, and the new phone carries on as
+// them through "Continue as MEDIC 1". The old phone's push tokens go with it:
+// a phone in a drawer must not go on buzzing for a truck its owner has left.
+function startDeviceSession(id) {
+  const sid = crypto.randomBytes(12).toString("base64url");
+  db.prepare("UPDATE accounts SET active_sid = ? WHERE id = ?").run(sid, id);
+  try { db.prepare("DELETE FROM push_tokens WHERE account_id = ?").run(id); } catch (e) { /* table may predate */ }
+  return sid;
 }
 
 function readToken(token) {
@@ -269,6 +290,17 @@ function requireAuth(req, res, next) {
   // A token outlives the account it names if somebody was removed mid-shift.
   const live = db.prepare("SELECT * FROM accounts WHERE id = ?").get(claims.id);
   if (!live) return res.status(401).json({ error: "That account no longer exists." });
+  // A token from a phone this account has since signed in on elsewhere. An
+  // account that has never signed in through this rule (no active_sid yet)
+  // still accepts its older tokens, so the rule arrives without signing the
+  // whole department out at once.
+  if (live.active_sid && claims.sid !== live.active_sid) {
+    res.setHeader("X-Auth-Reason", "other-device");
+    return res.status(401).json({
+      error: "This account was signed in on another phone, so this one has been signed out.",
+      reason: "other-device",
+    });
+  }
   // The role on the token is a request, not a fact. It counts only while the
   // account still allows it — so revoking a delegation, or letting it run out,
   // takes effect on the very next request rather than when the token expires.
@@ -277,6 +309,7 @@ function requireAuth(req, res, next) {
   const del = liveDelegation(live);
   req.user = {
     id: live.id,
+    sid: claims.sid || null,
     role: acting,
     ownRole: live.role,
     roles: allowed,
@@ -452,7 +485,7 @@ app.use((req, res, next) => {
   // (capacitor://localhost, http://localhost) cannot read it without this —
   // and a client that cannot read the ETag downloads the whole archive on
   // every cold poll, which is the exact cost the ETag exists to remove.
-  res.setHeader("Access-Control-Expose-Headers", "ETag");
+  res.setHeader("Access-Control-Expose-Headers", "ETag, X-Auth-Reason");
   res.setHeader("Access-Control-Max-Age", "86400");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -839,12 +872,15 @@ app.post("/api/board", requireAuth, (req, res) => {
   // What the requests held before this write, so the push trigger can see
   // which trucks were just handed a call. Read only for that one key.
   let prevRequests = null;
-  if (key === "ems:requests") {
+  let prevUnits = null;
+  if (key === "ems:requests" || key === "ems:units") {
     try {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
-      prevRequests = row ? JSON.parse(row.value) : null;
+      const before = row ? JSON.parse(row.value) : null;
+      if (key === "ems:requests") prevRequests = before; else prevUnits = before;
     } catch (e) {
       prevRequests = null;
+      prevUnits = null;
     }
   }
   let stored = value ?? null;
@@ -870,6 +906,7 @@ app.post("/api/board", requireAuth, (req, res) => {
   ).run(key, JSON.stringify(stored));
   bumpBoardKey(key);
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, value);
+  if (key === "ems:units") pushForUnitsWrite(prevUnits, value);
   res.json({ ok: true });
 });
 
@@ -902,7 +939,7 @@ const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSente
 // the dispatch channel, which sounds on the alarm stream through silent. Needs
 // FIREBASE_SERVICE_ACCOUNT set (see native/README.md); without it every part
 // of this is a no-op and the board behaves exactly as before.
-const { newAssignments } = require("./lib/push-triggers.cjs");
+const { newAssignments, newHandoverAsks } = require("./lib/push-triggers.cjs");
 const { pushConfigured, sendCallAlert, pushProbe, sendOwnerNotice } = require("./lib/push-fcm.cjs");
 
 db.exec(`
@@ -945,6 +982,42 @@ app.post("/api/push/unregister", requireAuth, (req, res) => {
 // hold one up. PRIVACY: the message names no patient and no route; an MRN on
 // a lock screen, relayed through Google, is a disclosure. The details are on
 // the board, behind the sign-in, where they belong.
+// A handover ASK: the seat-holder's phone is told somebody is waiting for
+// their seat, by name — a colleague's name is not patient data. No channel id,
+// so it does not sound like a call. Same discipline as the call push: after
+// the write, never inside it, and a failure never reaches the board.
+function pushForUnitsWrite(prevList, nextList) {
+  if (!pushConfigured()) return;
+  let asks;
+  try {
+    asks = newHandoverAsks(prevList, nextList);
+  } catch (e) {
+    return;
+  }
+  if (!asks.length) return;
+  setImmediate(async () => {
+    for (const ask of asks) {
+      let rows = [];
+      try {
+        rows = db.prepare("SELECT token FROM push_tokens WHERE account_id = ?").all(ask.holderAccountId);
+      } catch (e) {
+        rows = [];
+      }
+      for (const { token } of rows) {
+        try {
+          const r = await sendOwnerNotice(token, {
+            title: "SEAT HANDOVER",
+            body: `${ask.askerName} is waiting to take over your ${ask.unitName || "medic"} seat. Open the app to answer.`,
+          });
+          if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+        } catch (e) {
+          // never let a push problem near the board
+        }
+      }
+    }
+  });
+}
+
 function pushForRequestsWrite(prevList, nextList) {
   if (!pushConfigured()) return;
   let hits;
@@ -1003,11 +1076,13 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   // written — which would be the whole-board bug again, in miniature.
   let merged;
   let prevRequests = null;
+  let prevUnits = null;
   try {
     merged = db.transaction(() => {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
       const current = row ? JSON.parse(row.value) : null;
       if (key === "ems:requests") prevRequests = current;
+      if (key === "ems:units") prevUnits = current;
       // A key that holds a list cannot be merged with a map, or the other way
       // round. The client is told so and falls back to writing the key whole.
       if (current !== null && current !== undefined) {
@@ -1046,6 +1121,7 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   // A call that just landed on a truck wakes that truck's phone, even locked —
   // fired after the write has committed, and never able to fail it.
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, merged);
+  if (key === "ems:units") pushForUnitsWrite(prevUnits, merged);
   // The merged board goes back, so the device that wrote adopts what everybody
   // else has done in the same breath rather than waiting for the next poll.
   res.json({ ok: true, value: merged });
@@ -2184,12 +2260,13 @@ app.post("/api/auth/login", (req, res) => {
   }
   loginLimiter.clear(key);
   const fresh = findAccount(key);
+  const sid = startDeviceSession(fresh.id);
   // isOwner is stamped here and on /api/auth/me — NOT on publicAccount, which
   // /api/auth/lookup serves to anybody. The session uses it to draw the
   // owner's System tile; the server still refuses everyone else regardless.
   res.json({
     ok: true,
-    token: issueToken(fresh),
+    token: issueToken(fresh, undefined, sid),
     account: { ...publicAccount(fresh), ...(fresh.id === RESTORE_OWNER ? { isOwner: true } : {}) },
   });
 });
@@ -2263,7 +2340,8 @@ app.post("/api/auth/act", requireAuth, (req, res) => {
   const del = liveDelegation(live);
   res.json({
     ok: true,
-    token: issueToken(live, want),
+    // Same device, new hat: the device session carries over.
+    token: issueToken(live, want, req.user.sid),
     acting: want,
     // What they may actually touch, so the app can draw only those areas
     // rather than a full administrator's screen with everything refused.
@@ -2363,9 +2441,10 @@ app.post("/api/auth/set-password", (req, res) => {
   // Spent. A code opens an account once.
   clearClaimCode(acct.id);
   const fresh = findAccount(acct.id);
+  const sid = startDeviceSession(fresh.id);
   res.json({
     ok: true,
-    token: issueToken(fresh),
+    token: issueToken(fresh, undefined, sid),
     // The same owner mark the login answer carries — claiming the bootstrap
     // account IS the owner's first sign-in, and a session built here must
     // draw the System tile like any other.

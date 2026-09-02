@@ -1026,6 +1026,45 @@ patch", that document is the target — do not start a fresh exploration.
   above; both were found by grepping for the pattern, which is the check to
   run when adding a date field or a status pill.
 
+- **A seat somebody is working is theirs until they hand it over.**
+  `src/domain/seat-handover.jsx`, under `npm test`. Taking a seat whose holder
+  is MID-SHIFT no longer stands them down: the ask rides the relief queue
+  (`unit.relief[slot]` with `needsApproval`), the person asking is signed on and
+  WAITING (`awaitingRelief`, hours running from now), the holder's phone is
+  pushed (`newHandoverAsks` in `lib/push-triggers.cjs`, no channel id — it must
+  not sound like a call) and shows Approve / Decline at the top of `TeamView`.
+  Approving is the holder's own sign-out — their hours close by
+  `recordSignOut`, the seat transfers by the rule that already existed, and the
+  log says "handed over … (approved on their phone)". Declining keeps the seat;
+  `queuedReliefFor` never transfers a declined ask, the asker's phone signs off
+  and the sign-in screen names who declined. A dead phone cannot answer, so
+  `DispatcherView` lists unanswered asks with **Hand over now** (the holder is
+  signed off with their hours, `forcedBy` the desk) and **Withdraw**. Two cases
+  are NOT asks and must stay that way: a holder still out on a call is queued
+  for (as before), and a holder whose shift is over and who is not out went
+  home without signing out — nobody to ask, plain takeover (`handoverKind`).
+- **One phone at a time, and changing phones is not a sign-out.**
+  `startDeviceSession` in `server.js`: signing in mints a device session id
+  (`active_sid` on the account, `sid` in the token) and every other token for
+  that account is answered 401 with `X-Auth-Reason: other-device` on its next
+  request. NOTHING on the board moves — the seat, shift and hours belong to the
+  person — so the new phone carries on through "Continue as MEDIC 1" (which
+  writes nothing) and the old phone's sign-in screen says exactly what happened
+  (`loginNotice`, App → LoginScreen). An account that has never signed in
+  through the rule (`active_sid` null) still honours its older tokens, so the
+  rule arrives without signing the department out. Choosing a hat (`act`)
+  keeps the same sid. The old phone's push tokens are dropped at the new
+  sign-in; the new phone re-registers. **Any harness that mints tokens must
+  carry the account's live sid** (`sidOf` in the pentest harness).
+- **A waiting reliever is not the seat's occupant.** Two places assumed it
+  was: `recordSignOut` treated a queued reliever pressing Sign out as the
+  seat's holder — it stood the real holder down and "signed off" a seat the
+  reliever never held — and the "someone took your seat" effect bounced a
+  reliever to the sign-in screen twelve seconds after they queued, because the
+  seat's accountId was never theirs. `recordSignOut` now withdraws the ask and
+  closes the reliever's own short stay; the effect exempts a reliever whose
+  ask is still on the seat.
+
 ## Checking your work
 
 Two commands, and both must pass before you build.

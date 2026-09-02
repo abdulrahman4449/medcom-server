@@ -177,7 +177,9 @@ async function fetchKeyValue(key) {
   if (cached && cached.etag) headers["If-None-Match"] = cached.etag;
   const res = await fetch(`${API_BASE}/api/board?key=${encodeURIComponent(key)}`, { headers });
   if (res.status === 304 && cached) return { status: 200, value: cached.value };
-  if (res.status === 401 || res.status === 403) return { status: res.status, value: null };
+  // The reason rides on a header (X-Auth-Reason) so a device signed out
+  // because its owner signed in on another phone can be told exactly that.
+  if (res.status === 401 || res.status === 403) return { status: res.status, value: null, reason: res.headers.get("x-auth-reason") || "" };
   if (!res.ok) throw new Error(`readKey ${key} failed: ${res.status}`);
   const { value } = await res.json();
   const etag = res.headers.get("ETag");
@@ -195,7 +197,7 @@ export async function readKeyRaw(key) {
     // lost signal: holding the records and laying them over the server's copy
     // would show a board that looks right and is saving nothing.
     if (got.status === 401) {
-      noteAuthLost();
+      noteAuthLost(got.reason || "");
       setConnectionOk(true);
       return null;
     }
@@ -231,7 +233,7 @@ export async function readKey(key, fallback) {
     // lost signal: holding the records and laying them over the server's copy
     // would show a board that looks right and is saving nothing.
     if (got.status === 401) {
-      noteAuthLost();
+      noteAuthLost(got.reason || "");
       setConnectionOk(true);
       return fallback;
     }
@@ -328,7 +330,7 @@ export async function writeKey(key, value) {
       });
       if (res.status === 401) {
         // Signed out from under us. Queueing this would be pretending.
-        noteAuthLost();
+        noteAuthLost(res.headers.get("x-auth-reason") || "");
         throw Object.assign(new Error(`writeKey ${key}: signed out`), { httpStatus: 401 });
       }
       if (!res.ok) {
@@ -454,7 +456,7 @@ export async function writeRecords(key, upsert, remove, opts) {
     body: JSON.stringify({ key, upsert, remove: remove || [], ...(opts || {}) }),
   });
   if (res.status === 401) {
-    noteAuthLost();
+    noteAuthLost(res.headers.get("x-auth-reason") || "");
     throw Object.assign(new Error(`writeRecords ${key}: signed out`), { httpStatus: 401 });
   }
   const body = await res.json().catch(() => ({}));

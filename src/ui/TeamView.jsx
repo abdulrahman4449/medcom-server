@@ -22,6 +22,7 @@ import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Ambulance, Ban, CalendarClock, CheckCircle2, ChevronRight, Circle, Clock, FileSignature, HandRaised, PencilLine, PhoneIncoming, Radio, Users } from "../lib/icons.jsx";
 import { notifyAssignedCall } from "../lib/notify.jsx";
 import { readKey, writeKey, writeList } from "../lib/offline-queue.jsx";
+import { answerHandover, askForMySeat, handoverIsAsk, handoverRequest } from "../domain/seat-handover.jsx";
 import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { SectionBanner } from "./AdminView.jsx";
@@ -36,7 +37,7 @@ import { AssistStatusLine, CallCodingBlock, CallStepper, CallTypeTag, LoadedKmTa
 
 // ---------- team view ----------
 
-export function TeamView({ user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent }) {
+export function TeamView({ onHandOver, user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -885,6 +886,35 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
     !!user.awaitingRelief && !!seatHolder && seatHolder.accountId !== user.accountId;
   const occupantName = seatHolder ? seatHolder.name : "";
   const outgoingCall = awaitingSeat && myUnit ? liveRequestFor(myUnit, requests) : null;
+  // Waiting because the holder was ASKED (seat-handover.jsx), as opposed to
+  // waiting for a crew still out on a call.
+  const myAsk = myUnit && user.slot ? handoverRequest(myUnit, user.slot) : null;
+  const askMode = awaitingSeat && !!myAsk && myAsk.accountId === user.accountId && handoverIsAsk(myAsk);
+  // The other side: somebody is asking for THIS person's seat.
+  const askForMe = myUnit && user.slot && !user.awaitingRelief ? askForMySeat(myUnit, user.slot, user.accountId) : null;
+
+  // Handing over is signing out — the hours close by the same sign-out as any
+  // other, and the seat transfers by the rule that already existed for a
+  // queued relief. Approving is recorded on the ask first so the log can say
+  // it was approved rather than merely vacated.
+  async function approveHandover() {
+    if (!myUnit || !askForMe) return;
+    if (!window.confirm(`Hand ${seatLabel(user.slot)} over to ${askForMe.name} and sign out now?\n\nYour hours close at this moment and the seat is theirs.`)) return;
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(fresh.map((u) => (u.id === myUnit.id ? answerHandover(u, user.slot, "approved", user.name, Date.now()) : u)));
+    if (onHandOver) await onHandOver();
+  }
+  async function declineHandover() {
+    if (!myUnit || !askForMe) return;
+    const now = Date.now();
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(fresh.map((u) => (u.id === myUnit.id ? answerHandover(u, user.slot, "declined", user.name, now) : u)));
+    await addLog(
+      `${myUnit.name} — ${user.name} declined ${askForMe.name}'s request to take over ${seatLabel(user.slot)}`,
+      "shift",
+      { kind: "note", role: "team", name: user.name, accountId: user.accountId, unitId: myUnit.id, unitName: myUnit.name, station: stationOf(myUnit), seat: user.slot, handoverDeclined: askForMe.accountId }
+    );
+  }
 
   // This crew member's own list, and whether it has already been done today for
   // this truck. Alpha takes the medic list, Bravo the EMT list.
@@ -1453,27 +1483,54 @@ export function TeamView({ user, units, requests, saveUnits, saveRequests, addLo
           They are on duty and their hours are running; what they are not is on
           the truck. Showing them the ordinary crew screen would have them
           watching a call that is not theirs, on a unit they cannot act for. */}
+      {/* Somebody wants this seat. The holder decides, here, on their own
+          phone — the person asking is signed on and waiting, and the desk can
+          step in only if this prompt goes unanswered. */}
+      {askForMe && (
+        <div style={styles.oosAsk}>
+          <div style={styles.oosAskHead}>
+            {askForMe.name} is asking to take over your seat — {myUnit ? myUnit.name : "your medic"} · {seatLabel(user.slot)}
+          </div>
+          <div style={styles.oosAskWhy}>
+            Waiting since {clockStr(askForMe.queuedAt)}. Handing over signs you out now — your hours close at this
+            moment and the seat is theirs. Declining keeps your seat and tells them.
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button style={styles.primaryBtnSm} onClick={approveHandover}>Hand over &amp; sign out</button>
+            <button style={styles.ghostBtnSm} onClick={declineHandover}>Decline</button>
+          </div>
+        </div>
+      )}
+
       {awaitingSeat && (
         <div style={styles.reliefWait}>
           <div style={styles.reliefWaitHead}>
             <Clock size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
-            WAITING TO TAKE OVER {myUnit ? myUnit.name : "YOUR MEDIC"} — {seatLabel(user.slot).toUpperCase()}
+            {askMode ? "WAITING FOR APPROVAL — " : "WAITING TO TAKE OVER "}{myUnit ? myUnit.name : "YOUR MEDIC"} — {seatLabel(user.slot).toUpperCase()}
           </div>
           <div style={styles.reliefWaitBody}>
-            {occupantName ? `${occupantName} is` : "The outgoing crew are"} still out on a call.
-            You are signed on and your shift is running from {clockStr(user.shiftStart)}. The seat
-            becomes yours the moment they clear and sign out — you do not need to do anything.
+            {askMode
+              ? `${occupantName || "The seat holder"} has been asked on their phone. You are signed on and your shift is running from ${clockStr(user.shiftStart)}. The seat becomes yours the moment they approve or sign out. If they cannot answer, ask the dispatcher to hand it over.`
+              : `${occupantName ? `${occupantName} is` : "The outgoing crew are"} still out on a call. You are signed on and your shift is running from ${clockStr(user.shiftStart)}. The seat becomes yours the moment they clear and sign out — you do not need to do anything.`}
           </div>
           {outgoingCall && (
             <div style={styles.reliefWaitCall}>
               Currently on: {outgoingCall.nature} · {callRoute(outgoingCall)}
             </div>
           )}
-          <InfoNote label="Why not just take the seat?">
-            Taking it now would stop their overtime at this moment rather than when they actually
-            clear, and the call would lose the crew who ran it. The log has to show who was on the
-            truck, so the seat changes hands when the truck comes back.
-          </InfoNote>
+          {askMode ? (
+            <InfoNote label="Why ask?">
+              A seat somebody is working is theirs until they hand it over. Asking on their phone
+              means nobody is stood down without knowing, and their hours close by their own
+              sign-out — not by yours.
+            </InfoNote>
+          ) : (
+            <InfoNote label="Why not just take the seat?">
+              Taking it now would stop their overtime at this moment rather than when they actually
+              clear, and the call would lose the crew who ran it. The log has to show who was on the
+              truck, so the seat changes hands when the truck comes back.
+            </InfoNote>
+          )}
         </div>
       )}
 

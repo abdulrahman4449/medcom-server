@@ -2,7 +2,8 @@ import { actAsRole, choosePassword, lookupAccount, saveAccount, signIn, verifyPa
 import { BrandLockup, DEPT_LOGO, HOSPITAL_LOGO, ORG_NAME, SHOW_LOGOS } from "../brand/artwork.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
 import { areaSentence } from "../domain/delegation.jsx";
-import { reliefSituationFor } from "../domain/crew-relief.jsx";
+import { reliefSituationFor, seatShiftIsOver } from "../domain/crew-relief.jsx";
+import { handoverKind, handoverRequest, queueHandover } from "../domain/seat-handover.jsx";
 import { ON_CALL_STATUSES } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
 import { clockStr, msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.jsx";
@@ -46,7 +47,20 @@ export function seatHeldBy(units, accountId) {
   return null;
 }
 
-export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme }) {
+// What the sign-in screen has to say before anybody types: why this device
+// was signed out (App.jsx sets it), in words that stop the wrong next step.
+function loginNoticeText(notice) {
+  if (notice === "other-device") {
+    return "You signed in on another phone, so this one was signed out. Nothing on the board changed — your seat, your shift and your hours carry on. Sign in here to continue as yourself.";
+  }
+  if (notice && notice.startsWith("declined:")) {
+    const [, by, unit, seat] = notice.split(":");
+    return `${by} declined your request to take over ${unit} · ${seat}. You have been signed off. If the seat has to change hands, ask the dispatcher.`;
+  }
+  return "";
+}
+
+export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme, loginNotice }) {
   // The tab that is selected, never null. The screen used to open on a menu of
   // three buttons and only then show a form; the approved design is one card
   // with the choice as a tab strip along the top of it, so there is a field to
@@ -504,17 +518,61 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // Taking a seat that someone is still sitting in: the outgoing crew member
   // is stood down (their own session drops back to the login screen on its next
   // poll) and the swap goes on the log sheet naming both sides.
-  function takeOverSeat(seat, holder) {
+  //
+  // Three cases (seat-handover.jsx). Somebody MID-SHIFT is asked, on their own
+  // phone, and nothing moves until they answer. Somebody whose shift is over
+  // and who is not out went home without signing out — there is nobody to ask,
+  // so that is the plain takeover it always was. Somebody still out on a call
+  // is queued for; finishTeamLogin asks its own question for that one.
+  async function takeOverSeat(seat, holder) {
+    const now = Date.now();
+    const freshRequests = (await readKey("ems:requests", [])) || [];
+    const kind = handoverKind(seatUnit, seat, freshRequests, foundAccount.id, now);
     const holderMeta = shiftMeta(holder.shift);
-    const ot = overtimeMs(holder, Date.now());
-    const confirmed = window.confirm(
-      `Take over ${seatLabel(seat)} on ${seatUnit ? seatUnit.name : "this team"}?\n\n` +
-        `${holder.name} is still signed on${holderMeta ? ` for the ${holderMeta.label.toLowerCase()}` : ""}` +
-        `${ot > 0 ? ` and is ${otHoursStr(ot)} into overtime` : ""}.\n\n` +
-        `They will be stood down and the shift swap recorded on the log sheet.`
-    );
+    const ot = overtimeMs(holder, now);
+    const where = seatUnit ? seatUnit.name : "this team";
+    const who =
+      `${holder.name} is still signed on${holderMeta ? ` for the ${holderMeta.label.toLowerCase()}` : ""}` +
+      `${ot > 0 ? ` and is ${otHoursStr(ot)} into overtime` : ""}.`;
+    let confirmed = true;
+    if (kind === "needs-approval") {
+      confirmed = window.confirm(
+        `Ask ${holder.name} to hand over ${seatLabel(seat)} on ${where}?\n\n${who}\n\n` +
+          `They are asked on their own phone. You will be signed on and waiting; the seat is yours the moment ` +
+          `they approve or sign out. If they cannot answer, the dispatcher can hand it over.`
+      );
+    } else if (kind === "forgot") {
+      confirmed = window.confirm(
+        `Take over ${seatLabel(seat)} on ${where}?\n\n` +
+          `${holder.name}'s shift ended${holder.shiftEnd ? ` at ${clockStr(holder.shiftEnd)}` : ""} and the truck is not out — ` +
+          `they left without signing out. They will be signed off and the swap recorded on the log sheet.`
+      );
+    }
     if (!confirmed) return;
     finishTeamLogin(foundAccount, seat);
+  }
+
+  // Signing in again while waiting for a seat — on another phone, or after
+  // this one restarted. Nothing is written: the ask is already on the seat.
+  function resumeWaiting(seat) {
+    const unit = seatUnit;
+    const r = unit ? handoverRequest(unit, seat) : null;
+    if (!r || r.accountId !== foundAccount.id) return;
+    onLogin({
+      ...authorityOf(foundAccount),
+      role: "team",
+      accountId: foundAccount.id,
+      name: foundAccount.name || r.name || foundAccount.id,
+      unitId: unit.id,
+      unitName: unit.name,
+      station: stationOf(unit),
+      slot: seat,
+      shift: r.shift || scheduledShiftKey(Date.now()),
+      shiftStart: r.shiftStart || null,
+      shiftEnd: r.shiftEnd || null,
+      signedOnAt: r.queuedAt || Date.now(),
+      awaitingRelief: true,
+    });
   }
 
   // The other seat, taken at the same time and in the partner's own name. Only
@@ -640,6 +698,56 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
           shiftStart: assignment.shiftStart,
           shiftEnd: assignment.shiftEnd,
           awaitingRelief: true,
+        },
+        actorStamp(session)
+      );
+      setBusy(false);
+      onLogin(session);
+      return;
+    }
+
+    // Somebody mid-shift is asked, on their own phone. The ask goes on the seat
+    // (the same queue a still-out relief uses), the person asking is signed on
+    // and waiting, and the seat moves only when the holder approves or signs
+    // out — or when the desk hands it over because the holder cannot answer.
+    if (unit && situation === "on-shift" && unit[slot] && unit[slot].accountId !== account.id) {
+      const out = unit[slot];
+      const nextUnits = freshUnits.map((u) =>
+        u.id === teamId
+          ? queueHandover(u, slot, { accountId: account.id, name: account.name || account.id, ...assignment }, now, true)
+          : u
+      );
+      await saveUnits(nextUnits);
+      const session = {
+        ...authorityOf(account),
+        role: "team",
+        accountId: account.id,
+        name: account.name || account.id,
+        unitId: teamId,
+        unitName: unit.name,
+        station: stationOf(unit),
+        slot,
+        shift: key,
+        ...assignment,
+        awaitingRelief: true,
+      };
+      await addLog(
+        `${unit.name} — ${session.name} asked to take over ${seatLabel(slot)} from ${out.name} · waiting for their approval`,
+        "shift",
+        {
+          kind: "on",
+          role: "team",
+          name: session.name,
+          accountId: account.id,
+          unitId: teamId,
+          unitName: unit.name,
+          station: stationOf(unit),
+          seat: slot,
+          shift: key,
+          shiftStart: assignment.shiftStart,
+          shiftEnd: assignment.shiftEnd,
+          awaitingRelief: true,
+          askedToTakeOver: out.accountId,
         },
         actorStamp(session)
       );
@@ -874,6 +982,9 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
 
         {role && (
           <div style={{ marginTop: 18 }}>
+            {loginNotice && loginNoticeText(loginNotice) && (
+              <div style={styles.claimCodeBanner}>{loginNoticeText(loginNotice)}</div>
+            )}
             {stage === "id" && (
               <>
                 <label style={styles.loginFieldLabel}>EMPLOYEE ID</label>
@@ -1190,6 +1301,9 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     const holder = seatUnit ? seatUnit[seat] : null;
                     const holderMeta = holder ? shiftMeta(holder.shift) : null;
                     const holderOt = holder ? overtimeMs(holder, Date.now()) : 0;
+                    const waitingHere = seatUnit ? handoverRequest(seatUnit, seat) : null;
+                    const waitingIsMe = !!waitingHere && waitingHere.accountId === foundAccount.id;
+                    const holderGone = !!holder && seatShiftIsOver(holder, Date.now());
                     return (
                       <button
                         key={seat}
@@ -1198,6 +1312,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                         onClick={() =>
                           holder && holder.accountId === foundAccount.id
                             ? resumeSeat()
+                            : holder && waitingIsMe
+                            ? resumeWaiting(seat)
                             : holder
                             ? takeOverSeat(seat, holder)
                             : finishTeamLogin(foundAccount, seat)
@@ -1210,10 +1326,13 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                               ? "Available"
                               : holder.accountId === foundAccount.id
                               ? "This is you — continue"
+                              : waitingIsMe
+                              ? `Held by ${holder.name} — you are waiting for their answer · continue waiting`
                               : `Held by ${holder.name}` +
                                 (holderMeta ? ` · ${holderMeta.short}` : "") +
                                 (holderOt > 0 ? ` · ${shortDurationStr(holderOt)} overtime` : "") +
-                                " — take over"}
+                                (waitingHere && !waitingIsMe ? ` · ${waitingHere.name} is waiting` : "") +
+                                (holderGone ? " — shift ended, take over" : " — ask to take over")}
                           </div>
                         </div>
                         <ChevronRight size={18} color="var(--ink-3)" />
@@ -1222,8 +1341,10 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                   })}
                 </div>
                 <InfoNote label="More about this">
-                  Taking over a seat that's still held stands the other person down and records the
-                  shift swap on the log sheet.
+                  A seat somebody is working is theirs until they hand it over: asking sends the request to
+                  their phone, and you are signed on and waiting until they approve — or the dispatcher hands
+                  it over if they cannot answer. A seat whose shift has ended and whose truck is not out is
+                  taken over directly, and a crew still out on a call is queued for.
                 </InfoNote>
 
                 {/* Both crew on one tablet.

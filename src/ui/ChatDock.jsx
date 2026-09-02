@@ -3,9 +3,10 @@ import { CALL_CLOSE_REASONS, CALL_CLOSE_REASON_MAX } from "../domain/close-reaso
 import { PRIORITY, PRIORITY_CHOICES, REQUIREMENTS, REQ_STATUS, reqStatusMeta, applyCallEditsTo, priorityKeyOf, reqLabels, verifyCallEditOn } from "../domain/constants.jsx";
 import { COVERAGE_KEY, coverageUnits, openCoverageGap, startCoverageGap, stationHasCoverage } from "../domain/coverage.jsx";
 import { queuedReliefFor, reliefSituationFor } from "../domain/crew-relief.jsx";
+import { answerHandover, clearHandover, handoverIsPending, handoverRequest } from "../domain/seat-handover.jsx";
 import { assignableNote, assignableUnits, effectiveStatusMeta, idleStatusFor, isOnCall, isStaffed, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
-import { MESSAGE_MAX, buzz, clockStr, markThreadSeen, notifyMessage, postMessage, shortDurationStr, threadFor, unreadIn } from "../domain/messages.jsx";
+import { MESSAGE_MAX, buzz, clockStr, markThreadSeen, notifyMessage, otHoursStr, postMessage, shortDurationStr, threadFor, unreadIn } from "../domain/messages.jsx";
 import { opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { oosRequestOf } from "../domain/out-of-service.jsx";
 import { activeAssistUnitIds, assistOf, assistPending, assistTeams } from "../domain/second-ambulance.jsx";
@@ -525,6 +526,78 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
             seat: rq.seat,
           }
         : undefined
+    );
+  }
+
+  // A seat somebody is waiting for, whose holder has not answered on their
+  // phone. The holder decides, normally; a dead phone cannot, so the desk can
+  // hand the seat over — the holder is signed off at this moment, with their
+  // hours, and the log says the DESK did it, never that the holder agreed.
+  async function forceHandover(unit, slot) {
+    const r = handoverRequest(unit, slot);
+    const holder = unit[slot];
+    if (!r || !holder) return;
+    if (
+      !window.confirm(
+        `Hand ${seatLabel(slot)} on ${unit.name} over to ${r.name} now?\n\n` +
+          `${holder.name} is signed off at this moment — their hours close now — and the log records that the desk did it.`
+      )
+    )
+      return;
+    const now = Date.now();
+    const ot = overtimeMs(holder, now);
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(
+      fresh.map((u) => {
+        if (u.id !== unit.id) return u;
+        const cur = u[slot];
+        const ask = handoverRequest(u, slot);
+        if (!ask || !cur) return u;
+        return {
+          ...clearHandover(u, slot),
+          [slot]: {
+            accountId: ask.accountId, name: ask.name, shift: ask.shift,
+            shiftStart: ask.shiftStart, shiftEnd: ask.shiftEnd, signedOnAt: ask.queuedAt,
+          },
+          lastCrew: {
+            ...(u.lastCrew || {}),
+            [slot]: { ...cur, signedOffAt: now, overtimeMs: overtimeMs(cur, now), handedOverBy: user.name || "Dispatch" },
+          },
+        };
+      })
+    );
+    await addLog(
+      `${unit.name} — ${holder.name} (${seatLabel(slot)}) signed off · seat handed over to ${r.name} by ${user.name || "Dispatch"} (no answer from ${holder.name})` +
+        (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
+      "shift",
+      {
+        kind: "off", role: "team", name: holder.name, accountId: holder.accountId,
+        unitId: unit.id, unitName: unit.name, station: stationOf(unit), seat: slot,
+        shift: holder.shift || null, shiftStart: holder.shiftStart || null, shiftEnd: holder.shiftEnd || null,
+        overtimeMs: ot, forcedBy: user.name || "Dispatch",
+      }
+    );
+    await addLog(
+      `${unit.name} — ${r.name} took over ${seatLabel(slot)} from ${holder.name} · handed over by ${user.name || "Dispatch"}`,
+      "shift",
+      {
+        kind: "on", role: "team", name: r.name, accountId: r.accountId,
+        unitId: unit.id, unitName: unit.name, station: stationOf(unit), seat: slot,
+        shift: r.shift || null, shiftStart: r.shiftStart || null, shiftEnd: r.shiftEnd || null,
+        relievedName: holder.name, forcedBy: user.name || "Dispatch",
+      }
+    );
+  }
+  async function withdrawHandover(unit, slot) {
+    const r = handoverRequest(unit, slot);
+    if (!r) return;
+    if (!window.confirm(`Withdraw ${r.name}'s request for ${seatLabel(slot)} on ${unit.name}?\n\nThey are told, and signed off.`)) return;
+    const fresh = await readKey("ems:units", units);
+    await saveUnits(fresh.map((u) => (u.id === unit.id ? answerHandover(u, slot, "declined", user.name || "Dispatch", Date.now()) : u)));
+    await addLog(
+      `${unit.name} — ${r.name}'s request to take over ${seatLabel(slot)} withdrawn by ${user.name || "Dispatch"}`,
+      "shift",
+      { kind: "note", role: "dispatcher", name: user.name, accountId: user.accountId, unitId: unit.id, unitName: unit.name, station: stationOf(unit), seat: slot }
     );
   }
 
@@ -1107,6 +1180,34 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
             </div>
           );
         })}
+
+      {/* Somebody waiting for a seat whose holder has not answered. Asked on
+          the holder's own phone first; the desk steps in only when that
+          prompt goes unanswered — a dead phone must not hold a seat all day. */}
+      {stationUnits
+        .flatMap((u) => ["alpha", "bravo"].map((slot) => ({ u, slot, r: handoverRequest(u, slot) })))
+        .filter(({ u, slot, r }) => handoverIsPending(r) && u[slot] && u[slot].accountId !== r.accountId)
+        .map(({ u, slot, r }) => (
+          <div key={`ho-${u.id}-${slot}`} style={styles.oosAsk}>
+            <div style={styles.oosAskHead}>
+              {r.name} is waiting to take over {u[slot].name}'s seat — {u.name} · {seatLabel(slot)}
+            </div>
+            <div style={styles.oosAskWhy}>
+              Asked at {clockStr(r.queuedAt)} · {u[slot].name} has not answered on their phone.
+              <span style={styles.oosAskWho}>
+                {" "}Handing over here signs {u[slot].name} off now and is recorded as the desk's decision.
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button style={styles.primaryBtnSm} onClick={() => forceHandover(u, slot)}>
+                Hand over now
+              </button>
+              <button style={styles.ghostBtnSm} onClick={() => withdrawHandover(u, slot)}>
+                Withdraw the request
+              </button>
+            </div>
+          </div>
+        ))}
 
       {/* Trucks asking to come off the run. Answered here because taking an
           ambulance off is a decision about the department's cover, and this is

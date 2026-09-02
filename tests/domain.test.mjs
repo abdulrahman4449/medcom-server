@@ -1730,5 +1730,41 @@ export function run(D, t) {
       D.nextDailyAt(Date.UTC(2026, 8, 1, 3, 0, 0), 4), Date.UTC(2026, 8, 1, 4, 5, 0));
     t.is("backups: a boundary already passed books tomorrow's",
       D.nextDailyAt(Date.UTC(2026, 8, 1, 4, 5, 0), 4), Date.UTC(2026, 8, 2, 4, 5, 0));
+
+  // ---------- taking a seat somebody is sitting in asks them first
+  {
+    const now = at(2026, 9, 2, 10);
+    const holder = { accountId: "A1", name: "Ali", shift: "day", shiftStart: at(2026, 9, 2, 7), shiftEnd: at(2026, 9, 2, 19), signedOnAt: at(2026, 9, 2, 7) };
+    const unit = { id: "m1", name: "MEDIC 1", station: "main", alpha: holder, bravo: null, status: "available" };
+    const badr = { accountId: "B1", name: "Badr", shift: "day" };
+    t.is("handover: an empty seat is free", D.handoverKind(unit, "bravo", [], "B1", now), "free");
+    t.is("handover: your own seat is yours to resume — nothing is written", D.handoverKind(unit, "alpha", [], "A1", now), "mine");
+    t.is("handover: a holder mid-shift must be ASKED", D.handoverKind(unit, "alpha", [], "B1", now), "needs-approval");
+    t.is("handover: a holder whose shift is over and who is not out is a plain takeover",
+      D.handoverKind(unit, "alpha", [], "B1", at(2026, 9, 2, 20)), "forgot");
+    const outUnit = { ...unit, assignedRequestId: "r1", status: "dispatched" };
+    const out = [{ id: "r1", assignedUnitId: "m1", status: "enroute", createdAt: now - 600000 }];
+    t.is("handover: a holder still out on a call is queued for, not asked", D.handoverKind(outUnit, "alpha", out, "B1", now), "still-out");
+    const asked = D.queueHandover(unit, "alpha", badr, now, true);
+    t.ok("handover: the ask is pending on the seat", D.handoverIsPending(D.handoverRequest(asked, "alpha")));
+    t.ok("handover: the holder sees an ask for their seat", !!D.askForMySeat(asked, "alpha", "A1"));
+    t.ok("handover: nobody else sees an ask for that seat", !D.askForMySeat(asked, "alpha", "B1"));
+    t.is("handover: the one asking sees their own wait when they sign in again", D.handoverKind(asked, "alpha", [], "B1", now), "waiting-mine");
+    t.ok("handover: a pending ask transfers the seat if the holder simply signs out", !!D.queuedReliefFor(asked, "alpha"));
+    const declined = D.answerHandover(asked, "alpha", "declined", "Ali", now);
+    t.is("handover: a declined ask answers 'declined'", D.handoverAnswer(D.handoverRequest(declined, "alpha")), "declined");
+    t.ok("handover: a declined ask NEVER transfers the seat", !D.queuedReliefFor(declined, "alpha"));
+    t.ok("handover: a declined ask is no longer pending for the holder", !D.askForMySeat(declined, "alpha", "A1"));
+    t.ok("handover: clearing removes it", !D.handoverRequest(D.clearHandover(declined, "alpha"), "alpha"));
+    const stillOut = D.queueHandover(unit, "alpha", badr, now, false);
+    t.ok("handover: a still-out relief is not an ask and needs no answer", !D.handoverIsAsk(D.handoverRequest(stillOut, "alpha")));
+    t.ok("handover: a still-out relief still transfers at sign-out", !!D.queuedReliefFor(stillOut, "alpha"));
+    // the push: the HOLDER's phone is woken once, when the ask lands
+    t.is("handover push: a new ask wakes the holder, once", D.newHandoverAsks([unit], [asked]).map((h) => h.holderAccountId), ["A1"]);
+    t.is("handover push: re-saving the same ask wakes nobody", D.newHandoverAsks([asked], [asked]), []);
+    t.is("handover push: a declined ask wakes nobody", D.newHandoverAsks([asked], [declined]), []);
+    t.is("handover push: a still-out relief is not an ask", D.newHandoverAsks([unit], [stillOut]), []);
+    t.is("handover push: an ask on an EMPTY seat has nobody to wake", D.newHandoverAsks([unit], [D.queueHandover(unit, "bravo", badr, now, true)]), []);
+  }
   }
 }

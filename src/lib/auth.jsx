@@ -48,14 +48,14 @@ export function onAuthLost(fn) {
   authListeners.add(fn);
   return () => authListeners.delete(fn);
 }
-export function noteAuthLost() {
+export function noteAuthLost(reason) {
   // Nothing was lost if this device was never signed in. Before anyone signs
   // in the board answers 401 to every poll, and treating that as "you have
   // been signed out" would fire on a loop at the sign-in screen.
   if (!token) return;
   clearToken();
   authListeners.forEach((fn) => {
-    try { fn(); } catch (e) { /* a listener that throws must not stop the rest */ }
+    try { fn(reason || ""); } catch (e) { /* a listener that throws must not stop the rest */ }
   });
 }
 
@@ -123,7 +123,7 @@ export async function actAsRole(role) {
 export async function fetchMe() {
   const res = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() });
   if (res.status === 401) {
-    noteAuthLost();
+    noteAuthLost(res.headers.get("x-auth-reason") || "");
     return null;
   }
   if (!res.ok) return null;

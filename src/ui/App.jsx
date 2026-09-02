@@ -8,6 +8,7 @@ import { CHECKLIST_KEY, CHECKLIST_RUNS_KEY, emptyChecklists } from "../domain/ch
 import { STATUS } from "../domain/constants.jsx";
 import { COVERAGE_KEY, closeCoverageGapIfClear, openCoverageGapIfStuck } from "../domain/coverage.jsx";
 import { queuedReliefFor } from "../domain/crew-relief.jsx";
+import { clearHandover, handoverAnswer, handoverRequest } from "../domain/seat-handover.jsx";
 import { ON_CALL_STATUSES, idleStatusFor, isOnCall, liveRequestFor } from "../domain/in-service.jsx";
 import { INVENTORY_KEY, INVENTORY_MOVES_KEY } from "../domain/inventory.jsx";
 import { DEFAULT_ACCOUNTS, DEFAULT_STATION, DEFAULT_UNITS, STATIONS, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
@@ -905,9 +906,16 @@ export function App() {
   // Signed out by the server - the token expired, or the account was removed
   // while the tablet was asleep. Better to be put back at the sign-in screen
   // than to sit in front of a board that quietly stopped saving.
-  useEffect(() => onAuthLost(() => {
+  // Why the sign-in screen is being shown, when it can say. "other-device" is
+  // the owner signing in on another phone — nothing on the board moved, and
+  // the screen must say so rather than let them sign on somewhere else and
+  // start a second stay. A declined handover ends a reliever's wait the same
+  // way, naming who declined.
+  const [loginNotice, setLoginNotice] = useState("");
+  useEffect(() => onAuthLost((reason) => {
     clearSession();
     setUser(null);
+    if (reason === "other-device") setLoginNotice("other-device");
   }), []);
 
   // The slow half. Nothing in here changes more than a few times a day, and
@@ -1391,6 +1399,7 @@ export function App() {
   // the moment to ask a crew member about notifications so calls still reach
   // them when the tab isn't the one in front.
   function handleLogin(u) {
+    setLoginNotice("");
     setSession(u);
     if (u) requestAlertPermission();
     if (u) requestNativeNotifications();
@@ -1981,6 +1990,29 @@ export function App() {
     if (user && user.role === "team" && user.unitId && user.slot) {
       const freshUnits = await readKey("ems:units", units);
       const unit = freshUnits.find((u) => u.id === user.unitId);
+      // Waiting for the seat, not sitting in it. Signing out from the queue
+      // withdraws the ask and closes this person's own short stay; the seat
+      // and its holder are not touched. Left to the code below, a waiting
+      // reliever pressing Sign out was treated as the seat's occupant — the
+      // holder was stood down and the reliever "signed off" a seat they never
+      // held.
+      if (unit && user.awaitingRelief && unit[user.slot] && unit[user.slot].accountId !== user.accountId) {
+        const mine = handoverRequest(unit, user.slot);
+        if (mine && mine.accountId === user.accountId) {
+          await saveUnits(freshUnits.map((u) => (u.id === unit.id ? clearHandover(u, user.slot) : u)));
+        }
+        await addLog(
+          `${unit.name} — ${user.name} (${seatLabel(user.slot)}) stopped waiting for the seat and signed off`,
+          "shift",
+          {
+            kind: "off", role: "team", name: user.name, accountId: user.accountId,
+            unitId: unit.id, unitName: unit.name, station: stationOf(unit), seat: user.slot,
+            shift: user.shift || null, shiftStart: user.shiftStart || null, shiftEnd: user.shiftEnd || null,
+            overtimeMs: 0, awaitingRelief: true,
+          }
+        );
+        return;
+      }
       if (unit) {
         const otherSlot = user.slot === "alpha" ? "bravo" : "alpha";
         const stillEmpty = !unit[otherSlot];
@@ -2099,8 +2131,11 @@ export function App() {
 
         if (waiting) {
           await addLog(
-            `${unit.name} — ${waiting.name} took over ${seatLabel(user.slot)} from ${user.name}, ` +
-              `who has now cleared and signed out`,
+            waiting.needsApproval
+              ? `${unit.name} — ${user.name} handed ${seatLabel(user.slot)} over to ${waiting.name}` +
+                (waiting.status === "approved" ? " (approved on their phone)" : " (signed out while they waited)")
+              : `${unit.name} — ${waiting.name} took over ${seatLabel(user.slot)} from ${user.name}, ` +
+                `who has now cleared and signed out`,
             "shift",
             {
               kind: "on",
@@ -2115,6 +2150,7 @@ export function App() {
               shiftStart: waiting.shiftStart || null,
               shiftEnd: waiting.shiftEnd || null,
               relievedName: user.name,
+              handedOver: !!waiting.needsApproval,
             }
           );
         }
@@ -2333,7 +2369,29 @@ export function App() {
     const unit = units.find((u) => u.id === user.unitId);
     if (!unit) return;
     const seat = unit[user.slot];
+    // Waiting for this seat, with the ask still on it: the holder is somebody
+    // else by definition, and that is not being displaced. Without this the
+    // reliever was bounced to the sign-in screen twelve seconds after asking.
+    const ask = handoverRequest(unit, user.slot);
+    if (user.awaitingRelief && seat && seat.accountId !== user.accountId && ask && ask.accountId === user.accountId) return;
     if (!seat || (user.accountId && seat.accountId !== user.accountId)) setSession(null);
+  }, [units, user, ready]);
+
+  // The answer to a handover ask, on the phone that asked. "Declined" ends the
+  // wait: the ask is withdrawn, this person's short stay is closed, and the
+  // sign-in screen says who said no. An UNANSWERED ask keeps waiting — a dead
+  // phone on the other side is the desk's to resolve, not a timer's.
+  useEffect(() => {
+    if (!ready || !user || user.role !== "team" || !user.awaitingRelief || !user.unitId || !user.slot) return;
+    if (signingOutRef.current) return;
+    const unit = units.find((u) => u.id === user.unitId);
+    if (!unit) return;
+    const r = handoverRequest(unit, user.slot);
+    if (!r || r.accountId !== user.accountId) return;
+    if (handoverAnswer(r) === "declined") {
+      setLoginNotice(`declined:${r.answeredBy || "The seat holder"}:${unit.name}:${seatLabel(user.slot)}`);
+      handleLogout();
+    }
   }, [units, user, ready]);
 
   // If an admin removes the account you're signed in with, the next poll drops
@@ -2378,6 +2436,7 @@ export function App() {
   if (!user) {
     return (
       <LoginScreen
+        loginNotice={loginNotice}
         units={units}
         onLogin={handleLogin}
         saveUnits={saveUnits}
@@ -2621,6 +2680,7 @@ export function App() {
           )}
           {!onSharedPage && user.role === "team" && (
             <TeamView
+              onHandOver={handleLogout}
               onGoToPage={(t) => setNavTab(t)}
               overtimeSent={overtimeSent}
               setOvertimeSent={setOvertimeSent}
