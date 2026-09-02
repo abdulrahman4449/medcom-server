@@ -17,7 +17,7 @@
 //
 // Options:
 //   --to <dir>        where to write. Required.
-//   --server <url>    default https://medcom-dispatch.onrender.com
+//   --server <url>    default https://pulseops-ems.com
 //   --token <token>   the server's BACKUP_TOKEN. Or set BACKUP_TOKEN here.
 //   --every <hours>   keep running and pull every N hours. Omit to pull once.
 //   --keep <n>        how many copies to keep on the drive (default 60).
@@ -35,7 +35,7 @@ const arg = (name, fallback) => {
 };
 
 const dir = arg("to");
-const server = (arg("server", "https://medcom-dispatch.onrender.com")).replace(/\/$/, "");
+const server = (arg("server", "https://pulseops-ems.com")).replace(/\/$/, "");
 const token = arg("token", process.env.BACKUP_TOKEN || "");
 const everyHours = Number(arg("every", 0));
 const keep = Number(arg("keep", 60));

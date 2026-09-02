@@ -19,7 +19,7 @@ import { AlertTriangle, Archive, RotateCcw } from "../lib/icons.jsx";
 // server has been given a token — carry one away.
 //
 // Two destinations, when the server has been told about a second one. On a
-// server the department owns, that second one is the mount path of an external
+// server you own, that second one is the mount path of an external
 // drive left plugged in: the same snapshot is written to both, so losing
 // either disk still leaves a copy. On a hosted server there is no socket to
 // plug a drive into, and the second copy is the one somebody downloads.
@@ -698,7 +698,7 @@ export function BackupPanel({ user }) {
                 <span style={styles.backupNote}>
                   This is how a copy reaches an external drive: download it and save it there.
                   The server has no drive of its own to write to — a hosted machine has no socket
-                  to plug one into. (On a server the department owns, <code>BACKUP_DIR_2</code>
+                  to plug one into. (On a server you own, <code>BACKUP_DIR_2</code>
                   writes every snapshot straight to a mounted drive as well, and no download is
                   needed.)
                   <br />
