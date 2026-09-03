@@ -2024,12 +2024,16 @@ export function SeatLine({ label, member, unit, slot, onRelieve, onGrantOt, requ
   const ot = member ? overtimeMs(member, Date.now()) : 0;
   // Somebody queued to take this seat when its crew clear.
   const waiting = unit && slot ? queuedReliefFor(unit, slot) : null;
-  // Only offered where there is genuinely nothing to wait for: the shift has
-  // ended and the truck is not out. Somebody still on a call is on overtime, and
-  // standing them down from a desk would take a running call off its crew.
+  // The desk may sign a seat out whenever the truck is NOT out on a call:
+  // a shift that ended without a sign-off (forgot-to-sign-out), and now an
+  // on-shift seat too — a crew whose phone was signed out (the one-phone rule,
+  // a lost handset, going home early) leaves a seat that shows AVAILABLE with
+  // no live phone behind it, and until this only shift-end could clear it.
+  // "still-out" stays excluded: standing a crew down from the desk must never
+  // take a running call off them.
   const situation =
     unit && slot && now ? reliefSituationFor(unit, slot, requests || [], now) : "free";
-  const canRelieve = !!onRelieve && !!member && situation === "forgot-to-sign-out";
+  const canRelieve = !!onRelieve && !!member && (situation === "forgot-to-sign-out" || situation === "on-shift");
   return (
     <div style={styles.unitMemberRow}>
       <span style={styles.unitMemberLabel}>{label}</span>

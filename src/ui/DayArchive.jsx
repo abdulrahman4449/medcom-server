@@ -10,7 +10,7 @@ import { grantWholeShiftOvertime } from "../domain/overtime.jsx";
 import { assistPending } from "../domain/second-ambulance.jsx";
 import { hhmm, overtimeMs, seatLabel, shiftLabelWithWindow, shiftMeta } from "../domain/shift-helpers.jsx";
 import { dispatchersOnDuty } from "../domain/desk-duty.jsx";
-import { shortDurationStr } from "../domain/messages.jsx";
+import { otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { callStartTs } from "../domain/uhu.jsx";
 import { exportArchivedDay } from "../export/workbook.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
@@ -431,11 +431,22 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     `GRANT::${(stay.accountId || stay.name || "?").toUpperCase()}::${stay.shiftStart || 0}::desk::?`;
 
   async function relieveSeat(unit, slot, member) {
-    const endedAt = member.shiftEnd || Date.now();
+    const now = Date.now();
+    // A shift that has ended closes at its end (administration pressing a button
+    // hours later is not evidence they worked until now); a shift still running
+    // closes NOW, because that is when the desk is signing them out.
+    const shiftOver = member.shiftEnd ? now >= member.shiftEnd : false;
+    const endedAt = shiftOver ? member.shiftEnd : now;
+    const ot = shiftOver ? 0 : overtimeMs(member, now);
     const ok = window.confirm(
-      `Sign ${member.name} out of ${seatLabel(slot)} on ${unit.name}?\n\n` +
-        `Their shift ended at ${clockStr(endedAt)} and the truck is not out. Their hours are ` +
-        `recorded to the end of that shift, not to now.\n\nThis is recorded as done by you.`
+      shiftOver
+        ? `Sign ${member.name} out of ${seatLabel(slot)} on ${unit.name}?\n\n` +
+            `Their shift ended at ${clockStr(endedAt)} and the truck is not out. Their hours are ` +
+            `recorded to the end of that shift, not to now.\n\nThis is recorded as done by you.`
+        : `Sign ${member.name} out of ${seatLabel(slot)} on ${unit.name} now?\n\n` +
+            `They are still on shift and the truck is not out. Use this when their phone was signed ` +
+            `out and the seat is showing available with nobody live behind it. Their hours close now, ` +
+            `at ${clockStr(endedAt)}.\n\nThis is recorded as done by you.`
     );
     if (!ok) return;
     const fresh = await readKey("ems:units", units);
@@ -468,7 +479,10 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     );
     await addLog(
       `${unit.name} — ${member.name} (${seatLabel(slot)}) signed out by ${user.name || "Admin"} ` +
-        `· did not sign out at the end of their shift`,
+        (shiftOver
+          ? `· did not sign out at the end of their shift`
+          : `· mid-shift, seat left by a signed-out phone`) +
+        (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
       "shift",
       {
         kind: "off",
@@ -482,7 +496,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         shift: member.shift || null,
         shiftStart: member.shiftStart || null,
         shiftEnd: member.shiftEnd || null,
-        overtimeMs: 0,
+        overtimeMs: ot,
         relievedByAdmin: true,
       }
     );

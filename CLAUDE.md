@@ -789,6 +789,18 @@ patch", that document is the target — do not start a fresh exploration.
   `desk`, named "Dispatch desk" on the overtime panel. The live log is capped
   at 400 lines, so the panel says "no sign-on in the log" rather than "nobody
   on the desk".
+- **Being signed out on a device never empties the seat — but the desk can
+  clear a seat a signed-out phone left behind.** The seat belongs to the person
+  (changing phones is not a sign-out), so a one-phone sign-out, a dead handset
+  or going home early leaves the seat on the board showing AVAILABLE with no
+  live phone behind it, and a refresh cannot fix that — the seat is genuinely
+  still theirs. `reliefSituationFor` returns `on-shift` for such a seat, and
+  the dispatcher roster card now offers **Sign out** on it (not only on a
+  shift-ended `forgot-to-sign-out` seat); `still-out` stays excluded so the
+  desk can never take a running call off a crew. `relieveSeat` closes the
+  hours at NOW for a still-running shift (not at shift end) and logs it as
+  "mid-shift, seat left by a signed-out phone". The crew's own recovery is
+  unchanged: sign in on the new phone and Continue as MEDIC N.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is
