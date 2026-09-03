@@ -25,6 +25,7 @@ import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.WindowManager;
 
 import com.getcapacitor.JSObject;
@@ -94,7 +95,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-03";
+    private static final String PLUGIN_BUILD = "2026-09-03.2";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -109,6 +110,9 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // one that worked from everywhere else in the app.
     private boolean volumeFloorOk = false;
     private String volumeFloorNote = "not attempted yet";
+    // The floor's own heartbeat. See startFloorWatch().
+    private Handler floorHandler;
+    private Runnable floorTick;
 
     @Override
     public void load() {
@@ -351,6 +355,9 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 }
             }
             if (sounding) {
+                // The floor holds itself from here until stop(), whatever the
+                // page is doing.
+                startFloorWatch();
                 // Handed back so the crew screen can say which tone this phone
                 // actually played. "The ALS tone is wrong in the app" is not
                 // answerable from a log nobody can open on a truck.
@@ -446,11 +453,65 @@ public class PulseOpsAlarmPlugin extends Plugin {
         }
     }
 
+    /**
+     * The floor re-asserts ITSELF, on the plugin's own timer.
+     *
+     * It used to be re-applied only when the web layer repeated alert(), every
+     * 1.7 seconds — which makes an alarm's loudness depend on a JavaScript
+     * timer inside a WebView, and Android throttles those the moment the page
+     * is busy, backgrounded or scrolling. A thumb on volume-down during a call
+     * then took the alarm stream to zero and nothing put it back: the tone was
+     * still playing, correctly, into silence. Reported as "when I lowered the
+     * volume the sound stopped entirely".
+     *
+     * A second is short enough that volume-down is undone before a crew has
+     * finished pressing it, and this runs entirely inside the plugin, so it
+     * holds whatever the page is doing — including nothing at all.
+     */
+    private void startFloorWatch() {
+        stopFloorWatch();
+        floorHandler = new Handler(Looper.getMainLooper());
+        floorTick = new Runnable() {
+            @Override
+            public void run() {
+                // Only while OUR alarm is the thing playing. The watch must
+                // never outlive the alert and go on holding somebody's phone
+                // at 70% after the call was acknowledged.
+                MediaPlayer p = player;
+                if (p == null) return;
+                boolean playing;
+                try {
+                    playing = p.isPlaying();
+                } catch (Exception e) {
+                    playing = false;
+                }
+                if (!playing) return;
+                raiseAlarmVolume();
+                if (floorHandler != null) floorHandler.postDelayed(this, 1000);
+            }
+        };
+        floorHandler.postDelayed(floorTick, 1000);
+    }
+
+    private void stopFloorWatch() {
+        try {
+            if (floorHandler != null && floorTick != null) floorHandler.removeCallbacks(floorTick);
+        } catch (Exception ignored) {
+        }
+        floorHandler = null;
+        floorTick = null;
+    }
+
     /** The last thing the floor did, in words a crew can read off their own
         screen and send on. A guard that fails silently is a guard nobody knows
         about: this one is reported by status(), so it reaches the crew line,
         the owner's System page and a device's diagnostics answer. */
     private void noteFloor(boolean ok, String why) {
+        // Only when it CHANGES: the watch below runs once a second, and a line
+        // a second would bury everything else in logcat.
+        if (ok != volumeFloorOk || !why.equals(volumeFloorNote)) {
+            Log.i("PulseOpsAlarm", "volume floor: " + (ok ? "ok" : "NOT APPLIED") + " - " + why);
+        }
         volumeFloorOk = ok;
         volumeFloorNote = why;
     }
@@ -846,6 +907,9 @@ public class PulseOpsAlarmPlugin extends Plugin {
     }
 
     private void stopPlayer() {
+        // Before the player, and unconditionally: a watch left running would go
+        // on holding the alarm stream up after the call was acknowledged.
+        stopFloorWatch();
         try {
             if (player != null) {
                 if (player.isPlaying()) player.stop();

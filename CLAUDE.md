@@ -690,6 +690,18 @@ patch", that document is the target — do not start a fresh exploration.
   entitlement, which needs a developer account and Apple's approval. Reported
   as a real thumb-on-volume-down test that "the foreground guaranteed volume
   floor did not kick in", on both handsets.
+- **The floor holds ITSELF, on the plugin's own timer.** It used to be
+  re-applied only when the web layer repeated `alert()` every 1.7 s — which
+  makes an alarm's loudness depend on a JavaScript timer inside a WebView, and
+  Android throttles those the moment the page is busy, backgrounded or
+  scrolling. A thumb on volume-down during a live call then took the alarm
+  stream to zero and nothing put it back: the tone went on playing, correctly,
+  into silence. Reported as "when I lowered the volume the sound stopped
+  entirely". `startFloorWatch` re-asserts once a second for as long as the
+  plugin's OWN player is running, and `stopFloorWatch` runs first and
+  unconditionally in `stopPlayer()` — a watch left behind holds somebody's
+  phone at 70% after the call was acknowledged. `noteFloor` logs to logcat only
+  when the outcome CHANGES, or a once-a-second line buries everything else.
 - **A raise that is REFUSED looks exactly like one that worked — so verify it,
   and say which.** `raiseAlarmVolume` used to call `setStreamVolume` and assume
   it landed. Android accepts that call and quietly does nothing under Do Not
