@@ -745,6 +745,14 @@ patch", that document is the target — do not start a fresh exploration.
   six round trips to Riyadh under the CONNECTING screen. The theme attribute is
   set from localStorage by a one-line script in the head, so a light-theme
   phone does not open dark and flip.
+- **A prompt built from a slow-poll key waits for the slow poll.** `coldReady`
+  in `App.jsx`, set only after `RESTOCK_KEY` and `CHECKLIST_RUNS_KEY` have been
+  READ successfully. The restock nudge, the History badge and the
+  mandatory-checklist demand were computed from the empty defaults on first
+  render and claimed, for one round trip after every refresh, that calls were
+  waiting and a checklist was owed — an amber banner that flashed and vanished
+  on every open, on film. Anything new that prompts a person off a cold key
+  must gate on it too; `loadCold` reads its keys together for the same reason.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is

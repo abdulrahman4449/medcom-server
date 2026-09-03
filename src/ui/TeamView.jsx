@@ -39,7 +39,7 @@ import { AssistStatusLine, CallCodingBlock, CallStepper, CallTypeTag, LoadedKmTa
 
 // ---------- team view ----------
 
-export function TeamView({ onHandOver, user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent }) {
+export function TeamView({ onHandOver, user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, coldReady, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -233,12 +233,12 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
 
   // Calls this truck has finished on this shift with nobody having said the
   // truck was made up again afterwards.
-  const awaitingRestock = callsAwaitingRestock(
-    requests,
-    myUnit && myUnit.id,
-    crewShiftWindow(user, Date.now()).start,
-    restockDone
-  );
+  // Nothing until the slow poll has answered: the marks live on it, and before
+  // they land every finished call looks unrestocked — a nudge that flashed on
+  // every refresh and vanished a moment later.
+  const awaitingRestock = coldReady
+    ? callsAwaitingRestock(requests, myUnit && myUnit.id, crewShiftWindow(user, Date.now()).start, restockDone)
+    : [];
 
   // Bumped whenever this screen comes back to the front, so the alarm can tell
   // "still running" from "running since before the phone was put away".
@@ -979,8 +979,11 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   // filed theirs — on this truck or on one they were sitting in earlier — the
   // list on this truck is offered rather than demanded.
   const myShiftRun = personChecklistRun(checklistRuns, user.accountId, todayKey);
+  // Same guard as the restock nudge: the filed runs ride the slow poll, and
+  // demanded off an empty list the checklist was "required" of a crew who had
+  // filed it an hour ago, for one round trip after every open.
   const checklistMandatory =
-    myUnit && myPart
+    coldReady && myUnit && myPart
       ? checklistIsMandatory(checklistRuns, user.accountId, todayKey, myUnit.id, myPart.key)
       : false;
 

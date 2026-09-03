@@ -353,6 +353,12 @@ export function App() {
   const [passwordResets, setPasswordResets] = useState([]);
   // Which finished calls have had the truck made up again after them.
   const [restockDone, setRestockDone] = useState({});
+  // True once the slow poll has answered. The restock nudge and the
+  // mandatory-checklist demand are built from keys that arrive on that poll,
+  // and drawn from the empty defaults before it lands they claimed, for one
+  // round trip after every refresh, that calls were waiting and a checklist
+  // was owed — a banner that flashed and vanished on every open.
+  const [coldReady, setColdReady] = useState(false);
   const [policyBusy, setPolicyBusy] = useState(false);
   const [log, setLog] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -937,26 +943,34 @@ export function App() {
       setReady(true);
       return;
     }
-    const arch = await readKeyRaw(ARCHIVE_KEY);
+    // Read together, not one after another: nine round trips in a row kept
+    // every screen built from these keys wrong for the whole chain.
+    const [arch, subs, l, cl, runs, invMoves, pwr, rst, sent] = await Promise.all([
+      readKeyRaw(ARCHIVE_KEY),
+      readKeyRaw(SUBMISSION_KEY),
+      readKeyRaw("ems:log"),
+      readKeyRaw(CHECKLIST_KEY),
+      readKeyRaw(CHECKLIST_RUNS_KEY),
+      readKeyRaw(INVENTORY_MOVES_KEY),
+      readKeyRaw(PWRESET_KEY),
+      readKeyRaw(RESTOCK_KEY),
+      // Who has sent their overtime in. A small map, read on the slow poll
+      // because a claim being sent is not something anybody is watching for.
+      readKeyRaw(OVERTIME_SENT_KEY),
+    ]);
     if (arch !== READ_FAILED) setArchives(arch || []);
-    const subs = await readKeyRaw(SUBMISSION_KEY);
     if (subs !== READ_FAILED) setSubmissions(subs || []);
-    const l = await readKeyRaw("ems:log");
     if (l !== READ_FAILED) setLog(l || []);
-    const cl = await readKeyRaw(CHECKLIST_KEY);
     if (cl !== READ_FAILED) setChecklists(cl && (cl.medic || cl.emt) ? cl : emptyChecklists());
-    const runs = await readKeyRaw(CHECKLIST_RUNS_KEY);
     if (runs !== READ_FAILED) setChecklistRuns(runs || []);
-    const invMoves = await readKeyRaw(INVENTORY_MOVES_KEY);
     if (invMoves !== READ_FAILED) setInventoryMoves(invMoves || []);
-    const pwr = await readKeyRaw(PWRESET_KEY);
     if (pwr !== READ_FAILED) setPasswordResets(pwr || []);
-    const rst = await readKeyRaw(RESTOCK_KEY);
     if (rst !== READ_FAILED) setRestockDone(rst || {});
-    // Who has sent their overtime in. A small map, read on the slow poll
-    // because a claim being sent is not something anybody is watching for.
-    const sent = await readKeyRaw(OVERTIME_SENT_KEY);
     if (sent !== READ_FAILED) setOvertimeSent(sent || {});
+    // Only a SUCCESSFUL read of the two keys the crew prompts hang on counts:
+    // a failed read leaves the empty defaults in place, and a prompt built
+    // from those is the flash this flag exists to stop.
+    if (rst !== READ_FAILED && runs !== READ_FAILED) setColdReady(true);
   }, []);
 
   // Read when the shelf is actually being looked at, and never on the poll.
@@ -2526,12 +2540,14 @@ export function App() {
               key: "history",
               glyph: "🕘",
               label: "History",
-              badge: callsAwaitingRestock(
-                requests,
-                user.unitId,
-                crewShiftWindow(user, Date.now()).start,
-                restockDone
-              ).length,
+              badge: coldReady
+                ? callsAwaitingRestock(
+                    requests,
+                    user.unitId,
+                    crewShiftWindow(user, Date.now()).start,
+                    restockDone
+                  ).length
+                : 0,
             },
             { key: "teams", glyph: "🚑", label: "My truck" },
             { key: "policies", glyph: "📖", label: "Policies" },
@@ -2690,6 +2706,7 @@ export function App() {
               overtimeSent={overtimeSent}
               setOvertimeSent={setOvertimeSent}
               restockDone={restockDone}
+              coldReady={coldReady}
               setRestockDone={setRestockDone}
               messages={messages}
               setMessages={setMessages}
