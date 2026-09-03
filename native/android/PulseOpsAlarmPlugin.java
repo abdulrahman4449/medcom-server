@@ -101,7 +101,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-03.5";
+    private static final String PLUGIN_BUILD = "2026-09-03.6";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -352,16 +352,32 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // dispatch_alert.mp3 uses it for everything, exactly as before.
             final String priority = call.getString("priority", "routine");
             final String tone = toneKey(priority);
+            // Everything about this alert, before a note is played. Silence
+            // with no explanation is the one outcome nobody can act on, and
+            // until now the plugin said nothing at all about the PLAYER — only
+            // about the volume, which is a different question.
+            try {
+                AudioManager am0 = audio();
+                Log.i("PulseOpsAlarm", "alert: priority=" + priority + " tone=" + tone
+                    + " alarmStream=" + (am0 == null ? "?" : am0.getStreamVolume(AudioManager.STREAM_ALARM)
+                        + "/" + am0.getStreamMaxVolume(AudioManager.STREAM_ALARM))
+                    + " ringerMode=" + (am0 == null ? "?" : am0.getRingerMode())
+                    + " musicActive=" + (am0 == null ? "?" : am0.isMusicActive()));
+            } catch (Exception ignored) {
+            }
             String source;
             boolean sounding = false;
             int resId = toneResource(priority);
             if (resId != 0) {
                 source = "dispatch_alert_" + tone;
-                sounding = startPlayer(MediaPlayer.create(getContext(), resId));
+                sounding = startPlayer(buildPlayer(rawUri(resId)));
+                Log.i("PulseOpsAlarm", "alert: bundled " + source + " -> " + (sounding ? "playing" : "FAILED"));
             } else {
                 source = "built in memory";
                 Uri built = builtToneUri(priority);
-                if (built != null) sounding = startPlayer(MediaPlayer.create(getContext(), built));
+                Log.i("PulseOpsAlarm", "alert: no bundled tone, built uri=" + built);
+                if (built != null) sounding = startPlayer(buildPlayer(built));
+                Log.i("PulseOpsAlarm", "alert: built tone -> " + (sounding ? "playing" : "FAILED"));
             }
             // No tone in this build? Use the phone's own alarm sound rather
             // than nothing.
@@ -376,9 +392,11 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 source = "the phone's own alarm";
                 Uri alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
                 if (alarm == null) alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                Log.i("PulseOpsAlarm", "alert: falling back to the phone's own alarm, uri=" + alarm);
                 if (alarm != null) {
-                    sounding = startPlayer(MediaPlayer.create(getContext(), alarm));
+                    sounding = startPlayer(buildPlayer(alarm));
                 }
+                Log.i("PulseOpsAlarm", "alert: phone alarm -> " + (sounding ? "playing" : "FAILED"));
             }
 
             // Vibration alongside the tone: a truck with its siren running is
@@ -406,6 +424,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
             } else {
                 releaseFocus();
                 restoreAlarmVolume();
+                Log.w("PulseOpsAlarm", "alert: NOTHING could be played - handing back to the page tone");
                 call.reject("Nothing could be played on the alarm stream - the app will use its own tone.");
             }
         } catch (Exception e) {
@@ -416,10 +435,56 @@ public class PulseOpsAlarmPlugin extends Plugin {
     /** Attaches the alarm-stream attributes and starts looping. Null-safe:
         MediaPlayer.create returns null rather than throwing when it cannot open
         the source, which is exactly the case this has to survive. */
-    private boolean startPlayer(MediaPlayer mp) {
-        if (mp == null) return false;
+    /**
+     * Build the alarm player in the order Android documents, rather than with
+     * MediaPlayer.create().
+     *
+     * create() returns an ALREADY PREPARED player, and setAudioAttributes must
+     * be called BEFORE prepare — so attaching the alarm attributes afterwards
+     * was always out of contract. Older platforms tolerated it; a new one need
+     * not, and when it does not the call throws, the player is released, every
+     * fallback below fails the same way for the same reason, and the alert ends
+     * up on the page tone — which plays on the MEDIA stream, where the volume
+     * floor does not reach and a thumb on volume-down kills it outright. Every
+     * symptom of the last two days, from one line in the wrong order.
+     *
+     * Built this way the attributes are attached first, so the tone is on the
+     * alarm stream by construction rather than by permission.
+     */
+    private MediaPlayer buildPlayer(Uri uri) {
+        if (uri == null) return null;
+        MediaPlayer mp = new MediaPlayer();
         try {
             mp.setAudioAttributes(alarmAttributes());
+            mp.setDataSource(getContext(), uri);
+            mp.prepare();
+            return mp;
+        } catch (Exception e) {
+            Log.w("PulseOpsAlarm", "buildPlayer: could not open " + uri + " - " + e);
+            try { mp.release(); } catch (Exception ignored) {}
+            return null;
+        }
+    }
+
+    /** A raw resource as a uri, so one builder serves every source. */
+    private Uri rawUri(int resId) {
+        if (resId == 0) return null;
+        return Uri.parse("android.resource://" + getContext().getPackageName() + "/" + resId);
+    }
+
+    private boolean startPlayer(MediaPlayer mp) {
+        if (mp == null) {
+            // MediaPlayer.create returns null rather than throwing when it
+            // cannot open the source at all — a missing raw resource, an
+            // unreadable uri, or a device with no audio output to open.
+            Log.w("PulseOpsAlarm", "startPlayer: MediaPlayer.create returned null - nothing to play");
+            return false;
+        }
+        try {
+            // The attributes are attached in buildPlayer, BEFORE prepare, which
+            // is the only order Android guarantees. Setting them here, on a
+            // prepared player, is what put the alert on the wrong stream.
+            //
             // The stream's level and the player's own level multiply, so a
             // player left below 1.0 would cap the alarm under the floor no
             // matter what the stream says.
@@ -427,14 +492,24 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // A player that dies mid-loop used to do so in silence: the alarm
             // simply stopped and the crew had no idea it ever started. Errors
             // tear it down so the next repeat builds a fresh one.
-            mp.setOnErrorListener((m, what, extra) -> { stopPlayer(); return true; });
+            mp.setOnErrorListener((m, what, extra) -> {
+                // A player that dies mid-loop takes the alarm with it. It used
+                // to do so in silence: the tone simply stopped and nothing
+                // anywhere said why.
+                Log.w("PulseOpsAlarm", "player error what=" + what + " extra=" + extra + " - alarm torn down");
+                stopPlayer();
+                return true;
+            });
             // Repeat until the crew acknowledges. The web layer calls stop()
             // when the banner is dismissed.
             mp.setLooping(true);
             mp.start();
             player = mp;
+            Log.i("PulseOpsAlarm", "startPlayer: started, isPlaying=" + mp.isPlaying()
+                + " duration=" + mp.getDuration() + "ms");
             return true;
         } catch (Exception e) {
+            Log.w("PulseOpsAlarm", "startPlayer: threw - " + e);
             try { mp.release(); } catch (Exception ignored) {}
             return false;
         }
@@ -926,12 +1001,16 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // moving, which is worse than a missed alert rather than better.
             raiseAlarmVolume();
             Uri tone = standDownUri();
-            MediaPlayer mp = tone == null ? null : MediaPlayer.create(getContext(), tone);
+            // Through the same builder as the alarm: attributes BEFORE prepare,
+            // or the stand-down lands on the media stream exactly as the alarm
+            // did — and a stand-down nobody hears is a crew still driving.
+            MediaPlayer mp = buildPlayer(tone);
             if (mp == null) {
+                Log.w("PulseOpsAlarm", "standDown: nothing could be opened, uri=" + tone);
                 call.reject("Nothing to sound the stand-down with.");
                 return;
             }
-            mp.setAudioAttributes(alarmAttributes());
+            mp.setVolume(1f, 1f);
             mp.setLooping(false);
             mp.setOnCompletionListener((m) -> stopStandDown());
             mp.setOnErrorListener((m, what, extra) -> { stopStandDown(); return true; });
@@ -996,6 +1075,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     }
 
     private void stopPlayer() {
+        if (player != null) Log.i("PulseOpsAlarm", "stopPlayer: tearing the alarm down");
         // Before the player, and unconditionally: a watch left running would go
         // on holding the alarm stream up after the call was acknowledged.
         stopFloorWatch();

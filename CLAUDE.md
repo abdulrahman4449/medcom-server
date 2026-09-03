@@ -710,6 +710,24 @@ patch", that document is the target — do not start a fresh exploration.
   `held 74×`, or `WATCHED 1× — the floor was not being held` when a whole
   alert produced one look. Never publish a min/max trace without the count of
   observations beside it.
+- **`MediaPlayer.create()` returns a PREPARED player, and audio attributes
+  must be set BEFORE prepare.** Every alarm player was built with `create()`
+  and then given `setAudioAttributes(USAGE_ALARM)` afterwards — out of
+  contract, tolerated by older platforms, and not by Android 17 (API 37). When
+  the call throws, `startPlayer` releases the player, every fallback below
+  fails identically for the same reason, the alert is handed back to the web
+  layer, and the page tone plays on the MEDIA stream — where the volume floor
+  does not reach and a thumb on volume-down kills it outright. That one line in
+  the wrong order produced every symptom of two days: a tone that died with the
+  volume, an alarm stream sitting untouched at 86%, and finally no sound at
+  all. `buildPlayer(uri)` now does `new MediaPlayer()` → `setAudioAttributes`
+  → `setDataSource` → `prepare`, so the tone is on the alarm stream by
+  construction rather than by permission; `rawUri` makes a bundled resource
+  just another uri so ONE builder serves the bundled tone, the built one, the
+  phone's own alarm and the stand-down. **Never reach for
+  `MediaPlayer.create()` here again.** The plugin also logs the whole path —
+  which source, whether it opened, whether it started, and any error mid-loop —
+  because silence with no explanation is the one outcome nobody can act on.
 - **A floor with a case where it stops holding is not a floor.** Three ways it
   quietly stopped: the watch bailed out on a momentary `false` from
   `isPlaying()` and never rescheduled — MediaPlayer gives that freely while
