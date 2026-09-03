@@ -659,6 +659,18 @@ export function run(D, t) {
       " · device volume 60% (iPhone: no floor, the slider decides) · NO BUZZ"
     );
     t.is("loudness: a shell that never mentions the buzz says nothing about it", D.alarmLoudnessNote({ platform: "android", alarmVolumePct: 70, volumeFloorOk: true }), " · alarm stream 70%");
+
+    // A request that never completed must not read like a refused one. The
+    // browser's own "Failed to fetch" names nothing — not the address it
+    // tried, not whether the phone is even online — and it was being shown in
+    // red under the password box, where it reads as "your password is wrong".
+    {
+      const e = D.serverUnreachable(new Error("Failed to fetch"));
+      t.ok("unreachable: marked as an outage, not a refusal", e.offline === true);
+      t.ok("unreachable: names the address it tried", /pulseops-ems\.com|this site/.test(e.message));
+      t.ok("unreachable: says what to check", /server is running/.test(e.message));
+      t.ok("unreachable: never says 'failed to fetch'", !/failed to fetch/i.test(e.message));
+    }
     t.is("loudness: a rejected promise is not an object", D.alarmLoudnessNote(null), "");
     // Both vocabularies, because a board that has been running a while still
     // holds the old words.

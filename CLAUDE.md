@@ -639,6 +639,18 @@ patch", that document is the target — do not start a fresh exploration.
   on is a page that is never backgrounded. It does **not** survive Home or a
   lock; only a foreground service or FCM would, and both cost a Play
   declaration or a server. Say that rather than implying it is covered.
+- **"Failed to fetch" is the browser's words, and it names nothing.** A fetch
+  rejects only when the request never completed — a 401 or a 500 is a resolved
+  promise — so anything thrown by the call itself is the device having no route
+  to the server. `fetchOrExplain` / `serverUnreachable` in `lib/board-api.jsx`
+  (under `npm test`) turn that into the address it tried and the three things
+  to check, and mark it `offline: true` so a caller can tell "the server said
+  no" from "nothing answered". It matters most on the sign-in screen, where the
+  browser's own wording sat in red under the password box and read as a
+  rejected password: the causes are the device being offline, the address not
+  resolving from THIS device (an emulator with no DNS, a hospital wifi), or the
+  server not answering — including a certificate the device will not trust,
+  which a browser reports identically to being offline.
 - **An iPhone never buzzed for a dispatch, because `navigator.vibrate` does not
   exist on iOS.** The web layer's `buzz()` is the Vibration API, which Safari
   and WKWebView have never shipped — so the call was a silent no-op and the iOS

@@ -1,4 +1,4 @@
-import { API_BASE } from "./board-api.jsx";
+import { API_BASE, fetchOrExplain } from "./board-api.jsx";
 
 // ---------- the token this device is signed in with ----------
 //
@@ -60,7 +60,10 @@ export function noteAuthLost(reason) {
 }
 
 async function post(path, body) {
-  const res = await fetch(`${API_BASE}${path}`, {
+  // Through fetchOrExplain, so a phone that cannot reach the server at all is
+  // told which server and what to check, rather than shown the browser's own
+  // "Failed to fetch" in red under the password box.
+  const res = await fetchOrExplain(`${API_BASE}${path}`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body || {}),
@@ -124,7 +127,7 @@ export async function actAsRole(role) {
 // session, so the tag beside the name and the button that moves them into that
 // area are both telling the truth.
 export async function fetchMe() {
-  const res = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() });
+  const res = await fetchOrExplain(`${API_BASE}/api/auth/me`, { headers: authHeaders() });
   if (res.status === 401) {
     noteAuthLost(res.headers.get("x-auth-reason") || "");
     return null;
@@ -183,7 +186,7 @@ export function changeOwnPassword(current, next) {
 // ---------- the roster, for an administrator ----------
 
 export async function listAccounts() {
-  const res = await fetch(`${API_BASE}/api/accounts`, { headers: authHeaders() });
+  const res = await fetchOrExplain(`${API_BASE}/api/accounts`, { headers: authHeaders() });
   if (res.status === 401) { noteAuthLost(); return []; }
   if (!res.ok) return [];
   const data = await res.json();
@@ -195,7 +198,7 @@ export function saveAccount(account) {
 }
 
 export async function removeAccount(id) {
-  const res = await fetch(`${API_BASE}/api/accounts/${encodeURIComponent(id)}`, {
+  const res = await fetchOrExplain(`${API_BASE}/api/accounts/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: authHeaders(),
   });

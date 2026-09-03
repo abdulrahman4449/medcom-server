@@ -50,6 +50,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/call-changes.jsx")};
 export { pendingResets } from ${JSON.stringify(ROOT + "src/ui/PasswordResets.jsx")};
 export { CALL_CATEGORIES, suggestedCallType } from ${JSON.stringify(ROOT + "src/domain/sheet-vocabulary.jsx")};
 export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
+export { serverAddress, serverUnreachable } from ${JSON.stringify(ROOT + "src/lib/board-api.jsx")};
 export { toneKeyFor, alarmLoudnessNote } from ${JSON.stringify(ROOT + "src/lib/dates.jsx")};
 export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};
 export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "src/domain/second-ambulance.jsx")};
