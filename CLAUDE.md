@@ -702,6 +702,20 @@ patch", that document is the target — do not start a fresh exploration.
   unconditionally in `stopPlayer()` — a watch left behind holds somebody's
   phone at 70% after the call was acknowledged. `noteFloor` logs to logcat only
   when the outcome CHANGES, or a once-a-second line buries everything else.
+- **The speaker check runs ITSELF at sign-on, on the shell only.**
+  `src/domain/speaker-check.jsx` (rules under `npm test`) + the effect in
+  `TeamView`. The buttons have always been there and are pressed on somebody's
+  first day and never again; a phone that has gone quiet since is discovered by
+  missing a call. So the crew screen plays the dispatch tone down the same path
+  a real call takes, once per sign-on, and puts the answer on the screen —
+  including "this phone is at 10%, turn it up". Keyed by person + truck +
+  shift window together, remembered on the DEVICE, so a refresh, a re-render
+  or coming back from the background is not a second tone but the same crew
+  member's next shift is. It never runs in a browser (page audio cannot play
+  before a tap, and silence pretending to be a check reads as a broken
+  speaker), never over a live alarm, and never on a truck already out on a
+  call. `soundSpeakerCheck` now RETURNS what the shell said, because a check
+  whose result nobody sees is not a check.
 - **A guard that only speaks when it FAILS cannot answer "what happened".**
   The floor line printed only on a refusal, so "FLOOR not attempted yet"
   vanished after the first call and the screen went quiet — the crew line said

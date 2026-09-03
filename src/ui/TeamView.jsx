@@ -17,7 +17,7 @@ import { ADDED_SERVICES, CALL_TYPES, LOADED_KM, LOADED_KM_COLOR, applyCallCoding
 import { overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
-import { soundCallAlert, soundReminderTone, soundStandDownTone, speakStandDown } from "../lib/dates.jsx";
+import { nativeAlarm, soundCallAlert, soundReminderTone, soundSpeakerCheck, soundStandDownTone, speakStandDown } from "../lib/dates.jsx";
 import { changedFieldsSince, newestDispatchEditAt, seenBaselineFor, unseenDispatchEdits } from "../domain/call-changes.jsx";
 import { markEditsSeen, readEditsSeen } from "../lib/edits-seen.jsx";
 import { uid } from "../lib/helpers.jsx";
@@ -29,6 +29,7 @@ import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { SectionBanner } from "./AdminView.jsx";
 import { AlarmOverlay, AlertToneCheck, BackgroundAlertNotice, CallAlertNotice, SoundDiagnostics } from "./AlarmOverlay.jsx";
+import { markSpeakerCheckDone, speakerCheckDone, speakerCheckDue, speakerCheckKey, speakerCheckResult } from "../domain/speaker-check.jsx";
 import { CallEditForm, CallRoute, ChecklistCard, EditHistory, InfoNote, ReceiverBanner, RefusalForm } from "./AssistanceTasks.jsx";
 import { CallRestock } from "./CallRestock.jsx";
 import { ChatDock, useMessageAlerts } from "./ChatDock.jsx";
@@ -671,6 +672,48 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // clear on unmount
+
+  // ---- the speaker check that nobody has to remember ----
+  //
+  // At sign-on, once, on the shell only: play the dispatch tone down the same
+  // path a real call takes and put the answer on the screen. The buttons below
+  // have always been there and are pressed on somebody's first day and never
+  // again; a phone that has gone silent since then is discovered by missing a
+  // call. This is the check that happens while the crew are still standing at
+  // the truck.
+  //
+  // It runs through the plugin's alarm stream, which needs no tap — page audio
+  // does, which is why this never runs in a browser: silence pretending to be a
+  // check is worse than no check, because silence reads as a broken speaker.
+  const [speakerCheck, setSpeakerCheck] = useState(null);
+  const speakerCheckRan = useRef(false);
+  useEffect(() => {
+    if (speakerCheckRan.current) return;
+    const key = speakerCheckKey(user, myUnit);
+    let store = null;
+    try { store = window.localStorage; } catch (e) { store = null; }
+    const done = speakerCheckDone(key, store);
+    if (!speakerCheckDue({
+      key,
+      hasShell: !!nativeAlarm(),
+      alarmActive,
+      // A truck already out on a call is working, and a phone that has been
+      // dispatched has just proved the point anyway.
+      onCall: !!myRequest,
+      done,
+    })) return;
+    speakerCheckRan.current = true;
+    markSpeakerCheckDone(key, store);
+    // A moment after the screen settles, so it does not land in the middle of
+    // the sign-in transition.
+    const t = setTimeout(() => {
+      Promise.resolve(soundSpeakerCheck(audioCtxRef, "als"))
+        .then((r) => setSpeakerCheck(speakerCheckResult(r)))
+        .catch(() => setSpeakerCheck(speakerCheckResult(null)));
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user && user.accountId, myUnit && myUnit.id, user && user.shiftStart, alarmActive, myRequest && myRequest.id]);
 
   function stopAlarmLoop() {
     if (alarmIntervalRef.current) {
@@ -1418,6 +1461,31 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
           notice above it: a crew whose phone cannot be heard needs telling on
           whichever screen they are standing on. */}
       <BackgroundAlertNotice />
+
+      {/* What the automatic check at sign-on found. Dismissable, because it is
+          a result and not a demand — but it stays until it is read, since a
+          crew who miss it are back to finding out at the first call. */}
+      {speakerCheck && (
+        <div
+          style={{
+            marginTop: 10,
+            borderRadius: 12,
+            padding: "9px 12px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            minWidth: 0,
+            border: `1px solid ${speakerCheck.ok ? "var(--hair-2)" : "var(--hold)"}`,
+            background: speakerCheck.ok ? "transparent" : "color-mix(in srgb, var(--hold) 10%, transparent)",
+          }}
+        >
+          <span style={{ flex: "none", fontSize: 13 }}>{speakerCheck.ok ? "✓" : "⚠"}</span>
+          <span style={{ flex: 1, fontSize: 12.5, color: speakerCheck.ok ? "var(--ink-3)" : "var(--hold-2)", overflowWrap: "anywhere" }}>
+            {speakerCheck.say}
+          </span>
+          <button type="button" style={styles.ghostBtnSm} onClick={() => setSpeakerCheck(null)}>OK</button>
+        </div>
+      )}
 
       {/* A crew signing on can check the tablet's speaker against all three
           tones before they are relying on one of them. */}

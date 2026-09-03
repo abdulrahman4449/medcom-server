@@ -672,6 +672,47 @@ export function run(D, t) {
       !/dipped/.test(D.volumeFloorNote({ volumeFloor: "already at or above the floor", alarmVolumeMinPct: -1, floorRaises: 0 })));
     t.is("floor line: an iPhone has no floor to report", D.volumeFloorNote({ platform: "ios" }), " · no floor on iPhone");
     t.is("floor line: nothing to say without a shell", D.volumeFloorNote(null), "");
+
+    // ---- the speaker check at sign-on ----
+    //
+    // A tone played at somebody without them asking for it has to be right
+    // about WHEN. The alarm condition is the one that matters: a real call
+    // sounding is never interrupted to test whether sound works.
+    {
+      const u = { accountId: "C1", shiftStart: 111 };
+      const unit = { id: "u1" };
+      const key = D.speakerCheckKey(u, unit);
+      t.is("speaker check: keyed by person, truck and shift together", key, "C1|u1|111");
+      t.is("speaker check: a half-built session has no key", D.speakerCheckKey({ accountId: "C1" }, unit), "");
+      const base = { key, hasShell: true, alarmActive: false, onCall: false, done: false };
+      t.ok("speaker check: runs at sign-on on a shell", D.speakerCheckDue(base));
+      t.ok("speaker check: NEVER over a live alarm", !D.speakerCheckDue({ ...base, alarmActive: true }));
+      t.ok("speaker check: not on a truck already out on a call", !D.speakerCheckDue({ ...base, onCall: true }));
+      t.ok("speaker check: never in a browser, where page audio cannot play untapped",
+        !D.speakerCheckDue({ ...base, hasShell: false }));
+      t.ok("speaker check: once per sign-on, not once per render", !D.speakerCheckDue({ ...base, done: true }));
+      t.ok("speaker check: no key, no tone", !D.speakerCheckDue({ ...base, key: "" }));
+      // The same person back on the same truck for a second shift is a new
+      // shift and gets a new check.
+      t.ok("speaker check: a new shift is a new check",
+        D.speakerCheckKey({ accountId: "C1", shiftStart: 222 }, unit) !== key);
+      // Storage that is blocked degrades to checking again, never to throwing.
+      t.ok("speaker check: a device with no storage still checks", !D.speakerCheckDone(key, null));
+      const store = { v: {}, getItem(k) { return this.v[k]; }, setItem(k, val) { this.v[k] = val; } };
+      D.markSpeakerCheckDone(key, store);
+      t.ok("speaker check: remembered for this sign-on", D.speakerCheckDone(key, store));
+      t.ok("speaker check: not remembered for the next one", !D.speakerCheckDone("C1|u1|222", store));
+    }
+    // The answer has to reach the crew, and a quiet phone is not a pass.
+    t.ok("speaker check: a phone that could not play says so",
+      D.speakerCheckResult({ ok: false }).ok === false);
+    t.ok("speaker check: a shell that answered nothing is not a pass",
+      D.speakerCheckResult(null).ok === false);
+    t.ok("speaker check: a quiet phone is told to turn it up",
+      D.speakerCheckResult({ ok: true, tone: "critical", alarmVolumePct: 10 }).ok === false
+      && /Turn it up/.test(D.speakerCheckResult({ ok: true, alarmVolumePct: 10 }).say));
+    t.ok("speaker check: a loud phone is told it will be heard",
+      D.speakerCheckResult({ ok: true, tone: "critical", alarmVolumePct: 86 }).ok === true);
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

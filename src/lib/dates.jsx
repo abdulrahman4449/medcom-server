@@ -778,37 +778,49 @@ export function standDownOutcome() {
 // relaunched. The tone is stopped after a couple of seconds because this is a
 // check, not an alert; if it ever collides with a real alarm, the alarm's own
 // 1.7-second repeat restarts the player the moment it finds it stopped.
+// Returns what the shell said about the check — the tone it used, where it
+// came from, how loud the phone is — so a caller can put the answer on the
+// screen. A check whose result nobody sees is not a check. Resolves to null on
+// the page-audio path, which cannot report anything about itself.
 export function soundSpeakerCheck(audioCtxRef, priority) {
   const plugin = nativeAlarm();
   if (plugin && typeof plugin.stop === "function") {
     try {
       const answered = plugin.alert({ priority: String(priority || "routine") });
       lastAlarmOutcome = "system alarm (check)";
+      const stopSoon = () => {
+        setTimeout(() => {
+          try {
+            plugin.stop();
+          } catch (e) {
+            // an alarm mid-flight owns the player; its repeat carries on
+          }
+        }, 2200);
+      };
       if (answered && typeof answered.then === "function") {
-        answered.then(
+        const out = answered.then(
           (r) => {
             const tone = r && r.tone ? String(r.tone).toUpperCase() : "?";
-            lastAlarmOutcome = `system alarm · ${tone} · ${(r && r.source) || "shell"} (check)`;
+            lastAlarmOutcome = `system alarm · ${tone} · ${(r && r.source) || "shell"} (check)${alarmLoudnessNote(r)}`;
+            return r || { ok: true };
           },
           () => {
             lastAlarmOutcome = "system alarm refused — page tone used for the check";
             soundCallAlert(audioCtxRef, priority);
+            return { ok: false };
           }
         );
+        stopSoon();
+        return out;
       }
-      setTimeout(() => {
-        try {
-          plugin.stop();
-        } catch (e) {
-          // an alarm mid-flight owns the player; its repeat carries on
-        }
-      }, 2200);
-      return;
+      stopSoon();
+      return Promise.resolve(null);
     } catch (e) {
       // an old shell without the method — the page tone is still an answer
     }
   }
   soundCallAlert(audioCtxRef, priority);
+  return Promise.resolve(null);
 }
 
 export function soundCallAlert(audioCtxRef, priority, unmissable) {

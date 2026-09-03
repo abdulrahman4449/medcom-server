@@ -47,6 +47,7 @@ export { staffStatsFor, departmentUhu, categoryMixRows, serviceMixRows, response
 export { roleSwitchTarget } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/seat-handover.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/call-changes.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/speaker-check.jsx")};
 export { pendingResets } from ${JSON.stringify(ROOT + "src/ui/PasswordResets.jsx")};
 export { CALL_CATEGORIES, suggestedCallType } from ${JSON.stringify(ROOT + "src/domain/sheet-vocabulary.jsx")};
 export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
