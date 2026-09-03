@@ -12,6 +12,7 @@ import android.app.PendingIntent;
 import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
+import android.database.ContentObserver;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -86,6 +87,11 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // that number differs by handset.
     private static final double MIN_ALARM_SHARE = 0.7;
 
+    // How often the floor re-asserts itself while an alert sounds. Short
+    // enough that a thumb held on volume-down never gets the alarm quiet for
+    // long enough to be heard as quiet.
+    private static final long FLOOR_TICK_MS = 400;
+
     // The PLUGIN's own build date, which is not the web build's.
     //
     // index.html is copied into the project and the plugin is rebuilt in
@@ -95,7 +101,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-03.3";
+    private static final String PLUGIN_BUILD = "2026-09-03.4";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -113,6 +119,9 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // The floor's own heartbeat. See startFloorWatch().
     private Handler floorHandler;
     private Runnable floorTick;
+    // Corrects a volume change the INSTANT it happens, rather than up to a
+    // tick later. See startFloorWatch().
+    private ContentObserver volumeObserver;
     // What actually happened to the alarm stream WHILE the last alert was
     // sounding: the lowest level seen, and how many times the floor put it
     // back. A reading taken afterwards is 86% and says nothing — the whole
@@ -396,6 +405,10 @@ public class PulseOpsAlarmPlugin extends Plugin {
         if (mp == null) return false;
         try {
             mp.setAudioAttributes(alarmAttributes());
+            // The stream's level and the player's own level multiply, so a
+            // player left below 1.0 would cap the alarm under the floor no
+            // matter what the stream says.
+            mp.setVolume(1f, 1f);
             // A player that dies mid-loop used to do so in silence: the alarm
             // simply stopped and the crew had no idea it ever started. Errors
             // tear it down so the next repeat builds a fresh one.
@@ -445,6 +458,17 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // "the floor did not kick in" became invisible: the alarm played
             // correctly into a stream at 10% and every diagnostic said fine.
             int after = am.getStreamVolume(AudioManager.STREAM_ALARM);
+            if (after < want) {
+                // Some devices refuse an absolute set and still honour a
+                // relative raise — the same permission, a different code path
+                // inside the framework. Worth one climb before giving up and
+                // calling the floor refused. Bounded by the stream's own max,
+                // so this can never spin.
+                for (int i = 0; i <= max && am.getStreamVolume(AudioManager.STREAM_ALARM) < want; i++) {
+                    am.adjustStreamVolume(AudioManager.STREAM_ALARM, AudioManager.ADJUST_RAISE, 0);
+                }
+                after = am.getStreamVolume(AudioManager.STREAM_ALARM);
+            }
             if (after >= want) {
                 // Keep the ORIGINAL setting, once, and ONLY when the raise
                 // actually took. A re-raise mid-alarm - the repeat above,
@@ -491,23 +515,45 @@ public class PulseOpsAlarmPlugin extends Plugin {
         floorTick = new Runnable() {
             @Override
             public void run() {
-                // Only while OUR alarm is the thing playing. The watch must
-                // never outlive the alert and go on holding somebody's phone
-                // at 70% after the call was acknowledged.
-                MediaPlayer p = player;
-                if (p == null) return;
-                boolean playing;
-                try {
-                    playing = p.isPlaying();
-                } catch (Exception e) {
-                    playing = false;
-                }
-                if (!playing) return;
+                // The alert owns the floor for as long as the PLAYER EXISTS,
+                // not for as long as isPlaying() happens to answer true.
+                //
+                // It used to bail out on a false from isPlaying() and never
+                // reschedule — so one momentary false, which MediaPlayer gives
+                // freely while it is preparing, seeking or recovering from an
+                // interruption, killed the floor for the rest of the call and
+                // nothing restarted it. A guarantee cannot have a case where it
+                // silently stops guaranteeing. stopFloorWatch() is the only
+                // thing that ends this, and stopPlayer() is the only thing that
+                // calls it.
+                if (player == null) return;
                 raiseAlarmVolume();
-                if (floorHandler != null) floorHandler.postDelayed(this, 1000);
+                if (floorHandler != null) floorHandler.postDelayed(this, FLOOR_TICK_MS);
             }
         };
-        floorHandler.postDelayed(floorTick, 1000);
+        // Immediately, then on the tick: the first correction must not wait.
+        floorHandler.post(floorTick);
+
+        // And instantly, on the volume itself.
+        //
+        // A timer alone means a thumb held on volume-down wins for up to a
+        // whole tick, which is long enough for a crew to hear the alarm die.
+        // Android publishes volume changes through the settings provider, so
+        // the floor is put back in the same breath as it is taken away. Our
+        // own write comes back through here too and is a no-op: the raise
+        // returns early once the stream is at or above the floor.
+        try {
+            volumeObserver = new ContentObserver(floorHandler) {
+                @Override
+                public void onChange(boolean selfChange) {
+                    if (player != null) raiseAlarmVolume();
+                }
+            };
+            getContext().getContentResolver()
+                .registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver);
+        } catch (Exception ignored) {
+            // Without the observer the tick above still holds the floor.
+        }
     }
 
     private void stopFloorWatch() {
@@ -515,6 +561,11 @@ public class PulseOpsAlarmPlugin extends Plugin {
             if (floorHandler != null && floorTick != null) floorHandler.removeCallbacks(floorTick);
         } catch (Exception ignored) {
         }
+        try {
+            if (volumeObserver != null) getContext().getContentResolver().unregisterContentObserver(volumeObserver);
+        } catch (Exception ignored) {
+        }
+        volumeObserver = null;
         floorHandler = null;
         floorTick = null;
     }

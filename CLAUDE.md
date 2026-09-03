@@ -690,6 +690,24 @@ patch", that document is the target — do not start a fresh exploration.
   entitlement, which needs a developer account and Apple's approval. Reported
   as a real thumb-on-volume-down test that "the foreground guaranteed volume
   floor did not kick in", on both handsets.
+- **A floor with a case where it stops holding is not a floor.** Three ways it
+  quietly stopped: the watch bailed out on a momentary `false` from
+  `isPlaying()` and never rescheduled — MediaPlayer gives that freely while
+  preparing, seeking or recovering from an interruption, so one false killed
+  the floor for the rest of the call; a once-a-second tick let a thumb held on
+  volume-down keep the alarm quiet long enough to be heard as quiet; and
+  `setStreamVolume` alone is refused on devices that would still honour
+  `adjustStreamVolume`. So the watch now runs for as long as the PLAYER EXISTS
+  (`stopFloorWatch` is the only thing that ends it, and `stopPlayer` is the
+  only thing that calls it), ticks at `FLOOR_TICK_MS` (400 ms) starting
+  immediately, registers a `ContentObserver` on `Settings.System` so a volume
+  change is corrected in the same breath as it is made, and climbs with
+  `ADJUST_RAISE` when the absolute set is refused. The player is also pinned at
+  `setVolume(1f, 1f)` — the stream's level and the player's own multiply, so a
+  player under 1.0 caps the alarm below the floor whatever the stream says.
+  The observer must be unregistered in `stopFloorWatch` BEFORE
+  `restoreAlarmVolume` runs, or the restore is instantly undone by its own
+  notification.
 - **The floor holds ITSELF, on the plugin's own timer.** It used to be
   re-applied only when the web layer repeated `alert()` every 1.7 s — which
   makes an alarm's loudness depend on a JavaScript timer inside a WebView, and
