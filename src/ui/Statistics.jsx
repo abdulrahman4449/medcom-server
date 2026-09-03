@@ -2229,7 +2229,7 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
 /* The same light yellow the spreadsheet shades a stood-down call with
    (FFF2CC / 7F6000). Red on these documents already means no coverage and must
    not also mean cancelled. */
-.cancelled td{background:#FFF2CC !important;color:#7F6000}
+.cancelled td{background:#FFF2CC !important;color:#7F6000 !important}
 .foot{margin-top:12pt;border-top:0.7pt solid #C9D4DD;padding-top:6pt;font-size:7pt;color:#6C7B89}
 .keep{break-inside:avoid;page-break-inside:avoid}
 .none{font-size:8pt;color:#5A6B7B;font-style:italic;margin:4pt 0 10pt}
@@ -2297,16 +2297,21 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         const f = table[String(key || "").trim().toUpperCase()] || table[String(key || "").trim()];
         return f ? ` style="background:#${f[0].slice(2)};color:#${f[1].slice(2)}"` : "";
       };
-      const fill = CATEGORY_FILLS[(r.callCategory || "").trim()];
+      // A stood-down row is yellow from edge to edge, and its cells carry NO
+      // colour of their own. The row rule overrode the category cell's red
+      // fill but not its white text (an inline colour beats a class), so
+      // "EMERGENCY (INTERNAL)" printed white on light yellow — unreadable.
+      const stoodDown = requestOutcomeKey(r) === "cancelled";
+      const fill = stoodDown ? null : CATEGORY_FILLS[(r.callCategory || "").trim()];
       const catStyle = fill ? ` style="background:#${fill[0].slice(2)};color:#${fill[1].slice(2)}"` : "";
-      const svcStyle = paint(SERVICE_FILLS, serviceTypeFor(r));
+      const svcStyle = stoodDown ? "" : paint(SERVICE_FILLS, serviceTypeFor(r));
       // Cancelled reads as cancelled on both documents, in the same colour.
       // The board has no "cancelled" STATUS — a call the desk stands down is
       // closed like any other and the only record of it is the close reason —
       // so this asks `requestOutcomeKey`, which reads that reason, exactly as
       // the REQUEST STATUS column of the spreadsheet does. Asking `r.status`
       // instead answered COMPLETED for a call that was called off.
-      const offRow = requestOutcomeKey(r) === "cancelled" ? ` class="cancelled"` : "";
+      const offRow = stoodDown ? ` class="cancelled"` : "";
       return `<tr${offRow}>
         <td class="c">${i + 1}</td>
         <td${cls}>${esc(r.patientOrigin || "")}</td>
