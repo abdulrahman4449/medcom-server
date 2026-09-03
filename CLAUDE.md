@@ -823,6 +823,25 @@ patch", that document is the target — do not start a fresh exploration.
   the whole-key write is the right shape here. It rides the slow poll only.
   Dates are the DEVICE's local day (Riyadh), keyed `YYYY-MM-DD`, deliberately
   NOT the 07:00 operational boundary — a planner reads a wall calendar.
+- **The schedule has two documents from one source, and the totals never cross
+  over.** `src/export/schedule-export.jsx`. The staff PDF is the department's
+  own KFSH layout (title band, the six-column legend, the navy period band, the
+  Hijri/Gregorian/day-of-week header, group separators, the colour coding) and
+  carries the GRID ONLY — no per-employee shift or overtime totals, no
+  per-day coverage or team totals. The Excel working copy carries exactly those
+  three (Shifts, OT h, the coverage rows and a TOTAL TEAMS/PEOPLE row) for the
+  next revision. The PDF is offered only once the schedule is APPROVED. The
+  owner/admin account never appears on the roster (`scheduleEligibleAccounts`
+  filters the `isOwner` row from the picker and the view).
+- **The schedule is prepared, submitted and approved, and any edit reopens it.**
+  `status` on `ems:schedule` is draft → submitted → approved with a climbing
+  `version`. A preparer (schedule area) submits; a REAL admin (`role === "admin"`
+  and not `isDelegatedAdmin`) approves or sends back; `saveEdit` stamps the
+  object back to draft on any content change, so an approved sheet on screen is
+  always the one that was approved. Approval authority is enforced in the UI
+  only — a schedule-area delegate can write the key — which is the same trust
+  every delegated area carries; server-side sub-field enforcement is a later
+  refinement if it is ever wanted.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is

@@ -173,3 +173,68 @@ export function scheduleCoverageCount(cells, accountIds, dayKey, codes) {
   });
   return n;
 }
+
+// ---------- the draft → submitted → approved workflow ----------
+//
+// A preparer lent the schedule area fills in a draft and submits it; a real
+// administrator approves it or sends it back. Any edit reopens it to draft, so
+// an approved sheet on screen is always the one that was approved. The status
+// lives in the object with the cells; the version climbs on each approval.
+export const SCHEDULE_STATUSES = {
+  draft: "DRAFT",
+  submitted: "WAITING FOR APPROVAL",
+  approved: "APPROVED",
+};
+
+export function scheduleStatusLabel(schedule) {
+  const s = schedule && schedule.status;
+  return SCHEDULE_STATUSES[s] || SCHEDULE_STATUSES.draft;
+}
+
+export function scheduleIsApproved(schedule) {
+  return !!schedule && schedule.status === "approved";
+}
+
+// The owner/admin's own account never appears on the roster — it is not a crew
+// slot on the board and it is not scheduled. `accounts` from `/api/accounts`
+// carries `isOwner` on that one row.
+export function scheduleEligibleAccounts(accounts) {
+  return (accounts || []).filter((a) => a && !a.isOwner);
+}
+
+// The whole sheet as the exports and the grid read it: groups in order, each
+// with its rows (name, id, the 42 tokens, and the row's summary), the owner
+// account filtered out, plus the flat list of everyone on it for the coverage
+// count.
+export function scheduleView(schedule, accounts, dayKeys) {
+  const model = schedule && typeof schedule === "object" ? schedule : {};
+  const cells = model.cells && typeof model.cells === "object" ? model.cells : {};
+  const byId = new Map((accounts || []).map((a) => [a.id, a]));
+  const ownerIds = new Set((accounts || []).filter((a) => a && a.isOwner).map((a) => a.id));
+  const groups = (Array.isArray(model.groups) ? model.groups : []).map((g) => ({
+    id: g.id,
+    name: g.name || "",
+    rows: (g.memberIds || [])
+      .filter((id) => !ownerIds.has(id))
+      .map((id) => {
+        const a = byId.get(id);
+        return {
+          accountId: id,
+          name: a ? (a.name || id) : id,
+          empId: id,
+          cells: dayKeys.map((k) => cells[scheduleCellKey(id, k)] || ""),
+          summary: employeeScheduleSummary(cells, id, dayKeys),
+        };
+      }),
+  }));
+  const allIds = groups.flatMap((g) => g.rows.map((r) => r.accountId));
+  return { groups, allIds };
+}
+
+// The per-day team totals the Excel working copy carries and the staff PDF
+// never does. A team is two people; the count is the working people that day.
+export function scheduleWorkingPerDay(cells, allIds, dayKeys) {
+  return dayKeys.map((k) =>
+    (allIds || []).reduce((n, id) => (scheduleIsWork(cells[scheduleCellKey(id, k)]) ? n + 1 : n), 0)
+  );
+}

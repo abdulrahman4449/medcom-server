@@ -13,8 +13,10 @@ import {
   SCHEDULE_CODES, SCHEDULE_CODE_ORDER, SCHEDULE_COVERAGE, SCHEDULE_KEY,
   SCHEDULE_REQUIRED_SHIFTS, defaultScheduleStart, employeeScheduleSummary,
   parseScheduleCode, scheduleCellKey, scheduleCoverageCount, scheduleDayIsWeekend,
-  scheduleDayKeys,
+  scheduleDayKeys, scheduleEligibleAccounts, scheduleIsApproved, scheduleStatusLabel,
 } from "../domain/schedule.jsx";
+import { exportScheduleExcel, openSchedulePdf } from "../export/schedule-export.jsx";
+import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { writeKey, readKey } from "../lib/offline-queue.jsx";
 import { useMemo, useState } from "../lib/react.jsx";
@@ -60,6 +62,10 @@ function normalise(schedule) {
     cells: s.cells && typeof s.cells === "object" ? s.cells : {},
     updatedAt: s.updatedAt || null,
     updatedBy: s.updatedBy || "",
+    status: s.status === "submitted" || s.status === "approved" ? s.status : "draft",
+    version: typeof s.version === "number" ? s.version : 0,
+    submittedBy: s.submittedBy || "", submittedAt: s.submittedAt || null,
+    approvedBy: s.approvedBy || "", approvedAt: s.approvedAt || null,
   };
 }
 
@@ -106,6 +112,48 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
     return true;
   }
 
+  // A content edit (a cell, a group, a member) reopens an approved or submitted
+  // schedule to draft — an approved sheet on screen must always be the one that
+  // was approved.
+  async function saveEdit(next, note) {
+    return save({ ...next, status: "draft" }, note);
+  }
+
+  const isRealAdmin = !!user && user.role === "admin" && !isDelegatedAdmin(user);
+  const approved = scheduleIsApproved(model);
+
+  async function submitForApproval() {
+    if (!window.confirm("Submit this schedule to an administrator for approval?")) return;
+    await save({ status: "submitted", submittedBy: (user && user.name) || "", submittedAt: Date.now() },
+      `Schedule submitted for approval by ${(user && user.name) || "preparer"}`);
+  }
+  async function approveSchedule() {
+    if (!window.confirm("Approve and publish this schedule? It can then be exported as the staff PDF.")) return;
+    await save({ status: "approved", version: (model.version || 0) + 1, approvedBy: (user && user.name) || "", approvedAt: Date.now() },
+      `Schedule V${(model.version || 0) + 1} approved by ${(user && user.name) || "admin"}`);
+  }
+  async function sendBack() {
+    if (!window.confirm("Send this schedule back to the preparer as a draft?")) return;
+    await save({ status: "draft" }, `Schedule sent back to draft by ${(user && user.name) || "admin"}`);
+  }
+
+  function exportMeta() {
+    const first = dayKeys[0].split("-").map(Number), last = dayKeys[dayKeys.length - 1].split("-").map(Number);
+    const MONF = ["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"];
+    const hijri = (() => { try { const f = new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", { month: "long", day: "numeric" }); return `${f.format(new Date(first[0], first[1]-1, first[2]))} → ${f.format(new Date(last[0], last[1]-1, last[2]))} 1448 H`; } catch (e) { return ""; } })();
+    const todayKeyOf = (() => { const d = new Date(); const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; })();
+    return {
+      periodLabel: `${first[2]} ${MONF[first[1]-1]} TO ${last[2]} ${MONF[last[1]-1]} ${last[0]}`,
+      hijriRange: hijri,
+      version: model.version, status: model.status, statusLabel: scheduleStatusLabel(model),
+      approvedBy: model.approvedBy, approvedAt: model.approvedAt ? new Date(model.approvedAt).toLocaleDateString("en-GB") : "",
+      generated: `Generated ${new Date().toLocaleString("en-GB")}`,
+      todayKey: todayKeyOf, fileTag: dayKeys[0],
+    };
+  }
+  function doExportPdf() { openSchedulePdf({ schedule: model, accounts, dayKeys, meta: exportMeta() }); }
+  async function doExportExcel() { await exportScheduleExcel({ schedule: model, accounts, dayKeys, meta: exportMeta() }); }
+
   function setStartDate(value) {
     // value: "YYYY-MM-DD" from the date field. Snap to the Sunday of that week.
     if (!value) return;
@@ -115,31 +163,31 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
     dt.setDate(dt.getDate() - dt.getDay());
     const ms = dt.getTime();
     setStart(ms);
-    save({ start: ms }, `Schedule start set to the week of ${value}`);
+    saveEdit({ start: ms }, `Schedule start set to the week of ${value}`);
   }
 
   async function addGroup() {
     const name = window.prompt("Name this group (you can rename it later):", `Group ${groups.length + 1}`);
     if (!name) return;
-    await save({ groups: [...groups, { id: uid("grp"), name: name.trim(), memberIds: [] }] }, `Schedule group "${name.trim()}" added`);
+    await saveEdit({ groups: [...groups, { id: uid("grp"), name: name.trim(), memberIds: [] }] }, `Schedule group "${name.trim()}" added`);
   }
   async function renameGroup(g) {
     const name = window.prompt("Rename this group:", g.name);
     if (!name || name.trim() === g.name) return;
-    await save({ groups: groups.map((x) => (x.id === g.id ? { ...x, name: name.trim() } : x)) }, `Schedule group renamed to "${name.trim()}"`);
+    await saveEdit({ groups: groups.map((x) => (x.id === g.id ? { ...x, name: name.trim() } : x)) }, `Schedule group renamed to "${name.trim()}"`);
   }
   async function removeGroup(g) {
     if (!window.confirm(`Remove the group "${g.name}"? The people in it go back to Unassigned; their codes are kept.`)) return;
-    await save({ groups: groups.filter((x) => x.id !== g.id) }, `Schedule group "${g.name}" removed`);
+    await saveEdit({ groups: groups.filter((x) => x.id !== g.id) }, `Schedule group "${g.name}" removed`);
   }
   async function addToGroup(groupId, accountId) {
-    await save({
+    await saveEdit({
       groups: groups.map((g) => (g.id === groupId ? { ...g, memberIds: [...(g.memberIds || []), accountId] } : { ...g, memberIds: (g.memberIds || []).filter((id) => id !== accountId) })),
     }, `${accountName(accountId)} added to the schedule`);
     setAssignTo(null);
   }
   async function removeFromGroup(groupId, accountId) {
-    await save({ groups: groups.map((g) => (g.id === groupId ? { ...g, memberIds: (g.memberIds || []).filter((id) => id !== accountId) } : g)) },
+    await saveEdit({ groups: groups.map((g) => (g.id === groupId ? { ...g, memberIds: (g.memberIds || []).filter((id) => id !== accountId) } : g)) },
       `${accountName(accountId)} taken off the schedule`);
   }
 
@@ -149,13 +197,13 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
     const key = scheduleCellKey(accountId, dayKey);
     if (token) nextCells[key] = token; else delete nextCells[key];
     const parts = dayLabelParts(dayKey);
-    await save({ cells: nextCells },
+    await saveEdit({ cells: nextCells },
       `Schedule — ${accountName(accountId)} on ${parts.dow} ${parts.dom} ${parts.mon} set to ${token || "off"}`);
     setPicker(null);
     setOtHours("");
   }
 
-  const unassigned = (accounts || []).filter((a) => a && !assigned.has(a.id));
+  const unassigned = scheduleEligibleAccounts(accounts).filter((a) => !assigned.has(a.id));
 
   return (
     <div>
@@ -172,6 +220,41 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
           <button style={styles.bannerBtn} onClick={addGroup}><Plus size={12} /> Group</button>
         </span>
       </SectionBanner>
+
+      {/* Status, version, and the workflow. A preparer submits; a real
+          administrator approves or sends back; the approved sheet is the only
+          one the staff PDF is offered from. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "2px 0 4px" }}>
+        <span style={{
+          fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, padding: "3px 9px", borderRadius: 5,
+          background: approved ? "rgba(48,209,88,.14)" : model.status === "submitted" ? "rgba(255,159,10,.16)" : "var(--inset-2)",
+          color: approved ? "var(--ok)" : model.status === "submitted" ? "var(--hold)" : "var(--ink-3)",
+        }}>{model.version ? `V${model.version} · ` : ""}{scheduleStatusLabel(model)}</span>
+        {model.status === "submitted" && model.submittedBy && (
+          <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>submitted by {model.submittedBy}</span>
+        )}
+        {approved && model.approvedBy && (
+          <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>approved by {model.approvedBy}</span>
+        )}
+        <span style={{ marginLeft: "auto", display: "inline-flex", gap: 7, flexWrap: "wrap" }}>
+          {!approved && model.status !== "submitted" && (
+            <button style={styles.bannerBtn} disabled={busy} onClick={submitForApproval}>Submit for approval</button>
+          )}
+          {model.status === "submitted" && isRealAdmin && (
+            <>
+              <button style={styles.bannerBtn} disabled={busy} onClick={sendBack}>Send back</button>
+              <button style={{ ...styles.primaryBtnSm }} disabled={busy} onClick={approveSchedule}>Approve &amp; publish</button>
+            </>
+          )}
+          {model.status === "submitted" && !isRealAdmin && (
+            <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>waiting for an administrator to approve</span>
+          )}
+          <button style={styles.bannerBtn} onClick={doExportExcel}>Export Excel</button>
+          {approved
+            ? <button style={styles.bannerBtn} onClick={doExportPdf}>Export staff PDF</button>
+            : <button style={{ ...styles.bannerBtn, opacity: 0.5 }} disabled title="Approve the schedule first">Staff PDF (after approval)</button>}
+        </span>
+      </div>
 
       {model.updatedAt ? (
         <div style={styles.sectionNote}>

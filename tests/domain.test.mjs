@@ -158,6 +158,21 @@ export function run(D, t) {
     cov[D.scheduleCellKey("C", keys[0])] = "N";
     t.is("schedule: main-day coverage counts D and H", D.scheduleCoverageCount(cov, ["A", "B", "C"], keys[0], ["D", "H"]), 2);
     t.is("schedule: GN dispatch codes render as N", D.SCHEDULE_CODES.GN.show, "N");
+
+    // status workflow + owner exclusion + view
+    t.is("schedule: default status reads DRAFT", D.scheduleStatusLabel({}), "DRAFT");
+    t.is("schedule: an approved schedule says so", D.scheduleStatusLabel({ status: "approved" }), "APPROVED");
+    t.ok("schedule: approved flag", D.scheduleIsApproved({ status: "approved" }) && !D.scheduleIsApproved({ status: "draft" }));
+    const accts = [{ id: "F1525518", name: "Owner", isOwner: true }, { id: "E1", name: "Ali" }, { id: "E2", name: "Mona" }];
+    t.is("schedule: the owner account is filtered out of the eligible list", D.scheduleEligibleAccounts(accts).length, 2);
+    const sched = { groups: [{ id: "g1", name: "A", memberIds: ["F1525518", "E1", "E2"] }], cells: { [D.scheduleCellKey("E1", keys[0])]: "D", [D.scheduleCellKey("E2", keys[0])]: "N" } };
+    const view = D.scheduleView(sched, accts, keys);
+    t.is("schedule: the view drops the owner from the group", view.groups[0].rows.length, 2);
+    t.ok("schedule: the view never lists the owner", !view.allIds.includes("F1525518"));
+    t.is("schedule: a row carries its 42 tokens", view.groups[0].rows[0].cells.length, 42);
+    const perDay = D.scheduleWorkingPerDay(sched.cells, view.allIds, keys);
+    t.is("schedule: two people working on day 0", perDay[0], 2);
+    t.is("schedule: nobody working on day 1", perDay[1], 0);
   }
 
   // ---------- Zahrawi stands 9:30, and it is the UHU denominator
