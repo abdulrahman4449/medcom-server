@@ -901,6 +901,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                 user={user}
                 units={units}
                 log={log}
+                accounts={accounts}
                 saveRequests={saveRequests}
                 addLog={addLog}
               />

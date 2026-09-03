@@ -678,6 +678,21 @@ export function run(D, t) {
     // An empty board still answers, rather than throwing on the one screen
     // somebody reaches for when the board has just come back.
     t.is("past call: no log and no trucks is an empty list", D.knownCrew(null, null).length, 0);
+
+    // Every crew member on file is offered on the admin form, log or no log;
+    // dispatchers and the owner are not crew and are left out.
+    const accts = [
+      { id: "F9001", role: "crew", name: "R. Chen" },
+      { id: "F9100", role: "crew", name: "Never-logged Medic" },
+      { id: "D1", role: "dispatcher", name: "Desk" },
+      { id: "F1525518", role: "admin", name: "Owner", isOwner: true },
+    ];
+    const merged = D.knownCrew(log, units, accts);
+    const mids = merged.map((p) => p.accountId);
+    t.ok("past call: a crew account with no log line is still offered", mids.includes("F9100"));
+    t.ok("past call: a dispatcher account is not offered", !mids.includes("D1"));
+    t.ok("past call: the owner account is not offered as crew", !mids.includes("F1525518"));
+    t.is("past call: an account already seen is not doubled", merged.filter((p) => p.accountId === "F9001").length, 1);
   }
 
   // ---------- statistics describe a period somebody chose

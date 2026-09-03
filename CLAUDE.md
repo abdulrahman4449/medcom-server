@@ -1075,6 +1075,14 @@ patch", that document is the target — do not start a fresh exploration.
   things: pruning the board when it outgrows the server (`board-size.jsx`), and
   a key that is genuinely one whole object. Reach for it and you are choosing to
   overwrite everybody.
+- **The manual-call seat pickers list every crew member, not only the ones the
+  log has seen.** `knownCrew(log, units, accounts)` in `domain/crew-roster.jsx`
+  (under `npm test`) — the Alpha and Bravo dropdowns on `PastCall` (the admin
+  form) now merge the accounts list in: anyone the board has actually seen
+  sorts first (by last-seen), then every other crew member on file. Crew
+  accounts carry role `crew` in the accounts table while a shift-log line for
+  the same person carries `team`, so the merge accepts EITHER; a dispatcher and
+  the owner are never crew. `accounts` is threaded PastCallSection → PastCallForm.
 - **A call the board never saw can still be written up, and it says so.**
   `PastCall.jsx` — the desk types the six times, the truck, the route and *why*
   it is being entered by hand, and the record carries `enteredAfterTheFact`

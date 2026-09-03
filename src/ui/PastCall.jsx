@@ -118,7 +118,7 @@ function CrewSeat({ label, hint, roster, value, setValue, typed, setTyped }) {
   );
 }
 
-export function PastCallForm({ user, units, log, saveRequests, addLog, onDone }) {
+export function PastCallForm({ user, units, log, accounts, saveRequests, addLog, onDone }) {
   const now = Date.now();
   const [ymd, setYmd] = useState(() => localYmd(now));
   const [times, setTimes] = useState({});
@@ -149,7 +149,7 @@ export function PastCallForm({ user, units, log, saveRequests, addLog, onDone })
   const station = (user && user.station) || DEFAULT_STATION;
   const mine = atStation(units || [], station);
   // Everybody the board has seen on a truck, most recent first.
-  const roster = knownCrew(log, units);
+  const roster = knownCrew(log, units, accounts);
   // What each seat resolves to: a person off the roster, or the name typed
   // into the "Someone else" box beside it.
   const alphaName = alpha === OTHER_CREW
@@ -470,7 +470,7 @@ export function PastCallForm({ user, units, log, saveRequests, addLog, onDone })
 }
 
 // The banner and the button that opens it.
-export function PastCallSection({ user, units, log, saveRequests, addLog }) {
+export function PastCallSection({ user, units, log, accounts, saveRequests, addLog }) {
   const [open, setOpen] = useState(false);
   if (!user || (user.role !== "dispatcher" && user.role !== "admin")) return null;
   return (
@@ -488,6 +488,7 @@ export function PastCallSection({ user, units, log, saveRequests, addLog }) {
           user={user}
           units={units}
           log={log}
+          accounts={accounts}
           saveRequests={saveRequests}
           addLog={addLog}
           onDone={() => setOpen(false)}

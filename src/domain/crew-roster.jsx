@@ -14,7 +14,7 @@
 //
 // Most recent first, because the crew that ran a call during an outage is
 // almost always one that has been on lately.
-export function knownCrew(log, units) {
+export function knownCrew(log, units, accounts) {
   const seen = new Map();
   const note = (accountId, name, ts) => {
     const clean = String(name || "").trim();
@@ -48,6 +48,17 @@ export function knownCrew(log, units) {
   (log || []).forEach((l) => {
     if (!l || l.role !== "team") return;
     note(l.accountId, l.name, l.ts || l.shiftStart || 0);
+  });
+
+  // And every crew member on file. On the administrator's form the accounts
+  // list is to hand, and the department wants to pick ANY member of staff for a
+  // call the board missed — not only the ones the log happens to have seen.
+  // They sort below the recently-seen crew (lastSeen 0) but are all selectable.
+  (accounts || []).forEach((a) => {
+    // Crew accounts carry role "crew" in the accounts table; a shift-log line
+    // for the same person carries "team". Accept either, and never the owner.
+    if (!a || (a.role !== "crew" && a.role !== "team") || a.isOwner) return;
+    note(a.id, a.name, 0);
   });
 
   return [...seen.values()].sort((a, b) => b.lastSeen - a.lastSeen);
