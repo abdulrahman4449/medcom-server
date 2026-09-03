@@ -105,7 +105,16 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   const alarmActive = assisting
     ? !assistTeam.acknowledgedAt
     : !!(myRequest && myRequest.status === "assigned" && !myRequest.acknowledged);
-  const [ambulanceInput, setAmbulanceInput] = useState(myUnit ? myUnit.ambulanceNumber || "" : "");
+  // Starts EMPTY unless this shift has already confirmed a number. The field
+  // used to open on whatever the last crew typed, so the person signing on
+  // pressed Confirm beside last shift's truck — the one thing the prompt below
+  // exists to prevent.
+  const [ambulanceInput, setAmbulanceInput] = useState(() =>
+    myUnit && myUnit.ambulanceNumber &&
+    myUnit.ambulanceShiftStart === (user.shiftStart || shiftWindowAt(Date.now()).start)
+      ? myUnit.ambulanceNumber
+      : ""
+  );
   // The board arrives a moment after this screen does, so the field was
   // initialised from a unit that was still empty and then never caught up —
   // which looked like the number had not been saved at all. It follows the
@@ -579,10 +588,9 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   const alarmingRequestId = useRef(null);
   const notifiedRequestId = useRef(null);
 
-  useEffect(() => {
-    setAmbulanceInput(myUnit ? myUnit.ambulanceNumber || "" : "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myUnit && myUnit.ambulanceNumber]);
+  // (A second, unguarded mirror of the board's number used to live here. It
+  // undid the guard above on every poll: the night crew's field filled itself
+  // with the day crew's truck. The guarded effect above is the only mirror.)
 
   // Persistent alarm: starts the moment a call is assigned to this unit and
   // has not yet been acknowledged, and keeps sounding until it is.

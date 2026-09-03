@@ -721,6 +721,21 @@ patch", that document is the target — do not start a fresh exploration.
   timestamp is in. Resolved through `shiftWindowAt`, never compared outright:
   Zahrawi starts at 09:30, and a line matching no window is filed under nothing
   and lost from every sheet.
+- **Only a shift's OWN crew hold its log open.** `shiftStillStaffed` in
+  `domain/shift-log.jsx`, under `npm test`. The automatic filing asked "is
+  anyone at the station seated?" — and at a station that runs around the clock
+  the answer is always yes, because the night crew sign on before the day
+  shift ends. So the day log never filed while the operational day beside it
+  was kept perfectly well: "1 kept, 0 filed". A seat holds a window open only
+  if the person in it signed on FOR that window (`shiftStart` on the seat), and
+  a seat still held a whole shift after the window closed is a forgotten
+  sign-out, not a shift still running.
+- **The ambulance number is asked of each shift, and the field starts EMPTY.**
+  `ambulanceInput` in `TeamView.jsx` — a second, unguarded effect mirrored the
+  unit's stored number into the field on every poll, undoing the guard above
+  it, so the crew signing on found last shift's truck already typed in and
+  pressed Confirm beside it. The number is stamped with `ambulanceShiftStart`;
+  the field shows it only when that stamp is THIS shift's window.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is

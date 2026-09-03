@@ -2,7 +2,7 @@ import { COVERAGE_KEY, coverageGapsIn } from "./coverage.jsx";
 import { stationOf } from "./live-sheet.jsx";
 import { opDayKey, opDayLabel, opDayStart } from "./op-day.jsx";
 import { shiftWindowAt } from "./shift-helpers.jsx";
-import { SHIFTS } from "./shifts.jsx";
+import { SHIFTS, SHIFT_MS } from "./shifts.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 
 // ---------- submitting a shift's log ----------
@@ -35,6 +35,32 @@ export function requestsForShift(requests, station, windowStart, windowEnd) {
       r.createdAt >= windowStart &&
       r.createdAt < windowEnd
   );
+}
+
+// Whether anybody who worked THIS shift is still in a seat at the station.
+//
+// The automatic filing used to ask "is anyone at the station seated?" — and at
+// a station that runs around the clock the answer is always yes: the night
+// crew signs on before the day shift ends, so the day log could never file,
+// and the morning board read "0 filed" under an operational day the archive
+// had kept perfectly well. A seat holds a shift's log open only if the person
+// in it signed on FOR that shift (the seat carries `shiftStart`; an older seat
+// with none is placed by when it was signed on). A seat still held one whole
+// shift after the window closed is a forgotten sign-out, not a shift still
+// running, and stops holding the log open — the sign-off, when it comes, is
+// picked up by the re-cut like any other late line.
+export function shiftStillStaffed(units, station, windowStart, windowEnd, now = Date.now()) {
+  if (now >= windowEnd + SHIFT_MS) return false;
+  return (units || []).some((u) => {
+    if (!u || stationOf(u) !== station) return false;
+    return ["alpha", "bravo"].some((slot) => {
+      const m = u[slot];
+      if (!m) return false;
+      if (m.shiftStart) return m.shiftStart === windowStart;
+      const on = m.signedOnAt || 0;
+      return on >= windowStart && on < windowEnd;
+    });
+  });
 }
 
 export function logForShift(log, station, windowStart, windowEnd) {

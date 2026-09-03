@@ -24,6 +24,25 @@ export function run(D, t) {
   t.ok("op day: exactly 24 hours long",
     D.opDayEnd(D.opDayStart(at(2026, 8, 20, 9))) - D.opDayStart(at(2026, 8, 20, 9)) === 24 * H);
 
+  // ---------- only a shift's own crew hold its log open
+  {
+    const dayStart = at(2026, 9, 2, 7), dayEnd = at(2026, 9, 2, 19);
+    const nightSeat = { name: "N", accountId: "n1", shiftStart: at(2026, 9, 2, 19), signedOnAt: at(2026, 9, 2, 18, 45) };
+    const daySeat = { name: "D", accountId: "d1", shiftStart: dayStart, signedOnAt: at(2026, 9, 2, 6, 50) };
+    const oldSeat = { name: "O", accountId: "o1", signedOnAt: at(2026, 9, 2, 8) };
+    const u = (seat) => [{ id: "m1", name: "MEDIC 1", station: "main", alpha: seat, bravo: null }];
+    t.ok("auto-file: the night crew seated early do not hold the day log open",
+      !D.shiftStillStaffed(u(nightSeat), "main", dayStart, dayEnd, at(2026, 9, 2, 19, 30)));
+    t.ok("auto-file: a day crew still seated at 19:30 does",
+      D.shiftStillStaffed(u(daySeat), "main", dayStart, dayEnd, at(2026, 9, 2, 19, 30)));
+    t.ok("auto-file: an old seat with no shiftStart is placed by its sign-on time",
+      D.shiftStillStaffed(u(oldSeat), "main", dayStart, dayEnd, at(2026, 9, 2, 19, 30)));
+    t.ok("auto-file: a seat forgotten a whole shift later stops holding the log",
+      !D.shiftStillStaffed(u(daySeat), "main", dayStart, dayEnd, at(2026, 9, 3, 7, 5)));
+    t.ok("auto-file: another station's crew are not this station's",
+      !D.shiftStillStaffed([{ id: "c1", name: "CCC 1", station: "ccc", alpha: daySeat }], "main", dayStart, dayEnd, at(2026, 9, 2, 19, 30)));
+  }
+
   // ---------- Zahrawi stands 9:30, and it is the UHU denominator
   t.is("Zahrawi: 9.5 hours", D.shiftMsForUnit({ name: "ZAHRAWI" }), 9.5 * H);
   t.is("Zahrawi: the short form too", D.shiftMsForUnit({ name: "ZAH" }), 9.5 * H);

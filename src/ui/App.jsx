@@ -20,7 +20,7 @@ import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { callsNeedingReturn, isRecurring, isReturnLeg, repeatOccurrencesDue, returnBookingFor, wantsReturn } from "../domain/return-journeys.jsx";
 import { callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftAssignment, shiftMeta, shiftPhrase, shiftWindowAt } from "../domain/shift-helpers.jsx";
-import { SUBMISSION_KEY, amendSubmissionsWithLateCalls, finaliseOpenSubmissions, requestsForShift, submissionId, submitShiftLog } from "../domain/shift-log.jsx";
+import { SUBMISSION_KEY, amendSubmissionsWithLateCalls, finaliseOpenSubmissions, requestsForShift, shiftStillStaffed, submissionId, submitShiftLog } from "../domain/shift-log.jsx";
 import { SHIFTS, SHIFT_MS } from "../domain/shifts.jsx";
 import { LOCATION_KEY, TRACKING_CONSENT_KEY, pruneLocations } from "../domain/truck-locations.jsx";
 import { actorStamp } from "../export/name-stamps.jsx";
@@ -1089,11 +1089,11 @@ export function App() {
         // and filing it would shut the rest of the shift out of its own log.
 
         for (const st of STATIONS) {
-          const crewStillOn = freshUnits.filter(
-            (u) => stationOf(u) === st.key && (u.alpha || u.bravo)
-          ).length;
-
           for (const w of windows) {
+            // Only THIS shift's crew hold its log open. Counting every seat at
+            // the station held the day log open all night, because the night
+            // crew were already seated — see `shiftStillStaffed`.
+            const crewStillOn = shiftStillStaffed(freshUnits, st.key, w.start, w.end, now);
             const id = submissionId(opDayStart(w.start), w.key, st.key);
             if (all.some((x) => x && x.id === id)) continue;
 
@@ -1138,7 +1138,7 @@ export function App() {
             await addLog(
               `${stationLabel(st.key)} — ${SHIFTS[w.key] ? SHIFTS[w.key].label : w.key} log ` +
                 `(${opDayLabel(opDayStart(w.start))}) filed automatically · all calls closed and ` +
-                `all crews signed out · ${res.entry.callCount} calls`,
+                `its crews signed out · ${res.entry.callCount} calls`,
               "status"
             );
           }
