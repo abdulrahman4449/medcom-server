@@ -639,6 +639,38 @@ patch", that document is the target — do not start a fresh exploration.
   on is a page that is never backgrounded. It does **not** survive Home or a
   lock; only a foreground service or FCM would, and both cost a Play
   declaration or a server. Say that rather than implying it is covered.
+- **The volume floor is ANDROID's, and iOS has none — say so rather than
+  implying otherwise.** Android raises `STREAM_ALARM` to `MIN_ALARM_SHARE`
+  (70%) for the length of an alert and re-asserts it on every 1.7-second
+  repeat, so a thumb on volume-down mid-alarm is undone. iOS cannot:
+  `AVAudioSession.outputVolume` is read-only and Apple publishes no API that
+  sets the system volume, so an alert on an iPhone plays at whatever the slider
+  says. `.playback` buys the ring/silent switch and nothing else — not the
+  slider, not Do Not Disturb; past those needs Apple's **Critical Alert**
+  entitlement, which needs a developer account and Apple's approval. Reported
+  as a real thumb-on-volume-down test that "the foreground guaranteed volume
+  floor did not kick in", on both handsets.
+- **A raise that is REFUSED looks exactly like one that worked — so verify it,
+  and say which.** `raiseAlarmVolume` used to call `setStreamVolume` and assume
+  it landed. Android accepts that call and quietly does nothing under Do Not
+  Disturb without notification-policy access, and several manufacturers' focus
+  modes do the same: no exception, no error, the stream stays where the thumb
+  left it, and every diagnostic on the phone said fine. It now reads the stream
+  back (`after >= want`) and records `volumeFloorOk` / `volumeFloor` on
+  `status()`, which reaches the crew's diagnostics line, `BackgroundAlertNotice`
+  and the owner's device diagnostics. A refused raise also no longer arms
+  `restoreAlarmVolume`: it changed nothing, so it has nothing to put back, and
+  arming it wrote the LOWERED value back as "the owner's setting".
+- **An iPhone answers `backgroundStatus` too.** It had no such method, so the
+  four-settings notice and the crew's diagnostics line were blank on exactly
+  the devices where the volume slider is the only thing between a call and
+  silence. iOS reports its output volume (as `alarmVolumePct` as well, so one
+  reader serves both platforms), notification permission, and the channel and
+  battery fields as fine — an undefined value reads as a fault in the notice.
+  `alert()` hands the volume back on BOTH the first call and the 1.7-second
+  repeat, so the crew line tracks the volume buttons live. `alarmLoudnessNote`
+  (`npm test`) turns that into the words on the line, and the notice tells an
+  iPhone to turn it up BEFORE the shift, because nothing can raise it after.
 - **A notification channel belongs to the user, not to the app.** Android
   refuses to change an existing channel's importance, sound or DND bypass, for
   ever — so a handset that installed an early build, or whose owner once chose

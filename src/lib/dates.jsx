@@ -519,7 +519,7 @@ export function nativeAlarm() {
 // So the methods this build needs are named here and checked. Missing one is
 // not a fault in the phone or the settings; it means the app needs rebuilding,
 // and the crew line says so in those words.
-export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNotifications"];
+export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNotifications", "backgroundStatus"];
 
 export function shellReport() {
   const plugin = nativeAlarm();
@@ -685,6 +685,26 @@ export function alarmOutcome() {
   return lastAlarmOutcome;
 }
 
+// How loud the phone actually was when it played, in the same line as which
+// tone it played.
+//
+// Reported because a thumb on the volume buttons during an alert is a real
+// thing crews do, and the two platforms answer it differently: Android raises
+// the alarm stream to a floor and can be REFUSED (Do Not Disturb, a
+// manufacturer's focus mode) without any error at all, and iOS cannot raise
+// anything, because `outputVolume` is read-only and Apple offers no API that
+// sets the system volume. Either way the number belongs on the screen: "the
+// alert went quiet by itself" and "the alert is playing at 10% because that is
+// where the slider is" look identical from a truck.
+export function alarmLoudnessNote(r) {
+  if (!r || typeof r !== "object") return "";
+  const pct = r.outputVolumePct != null ? r.outputVolumePct : r.alarmVolumePct;
+  if (pct == null) return "";
+  if (r.platform === "ios") return ` · device volume ${pct}% (iPhone: no floor, the slider decides)`;
+  if (r.volumeFloorOk === false) return ` · alarm stream ${pct}% · FLOOR ${r.volumeFloor || "refused"}`;
+  return ` · alarm stream ${pct}%`;
+}
+
 // What the last stand-down did, on the same principle as the alarm above.
 //
 // Two rounds of guessing went into "the cancellation tone comes late" without
@@ -770,7 +790,7 @@ export function soundCallAlert(audioCtxRef, priority, unmissable) {
               // three people guess at.
               const tone = r && r.tone ? String(r.tone).toUpperCase() : "?";
               const from = r && r.source ? r.source : "shell";
-              lastAlarmOutcome = `system alarm · ${tone} · ${from}`;
+              lastAlarmOutcome = `system alarm · ${tone} · ${from}${alarmLoudnessNote(r)}`;
             },
             (err) => {
               lastAlarmOutcome = `system alarm refused (${(err && err.message) || "no reason given"})`;

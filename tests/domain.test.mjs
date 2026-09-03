@@ -623,6 +623,29 @@ export function run(D, t) {
     t.is("tones: a CCT call gets the wail", D.toneKeyFor("cct"), "critical");
     t.is("tones: an ALS call gets the same wail", D.toneKeyFor("als"), "critical");
     t.is("tones: a BLS call keeps the chime", D.toneKeyFor("bls"), "routine");
+
+    // How loud the phone was, said in the alarm outcome line. The two
+    // platforms are not the same fact: Android raises the alarm stream to a
+    // floor and can be refused silently, iOS cannot raise anything at all
+    // because outputVolume is read-only. A crew turning the volume down
+    // mid-alert must be able to read WHY it went quiet off their own screen.
+    t.is(
+      "loudness: an iPhone says the slider decides",
+      D.alarmLoudnessNote({ platform: "ios", outputVolumePct: 10 }),
+      " · device volume 10% (iPhone: no floor, the slider decides)"
+    );
+    t.is(
+      "loudness: an applied Android floor just says the level",
+      D.alarmLoudnessNote({ platform: "android", alarmVolumePct: 70, volumeFloorOk: true }),
+      " · alarm stream 70%"
+    );
+    t.is(
+      "loudness: a REFUSED Android floor says so, never silently",
+      D.alarmLoudnessNote({ platform: "android", alarmVolumePct: 10, volumeFloorOk: false, volumeFloor: "REFUSED - Do Not Disturb" }),
+      " · alarm stream 10% · FLOOR REFUSED - Do Not Disturb"
+    );
+    t.is("loudness: nothing to say about a shell that reported no volume", D.alarmLoudnessNote({ ok: true }), "");
+    t.is("loudness: a rejected promise is not an object", D.alarmLoudnessNote(null), "");
     // Both vocabularies, because a board that has been running a while still
     // holds the old words.
     t.is("tones: the old word for CCT still maps", D.toneKeyFor("urgent"), "critical");

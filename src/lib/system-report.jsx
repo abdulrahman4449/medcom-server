@@ -87,6 +87,13 @@ async function gatherDiagnostics() {
       d.dispatchChannel = bg.channelSilenced ? "SILENCED by the owner" : "sounding";
       d.alarmVolume = `${bg.alarmVolumePct != null ? bg.alarmVolumePct : "?"}%${(bg.alarmVolumePct || 0) < 30 ? " — LOW" : ""}`;
       d.batteryOptimisation = bg.batteryOptimised ? "ON — Android may freeze the app" : "off";
+      // Whether the alarm-volume floor actually landed on the last alert.
+      // Android can refuse it with no error at all, and iPhone has no floor to
+      // apply — either way the owner asking a phone "why were you quiet?"
+      // should get the answer in the answer, not have to infer it.
+      d.volumeFloor = bg.platform === "ios"
+        ? "none on iPhone — the alert plays at the phone's own volume"
+        : (bg.volumeFloor || (bg.volumeFloorOk ? "applied" : "not attempted yet"));
     }
   } catch (e) {
     /* a shell without the method simply reports the web-side facts */

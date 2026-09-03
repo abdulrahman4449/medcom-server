@@ -88,11 +88,14 @@ export function SoundDiagnostics({ audioCtxRef }) {
       build {BUILD_STAMP} · {shellReport()} · page audio {state} ·
       screen held {screenAwakeHeld() ? "yes" : "no"} · last alarm: {alarmOutcome()} ·
       last stand-down: {standDownOutcome()}
-      {bg ? ` · alarm volume ${bg.alarmVolumePct}% · notifications ${
+      {bg ? `${bg.platform === "ios"
+        ? ` · device volume ${bg.alarmVolumePct}% (no floor on iPhone)`
+        : ` · alarm volume ${bg.alarmVolumePct}%${bg.volumeFloorOk === false ? ` · FLOOR ${bg.volumeFloor}` : ""}`
+      } · notifications ${
         bg.notificationsEnabled ? "on" : "OFF"
-      } · channel ${bg.channelSilenced ? "SILENCED" : "ok"} · battery saver ${
+      }${bg.platform === "ios" ? "" : ` · channel ${bg.channelSilenced ? "SILENCED" : "ok"} · battery saver ${
         bg.batteryOptimised ? "ON" : "off"
-      }` : ""}
+      }`}` : ""}
     </div>
   );
 }
@@ -148,7 +151,31 @@ export function BackgroundAlertNotice() {
       say: "The Dispatch alerts channel has been silenced on this phone. Android will not let the app turn it back on — it has to be done in settings.",
     });
   }
-  if ((bg.alarmVolumePct || 0) < 30) {
+  // The volume, said out loud — and said DIFFERENTLY on the two platforms,
+  // because what the app can do about it is different.
+  //
+  // Android raises the alarm stream to a floor for the length of an alert, so
+  // a low reading there is either about to be corrected or was REFUSED, and a
+  // refusal is the interesting case: Do Not Disturb and some manufacturers'
+  // focus modes turn setStreamVolume into a no-op with no error at all, which
+  // is how "the floor did not kick in" stayed invisible.
+  //
+  // On iPhone there is no floor and there cannot be one — outputVolume is
+  // read-only and Apple publishes no way to set the system volume — so a thumb
+  // on volume-down genuinely does make the alert quieter and the only honest
+  // answer is to name it before the call comes rather than after.
+  const onIos = bg.platform === "ios";
+  if (onIos && (bg.alarmVolumePct || 0) < 40) {
+    faults.push({
+      which: null,
+      say: `The volume on this iPhone is ${bg.alarmVolumePct}%. On iPhone the alert plays at the phone's own volume — the app cannot raise it for you, so turn it up before your shift.`,
+    });
+  } else if (!onIos && bg.volumeFloorOk === false && /REFUSED/.test(String(bg.volumeFloor || ""))) {
+    faults.push({
+      which: "notifications",
+      say: `This phone refused to raise the alarm volume for the last alert — ${bg.volumeFloor}. Turn the alarm volume up by hand, and check Do Not Disturb.`,
+    });
+  } else if (!onIos && (bg.alarmVolumePct || 0) < 30) {
     faults.push({
       which: null,
       say: `The alarm volume on this phone is ${bg.alarmVolumePct}%. The alert plays on the alarm stream, so this is the slider it uses — not the media one.`,

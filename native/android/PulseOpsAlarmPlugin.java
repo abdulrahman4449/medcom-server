@@ -93,6 +93,11 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // What the alarm volume was before an alert raised it, so it can be put
     // back. -1 means "not raised by us".
     private int volumeBefore = -1;
+    // Whether the last attempt at the floor actually landed, and why not. Read
+    // back through status(), because a floor that is refused looks exactly like
+    // one that worked from everywhere else in the app.
+    private boolean volumeFloorOk = false;
+    private String volumeFloorNote = "not attempted yet";
 
     @Override
     public void load() {
@@ -386,22 +391,73 @@ public class PulseOpsAlarmPlugin extends Plugin {
     private void raiseAlarmVolume() {
         try {
             AudioManager am = audio();
-            if (am == null) return;
+            if (am == null) {
+                noteFloor(false, "no audio service on this device");
+                return;
+            }
             int max = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
             int now = am.getStreamVolume(AudioManager.STREAM_ALARM);
             int want = (int) Math.ceil(max * MIN_ALARM_SHARE);
-            if (now >= want) return;
-            // Keep the ORIGINAL setting, once. A re-raise mid-alarm - the
-            // repeat above, after a thumb on volume-down - must not overwrite
-            // what the owner actually had it on, or stop() "restores" the
-            // alarm stream to mid-alarm quiet and every alert after this one
-            // starts from there.
-            if (volumeBefore < 0) volumeBefore = now;
+            if (now >= want) {
+                noteFloor(true, "already at or above the floor");
+                return;
+            }
             am.setStreamVolume(AudioManager.STREAM_ALARM, want, 0);
-        } catch (Exception ignored) {
-            // Do Not Disturb can refuse this without the app holding policy
-            // access. The alert still plays; it plays quietly, and
-            // backgroundStatus() below is what says so.
+            // ASK, then LOOK. Android accepts setStreamVolume and quietly does
+            // nothing under Do Not Disturb without notification-policy access,
+            // and several manufacturers' battery or focus modes refuse it the
+            // same silent way - no exception, no error, the stream simply
+            // stays where the thumb left it. Assuming the write took is how
+            // "the floor did not kick in" became invisible: the alarm played
+            // correctly into a stream at 10% and every diagnostic said fine.
+            int after = am.getStreamVolume(AudioManager.STREAM_ALARM);
+            if (after >= want) {
+                // Keep the ORIGINAL setting, once, and ONLY when the raise
+                // actually took. A re-raise mid-alarm - the repeat above,
+                // after a thumb on volume-down - must not overwrite what the
+                // owner had it on, or stop() "restores" the alarm stream to
+                // mid-alarm quiet and every alert after this one starts from
+                // there. A refused raise must not arm the restore at all: it
+                // changed nothing, so it has nothing to put back.
+                if (volumeBefore < 0) volumeBefore = now;
+                noteFloor(true, "raised to " + pctOf(after, max) + "%");
+            } else {
+                noteFloor(false, "REFUSED - the alarm stream stayed at "
+                    + pctOf(after, max) + "%" + (dndOn() ? ", Do Not Disturb is on" : ""));
+            }
+        } catch (SecurityException e) {
+            // Do Not Disturb refuses this outright without the app holding
+            // notification-policy access. The alert still plays; it plays
+            // quietly, and the crew line now says so rather than swallowing it.
+            noteFloor(false, "REFUSED - Do Not Disturb blocks volume changes on this phone");
+        } catch (Exception e) {
+            noteFloor(false, "REFUSED - " + e.getMessage());
+        }
+    }
+
+    /** The last thing the floor did, in words a crew can read off their own
+        screen and send on. A guard that fails silently is a guard nobody knows
+        about: this one is reported by status(), so it reaches the crew line,
+        the owner's System page and a device's diagnostics answer. */
+    private void noteFloor(boolean ok, String why) {
+        volumeFloorOk = ok;
+        volumeFloorNote = why;
+    }
+
+    private int pctOf(int now, int max) {
+        return max > 0 ? (int) Math.round((now * 100.0) / max) : 0;
+    }
+
+    /** Whether the phone is in some Do Not Disturb mode. Not a fault on its
+        own - the alarm stream is meant to survive DND - but it is the usual
+        reason a volume change is refused, so it is worth naming. */
+    private boolean dndOn() {
+        try {
+            NotificationManager nm = nm();
+            if (nm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false;
+            return nm.getCurrentInterruptionFilter() != NotificationManager.INTERRUPTION_FILTER_ALL;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -631,10 +687,15 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 int now = am.getStreamVolume(AudioManager.STREAM_ALARM);
                 out.put("alarmVolume", now);
                 out.put("alarmVolumeMax", max);
-                out.put("alarmVolumePct", max > 0 ? (int) Math.round((now * 100.0) / max) : 0);
+                out.put("alarmVolumePct", pctOf(now, max));
             }
         } catch (Exception ignored) {
         }
+        // What the volume floor did last time an alert asked for it. Without
+        // this, a refused raise is indistinguishable from one that worked.
+        out.put("volumeFloorOk", volumeFloorOk);
+        out.put("volumeFloor", volumeFloorNote);
+        out.put("dnd", dndOn());
         try {
             PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
             boolean exempt = Build.VERSION.SDK_INT < Build.VERSION_CODES.M

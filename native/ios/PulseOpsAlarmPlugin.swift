@@ -55,6 +55,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "standby", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestNotifications", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "notify", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "backgroundStatus", returnType: CAPPluginReturnPromise),
     ]
 
 
@@ -356,6 +357,65 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         return wav(samples: samples, rate: rate)
     }
 
+    /**
+     * How loud this iPhone will actually be, handed back with every alert.
+     *
+     * THERE IS NO VOLUME FLOOR ON iOS AND THERE CANNOT BE ONE. Android's
+     * plugin raises STREAM_ALARM to 70% for the length of an alert;
+     * `AVAudioSession.outputVolume` is read-only and iOS offers no public API
+     * that sets the system volume, so the alert plays at whatever the slider
+     * says. A thumb on volume-down during an alert makes it quieter and the
+     * app cannot answer that. What the `.playback` category DOES buy is the
+     * ring/silent switch; it does not buy the slider or Do Not Disturb, and
+     * the only supported way past those is Apple's Critical Alert
+     * entitlement, which needs a developer account and Apple's approval.
+     *
+     * So the honest thing is to SAY the number. A crew looking at "device
+     * volume 10%" on their own screen can fix it in one gesture; a crew told
+     * nothing files it as "the app went quiet by itself".
+     */
+    private func deviceStatus(_ base: [String: Any] = [:]) -> [String: Any] {
+        var out = base
+        let session = AVAudioSession.sharedInstance()
+        let vol = session.outputVolume
+        out["platform"] = "ios"
+        out["outputVolume"] = vol
+        out["outputVolumePct"] = Int((vol * 100).rounded())
+        // Named so nothing downstream has to infer it from the platform.
+        out["volumeFloorOk"] = false
+        out["volumeFloor"] = "iOS has no volume floor - the alert plays at the phone's own volume"
+        out["category"] = session.category.rawValue
+        return out
+    }
+
+    /**
+     * The iPhone's answer to "will this phone actually make a noise".
+     *
+     * Android has had this since the four-settings notice was built; iOS had
+     * nothing, so `BackgroundAlertNotice` and the crew's diagnostics line were
+     * blank on every iPhone - the devices where the volume slider is the ONLY
+     * thing standing between a call and silence. Notification permission and
+     * the output volume are the two an iPhone can be asked for.
+     */
+    @objc func backgroundStatus(_ call: CAPPluginCall) {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            var out = self.deviceStatus()
+            let enabled = settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional
+            out["notificationsEnabled"] = enabled
+            // The crew line and the notice read these names on both platforms.
+            // An iPhone has no per-channel sound to silence and no battery
+            // optimisation that freezes an app the way Android's does, so they
+            // are reported as fine rather than left undefined - an undefined
+            // value reads as a fault in the notice.
+            out["channelExists"] = true
+            out["channelSilenced"] = false
+            out["batteryOptimised"] = false
+            out["alarmVolumePct"] = Int((AVAudioSession.sharedInstance().outputVolume * 100).rounded())
+            call.resolve(out)
+        }
+    }
+
     @objc func alert(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             NSLog("PulseOpsAlarm: alert() called")
@@ -368,7 +428,11 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
             // - turned a working alarm into silence with no second chance. The
             // player already loops on its own; a repeat is a no-op now.
             if let playing = self.player, playing.isPlaying {
-                call.resolve(["ok": true, "already": true])
+                // The device volume goes back with every repeat, not only with
+                // the first call, so the crew line tracks a thumb on the volume
+                // buttons live. On iOS that is all this can do about it: see
+                // deviceStatus() below for why there is no floor here.
+                call.resolve(self.deviceStatus(["ok": true, "already": true]))
                 return
             }
             self.stopPlayer()
@@ -435,7 +499,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 // Handed back so the crew screen can say which tone this phone
                 // actually played. "The ALS tone is wrong in the app" is not
                 // answerable from a console nobody can open on a truck.
-                call.resolve(["ok": started, "tone": tone, "source": source])
+                call.resolve(self.deviceStatus(["ok": started, "tone": tone, "source": source]))
             } catch {
                 call.reject("Could not raise the alarm: \(error.localizedDescription)")
             }
