@@ -842,6 +842,21 @@ patch", that document is the target — do not start a fresh exploration.
   only — a schedule-area delegate can write the key — which is the same trust
   every delegated area carries; server-side sub-field enforcement is a later
   refinement if it is ever wanted.
+- **Signing on somewhere else releases the seat you left behind.** `releaseAbandonedSeat`
+  in `App.jsx`, from `handleLogin`: if the account was holding a seat and this
+  sign-on is NOT continuing that exact seat (they came in as admin, on the desk,
+  or on a different truck), the old seat is signed out at once — hours closed at
+  now, an `off` line logged, a queued reliever taking it if there is one — so a
+  truck is never left showing AVAILABLE with no live phone behind it. A truck
+  OUT on a live call is left alone (`liveRequestFor`): that is the desk's to
+  resolve, never a sign-in's. The change-phones path (`Continue as MEDIC N`,
+  same unit and slot) keeps the seat, exactly as before.
+- **The UHU and event-log side column belongs to the roster level, not inside a
+  section.** `adminPanelOpen` in `App.jsx` — `AdminView` reports its open panel
+  through `onPanelChange`, and the side column is gated on
+  `navTab === "teams" && !adminPanelOpen`, so opening a section (the schedule,
+  accounts, a kept day) gives it the full width and the column returns when the
+  section is closed.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is

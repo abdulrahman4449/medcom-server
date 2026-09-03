@@ -323,6 +323,11 @@ export function App() {
   }, [theme]);
 
   const [navTabWanted, setNavTab] = useState("board");
+  // True while an administrator has a section open on the Teams page. The UHU
+  // and event-log side column belongs to the roster level, not inside a
+  // chosen section — AdminView reports its open panel here so the column can
+  // step out of the way.
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false);
   // Bumped when the bar's New call is pressed. The form itself stays where it
   // lives, on the dispatch board; this only tells it to open.
   const [newCallSignal, setNewCallSignal] = useState(0);
@@ -1000,6 +1005,7 @@ export function App() {
     // A delegate has no Board, so sending them there shows them an empty
     // screen and no way off it. They land on the first area they hold.
     setNavTab("board");
+    setAdminPanelOpen(false);
     // And the New call signal with it.
     //
     // The signal is a counter that DispatcherView watches. It survived a change
@@ -1427,6 +1433,62 @@ export function App() {
     if (u) requestAlertPermission();
     if (u) requestNativeNotifications();
     armAlerts();
+    // If this account was holding a seat and this sign-on is NOT continuing it
+    // — they signed in as admin, on the desk, or on a different truck — the old
+    // seat is theirs no longer, and left behind it shows AVAILABLE with no live
+    // phone. Release it now, the moment they land somewhere else, so a truck is
+    // never shown ready with nobody behind it. A truck out on a call is left
+    // alone: that is the desk's to resolve, never a sign-in's.
+    if (u && u.accountId) releaseAbandonedSeat(u);
+  }
+
+  async function releaseAbandonedSeat(u) {
+    try {
+      const freshUnits = await readKey("ems:units", units);
+      let held = null;
+      for (const unit of freshUnits) {
+        for (const slot of ["alpha", "bravo"]) {
+          const m = unit[slot];
+          if (m && m.accountId === u.accountId) held = { unit, slot, member: m };
+        }
+      }
+      if (!held) return;
+      // Continuing the very seat they held — the change-phones path — keeps it.
+      if (u.role === "team" && u.unitId === held.unit.id && u.slot === held.slot) return;
+      // Out on a live call: never take a running call off a crew from here.
+      const freshRequests = await readKey("ems:requests", requests);
+      if (liveRequestFor(held.unit, freshRequests)) return;
+      const now = Date.now();
+      const ot = overtimeMs(held.member, now);
+      const waiting = queuedReliefFor(held.unit, held.slot);
+      await saveUnits(
+        freshUnits.map((x) =>
+          x.id === held.unit.id
+            ? {
+                ...x,
+                [held.slot]: waiting
+                  ? { accountId: waiting.accountId, name: waiting.name, shift: waiting.shift, shiftStart: waiting.shiftStart, shiftEnd: waiting.shiftEnd, signedOnAt: waiting.queuedAt }
+                  : null,
+                relief: waiting ? { ...(x.relief || {}), [held.slot]: null } : x.relief,
+                lastCrew: { ...(x.lastCrew || {}), [held.slot]: { ...held.member, signedOffAt: now } },
+              }
+            : x
+        )
+      );
+      await addLog(
+        `${held.unit.name} — ${held.member.name} (${seatLabel(held.slot)}) signed out · moved to another session` +
+          (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
+        "shift",
+        {
+          kind: "off", role: "team", name: held.member.name, accountId: held.member.accountId,
+          unitId: held.unit.id, unitName: held.unit.name, station: stationOf(held.unit), seat: held.slot,
+          shift: held.member.shift || null, shiftStart: held.member.shiftStart || null, shiftEnd: held.member.shiftEnd || null,
+          overtimeMs: ot,
+        }
+      );
+    } catch (e) {
+      /* a failed release must never block the sign-on */
+    }
   }
 
   // `actor` is only passed in from the sign-in screen, where the person exists
@@ -2738,6 +2800,7 @@ export function App() {
             <AdminView
               page={navTab}
               onGoToPage={(t) => setNavTab(t)}
+              onPanelChange={(open) => setAdminPanelOpen(!!open)}
               archives={archives}
               passwordResets={passwordResets}
               setPasswordResets={setPasswordResets}
@@ -2782,7 +2845,7 @@ export function App() {
             They were rendering beside every page — the board, the schedule, the
             statistics — which put two long panels next to work that had nothing
             to do with them, and made every screen longer than it needed to be. */}
-        {navTab === "teams" && (
+        {navTab === "teams" && !adminPanelOpen && (
           <div style={styles.sideCol}>
             {seesLogSheet ? (
               <React.Fragment>
