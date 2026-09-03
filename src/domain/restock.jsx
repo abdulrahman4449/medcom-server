@@ -1,4 +1,4 @@
-import { callWasCancelled } from "./close-reasons.jsx";
+import { stoodDownBeforeArrival } from "./close-reasons.jsx";
 import { INVENTORY_MOVES_CAP, INVENTORY_MOVES_KEY } from "./inventory.jsx";
 import { stationOf } from "./live-sheet.jsx";
 import { callEndTs } from "./uhu.jsx";
@@ -51,9 +51,7 @@ export function restockIsDone(done, requestId) {
 // the list only when the reason says it was called off AND there is no arrival
 // at the scene on the record.
 export function restockNotNeeded(req) {
-  if (!req) return false;
-  const reachedScene = !!((req.times || {}).arrival);
-  return callWasCancelled(req) && !reachedScene;
+  return stoodDownBeforeArrival(req);
 }
 
 export function callsAwaitingRestock(requests, unitId, from, done) {

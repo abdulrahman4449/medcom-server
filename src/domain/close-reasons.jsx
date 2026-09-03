@@ -62,3 +62,14 @@ export function callWasCancelled(req) {
   if (!reason) return false;
   return CALL_CANCELLED_MARKERS.some((m) => reason.includes(m));
 }
+// Called off before the crew ever reached the patient: the reason says it was
+// stood down AND there is no arrival stamp. Both halves — a call stood down at
+// the bedside is a cancellation that still cost the crew a response, and a
+// call with no scene stamp is an unfinished timeline, not a cancellation.
+// Shared by the restock list and the service column, so the two never
+// disagree about which calls "never happened".
+export function stoodDownBeforeArrival(req) {
+  if (!req) return false;
+  const reachedScene = !!((req.times || {}).arrival);
+  return callWasCancelled(req) && !reachedScene;
+}

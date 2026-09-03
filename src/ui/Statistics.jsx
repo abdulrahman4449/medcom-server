@@ -1,3 +1,4 @@
+import { stoodDownBeforeArrival } from "../domain/close-reasons.jsx";
 import { ORG_STAMP } from "../brand/artwork.jsx";
 import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
 import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
@@ -1464,8 +1465,12 @@ export function fleetUhu(requests, units, from, to) {
 // so nothing here can measure one — and the figure is labelled for what it
 // really is rather than for what it would be nice to have.
 export function pcrCompliance(requests, from, to) {
+  // A call stood down before the crew reached anybody has no patient and no
+  // report, so it cannot be a miss — counted, it dragged the figure down for
+  // every call the desk called off. A refusal stays in: the crew assessed
+  // somebody, and that is written up.
   const closed = (requests || []).filter(
-    (r) => r && r.status === "completed" && r.createdAt >= from && r.createdAt < to
+    (r) => r && r.status === "completed" && r.createdAt >= from && r.createdAt < to && !stoodDownBeforeArrival(r)
   );
   const named = closed.filter((r) => pcrAuthorOf(r));
   return {
@@ -2153,7 +2158,11 @@ export function buildShiftReport({ sub, requests, coverage }) {
     return parts.length ? ` class="${parts.join(" ")}"` : "";
   };
 
-  const closed = calls.filter((r) => r.status === "completed").length;
+  // "Completed" used to be every closed call — which counted a call the desk
+  // stood down as completed, on a sheet whose own rows called it CANCELLED.
+  // The outcomes are named the way the REQUEST STATUS column names them.
+  const transferred = calls.filter((r) => requestOutcomeKey(r) === "transferred").length;
+  const calledOff = calls.filter((r) => ["cancelled", "notTransported"].includes(requestOutcomeKey(r))).length;
   const emergencies = calls.filter((r) => isInternalEmergency(r));
   const measured = emergencies.filter((r) => responseMsFor(r) !== null);
   const within = measured.filter((r) => responseMsFor(r) <= RESPONSE_TARGET_MS).length;
@@ -2207,7 +2216,7 @@ h2 .sub{font-weight:600;color:#5A6B7B;font-size:8.5pt;letter-spacing:0}
 .lede{font-size:10pt;color:#3B4A58;margin:0}
 .rule{height:2pt;background:#0A5540;margin:9pt 0 12pt}
 .stats{display:table;width:100%;border-spacing:5pt 0;margin-bottom:4pt}
-.stat{display:table-cell;width:20%;background:#F2F6F9;border-top:2.2pt solid #0A5540;padding:6pt 8pt}
+.stat{display:table-cell;background:#F2F6F9;border-top:2.2pt solid #0A5540;padding:6pt 8pt}
 .stat .n{font-size:16pt;font-weight:800;color:#0A5540;line-height:1}
 .stat .l{font-size:7pt;color:#5A6B7B;margin-top:2pt;line-height:1.3}
 
@@ -2248,7 +2257,8 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
 
 <div class="stats">
   <div class="stat"><div class="n">${calls.length}</div><div class="l">Calls</div></div>
-  <div class="stat"><div class="n">${closed}</div><div class="l">Completed</div></div>
+  <div class="stat"><div class="n">${transferred}</div><div class="l">Transferred</div></div>
+  <div class="stat"><div class="n">${calledOff}</div><div class="l">Cancelled / no transport</div></div>
   <div class="stat"><div class="n">${emergencies.length}</div><div class="l">Internal emergencies</div></div>
   <div class="stat"><div class="n">${measured.length ? Math.round((within / measured.length) * 100) + "%" : "—"}</div>
     <div class="l">Within 10 minutes</div></div>

@@ -1,3 +1,4 @@
+import { stoodDownBeforeArrival } from "./close-reasons.jsx";
 import { NO_TRANSPORT } from "./outcomes.jsx";
 import { assistTeams, isNoTransport } from "./second-ambulance.jsx";
 import { readKey } from "../lib/offline-queue.jsx";
@@ -156,7 +157,7 @@ export function loadedKmOf(req) {
 // answer, because it is somebody's answer that gets billed.
 export function suggestedCallType(req) {
   if (!req) return null;
-  if (isNoTransport(req)) return "E";
+  if (isNoTransport(req) || stoodDownBeforeArrival(req)) return "E";
   if (assistTeams(req).length > 0) return "D";
   return null;
 }

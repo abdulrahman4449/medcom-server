@@ -49,9 +49,9 @@ export function requestsForShift(requests, station, windowStart, windowEnd) {
 // shift after the window closed is a forgotten sign-out, not a shift still
 // running, and stops holding the log open — the sign-off, when it comes, is
 // picked up by the re-cut like any other late line.
-export function shiftStillStaffed(units, station, windowStart, windowEnd, now = Date.now()) {
-  if (now >= windowEnd + SHIFT_MS) return false;
-  return (units || []).some((u) => {
+export function unitsStaffedForShift(units, station, windowStart, windowEnd, now = Date.now()) {
+  if (!windowStart || !windowEnd || now >= windowEnd + SHIFT_MS) return [];
+  return (units || []).filter((u) => {
     if (!u || stationOf(u) !== station) return false;
     return ["alpha", "bravo"].some((slot) => {
       const m = u[slot];
@@ -61,6 +61,10 @@ export function shiftStillStaffed(units, station, windowStart, windowEnd, now = 
       return on >= windowStart && on < windowEnd;
     });
   });
+}
+
+export function shiftStillStaffed(units, station, windowStart, windowEnd, now = Date.now()) {
+  return unitsStaffedForShift(units, station, windowStart, windowEnd, now).length > 0;
 }
 
 export function logForShift(log, station, windowStart, windowEnd) {
@@ -105,12 +109,15 @@ export function logForFiledShift(log, station, windowStart, windowEnd) {
 // What is still outstanding on a submission: calls not closed, and crews from
 // those calls not yet signed out. While either is true the submission is held
 // open and its overtime is not final.
-export function submissionOutstanding(sub, requests, units) {
+//
+// "Crews still on" means THIS shift's crews — the same rule as the automatic
+// filing (`shiftStillStaffed`). Counting every seat at the station held a day
+// log open all night behind the night crew, its overtime never final, and the
+// board never allowed to tidy its calls away.
+export function submissionOutstanding(sub, requests, units, now = Date.now()) {
   const ids = new Set((sub.requestIds || []));
   const openCalls = (requests || []).filter((r) => ids.has(r.id) && r.status !== "completed");
-  const crewStillOn = (units || []).filter(
-    (u) => stationOf(u) === sub.station && (u.alpha || u.bravo)
-  );
+  const crewStillOn = unitsStaffedForShift(units, sub.station, sub.windowStart, sub.windowEnd, now);
   return { openCalls, crewStillOn };
 }
 

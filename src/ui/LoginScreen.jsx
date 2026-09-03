@@ -151,6 +151,28 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // reading "Held by Ali" cannot be expected to know which. Read while the
   // seat picker is open, every few seconds, and nowhere else.
   const [seatRequests, setSeatRequests] = useState([]);
+  // The board as this screen knows it. The `units` prop is what the app's poll
+  // holds, and on a phone that has just signed in the poll has not run yet (it
+  // waits for a token) — so the station list said "0 medics on this station"
+  // and the team list was empty for the first seconds of every sign-in. This
+  // is read straight off the board once the password is accepted and kept
+  // fresh while somebody is choosing, and nothing below draws off the prop.
+  const [boardUnits, setBoardUnits] = useState(units || []);
+  const [boardFresh, setBoardFresh] = useState(false);
+  useEffect(() => {
+    if (Array.isArray(units) && units.length) setBoardUnits(units);
+  }, [units]);
+  useEffect(() => {
+    if (!["chooseStation", "chooseTeam", "chooseSeat", "resume"].includes(stage)) return;
+    let alive = true;
+    const pull = async () => {
+      const u = await readKey("ems:units", null);
+      if (alive && Array.isArray(u)) { setBoardUnits(u); setBoardFresh(true); }
+    };
+    pull();
+    const t = setInterval(pull, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [stage]);
   useEffect(() => {
     if (stage !== "chooseSeat") return;
     let alive = true;
@@ -263,6 +285,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     // MEDIC 1" — somebody changing phones mid-shift — was sent to pick a
     // shift and a truck as if they were new.
     const freshUnits = (await readKey("ems:units", units)) || units;
+    if (Array.isArray(freshUnits)) { setBoardUnits(freshUnits); setBoardFresh(true); }
     const held = seatHeldBy(freshUnits, account.id);
     if (held) {
       setSeatUnit(held.unit);
@@ -286,7 +309,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // already theirs, and their hours have been running since they took it. This
   // only tells this device who it is.
   function resumeSeat() {
-    const held = seatHeldBy(units, foundAccount && foundAccount.id);
+    const held = seatHeldBy(boardUnits, foundAccount && foundAccount.id);
     if (!held) {
       // The seat went while they were reading the screen.
       setStage(canJoinTeam(foundAccount.role) ? "roleChoice" : "chooseShift");
@@ -1215,13 +1238,15 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                 <div style={styles.loginSub}>Which station are you working this shift?</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
                   {STATIONS.map((s) => {
-                    const count = units.filter((u) => stationOf(u) === s.key).length;
+                    const count = boardUnits.filter((u) => stationOf(u) === s.key).length;
                     return (
                       <button key={s.key} style={styles.roleBtn} onClick={() => chooseStation(s.key)}>
                         <div style={{ textAlign: "left" }}>
                           <div style={styles.roleBtnTitle}>{s.label}</div>
                           <div style={styles.roleBtnSub}>
-                            {count} {count === 1 ? "medic" : "medics"} on this station
+                            {boardFresh || boardUnits.length
+                              ? `${count} ${count === 1 ? "medic" : "medics"} on this station`
+                              : "Reading the board…"}
                           </div>
                         </div>
                         <ChevronRight size={18} color="var(--ink-3)" />
@@ -1241,7 +1266,10 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                   Which medic are you working this shift at {stationLabel(stationKey)}?
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                  {units.filter((u) => stationOf(u) === stationKey).map((u) => (
+                  {!boardFresh && !boardUnits.length && (
+                    <div style={styles.formHint}>Reading the board…</div>
+                  )}
+                  {boardUnits.filter((u) => stationOf(u) === stationKey).map((u) => (
                     <button key={u.id} style={styles.roleBtn} onClick={() => chooseJoinTeam(u.id)}>
                       <div style={{ textAlign: "left" }}>
                         <div style={styles.roleBtnTitle}>{u.name}</div>
@@ -1268,7 +1296,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
 
             {/* Signing in again, on a second device. */}
             {stage === "resume" && (() => {
-              const held = seatHeldBy(units, foundAccount && foundAccount.id);
+              const held = seatHeldBy(boardUnits, foundAccount && foundAccount.id);
               if (!held) return null;
               const meta = shiftMeta(held.member.shift);
               return (

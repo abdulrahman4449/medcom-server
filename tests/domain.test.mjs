@@ -43,6 +43,42 @@ export function run(D, t) {
       !D.shiftStillStaffed([{ id: "c1", name: "CCC 1", station: "ccc", alpha: daySeat }], "main", dayStart, dayEnd, at(2026, 9, 2, 19, 30)));
   }
 
+  // ---------- a call stood down before arrival, or refused, was run as no service: E
+  {
+    const als = { id: "s1", callCategory: "EMERGENCY (INTERNAL)", callType: "A", priority: "als", status: "completed", createdAt: at(2026, 9, 2, 10), times: {} };
+    t.is("svc: an ordinary ALS call reads ALS", D.serviceTypeFor(als), "ALS");
+    t.is("svc: stood down before arrival reads E, whatever its code",
+      D.serviceTypeFor({ ...als, closeReason: "Cancelled before the team arrived" }), "E");
+    t.is("svc: stood down AT the bedside keeps its level — the crew responded",
+      D.serviceTypeFor({ ...als, closeReason: "Cancelled — ward rang back", times: { arrival: at(2026, 9, 2, 10, 12) } }), "ALS");
+    t.is("svc: patient refused the transfer reads E",
+      D.serviceTypeFor({ ...als, noTransport: true, times: { arrival: at(2026, 9, 2, 10, 12) } }), "E");
+    t.is("svc: a call coded E reads E", D.serviceTypeFor({ ...als, callType: "E" }), "E");
+    t.is("svc: a cancelled call with NO code is still E, never the priority's level",
+      D.serviceTypeFor({ ...als, callType: "", closeReason: "Stood down" }), "E");
+    t.is("svc: the picker suggests E for a call stood down before arrival",
+      D.suggestedCallType({ ...als, callType: "", closeReason: "Stood down" }), "E");
+    t.ok("restock: a call stood down before arrival needs no restock",
+      D.restockNotNeeded({ ...als, closeReason: "Stood down" }));
+    t.ok("restock: a call stood down at the bedside still does",
+      !D.restockNotNeeded({ ...als, closeReason: "Stood down", times: { arrival: 1 } }));
+  }
+
+  // ---------- a filed log is held open only by its own crew
+  {
+    const dayStart = at(2026, 9, 2, 7), dayEnd = at(2026, 9, 2, 19);
+    const sub = { id: "x", station: "main", windowStart: dayStart, windowEnd: dayEnd, requestIds: ["r1"] };
+    const reqs = [{ id: "r1", status: "completed" }];
+    const night = [{ id: "m1", name: "MEDIC 1", station: "main", alpha: { accountId: "n1", shiftStart: at(2026, 9, 2, 19) } }];
+    const day = [{ id: "m1", name: "MEDIC 1", station: "main", alpha: { accountId: "d1", shiftStart: dayStart } }];
+    t.ok("finalise: the night crew do not hold the day's filed log open",
+      D.submissionOutstanding(sub, reqs, night, at(2026, 9, 2, 20)).crewStillOn.length === 0);
+    t.ok("finalise: the day crew still seated at 20:00 do",
+      D.submissionOutstanding(sub, reqs, day, at(2026, 9, 2, 20)).crewStillOn.length === 1);
+    t.ok("finalise: an open call holds it open whoever is seated",
+      D.submissionOutstanding(sub, [{ id: "r1", status: "arrived" }], night, at(2026, 9, 2, 20)).openCalls.length === 1);
+  }
+
   // ---------- Zahrawi stands 9:30, and it is the UHU denominator
   t.is("Zahrawi: 9.5 hours", D.shiftMsForUnit({ name: "ZAHRAWI" }), 9.5 * H);
   t.is("Zahrawi: the short form too", D.shiftMsForUnit({ name: "ZAH" }), 9.5 * H);

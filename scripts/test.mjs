@@ -46,7 +46,7 @@ export { roleSwitchTarget } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/seat-handover.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/call-changes.jsx")};
 export { pendingResets } from ${JSON.stringify(ROOT + "src/ui/PasswordResets.jsx")};
-export { CALL_CATEGORIES } from ${JSON.stringify(ROOT + "src/domain/sheet-vocabulary.jsx")};
+export { CALL_CATEGORIES, suggestedCallType } from ${JSON.stringify(ROOT + "src/domain/sheet-vocabulary.jsx")};
 export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
 export { toneKeyFor } from ${JSON.stringify(ROOT + "src/lib/dates.jsx")};
 export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};

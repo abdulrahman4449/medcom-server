@@ -1,5 +1,5 @@
 import { callFrom, callTo } from "./call-locations.jsx";
-import { callCloseReason } from "./close-reasons.jsx";
+import { callCloseReason, stoodDownBeforeArrival } from "./close-reasons.jsx";
 import { reqStatusMeta } from "./constants.jsx";
 import { ZAHRAWI_SHIFT_MS, coverageActor, isZahrawi } from "./coverage.jsx";
 import { stayWindow } from "./crew-stamps.jsx";
@@ -9,7 +9,7 @@ import { opDayLabel, opDayStart } from "./op-day.jsx";
 import { REFUSAL_TIME_KEY } from "./outcomes.jsx";
 import { pcrAuthorStamp } from "./pcr-author.jsx";
 import { journeyLabel } from "./return-journeys.jsx";
-import { assistOf, assistTeamNames, requestOutcomeKey, requestOutcomeLabel } from "./second-ambulance.jsx";
+import { assistOf, assistTeamNames, isNoTransport, requestOutcomeKey, requestOutcomeLabel } from "./second-ambulance.jsx";
 import { missingLogFields } from "./sheet-gaps.jsx";
 import { scheduledShiftKey, seatLabel, shiftDateOf, shiftLabelWithWindow, shiftMeta, shiftWindowFor } from "./shift-helpers.jsx";
 import { SHIFT_EVENTS, SHIFT_MS } from "./shifts.jsx";
@@ -165,10 +165,19 @@ export function isNightCall(req) {
 // letter failed; and the mapping itself was wrong — C is the app's CRITICAL,
 // which the sheet calls CCT, and D is an auxiliary run, which the sheet has no
 // service type for at all.
+//
+// The department's rule, added after a sheet printed ALS against a call that
+// was called off before the truck reached anybody: a call stood down before
+// arrival, or one where the patient refused the transfer, was NOT run as a
+// service. Its Svc is always E — never ALS, BLS or CCT — whatever category
+// or code is on the record, because the category says what was asked for and
+// E says what was delivered. A call stood down AT the bedside keeps its
+// level: the crew responded to it.
 export function serviceTypeFor(req) {
+  if (stoodDownBeforeArrival(req) || isNoTransport(req)) return "E";
   const key = req && req.callType ? String(req.callType) : "";
   if (!key) return "";
-  const map = { A: "ALS", B: "BLS", C: "CCT", D: "BLS", E: "NA", NA: "NA" };
+  const map = { A: "ALS", B: "BLS", C: "CCT", D: "BLS", E: "E", NA: "NA" };
   return map[key] || key;
 }
 

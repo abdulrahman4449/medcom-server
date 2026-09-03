@@ -753,6 +753,30 @@ patch", that document is the target — do not start a fresh exploration.
   waiting and a checklist was owed — an amber banner that flashed and vanished
   on every open, on film. Anything new that prompts a person off a cold key
   must gate on it too; `loadCold` reads its keys together for the same reason.
+- **A call stood down before arrival, or refused, was run as NO service: Svc
+  is E.** `serviceTypeFor` in `uhu-person.jsx`, under `npm test` — never ALS,
+  BLS or CCT, whatever category or code the record carries: the category says
+  what was asked for, E says what was delivered. A call stood down AT the
+  bedside keeps its level, because the crew responded to it.
+  `stoodDownBeforeArrival` in `close-reasons.jsx` is the one definition
+  (reason says called off AND no arrival stamp) shared by the Svc column, the
+  restock list, the picker's suggestion and the PCR-compliance denominator —
+  a call with no patient cannot be missing a patient care report. The PDF's
+  summary tiles say TRANSFERRED and CANCELLED / NO TRANSPORT, never
+  "Completed" over rows the sheet itself calls CANCELLED.
+- **The sign-in screen draws every list off the board it read itself.**
+  `boardUnits` in `LoginScreen.jsx` — the `units` prop is the app's poll, and
+  on a phone that has just signed in the poll has not run (it waits for a
+  token), so the station list said "0 medics on this station" and the team
+  list was empty for the first seconds of every sign-in. The screen reads
+  `ems:units` the moment the password is accepted and every five seconds
+  while somebody is choosing, and says "Reading the board…" until it has.
+- **A filed log is held open only by its own crew, exactly as the automatic
+  filing is.** `submissionOutstanding` — the finalise pass counted every seat
+  at the station, so a day log filed while the night crew were seated was
+  never finalised, its overtime never final, its calls never tidied away.
+  `unitsStaffedForShift` is the one rule for both, with a one-shift grace for
+  a forgotten sign-out.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is
