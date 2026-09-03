@@ -21,9 +21,23 @@
      to deploy, cache-bust and keep inside the native bundle as well. -->
 <link rel="icon" href="./brand/pulseops-mark-192.png" />
 <link rel="apple-touch-icon" href="./brand/pulseops-mark-512.png" />
+<!-- The theme is chosen per device and lives in localStorage. Setting it here,
+     before anything paints, means a phone on the light theme never opens dark
+     for a moment and then flips. -->
+<script>try{var t=localStorage.getItem("ems:theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <style>
   html, body, #root { height: 100%; margin: 0; background: #070A11; }
+  html[data-theme="light"], html[data-theme="light"] body, html[data-theme="light"] #root { background: #F1F4F8; }
   * { box-sizing: border-box; }
+
+  /* The splash BEFORE the app runs. Everything below this tag is one 1.6 MB
+     script, and a phone opening the app from cold shows an empty dark page
+     for as long as it takes to read and compile it. So the mark is painted
+     here, in plain HTML, at the same size and place the app's own
+     "CONNECTING" screen draws it; the app takes over without a jump, and
+     this element hides itself the moment #root has content. */
+  #splash { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #root:not(:empty) ~ #splash { display: none; }
 
   /* Taps that do not seem to register.
      
@@ -83,6 +97,7 @@
 </head>
 <body>
 <div id="root"></div>
+<div id="splash"><img src="<!--SPLASH-MARK-->" width="132" height="132" alt="" /></div>
 <!--APP-->
 </body>
 </html>

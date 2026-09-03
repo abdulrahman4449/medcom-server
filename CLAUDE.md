@@ -736,6 +736,15 @@ patch", that document is the target — do not start a fresh exploration.
   it, so the crew signing on found last shift's truck already typed in and
   pressed Confirm beside it. The number is stamped with `ambulanceShiftStart`;
   the field shows it only when that stamp is THIS shift's window.
+- **The shell paints the mark before the script runs, and the splash never
+  waits on a chain of reads.** `#splash` in `index.template.html` is plain HTML
+  with the lockup inlined by `build.mjs` from `BRAND_LOCKUP_SRC`, hidden by CSS
+  the moment `#root` has content — a cold start used to be an empty dark page
+  for as long as the 1.6 MB script took to compile. After sign-in `loadAll`
+  reads its six small keys with one `Promise.all`; one after another they were
+  six round trips to Riyadh under the CONNECTING screen. The theme attribute is
+  set from localStorage by a one-line script in the head, so a light-theme
+  phone does not open dark and flip.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is

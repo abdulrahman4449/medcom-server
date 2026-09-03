@@ -635,10 +635,9 @@ export function App() {
     };
   }, [armAlerts]);
 
-  // If sign-in or the first data load hasn't finished in 8s, something in
-  // the Firebase setup is off (most commonly: Anonymous auth not enabled,
-  // or no Firestore database created yet). Surface that instead of leaving
-  // the "Connecting..." screen spinning forever with no explanation.
+  // If the first board read hasn't finished in 8s the server is not answering
+  // this device. Say so, with the two things worth checking, instead of
+  // leaving the "Connecting…" screen spinning forever with no explanation.
   useEffect(() => {
     if (ready) return;
     const t = setTimeout(() => setConnectFailed(true), 8000);
@@ -833,7 +832,18 @@ export function App() {
     // A failed read here leaves the schedule as it was rather than emptying it:
     // an outage must not make the desk think nothing is booked.
     if (sch !== READ_FAILED) setScheduled(sch || []);
-    const cov = await readKey(COVERAGE_KEY, []);
+    // The six small keys below are read TOGETHER. One after another, each a
+    // round trip to Riyadh, they held the splash screen up by a second or two
+    // on mobile data every time the app was opened — the "it lags, then the
+    // logo, then the board" a crew sees on a cold start.
+    const [cov, msgs, inv, ot, locs, cons] = await Promise.all([
+      readKey(COVERAGE_KEY, []),
+      readKeyRaw(MESSAGES_KEY),
+      readKeyRaw(INVENTORY_KEY),
+      readKeyRaw(OVERTIME_KEY),
+      readKeyRaw(LOCATION_KEY),
+      readKeyRaw(TRACKING_CONSENT_KEY),
+    ]);
     setCoverage(cov || []);
     // Messages ride the same poll as the rest of the board, so a line typed at
     // the desk reaches the truck on the next tick without a channel of its own.
@@ -847,13 +857,9 @@ export function App() {
     // in front of a crew in the middle of a call. Only readKeyRaw reports a
     // failure, so only readKeyRaw can be used where "keep what we had" is the
     // right answer.
-    const msgs = await readKeyRaw(MESSAGES_KEY);
     if (msgs !== READ_FAILED) setMessages(msgs || []);
-    const inv = await readKeyRaw(INVENTORY_KEY);
     if (inv !== READ_FAILED) setInventory(inv || null);
-    const ot = await readKeyRaw(OVERTIME_KEY);
     if (ot !== READ_FAILED) setOvertimeDecisions(ot || {});
-    const locs = await readKeyRaw(LOCATION_KEY);
     if (locs !== READ_FAILED && locs !== null) {
       // Swept on the way in. Only written back when something actually needed
       // removing, so an idle board is not rewriting this key every poll.
@@ -861,7 +867,6 @@ export function App() {
       setLocations(kept);
       if (dropped > 0) await writeKey(LOCATION_KEY, kept);
     }
-    const cons = await readKeyRaw(TRACKING_CONSENT_KEY);
     if (cons !== READ_FAILED) setTrackingConsents(cons || {});
     setReady(true);
   }, []);
@@ -2417,12 +2422,12 @@ export function App() {
           <div style={styles.connectErrorBox}>
             <div style={styles.connectErrorTitle}>Still connecting…</div>
             <div style={styles.connectErrorBody}>
-              This is taking much longer than normal. The most common causes:
+              The server is not answering this device. The usual reasons:
             </div>
             <ul style={styles.connectErrorList}>
-              <li>Firebase Authentication → Anonymous sign-in isn't enabled yet</li>
-              <li>No Firestore database has been created for this project</li>
-              <li>The Firestore security rules are blocking access</li>
+              <li>This phone has no signal or no data — check the connection</li>
+              <li>The server is restarting after an update — it is back within a minute</li>
+              <li>The website opens in a browser but the app does not — the app needs rebuilding</li>
             </ul>
             <button style={styles.connectRetryBtn} onClick={() => window.location.reload()}>
               Try again

@@ -96,7 +96,16 @@ const stamp = new Date().toISOString().slice(0, 16).replace("T", " ") + "Z";
 const tag =
   "<script>window.__BUILD__=" + JSON.stringify(stamp) + ";</script>\n" +
   '<script>\n' + js.replace(/<\/script>/gi, "<\\/script>") + '\n</script>';
-const out = html.replace("<!--APP-->", () => tag);
+let out = html.replace("<!--APP-->", () => tag);
+
+// The static splash carries the same artwork the app draws first, read off
+// the brand module so the two can never drift. A function replacement again:
+// a base64 string cannot contain `$`, but the rule is the rule.
+const artwork = fs.readFileSync(path.join(root, "src", "brand", "artwork.jsx"), "utf8");
+const lockup = /export const BRAND_LOCKUP_SRC =\s*"(data:image\/png;base64,[A-Za-z0-9+/=]+)"/.exec(artwork);
+if (!lockup) throw new Error("BRAND_LOCKUP_SRC not found in src/brand/artwork.jsx");
+if (!out.includes("<!--SPLASH-MARK-->")) throw new Error("template has no <!--SPLASH-MARK--> marker");
+out = out.replace("<!--SPLASH-MARK-->", () => lockup[1]);
 fs.writeFileSync(outFile, out);
 
 const kb = (n) => (n / 1024).toFixed(0) + " KB";
