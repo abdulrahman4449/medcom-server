@@ -1,2 +1,2 @@
 
-export const { useState, useEffect, useRef, useCallback, createContext, useContext } = React;
+export const { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } = React;

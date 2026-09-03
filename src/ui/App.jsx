@@ -16,6 +16,7 @@ import { MESSAGES_KEY, clockStr, msDurationStr, otHoursStr } from "../domain/mes
 import { ARCHIVE_KEY, archiveOpDay, opDayComplete, opDayEnd, opDayLabel, opDayStart, requestsForOpDay, unarchivedOpDays } from "../domain/op-day.jsx";
 import { OVERTIME_KEY, OVERTIME_SENT_KEY, heldByCallAt, overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { RESTOCK_KEY, callsAwaitingRestock } from "../domain/restock.jsx";
+import { SCHEDULE_KEY } from "../domain/schedule.jsx";
 import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { callsNeedingReturn, isRecurring, isReturnLeg, repeatOccurrencesDue, returnBookingFor, wantsReturn } from "../domain/return-journeys.jsx";
 import { callTypeMeta, loadedKmMeta } from "../domain/sheet-vocabulary.jsx";
@@ -353,6 +354,7 @@ export function App() {
   const [passwordResets, setPasswordResets] = useState([]);
   // Which finished calls have had the truck made up again after them.
   const [restockDone, setRestockDone] = useState({});
+  const [schedule, setSchedule] = useState(null);
   // True once the slow poll has answered. The restock nudge and the
   // mandatory-checklist demand are built from keys that arrive on that poll,
   // and drawn from the empty defaults before it lands they claimed, for one
@@ -945,7 +947,7 @@ export function App() {
     }
     // Read together, not one after another: nine round trips in a row kept
     // every screen built from these keys wrong for the whole chain.
-    const [arch, subs, l, cl, runs, invMoves, pwr, rst, sent] = await Promise.all([
+    const [arch, subs, l, cl, runs, invMoves, pwr, rst, sent, sched] = await Promise.all([
       readKeyRaw(ARCHIVE_KEY),
       readKeyRaw(SUBMISSION_KEY),
       readKeyRaw("ems:log"),
@@ -957,6 +959,7 @@ export function App() {
       // Who has sent their overtime in. A small map, read on the slow poll
       // because a claim being sent is not something anybody is watching for.
       readKeyRaw(OVERTIME_SENT_KEY),
+      readKeyRaw(SCHEDULE_KEY),
     ]);
     if (arch !== READ_FAILED) setArchives(arch || []);
     if (subs !== READ_FAILED) setSubmissions(subs || []);
@@ -967,6 +970,7 @@ export function App() {
     if (pwr !== READ_FAILED) setPasswordResets(pwr || []);
     if (rst !== READ_FAILED) setRestockDone(rst || {});
     if (sent !== READ_FAILED) setOvertimeSent(sent || {});
+    if (sched !== READ_FAILED) setSchedule(sched || null);
     // Only a SUCCESSFUL read of the two keys the crew prompts hang on counts:
     // a failed read leaves the empty defaults in place, and a prompt built
     // from those is the flash this flag exists to stop.
@@ -2769,6 +2773,8 @@ export function App() {
               locations={locations}
               trackingConsents={trackingConsents}
               setTrackingConsents={setTrackingConsents}
+              schedule={schedule}
+              setSchedule={setSchedule}
             />
           )}
         </div>

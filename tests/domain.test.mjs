@@ -96,6 +96,70 @@ export function run(D, t) {
       D.dispatchersOnDuty([on(at(2026, 9, 3, 6, 50))], at(2026, 9, 3, 20)).length === 1);
   }
 
+  // ---------- the six-week employees schedule
+  {
+    const start = D.defaultScheduleStart(at(2026, 9, 3, 12)); // Thu 3 Sep 2026 -> Sun 30 Aug
+    const keys = D.scheduleDayKeys(start);
+    t.is("schedule: 42 days", keys.length, 42);
+    t.is("schedule: starts on the Sunday of the week", keys[0], "2026-08-30");
+    t.is("schedule: ends six weeks later", keys[41], "2026-10-10");
+    t.ok("schedule: Friday is a weekend", D.scheduleDayIsWeekend("2026-09-04"));
+    t.ok("schedule: Saturday is a weekend", D.scheduleDayIsWeekend("2026-09-05"));
+    t.ok("schedule: Sunday is not", !D.scheduleDayIsWeekend("2026-08-30"));
+
+    t.is("schedule: H6 parses to 6 overtime hours", D.parseScheduleCode("H6").hours, 6);
+    t.is("schedule: bare D has no hours", D.parseScheduleCode("D").hours, null);
+    t.ok("schedule: D is a worked shift", D.scheduleIsWork("D"));
+    t.ok("schedule: L is not a worked shift", !D.scheduleIsWork("L"));
+
+    // A tidy 22-shift row: 22 D's spread so no run exceeds 5 and no off-run
+    // exceeds 5, over 42 days.
+    const cells = {};
+    const put = (i, v) => { cells[D.scheduleCellKey("E1", keys[i])] = v; };
+    // 4-on / 3-off is 24 shifts over 42 days; drop two to land on 22, without
+    // making any off-run reach six.
+    for (let i = 0; i < 42; i++) { if (i % 7 < 4) put(i, "D"); }
+    put(3, ""); put(10, ""); // two 4th-days off -> 22 shifts, off-runs of 4
+    let sum = D.employeeScheduleSummary(cells, "E1", keys);
+    t.is("schedule: 22 shifts counted", sum.shifts, 22);
+    t.is("schedule: a clean 22-shift row has no flags", sum.flags.length, 0);
+
+    // Overtime from a numbered code.
+    put(0, "H6");
+    sum = D.employeeScheduleSummary(cells, "E1", keys);
+    t.is("schedule: H6 adds 6 overtime hours", sum.otHours, 6);
+
+    // Six in a row flags.
+    const run = {};
+    for (let i = 0; i < 6; i++) run[D.scheduleCellKey("E2", keys[i])] = "D";
+    t.ok("schedule: six working days in a row is flagged",
+      D.employeeScheduleSummary(run, "E2", keys).flags.some((f) => /in a row/.test(f)));
+
+    // Leave must be worked into and out of.
+    const lv = {};
+    lv[D.scheduleCellKey("E3", keys[10])] = "L";
+    t.ok("schedule: a leave with off days around it is flagged",
+      D.employeeScheduleSummary(lv, "E3", keys).flags.some((f) => /leave/.test(f)));
+    lv[D.scheduleCellKey("E3", keys[9])] = "D";
+    lv[D.scheduleCellKey("E3", keys[11])] = "D";
+    t.ok("schedule: a leave worked into and out of is not flagged for bracketing",
+      !D.employeeScheduleSummary(lv, "E3", keys).flags.some((f) => /leave/.test(f)));
+
+    // Office is exempt from the 22-shift rule.
+    const off = {};
+    off[D.scheduleCellKey("E4", keys[0])] = "S";
+    t.ok("schedule: an office worker is not flagged for fewer than 22 shifts",
+      !D.employeeScheduleSummary(off, "E4", keys).flags.some((f) => /of 22/.test(f)));
+
+    // Coverage counts people by code group.
+    const cov = {};
+    cov[D.scheduleCellKey("A", keys[0])] = "D";
+    cov[D.scheduleCellKey("B", keys[0])] = "H";
+    cov[D.scheduleCellKey("C", keys[0])] = "N";
+    t.is("schedule: main-day coverage counts D and H", D.scheduleCoverageCount(cov, ["A", "B", "C"], keys[0], ["D", "H"]), 2);
+    t.is("schedule: GN dispatch codes render as N", D.SCHEDULE_CODES.GN.show, "N");
+  }
+
   // ---------- Zahrawi stands 9:30, and it is the UHU denominator
   t.is("Zahrawi: 9.5 hours", D.shiftMsForUnit({ name: "ZAHRAWI" }), 9.5 * H);
   t.is("Zahrawi: the short form too", D.shiftMsForUnit({ name: "ZAH" }), 9.5 * H);

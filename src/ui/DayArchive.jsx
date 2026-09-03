@@ -30,6 +30,7 @@ import { CompletedCalls, EscalationChip, EscalationThread } from "./Escalations.
 import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
 import { DelegatedAuthority } from "./Delegation.jsx";
 import { FiledChecklists } from "./FiledChecklists.jsx";
+import { SchedulePage } from "./SchedulePage.jsx";
 import { PastCallSection } from "./PastCall.jsx";
 import { PatientRecords } from "./PatientRecords.jsx";
 import { InventoryAdmin } from "./InventoryAdmin.jsx";
@@ -394,7 +395,7 @@ function ClaimCodeBanner({ issued, onDone }) {
   );
 }
 
-export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents, onGoToPage }) {
+export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents, onGoToPage, schedule, setSchedule }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -1208,6 +1209,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         <SectionHub
           onOpen={setOpenPanel}
           tiles={[
+            canArea(user, "schedule") && { key: "empschedule", title: "Employees schedule", icon: <CalendarClock size={26} />,
+              note: "the six-week roster" },
             { key: "scheduled", title: "Scheduled requests", icon: <CalendarClock size={26} />,
               note: "bookings & repeating" },
             { key: "accounts", title: "Accounts & access", icon: <Users size={26} />,
@@ -1217,6 +1220,11 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
               tone: pendingResets(passwordResets).length ? "var(--hold-2)" : null },
           ]}
         />
+      )}
+      {openPanel === "empschedule" && canArea(user, "schedule") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
+          <SchedulePage schedule={schedule} setSchedule={setSchedule} accounts={accounts} user={user} addLog={addLog} />
+        </SectionScreen>
       )}
       {openPanel === "scheduled" && (
         <SectionScreen onBack={() => setOpenPanel(null)}>

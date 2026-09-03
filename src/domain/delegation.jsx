@@ -18,6 +18,7 @@ export const DELEGATION_AREAS = [
   { key: "inventory", label: "Inventory", sub: "What is on the shelf and what came off it" },
   { key: "policies", label: "Policies", sub: "The policy shelf" },
   { key: "checklists", label: "Vehicle checklists", sub: "What is on each list" },
+  { key: "schedule", label: "Employees schedule", sub: "Prepare the six-week roster" },
 ];
 
 export const ADMIN_AREAS = DELEGATION_AREAS.filter((a) => a.key !== "dispatch");

@@ -443,7 +443,7 @@ function loginFailed(id) {
 // definitions rather than the day's work: change them and every crew's screen
 // changes with them.
 const ADMIN_ONLY_KEYS = new Set([
-  "ems:policies", "ems:checklists", "ems:inventory",
+  "ems:policies", "ems:checklists", "ems:inventory", "ems:schedule",
   // Overtime decisions are administration's. Anyone signed in could write this
   // key, which meant anyone signed in could approve their own hours by posting
   // to the board — a screen that hides a button is not a permission. What a

@@ -808,6 +808,21 @@ patch", that document is the target — do not start a fresh exploration.
   guard). It is NOT one of the three paperwork ticks and never blocks going
   back in service. Not yet a sheet column — add it to `SHIFT_LOG_COLUMNS` and
   `buildShiftReport` together if it is ever wanted there.
+- **The employees schedule is the plan, not the board.** `src/domain/schedule.jsx`
+  (rules under `npm test`) + `src/ui/SchedulePage.jsx`, on the admin Teams page,
+  gated on the `schedule` delegation area so it can be lent to a preparer. Six
+  weeks of codes per employee, grouped; a code is set, changed or cleared by
+  tapping the cell. The rules are checked live: 22 shifts per employee (office
+  staff exempt), overtime ≤ 80 h (H6 = a 12 h day, 6 of them overtime; a bare
+  H/P/CH/CP is a whole overtime shift), no sixth working day in a row, no more
+  than five off days in a row, a leave bracketed by a worked day each side.
+  Coverage rows count PEOPLE (a team is two) against the department's minimums,
+  weekend = Fri/Sat. Stored as ONE object in `ems:schedule` (an
+  `ADMIN_ONLY_KEYS` key, writable by the schedule area), written whole on each
+  edit like `ems:inventory` — this is a planning doc, not the live board, so
+  the whole-key write is the right shape here. It rides the slow poll only.
+  Dates are the DEVICE's local day (Riyadh), keyed `YYYY-MM-DD`, deliberately
+  NOT the 07:00 operational boundary — a planner reads a wall calendar.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is
