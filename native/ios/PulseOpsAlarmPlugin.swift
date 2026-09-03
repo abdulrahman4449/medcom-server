@@ -1,6 +1,7 @@
 import Foundation
 import Capacitor
 import AVFoundation
+import AudioToolbox
 import UserNotifications
 import UIKit
 
@@ -60,6 +61,10 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
 
     private var player: AVAudioPlayer?
+    // The buzz that runs alongside the tone. iOS has no repeating vibration
+    // primitive - one call is one short buzz - so an alarm-length vibration is
+    // a timer re-triggering it, held here so it can be stopped with the alarm.
+    private var vibrateTimer: Timer?
     // Held so ARC does not release it mid-note; the alarm player is separate
     // because a stand-down must never stop an alarm that is still running.
     private var standDownPlayer: AVAudioPlayer?
@@ -358,6 +363,43 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /**
+     * Vibration, which this plugin did not have at all.
+     *
+     * The web layer buzzes with `navigator.vibrate`, and iOS has never
+     * shipped the Vibration API in Safari or in a WKWebView - so the call was
+     * a no-op and an iPhone has never once buzzed for a dispatch. On a phone
+     * face-down in a cradle, or in a pocket under a jacket, the buzz is what
+     * gets noticed first and it is the one channel the silent switch does not
+     * touch. Android has had it since the plugin was written; this is the
+     * missing half.
+     *
+     * `kSystemSoundID_Vibrate` is one short buzz and there is no looping form
+     * of it, so an alarm-length vibration is that call on a repeat. The
+     * pattern is not ours to choose - iOS gives one vibration and one length -
+     * and it obeys the owner's Sounds & Haptics setting, which the app may not
+     * read or change. Idempotent on purpose: the web layer calls alert() every
+     * 1.7 seconds and a restart each time would buzz forever on its first
+     * pulse, the same lesson the player learned.
+     */
+    private func startVibrating() {
+        DispatchQueue.main.async {
+            if self.vibrateTimer != nil { return }
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            let t = Timer(timeInterval: 1.6, repeats: true) { _ in
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            }
+            // .common so it keeps firing while a crew are scrolling the card.
+            RunLoop.main.add(t, forMode: .common)
+            self.vibrateTimer = t
+        }
+    }
+
+    private func stopVibrating() {
+        vibrateTimer?.invalidate()
+        vibrateTimer = nil
+    }
+
+    /**
      * How loud this iPhone will actually be, handed back with every alert.
      *
      * THERE IS NO VOLUME FLOOR ON iOS AND THERE CANNOT BE ONE. Android's
@@ -385,6 +427,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         out["volumeFloorOk"] = false
         out["volumeFloor"] = "iOS has no volume floor - the alert plays at the phone's own volume"
         out["category"] = session.category.rawValue
+        out["vibrating"] = vibrateTimer != nil
         return out
     }
 
@@ -432,11 +475,18 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 // the first call, so the crew line tracks a thumb on the volume
                 // buttons live. On iOS that is all this can do about it: see
                 // deviceStatus() below for why there is no floor here.
+                // Idempotent, so this is "make sure it is still buzzing"
+                // rather than a restart. A timer that was invalidated by a
+                // stand-down or an interruption comes back here.
+                self.startVibrating()
                 call.resolve(self.deviceStatus(["ok": true, "already": true]))
                 return
             }
             self.stopPlayer()
             self.configureSession()
+            // Before the tone, not after it: if no tone can be built at all,
+            // the buzz is the only thing left telling the crew.
+            self.startVibrating()
             // The bundled tone if there is one, and a tone built here if there
             // is not.
             //
@@ -565,6 +615,10 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func stopPlayer() {
+        // First, and before every early return below: the buzz belongs to the
+        // alarm, and an alarm that has been acknowledged must not leave a phone
+        // vibrating in somebody's pocket.
+        stopVibrating()
         player?.stop()
         player = nil
         // Taking the alarm down must not take the app's standby down with it.

@@ -645,6 +645,20 @@ export function run(D, t) {
       " · alarm stream 10% · FLOOR REFUSED - Do Not Disturb"
     );
     t.is("loudness: nothing to say about a shell that reported no volume", D.alarmLoudnessNote({ ok: true }), "");
+    // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
+    // has to say so — an iPhone that never vibrated for a dispatch went
+    // unnoticed for months because nothing anywhere reported it.
+    t.is(
+      "loudness: an iPhone says whether it buzzed",
+      D.alarmLoudnessNote({ platform: "ios", outputVolumePct: 60, vibrating: true }),
+      " · device volume 60% (iPhone: no floor, the slider decides) · buzzing"
+    );
+    t.is(
+      "loudness: a shell that did not buzz says NO BUZZ",
+      D.alarmLoudnessNote({ platform: "ios", outputVolumePct: 60, vibrating: false }),
+      " · device volume 60% (iPhone: no floor, the slider decides) · NO BUZZ"
+    );
+    t.is("loudness: a shell that never mentions the buzz says nothing about it", D.alarmLoudnessNote({ platform: "android", alarmVolumePct: 70, volumeFloorOk: true }), " · alarm stream 70%");
     t.is("loudness: a rejected promise is not an object", D.alarmLoudnessNote(null), "");
     // Both vocabularies, because a board that has been running a while still
     // holds the old words.

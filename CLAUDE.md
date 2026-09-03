@@ -639,6 +639,22 @@ patch", that document is the target — do not start a fresh exploration.
   on is a page that is never backgrounded. It does **not** survive Home or a
   lock; only a foreground service or FCM would, and both cost a Play
   declaration or a server. Say that rather than implying it is covered.
+- **An iPhone never buzzed for a dispatch, because `navigator.vibrate` does not
+  exist on iOS.** The web layer's `buzz()` is the Vibration API, which Safari
+  and WKWebView have never shipped — so the call was a silent no-op and the iOS
+  plugin had no vibration of its own, while Android had had it from the start.
+  On a phone face-down in a cradle the buzz is what gets noticed first, and it
+  is the one channel the silent switch does not touch. `startVibrating` /
+  `stopVibrating` in the iOS plugin repeat `kSystemSoundID_Vibrate` every 1.6 s
+  — iOS has no looping vibration, so an alarm-length buzz is one call on a
+  timer. Idempotent, like the player: the web layer calls `alert()` every
+  1.7 s and a restart each time buzzes forever on its first pulse. It starts
+  BEFORE the tone (a tone that cannot be built is when the buzz matters most)
+  and stops at the top of `stopPlayer()`, before its early returns, or an
+  acknowledged call leaves a phone vibrating in a pocket. The pattern is not
+  ours to choose and it obeys the owner's Sounds & Haptics setting, which the
+  app may not read or change. `vibrating` rides on `alert()`'s answer so the
+  crew line says `buzzing` or `NO BUZZ` rather than leaving it to be guessed.
 - **The volume floor is ANDROID's, and iOS has none — say so rather than
   implying otherwise.** Android raises `STREAM_ALARM` to `MIN_ALARM_SHARE`
   (70%) for the length of an alert and re-asserts it on every 1.7-second

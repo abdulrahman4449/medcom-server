@@ -698,11 +698,16 @@ export function alarmOutcome() {
 // where the slider is" look identical from a truck.
 export function alarmLoudnessNote(r) {
   if (!r || typeof r !== "object") return "";
+  // Whether the phone is buzzing as well as sounding. iOS has no Vibration API
+  // in a WKWebView at all, so `navigator.vibrate` is a no-op there and the
+  // buzz can only come from the shell — which makes "did it buzz?" a question
+  // the screen has to answer rather than the crew guess at.
+  const buzz = r.vibrating === true ? " · buzzing" : r.vibrating === false ? " · NO BUZZ" : "";
   const pct = r.outputVolumePct != null ? r.outputVolumePct : r.alarmVolumePct;
-  if (pct == null) return "";
-  if (r.platform === "ios") return ` · device volume ${pct}% (iPhone: no floor, the slider decides)`;
-  if (r.volumeFloorOk === false) return ` · alarm stream ${pct}% · FLOOR ${r.volumeFloor || "refused"}`;
-  return ` · alarm stream ${pct}%`;
+  if (pct == null) return buzz;
+  if (r.platform === "ios") return ` · device volume ${pct}% (iPhone: no floor, the slider decides)${buzz}`;
+  if (r.volumeFloorOk === false) return ` · alarm stream ${pct}% · FLOOR ${r.volumeFloor || "refused"}${buzz}`;
+  return ` · alarm stream ${pct}%${buzz}`;
 }
 
 // What the last stand-down did, on the same principle as the alarm above.
