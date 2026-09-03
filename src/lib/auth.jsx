@@ -70,6 +70,7 @@ async function post(path, body) {
   if (!res.ok) {
     const err = new Error(data.error || `The server answered ${res.status}.`);
     err.status = res.status;
+    err.data = data;
     throw err;
   }
   return data;
@@ -82,8 +83,10 @@ export function lookupAccount(id) {
   return post("/api/auth/lookup", { id });
 }
 
-export async function signIn(id, password) {
-  const data = await post("/api/auth/login", { id, password });
+// `force` answers the server's "seated on another phone" refusal (409,
+// reason seated-elsewhere): yes, sign that phone out, this is my phone now.
+export async function signIn(id, password, force) {
+  const data = await post("/api/auth/login", { id, password, ...(force ? { force: true } : {}) });
   setToken(data.token);
   return data.account;
 }
@@ -152,7 +155,9 @@ export async function verifyPassword(id, password) {
     const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, password }),
+      // verifyOnly: a check, not a sign-in — the server must not start a
+      // device session for the partner, or their own phone is signed out.
+      body: JSON.stringify({ id, password, verifyOnly: true }),
     });
     if (!res.ok) return false;
     await res.json();

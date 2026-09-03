@@ -1112,6 +1112,20 @@ patch", that document is the target — do not start a fresh exploration.
   keeps the same sid. The old phone's push tokens are dropped at the new
   sign-in; the new phone re-registers. **Any harness that mints tokens must
   carry the account's live sid** (`sidOf` in the pentest harness).
+- **One phone at a time — but never silently out of a seat.** The owner opened
+  the website with the account that was seated on MEDIC 1 in the app; the
+  one-phone rule signed the app out, the app was locked so nobody saw it, and
+  the next call assigned to MEDIC 1 made no sound — and the System page said
+  nothing, because both guards fired silently. `POST /api/auth/login` now
+  answers **409 `seated-elsewhere`** when another device is live for the
+  account AND it holds a seat on the board (`seatHeldOnBoard`); the sign-in
+  screen's `seatedElsewhere` stage says which truck and that continuing signs
+  that phone out, and `force: true` is the person's answer. A partner's
+  password check on a shared tablet sends `verifyOnly: true` and starts NO
+  device session — it used to sign the partner's own phone out of the truck.
+  Every displacement and every refused poll from the displaced phone is an
+  `other-device` finding. `one-device.js` in the scratchpad harness covers all
+  of it against a real server.
 - **A waiting reliever is not the seat's occupant.** Two places assumed it
   was: `recordSignOut` treated a queued reliever pressing Sign out as the
   seat's holder — it stood the real holder down and "signed off" a seat the

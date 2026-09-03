@@ -151,6 +151,9 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   // reading "Held by Ali" cannot be expected to know which. Read while the
   // seat picker is open, every few seconds, and nowhere else.
   const [seatRequests, setSeatRequests] = useState([]);
+  // The server's "your account is seated on another phone" answer, held for
+  // the screen that asks whether to go on.
+  const [seatedElsewhere, setSeatedElsewhere] = useState(null);
   // The board as this screen knows it. The `units` prop is what the app's poll
   // holds, and on a phone that has just signed in the poll has not run yet (it
   // waits for a token) — so the station list said "0 medics on this station"
@@ -389,12 +392,40 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       setFoundAccount(found);
     } catch (e) {
       setBusy(false);
+      // Right password, but this account is seated on a truck from another
+      // phone. Signing in here would sign that phone out mid-shift — and a
+      // signed-out phone cannot sound a call — so it is asked, not assumed.
+      if (e.status === 409 && e.data && e.data.reason === "seated-elsewhere") {
+        setSeatedElsewhere({ id: idInput.trim(), pw, unitName: e.data.unitName, slot: e.data.slot });
+        setStage("seatedElsewhere");
+        return;
+      }
       setError(e.message || "That password doesn't match that ID.");
       setPw("");
       return;
     }
     setBusy(false);
     setPw("");
+    await routeAfterPassword(found);
+  }
+
+  // "Yes, this is my phone now": sign the other phone out and carry on.
+  async function continueDespiteSeat() {
+    if (!seatedElsewhere) return;
+    setBusy(true);
+    setError("");
+    let found;
+    try {
+      found = await signIn(seatedElsewhere.id, seatedElsewhere.pw, true);
+      setFoundAccount(found);
+    } catch (e) {
+      setBusy(false);
+      setError(e.message || "Could not sign in.");
+      return;
+    }
+    setBusy(false);
+    setPw("");
+    setSeatedElsewhere(null);
     await routeAfterPassword(found);
   }
 
@@ -1288,6 +1319,29 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                 </InfoNote>
                 <div style={styles.loginActions}>
                   <button style={styles.ghostBtn} onClick={() => setStage("chooseShift")}>
+                    Back
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Right password, but seated on a truck from ANOTHER phone. */}
+            {stage === "seatedElsewhere" && seatedElsewhere && (
+              <>
+                <div style={styles.loginSub}>
+                  You are signed on as {seatedElsewhere.unitName} · {seatLabel(seatedElsewhere.slot)} from another phone.
+                </div>
+                <div style={styles.claimCodeBanner}>
+                  Continuing here signs that phone OUT. A signed-out phone does not sound a call.
+                  If you are changing phones, continue — your seat, shift and hours carry on. If you only
+                  want to look at the board, go back and use a different account.
+                </div>
+                <button style={styles.loginSubmit} disabled={busy} onClick={continueDespiteSeat}>
+                  Continue on this phone
+                </button>
+                {error && <div style={styles.loginError}>{error}</div>}
+                <div style={styles.loginActions}>
+                  <button style={styles.ghostBtn} onClick={() => { setSeatedElsewhere(null); setPw(""); resetAccountFlow(); }}>
                     Back
                   </button>
                 </div>

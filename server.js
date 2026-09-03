@@ -257,6 +257,24 @@ function issueToken(account, actingRole, sid) {
 // hours are the person's, not the phone's, and the new phone carries on as
 // them through "Continue as MEDIC 1". The old phone's push tokens go with it:
 // a phone in a drawer must not go on buzzing for a truck its owner has left.
+// The seat this account holds on the board right now, if any. Read for the
+// one-phone rule: signing in elsewhere signs the seated phone OUT, and a
+// signed-out phone cannot sound a call.
+function seatHeldOnBoard(accountId) {
+  try {
+    const row = db.prepare("SELECT value FROM board WHERE key = 'ems:units'").get();
+    if (!row) return null;
+    const units = JSON.parse(row.value);
+    for (const u of Array.isArray(units) ? units : []) {
+      for (const slot of ["alpha", "bravo"]) {
+        const m = u && u[slot];
+        if (m && m.accountId === accountId) return { unitName: u.name || u.id, slot };
+      }
+    }
+  } catch (e) { /* a missing or odd board must not block a sign-in */ }
+  return null;
+}
+
 function startDeviceSession(id) {
   const sid = crypto.randomBytes(12).toString("base64url");
   db.prepare("UPDATE accounts SET active_sid = ? WHERE id = ?").run(sid, id);
@@ -295,6 +313,10 @@ function requireAuth(req, res, next) {
   // still accepts its older tokens, so the rule arrives without signing the
   // whole department out at once.
   if (live.active_sid && claims.sid !== live.active_sid) {
+    // A guard that fires silently is how a missed call hides: the phone that
+    // was seated on the truck is refused here, every poll, and nothing on the
+    // System page said so. One finding per account, its count climbing.
+    noteFinding("other-device", `${claims.id}'s earlier phone is still asking the board after that account signed in on another device — it is signed out and will not sound a call.`);
     res.setHeader("X-Auth-Reason", "other-device");
     return res.status(401).json({
       error: "This account was signed in on another phone, so this one has been signed out.",
@@ -2241,7 +2263,7 @@ app.post("/api/auth/lookup", (req, res) => {
 });
 
 app.post("/api/auth/login", (req, res) => {
-  const { id, password } = req.body || {};
+  const { id, password, force, verifyOnly } = req.body || {};
   const key = String(id || "").trim().toUpperCase();
   if (loginBlocked(key)) {
     // Ten wrong guesses in fifteen minutes is either a forgotten password
@@ -2260,6 +2282,28 @@ app.post("/api/auth/login", (req, res) => {
   }
   loginLimiter.clear(key);
   const fresh = findAccount(key);
+  // A partner's password checked on a shared tablet is a check, not a sign-in:
+  // it used to start a device session for the PARTNER and sign their own
+  // phone out of the truck.
+  if (verifyOnly) return res.json({ ok: true, verified: true });
+  // One phone at a time — but never silently out of a seat. If another phone
+  // is live for this account AND it holds a seat on a truck, signing in here
+  // would sign that phone out mid-shift, and a signed-out phone cannot sound
+  // a call. The person is told and asked; `force` is their answer.
+  const seat = fresh.active_sid ? seatHeldOnBoard(fresh.id) : null;
+  if (seat && !force) {
+    return res.status(409).json({
+      error: `This account is signed on as ${seat.unitName} (${seat.slot}) from another phone. Signing in here signs that phone out.`,
+      reason: "seated-elsewhere",
+      unitName: seat.unitName,
+      slot: seat.slot,
+    });
+  }
+  if (fresh.active_sid) {
+    noteFinding("other-device", seat
+      ? `${fresh.id} signed in on a new device while seated on ${seat.unitName} (${seat.slot}) — the earlier phone is signed out and will not sound a call.`
+      : `${fresh.id} signed in on a new device — the earlier one is signed out.`);
+  }
   const sid = startDeviceSession(fresh.id);
   // isOwner is stamped here and on /api/auth/me — NOT on publicAccount, which
   // /api/auth/lookup serves to anybody. The session uses it to draw the
