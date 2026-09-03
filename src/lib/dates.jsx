@@ -531,7 +531,7 @@ export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNo
 // was simply not on the device. A method list says what a plugin can do; only
 // a version says which one it is. Bump this and the constant in BOTH plugins
 // together.
-export const SHELL_BUILD_WANTED = "2026-09-03.6";
+export const SHELL_BUILD_WANTED = { android: "2026-09-03.6", ios: "2026-09-03.5" };
 
 // What to say about the plugin's own build, given whatever backgroundStatus
 // last answered. Empty when there is nothing to complain about — the line is
@@ -572,14 +572,28 @@ export function volumeFloorNote(bg) {
   return ` · FLOOR ≥${min}% ${what}${low}${puts}${watch}`;
 }
 
+// The two plugins are asked for SEPARATELY, because they change separately.
+//
+// One number for both meant an Android-only fix — the volume floor, which iOS
+// cannot have at all — told every iPhone it was out of date and demanded an
+// Xcode rebuild that would have changed nothing but a constant. A version is
+// there to tell somebody what to do; one that cries wolf on the platform it
+// did not touch teaches them to ignore it.
+export function shellBuildWanted(platform) {
+  const p = String(platform || "").toLowerCase();
+  if (p === "ios") return SHELL_BUILD_WANTED.ios;
+  return SHELL_BUILD_WANTED.android;
+}
+
 export function shellBuildNote(bg) {
   if (!bg || typeof bg !== "object") return "";
+  const wanted = shellBuildWanted(bg.platform);
   const has = bg.pluginBuild ? String(bg.pluginBuild) : "";
   // A plugin too old to carry the stamp at all is, by definition, older than
   // the build that introduced it.
-  if (!has) return ` · PLUGIN IS OLD — rebuild the app (it is older than ${SHELL_BUILD_WANTED})`;
-  if (has === SHELL_BUILD_WANTED) return "";
-  return ` · PLUGIN IS ${has}, THIS BUILD NEEDS ${SHELL_BUILD_WANTED} — rebuild the app`;
+  if (!has) return ` · PLUGIN IS OLD — rebuild the app (it is older than ${wanted})`;
+  if (has === wanted) return "";
+  return ` · PLUGIN IS ${has}, THIS BUILD NEEDS ${wanted} — rebuild the app`;
 }
 
 export function shellReport() {

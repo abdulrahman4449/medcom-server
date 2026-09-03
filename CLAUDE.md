@@ -683,12 +683,17 @@ patch", that document is the target — do not start a fresh exploration.
   previous plugin, so a handset carrying a fortnight-old Java answered every
   name it was asked for and printed `shell up to date` while the fix written
   into that file was simply not on the device. Both plugins now report
-  `pluginBuild`, `SHELL_BUILD_WANTED` in `dates.jsx` is what this web layer
-  expects, and `shellBuildNote` (`npm test`) puts `PLUGIN IS 2026-08-20, THIS
-  BUILD NEEDS …` on the crew line. A plugin too old to carry the stamp at all
-  is older than the build that introduced it, and says so. **Bump all three
-  together** — the Java constant, the Swift constant and `SHELL_BUILD_WANTED` —
-  whenever either plugin changes.
+  `pluginBuild`, and `shellBuildNote` (`npm test`) puts `PLUGIN IS 2026-08-20,
+  THIS BUILD NEEDS …` on the crew line. A plugin too old to carry the stamp at
+  all is older than the build that introduced it, and says so.
+  **`SHELL_BUILD_WANTED` names the two platforms SEPARATELY**
+  (`shellBuildWanted(platform)`), because the two plugins change separately:
+  one number for both meant an Android-only fix — the volume floor, which iOS
+  cannot have at all — told every iPhone it was out of date and demanded an
+  Xcode rebuild that would have changed nothing but a constant, and a version
+  that cries wolf on the platform it did not touch is one people learn to
+  ignore. **Bump the constant in the plugin you actually changed and its entry
+  in `SHELL_BUILD_WANTED` — only that one.**
 - **The volume floor is ANDROID's, and iOS has none — say so rather than
   implying otherwise.** Android raises `STREAM_ALARM` to `MIN_ALARM_SHARE`
   (70%) for the length of an alert and re-asserts it on every 1.7-second

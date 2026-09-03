@@ -650,10 +650,21 @@ export function run(D, t) {
     // existed in the previous Android plugin, so a phone carrying the old one
     // answered every name and reported "shell up to date" while the fix that
     // had been written into that file was not on the device at all.
-    t.is("plugin build: current says nothing", D.shellBuildNote({ pluginBuild: D.SHELL_BUILD_WANTED }), "");
+    t.is("plugin build: current says nothing",
+      D.shellBuildNote({ platform: "android", pluginBuild: D.shellBuildWanted("android") }), "");
+    // The two plugins are versioned SEPARATELY. An Android-only fix — the
+    // volume floor, which iOS cannot have at all — must not tell every iPhone
+    // to rebuild for a constant. A version that cries wolf gets ignored.
+    t.is("plugin build: an iPhone is judged against the iOS build",
+      D.shellBuildNote({ platform: "ios", pluginBuild: D.shellBuildWanted("ios") }), "");
+    t.ok("plugin build: an Android fix does not nag an up-to-date iPhone",
+      D.shellBuildWanted("ios") !== D.shellBuildWanted("android")
+      && D.shellBuildNote({ platform: "ios", pluginBuild: D.shellBuildWanted("ios") }) === "");
+    t.ok("plugin build: an out-of-date iPhone is still named",
+      /PLUGIN IS 2026-08-01/.test(D.shellBuildNote({ platform: "ios", pluginBuild: "2026-08-01" })));
     t.ok("plugin build: an older one is named and calls for a rebuild",
-      /PLUGIN IS 2026-08-20/.test(D.shellBuildNote({ pluginBuild: "2026-08-20" }))
-      && /rebuild the app/.test(D.shellBuildNote({ pluginBuild: "2026-08-20" })));
+      /PLUGIN IS 2026-08-20/.test(D.shellBuildNote({ platform: "android", pluginBuild: "2026-08-20" }))
+      && /rebuild the app/.test(D.shellBuildNote({ platform: "android", pluginBuild: "2026-08-20" })));
     t.ok("plugin build: one too old to carry a stamp is still old",
       /PLUGIN IS OLD/.test(D.shellBuildNote({ platform: "android" })));
     t.is("plugin build: no shell at all is not a rebuild message", D.shellBuildNote(null), "");
