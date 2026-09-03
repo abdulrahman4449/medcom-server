@@ -139,6 +139,14 @@ public class PulseOpsAlarmPlugin extends Plugin {
 
     @Override
     public void load() {
+        // Say which plugin this is, in logcat, the moment it loads.
+        //
+        // The crew line can only report a version mismatch when the WEB build
+        // is new enough to check for one — so a phone carrying a fresh plugin
+        // and a stale www/index.html reports nothing at all, and looks exactly
+        // like a phone whose rebuild did not take. adb logcat -s PulseOpsAlarm
+        // answers it without depending on the web layer at all.
+        Log.i("PulseOpsAlarm", "plugin loaded, build " + PLUGIN_BUILD);
         ensureChannel();
     }
 

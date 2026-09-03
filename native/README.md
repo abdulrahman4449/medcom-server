@@ -1,5 +1,32 @@
 # native/
 
+## Two files, two places — and the app bundles its own web copy
+
+Every round of "the fix is not on the phone" has been this. The app is two
+halves that ship separately:
+
+1. **`public/index.html`** — the whole web app. The native shell does NOT
+   download it from the server; it bundles its own copy. Copy it to
+   **`android/app/src/main/assets/public/index.html`** (and the iOS project's
+   `App/public/index.html`) — or run Capacitor's copy step if the project is
+   wired to one. Putting it on the server updates the WEBSITE only.
+2. **`PulseOpsAlarmPlugin.java` / `.swift`** — the alarm plugin. Rebuild in
+   Android Studio / Xcode.
+
+Doing one and not the other looks completely healthy. Two checks, and use both:
+
+- **On the crew screen**, under the speaker check: the build stamp is the WEB
+  half, and `PLUGIN IS …, THIS BUILD NEEDS …` is the native half. That warning
+  can only appear when the web half is new enough to look for it — so a fresh
+  plugin behind a stale `index.html` says nothing at all.
+- **In logcat**, which does not depend on the web half:
+
+      adb logcat -s PulseOpsAlarm
+
+  The plugin prints `plugin loaded, build 2026-09-03.5` as it loads, and every
+  change in the volume floor's state as an alert runs.
+
+
 The parts of PulseOps that cannot be written in a web page, kept here so they
 travel with the app even though the Capacitor project itself lives on your Mac.
 

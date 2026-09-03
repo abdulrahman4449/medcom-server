@@ -667,6 +667,16 @@ patch", that document is the target — do not start a fresh exploration.
   ours to choose and it obeys the owner's Sounds & Haptics setting, which the
   app may not read or change. `vibrating` rides on `alert()`'s answer so the
   crew line says `buzzing` or `NO BUZZ` rather than leaving it to be guessed.
+- **The shell bundles its OWN `index.html`, so copying it to the server puts
+  it nowhere near the phone.** Reported four times as "the fix is not
+  implemented": the app was rebuilt in Android Studio (new plugin) while
+  `android/app/src/main/assets/public/index.html` was still hours old, and the
+  crew line then reports NOTHING wrong — the plugin-version warning can only
+  be printed by a web build new enough to look for one, so a fresh plugin
+  behind a stale bundle is invisible from the screen. The version that does
+  not depend on the web half at all is in logcat: the plugin prints
+  `plugin loaded, build …` from `load()`. `native/README.md` opens with the
+  two files and the two places they go.
 - **A method list is not a version — the plugin stamps its own build.**
   `SHELL_METHODS` catches a plugin that is missing a method, and on Android it
   caught nothing: every method this web layer needs already existed in the
