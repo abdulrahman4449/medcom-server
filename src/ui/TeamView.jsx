@@ -140,6 +140,13 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   const [escOpen, setEscOpen] = useState(false);
   // Whether the "these details are wrong" form is open on the live call.
   const [editOpen, setEditOpen] = useState(false);
+  // Extra services rendered on the call, free text, for billing. Optional — it
+  // does not gate going back in service. Seeded from the call and mirrored on
+  // every poll EXCEPT while the crew are typing, the same guard the ambulance
+  // field uses, so a partner's edit lands but a half-typed word is not wiped.
+  const [addedServicesInput, setAddedServicesInput] = useState("");
+  const addedServicesTouched = useRef(false);
+  const addedServicesSaving = useRef(false);
   // Whether the refusal is being signed for.
   const [refusalOpen, setRefusalOpen] = useState(false);
   const [assistOpen, setAssistOpen] = useState(false);
@@ -910,6 +917,34 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   // the bedside on their own would leave dispatch working from a call that
   // quietly changed underneath them.
   // Recording who took the patient at the destination.
+  useEffect(() => {
+    if (addedServicesTouched.current || addedServicesSaving.current) return;
+    setAddedServicesInput((myRequest && myRequest.addedServices) || "");
+  }, [myRequest && myRequest.id, myRequest && myRequest.addedServices]);
+
+  async function saveAddedServices() {
+    if (!myRequest) return;
+    const text = addedServicesInput.trim();
+    if (text === ((myRequest.addedServices || "").trim())) { addedServicesTouched.current = false; return; }
+    addedServicesSaving.current = true;
+    const who = user && user.name ? user.name : (myUnit ? myUnit.name : "Crew");
+    const fresh = await readKey("ems:requests", requests);
+    await saveRequests(
+      fresh.map((r) =>
+        r.id === myRequest.id
+          ? { ...r, addedServices: text, addedServicesBy: who, addedServicesAt: Date.now() }
+          : r
+      )
+    );
+    addedServicesTouched.current = false;
+    addedServicesSaving.current = false;
+    await addLog(
+      `${myUnit ? myUnit.name : "Crew"} (${who}) recorded added services on "${myRequest.nature}"` +
+        (text ? ` — ${text}` : " — cleared"),
+      "status"
+    );
+  }
+
   async function setReceiver({ name, receiverId }) {
     if (!myRequest) return;
     const now = Date.now();
@@ -1965,6 +2000,21 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
                   {type ? `${type.key} · ${type.name}` : "Type: A ALS · B BLS · C critical · D auxiliary · E no transport"}
                   {" — "}
                   {km ? `${km.name} loaded` : "Km bands: 1 ≤50 · 2 51–150 · 3 151–250 · 4 251–400 · 5 400+"}
+                </div>
+                {/* Added services — extra services rendered on the call, for
+                    billing. Free text, optional: it is not one of the three
+                    ticks and never blocks going back in service, so it sits
+                    below the count. 16px, or iOS zooms the whole board on
+                    focus. Saved when the field loses focus. */}
+                <div style={{ ...rowStyle(false), alignItems: "flex-start", flexWrap: "wrap", rowGap: 8 }}>
+                  <span style={{ flex: "none", width: 18 }} />{lab("ADDED SVCS", false)}
+                  <input
+                    style={{ flex: "1 1 100%", minWidth: 0, background: "var(--panel)", border: "1px solid var(--hair-2)", borderRadius: 8, color: "var(--ink)", fontSize: 16, padding: "9px 10px", fontFamily: "inherit" }}
+                    value={addedServicesInput}
+                    onChange={(e) => { addedServicesTouched.current = true; setAddedServicesInput(e.target.value); }}
+                    onBlur={saveAddedServices}
+                    placeholder="e.g. oxygen, cardiac monitor, splint"
+                  />
                 </div>
               </div>
             );

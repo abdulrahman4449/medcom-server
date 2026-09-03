@@ -801,6 +801,13 @@ patch", that document is the target — do not start a fresh exploration.
   hours at NOW for a still-running shift (not at shift end) and logs it as
   "mid-shift, seat left by a signed-out phone". The crew's own recovery is
   unchanged: sign in on the new phone and Continue as MEDIC N.
+- **Added services are the crew's free-text billing note, optional and never a
+  gate.** `addedServices` on the request, edited under LOADED KM on the crew
+  call card (`TeamView`), 16px like every field or iOS zooms the board, saved
+  on blur, mirrored on the poll except while typing (the ambulance-field
+  guard). It is NOT one of the three paperwork ticks and never blocks going
+  back in service. Not yet a sheet column — add it to `SHIFT_LOG_COLUMNS` and
+  `buildShiftReport` together if it is ever wanted there.
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is
