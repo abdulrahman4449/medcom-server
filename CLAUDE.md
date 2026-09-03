@@ -777,6 +777,18 @@ patch", that document is the target — do not start a fresh exploration.
   never finalised, its overtime never final, its calls never tidied away.
   `unitsStaffedForShift` is the one rule for both, with a one-shift grace for
   a forgotten sign-out.
+- **The desk has no seat on the board, so "who is on the desk today" is read
+  from the shift log.** `dispatchersOnDuty` in `domain/desk-duty.jsx`, under
+  `npm test`: a stay runs from its `kind: "on"` line (role `dispatcher`) until
+  an `off` line for the same person AND the same window, never past one whole
+  shift after the window closed (a forgotten sign-out, not a desk still
+  working), and an `off` from an earlier stay does not end a later one. The
+  admin's Teams page draws it above the rosters — shift, since when, time left
+  or overtime — with the same whole-shift grant the seats have:
+  `grantWholeShiftOvertime` takes `unit: null` and keys the decision to
+  `desk`, named "Dispatch desk" on the overtime panel. The live log is capped
+  at 400 lines, so the panel says "no sign-on in the log" rather than "nobody
+  on the desk".
 - **A sheet prints one row per record id, and `dedupeById` is the last gate.**
   `exportAndShareLog` dedupes both lists on the way in and `buildDispatchLogAOA`
   again before sorting. Everything upstream merges by id, but a workbook is

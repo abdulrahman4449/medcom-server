@@ -235,11 +235,17 @@ export async function grantWholeShiftOvertime({ unit, slot, member, user, decisi
   );
   if (!ok) return false;
 
+  // The desk has no truck and no seat. A grant to a dispatcher is keyed to
+  // "desk" and named as the desk, and reads on the overtime panel like any
+  // other whole-shift grant.
+  const unitId = unit ? unit.id : "desk";
+  const unitName = unit ? unit.name : "Dispatch desk";
+  const station = unit ? stationOf(unit) : member.station || DEFAULT_STATION;
   const id = `GRANT::${overtimeClaimId({
     accountId: member.accountId,
     name: member.name,
     shiftStart: start,
-    unitId: unit.id,
+    unitId,
     seat: slot,
   })}`;
 
@@ -254,10 +260,10 @@ export async function grantWholeShiftOvertime({ unit, slot, member, user, decisi
       note: "Whole shift granted as overtime",
       name: member.name,
       accountId: member.accountId || "",
-      unitId: unit.id,
-      unitName: unit.name,
-      seat: slot,
-      station: stationOf(unit),
+      unitId,
+      unitName,
+      seat: slot || null,
+      station,
       shift: member.shift,
       shiftStart: start,
       shiftEnd: end,
@@ -273,7 +279,7 @@ export async function grantWholeShiftOvertime({ unit, slot, member, user, decisi
   }
   setDecisions(next);
   await addLog(
-    `Whole shift granted as overtime — ${member.name} (${unit.name} · ${seatLabel(slot)}), ` +
+    `Whole shift granted as overtime — ${member.name} (${unitName}${slot ? ` · ${seatLabel(slot)}` : ""}), ` +
       `${shiftLabelWithWindow(member.shift)}, ${otHoursStr(whole)}` +
       (beyond > 0 ? ` · ${otHoursStr(beyond)} already past the shift end, to be claimed separately` : ""),
     "status"

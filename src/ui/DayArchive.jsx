@@ -8,7 +8,9 @@ import { clockStr } from "../domain/messages.jsx";
 import { logForOpDay, opDayEnd, opDayKey, opDayLabel, opDayStart, requestsForOpDay } from "../domain/op-day.jsx";
 import { grantWholeShiftOvertime } from "../domain/overtime.jsx";
 import { assistPending } from "../domain/second-ambulance.jsx";
-import { hhmm, seatLabel } from "../domain/shift-helpers.jsx";
+import { hhmm, overtimeMs, seatLabel, shiftLabelWithWindow, shiftMeta } from "../domain/shift-helpers.jsx";
+import { dispatchersOnDuty } from "../domain/desk-duty.jsx";
+import { shortDurationStr } from "../domain/messages.jsx";
 import { callStartTs } from "../domain/uhu.jsx";
 import { exportArchivedDay } from "../export/workbook.jsx";
 import { APP_NAME } from "../brand/brand.jsx";
@@ -411,6 +413,22 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       addLog,
     });
   }
+
+  // The same grant for the person on the desk. No truck, no seat: the stay is
+  // the dispatcher's own sign-on line.
+  async function grantDeskShift(stay) {
+    await grantWholeShiftOvertime({
+      unit: null,
+      slot: null,
+      member: stay,
+      user,
+      decisions: overtimeDecisions,
+      setDecisions: setOvertimeDecisions,
+      addLog,
+    });
+  }
+  const deskGrantId = (stay) =>
+    `GRANT::${(stay.accountId || stay.name || "?").toUpperCase()}::${stay.shiftStart || 0}::desk::?`;
 
   async function relieveSeat(unit, slot, member) {
     const endedAt = member.shiftEnd || Date.now();
@@ -1040,6 +1058,78 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           it, so the page opened on a wall of drawers and the thing it is named
           after began below the fold. Both stations, one under the other — the
           only place the two are visible together. */}
+      {/* The desk, before the trucks. A dispatcher signing on writes only a
+          shift-log line, so until now "who is on the desk today" could only be
+          answered by reading the log. This reads it: the shift they signed on
+          for, since when, how long is left or how far into overtime — the same
+          facts a crew sees on their own screen — and the whole-shift grant the
+          roster cards already offer against a seat. */}
+      {!openPanel && (() => {
+        const now = Date.now();
+        const stays = dispatchersOnDuty(log, now);
+        return (
+          <div style={{ marginTop: 18 }}>
+            <SectionBanner title="DISPATCH DESK — ON DUTY" icon={<Clock size={13} />}>
+              <span style={styles.stationCount}>
+                {stays.length} {stays.length === 1 ? "dispatcher" : "dispatchers"} signed on
+              </span>
+            </SectionBanner>
+            {stays.length === 0 ? (
+              <div style={styles.formHint}>
+                No dispatcher sign-on in the shift log for the current window. The desk is signed
+                on from the sign-in screen, and this reads the log that sign-on writes.
+              </div>
+            ) : (
+              <div style={{ ...styles.unitGrid, gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+                {stays.map((stay) => {
+                  const meta = shiftMeta(stay.shift);
+                  const ot = overtimeMs(stay, now);
+                  const left = Math.max(0, stay.shiftEnd - now);
+                  const granted = !!(overtimeDecisions && overtimeDecisions[deskGrantId(stay)] && overtimeDecisions[deskGrantId(stay)].granted);
+                  return (
+                    <div key={stay.key} style={styles.unitCard}>
+                      <div style={{ ...styles.unitCardBar, background: ot > 0 ? "var(--hold)" : "var(--ok)" }} />
+                      <div style={{ ...styles.unitCardBody, gap: 8 }}>
+                        <div style={styles.unitCardTop}>
+                          <span style={styles.unitCardName}>{stay.name}</span>
+                          <span style={styles.unitCardAmbulance}>{stationLabel(stay.station)}</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          {meta && (
+                            <span style={{ ...styles.shiftTag, color: meta.color, borderColor: meta.color }}>
+                              {meta.glyph} {meta.short}
+                            </span>
+                          )}
+                          <span style={styles.unitCardAmbulance}>{shiftLabelWithWindow(stay.shift)}</span>
+                          {stay.delegated && <span style={styles.reliefTag}>on delegated authority</span>}
+                        </div>
+                        <div style={styles.unitMemberRow}>
+                          <span style={styles.unitMemberLabel}>Signed on</span>
+                          <span style={styles.unitMemberName}>{clockStr(stay.signedOnAt)}</span>
+                        </div>
+                        <div style={styles.unitMemberRow}>
+                          <span style={styles.unitMemberLabel}>{ot > 0 ? "Overtime" : "Left on shift"}</span>
+                          {ot > 0
+                            ? <span style={styles.otTag}>OT {shortDurationStr(ot)}</span>
+                            : <span style={styles.unitMemberName}>{shortDurationStr(left)}</span>}
+                        </div>
+                        {granted
+                          ? <span style={{ ...styles.otTag, alignSelf: "flex-start" }}>WHOLE SHIFT GRANTED AS OT</span>
+                          : (
+                            <button style={{ ...styles.grantOtBtn, alignSelf: "flex-start" }} onClick={() => grantDeskShift(stay)}>
+                              Whole shift as OT
+                            </button>
+                          )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {!openPanel && STATIONS.map((st) => {
         const unitsHere = atStation(units, st.key);
         const liveHere = atStation(requests, st.key).filter((r) => r.status !== "completed");

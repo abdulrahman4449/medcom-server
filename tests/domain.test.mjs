@@ -79,6 +79,23 @@ export function run(D, t) {
       D.submissionOutstanding(sub, [{ id: "r1", status: "arrived" }], night, at(2026, 9, 2, 20)).openCalls.length === 1);
   }
 
+  // ---------- who is on the dispatch desk, from the shift log alone
+  {
+    const dayStart = at(2026, 9, 3, 7), dayEnd = at(2026, 9, 3, 19);
+    const on = (ts, d) => ({ ts, type: "shift", detail: { kind: "on", role: "dispatcher", name: "Desk One", accountId: "D1", station: "main", shift: "day", shiftStart: dayStart, shiftEnd: dayEnd, ...d } });
+    const off = (ts, d) => ({ ts, type: "shift", detail: { kind: "off", role: "dispatcher", name: "Desk One", accountId: "D1", shift: "day", shiftStart: dayStart, shiftEnd: dayEnd, ...d } });
+    t.is("desk: a dispatcher signed on is on duty", D.dispatchersOnDuty([on(at(2026, 9, 3, 6, 50))], at(2026, 9, 3, 11)).length, 1);
+    t.is("desk: signed off is not", D.dispatchersOnDuty([on(at(2026, 9, 3, 6, 50)), off(at(2026, 9, 3, 19, 5))], at(2026, 9, 3, 20)).length, 0);
+    t.is("desk: an off line from an EARLIER stay does not end this one",
+      D.dispatchersOnDuty([off(at(2026, 9, 2, 19, 5), { shiftStart: at(2026, 9, 2, 7), shiftEnd: at(2026, 9, 2, 19) }), on(at(2026, 9, 3, 6, 50))], at(2026, 9, 3, 11)).length, 1);
+    t.is("desk: a crew sign-on is not a dispatcher",
+      D.dispatchersOnDuty([{ ts: at(2026, 9, 3, 7), type: "shift", detail: { kind: "on", role: "team", name: "A", accountId: "A1", shiftStart: dayStart, shiftEnd: dayEnd } }], at(2026, 9, 3, 11)).length, 0);
+    t.is("desk: a sign-off that never came is a forgotten sign-out one shift later",
+      D.dispatchersOnDuty([on(at(2026, 9, 3, 6, 50))], at(2026, 9, 4, 7, 30)).length, 0);
+    t.ok("desk: still on duty in overtime until signed off",
+      D.dispatchersOnDuty([on(at(2026, 9, 3, 6, 50))], at(2026, 9, 3, 20)).length === 1);
+  }
+
   // ---------- Zahrawi stands 9:30, and it is the UHU denominator
   t.is("Zahrawi: 9.5 hours", D.shiftMsForUnit({ name: "ZAHRAWI" }), 9.5 * H);
   t.is("Zahrawi: the short form too", D.shiftMsForUnit({ name: "ZAH" }), 9.5 * H);

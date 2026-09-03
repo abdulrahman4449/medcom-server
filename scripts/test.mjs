@@ -40,6 +40,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/return-journeys.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/stat-source.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/rush.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/shift-log.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/desk-duty.jsx")};
 export { dedupeById } from ${JSON.stringify(ROOT + "src/lib/helpers.jsx")};
 export { staffStatsFor, departmentUhu, categoryMixRows, serviceMixRows, responseNote } from ${JSON.stringify(ROOT + "src/ui/Statistics.jsx")};
 export { roleSwitchTarget } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
