@@ -85,6 +85,17 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // that number differs by handset.
     private static final double MIN_ALARM_SHARE = 0.7;
 
+    // The PLUGIN's own build date, which is not the web build's.
+    //
+    // index.html is copied into the project and the plugin is rebuilt in
+    // Android Studio, and it is easy to do one and not the other. Checking
+    // that the METHOD NAMES exist cannot catch it here: every method this web
+    // layer needs already existed in the previous plugin, so an Android phone
+    // carrying a fortnight-old plugin reported "shell up to date" and there
+    // was nothing anywhere that disagreed. A version says what a method list
+    // cannot. Bump it whenever this file changes.
+    private static final String PLUGIN_BUILD = "2026-09-03";
+
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
     // that is still running for a different call.
@@ -704,6 +715,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
         } catch (Exception ignored) {
         }
         out.put("platform", "android");
+        out.put("pluginBuild", PLUGIN_BUILD);
         out.put("sdk", Build.VERSION.SDK_INT);
         return out;
     }

@@ -645,6 +645,18 @@ export function run(D, t) {
       " · alarm stream 10% · FLOOR REFUSED - Do Not Disturb"
     );
     t.is("loudness: nothing to say about a shell that reported no volume", D.alarmLoudnessNote({ ok: true }), "");
+
+    // A METHOD LIST IS NOT A VERSION. Every method this build needs already
+    // existed in the previous Android plugin, so a phone carrying the old one
+    // answered every name and reported "shell up to date" while the fix that
+    // had been written into that file was not on the device at all.
+    t.is("plugin build: current says nothing", D.shellBuildNote({ pluginBuild: D.SHELL_BUILD_WANTED }), "");
+    t.ok("plugin build: an older one is named and calls for a rebuild",
+      /PLUGIN IS 2026-08-20/.test(D.shellBuildNote({ pluginBuild: "2026-08-20" }))
+      && /rebuild the app/.test(D.shellBuildNote({ pluginBuild: "2026-08-20" })));
+    t.ok("plugin build: one too old to carry a stamp is still old",
+      /PLUGIN IS OLD/.test(D.shellBuildNote({ platform: "android" })));
+    t.is("plugin build: no shell at all is not a rebuild message", D.shellBuildNote(null), "");
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

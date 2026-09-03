@@ -521,6 +521,31 @@ export function nativeAlarm() {
 // and the crew line says so in those words.
 export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNotifications", "backgroundStatus"];
 
+// The plugin build this web layer expects, checked against the one the plugin
+// reports about ITSELF.
+//
+// Checking the method list is not enough and never was on Android: every
+// method this build needs already existed in the previous plugin, so a phone
+// carrying a fortnight-old plugin answered every name it was asked for and
+// said "shell up to date" — while the fix that had been shipped into that file
+// was simply not on the device. A method list says what a plugin can do; only
+// a version says which one it is. Bump this and the constant in BOTH plugins
+// together.
+export const SHELL_BUILD_WANTED = "2026-09-03";
+
+// What to say about the plugin's own build, given whatever backgroundStatus
+// last answered. Empty when there is nothing to complain about — the line is
+// long enough without a badge saying everything is fine.
+export function shellBuildNote(bg) {
+  if (!bg || typeof bg !== "object") return "";
+  const has = bg.pluginBuild ? String(bg.pluginBuild) : "";
+  // A plugin too old to carry the stamp at all is, by definition, older than
+  // the build that introduced it.
+  if (!has) return ` · PLUGIN IS OLD — rebuild the app (it is older than ${SHELL_BUILD_WANTED})`;
+  if (has === SHELL_BUILD_WANTED) return "";
+  return ` · PLUGIN IS ${has}, THIS BUILD NEEDS ${SHELL_BUILD_WANTED} — rebuild the app`;
+}
+
 export function shellReport() {
   const plugin = nativeAlarm();
   if (!plugin) return "no shell (browser)";

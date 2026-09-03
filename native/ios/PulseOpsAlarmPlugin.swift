@@ -60,6 +60,10 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
 
+    // The PLUGIN's own build date, which is not the web build's. See the same
+    // constant in the Android plugin for why a method list is not a version.
+    private let pluginBuild = "2026-09-03"
+
     private var player: AVAudioPlayer?
     // The buzz that runs alongside the tone. iOS has no repeating vibration
     // primitive - one call is one short buzz - so an alarm-length vibration is
@@ -421,6 +425,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         let session = AVAudioSession.sharedInstance()
         let vol = session.outputVolume
         out["platform"] = "ios"
+        out["pluginBuild"] = pluginBuild
         out["outputVolume"] = vol
         out["outputVolumePct"] = Int((vol * 100).rounded())
         // Named so nothing downstream has to infer it from the platform.

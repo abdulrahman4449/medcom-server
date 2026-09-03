@@ -667,6 +667,18 @@ patch", that document is the target — do not start a fresh exploration.
   ours to choose and it obeys the owner's Sounds & Haptics setting, which the
   app may not read or change. `vibrating` rides on `alert()`'s answer so the
   crew line says `buzzing` or `NO BUZZ` rather than leaving it to be guessed.
+- **A method list is not a version — the plugin stamps its own build.**
+  `SHELL_METHODS` catches a plugin that is missing a method, and on Android it
+  caught nothing: every method this web layer needs already existed in the
+  previous plugin, so a handset carrying a fortnight-old Java answered every
+  name it was asked for and printed `shell up to date` while the fix written
+  into that file was simply not on the device. Both plugins now report
+  `pluginBuild`, `SHELL_BUILD_WANTED` in `dates.jsx` is what this web layer
+  expects, and `shellBuildNote` (`npm test`) puts `PLUGIN IS 2026-08-20, THIS
+  BUILD NEEDS …` on the crew line. A plugin too old to carry the stamp at all
+  is older than the build that introduced it, and says so. **Bump all three
+  together** — the Java constant, the Swift constant and `SHELL_BUILD_WANTED` —
+  whenever either plugin changes.
 - **The volume floor is ANDROID's, and iOS has none — say so rather than
   implying otherwise.** Android raises `STREAM_ALARM` to `MIN_ALARM_SHARE`
   (70%) for the length of an alert and re-asserts it on every 1.7-second
