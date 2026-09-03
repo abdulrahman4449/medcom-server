@@ -256,7 +256,14 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   async function routeAfterPassword(account) {
     // Already on a seat? Then they are signing in again, not signing on. Offer
     // to carry on being who they already are before anything else.
-    const held = seatHeldBy(units, account.id);
+    //
+    // Read the board HERE, not off the prop: on a phone that has just signed
+    // in for the first time the poll has not run yet (it waits for a token),
+    // the prop is still empty, and the person who most needs "Continue as
+    // MEDIC 1" — somebody changing phones mid-shift — was sent to pick a
+    // shift and a truck as if they were new.
+    const freshUnits = (await readKey("ems:units", units)) || units;
+    const held = seatHeldBy(freshUnits, account.id);
     if (held) {
       setSeatUnit(held.unit);
       setJoinTeamId(held.unit.id);

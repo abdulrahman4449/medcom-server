@@ -1,5 +1,5 @@
 import { closeoutBlockers, closeoutMissingText } from "../domain/call-completeness.jsx";
-import { callRoute } from "../domain/call-locations.jsx";
+import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { CHECKLIST_RUNS_CAP, CHECKLIST_RUNS_KEY, CHECK_ANSWERS, checklistIsMandatory, checklistPartForSeat, checklistRunFor, isWriteItem, personChecklistRun, shiftKeyFor } from "../domain/checklist.jsx";
 import { callCloseReason } from "../domain/close-reasons.jsx";
 import { PRIORITY, REQ_STATUS, reqStatusMeta, TIME_STEPS, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf, proposeCallEditsTo, reqLabels } from "../domain/constants.jsx";
@@ -13,7 +13,7 @@ import { NO_TRANSPORT, REFUSAL_FROM_STATUSES, REFUSAL_TIME_KEY } from "../domain
 import { pcrAuthorChoices, pcrAuthorOf, pcrAuthorText } from "../domain/pcr-author.jsx";
 import { callsAwaitingRestock, markRestocked } from "../domain/restock.jsx";
 import { activeAssistUnitIds, assistOf, assistPending, assistTeamFor, assistTeams, isNoTransport } from "../domain/second-ambulance.jsx";
-import { applyCallCoding } from "../domain/sheet-vocabulary.jsx";
+import { CALL_TYPES, LOADED_KM, LOADED_KM_COLOR, applyCallCoding, callTypeOf, loadedKmOf, suggestedCallType } from "../domain/sheet-vocabulary.jsx";
 import { overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
@@ -84,6 +84,14 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
     markEditsSeen(myRequest.id, newestDeskEdit);
     setEditsSeenAt(newestDeskEdit);
   }
+  // The elapsed-time figure on the card. A quarter-minute tick is plenty for
+  // "12:40 on call"; it must not re-render the card every second.
+  const [clockNow, setClockNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setClockNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, []);
+  const callEditsApplied = (req) => (req && Array.isArray(req.edits) ? req.edits : []).some((e) => e && e.status === "applied");
   // A call this team was sent to as the second ambulance, rather than one that
   // is theirs to run. The team that owns the call keeps the timeline; an
   // assisting team's job is to turn up, help, and clear when they're done.
@@ -1746,76 +1754,102 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
       {!myRequest ? (
         <div style={styles.emptyState}>No active call. You'll be notified here the moment dispatch assigns one.</div>
       ) : (
-        <div style={{ ...styles.callCard, borderLeftColor: PRIORITY[priorityKeyOf(myRequest)].color, animation: "slide-in 0.25s ease" }}>
-          <div style={styles.callCardTop}>
-            <div style={styles.callCardNature}><Star field="nature" />{myRequest.nature}</div>
-            <div style={styles.callCardTopRight}>
-              {/* The escalation banner. It sits in the corner of the call all
-                  the way through it — a crew who hit a problem at the door of
-                  a ward should not have to wait until the call is over to say
-                  so, and one who only realises afterwards finds the same
-                  banner on the same call in their history. */}
-              {!alarmActive && (
-                <EscalationChip
-                  req={myRequest}
-                  viewer={escViewer}
-                  open={escOpen}
-                  onToggle={() => setEscOpen((v) => !v)}
-                />
+        <div style={{ ...styles.callCard, borderLeftColor: PRIORITY[priorityKeyOf(myRequest)].color, animation: "slide-in 0.25s ease", overflow: "hidden" }}>
+          {/* ---- header: category · status · elapsed, then the call itself ---- */}
+          {(() => {
+            const pr = PRIORITY[priorityKeyOf(myRequest)];
+            const st = reqStatusMeta(myRequest.status);
+            const tm = myRequest.times || {};
+            const stamped = Object.values(tm).filter((v) => typeof v === "number" && v <= clockNow);
+            const since = stamped.length ? Math.max(...stamped) : myRequest.createdAt || 0;
+            const started = tm.assigned || myRequest.createdAt || since;
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <span style={{ flex: "none", padding: "3px 9px", borderRadius: 6, background: `color-mix(in srgb, ${pr.color} 16%, transparent)`, color: pr.color, fontSize: 11, fontWeight: 800, letterSpacing: 0.9 }}>{pr.label}</span>
+                  <span style={{ marginLeft: "auto", flex: "none", fontSize: 19, fontWeight: 700, color: pr.color, fontVariantNumeric: "tabular-nums" }}>
+                    {msDurationStr(Math.max(0, clockNow - started))}
+                  </span>
+                </div>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: st.color, overflowWrap: "anywhere" }}>
+                  <span style={{ flex: "none", width: 7, height: 7, borderRadius: 999, background: st.color }} />
+                  <span>{st.label}{since ? ` · since ${clockStr(since)}` : ""}</span>
+                </span>
+              </div>
+            );
+          })()}
+          <div style={{ ...styles.callCardNature, fontSize: 25, fontWeight: 750, letterSpacing: -0.6, lineHeight: 1.12, marginTop: 6, overflowWrap: "anywhere" }}>
+            <Star field="nature" />{myRequest.nature}
+          </div>
+          {(isNoTransport(myRequest) || assisting || myRequest.scheduledFor) && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              <NoTransportTag req={myRequest} />
+              {assisting && (
+                <span style={styles.assistTag}>
+                  <HandRaised size={11} /> SECOND AMBULANCE{primaryUnit ? ` · with ${primaryUnit.name}` : ""}
+                </span>
               )}
-              <span style={{ ...styles.pill, background: PRIORITY[priorityKeyOf(myRequest)].color }}>{PRIORITY[priorityKeyOf(myRequest)].label}</span>
-            </div>
-          </div>
-          <div style={styles.callCardMeta}>
-            <span style={{ display: "inline-flex", alignItems: "center" }}>
-              <Star field="locationFrom" /><Star field="locationTo" />
-              <CallRoute req={myRequest} />
-            </span>
-            {/* Guarded like every other reader of this table. A status the
-                board can write and this table does not know is a blank screen
-                on the crew's own call card, which is the worst place in the
-                app for one. */}
-            <span style={{ ...styles.pill, background: reqStatusMeta(myRequest.status).color }}>
-              {reqStatusMeta(myRequest.status).label}
-            </span>
-            <NoTransportTag req={myRequest} />
-            <PcrAuthorTag req={myRequest} />
-            <CallTypeTag req={myRequest} />
-            <LoadedKmTag req={myRequest} />
-            {assisting && (
-              <span style={styles.assistTag}>
-                <HandRaised size={11} /> SECOND AMBULANCE
-                {primaryUnit ? ` · with ${primaryUnit.name}` : ""}
-              </span>
-            )}
-            {myRequest.scheduledFor && (
-              <span style={styles.scheduledTag}>
-                <CalendarClock size={11} /> booked for {hhmm(myRequest.scheduledFor)}
-              </span>
-            )}
-          </div>
-          {myRequest.mrn && <div style={styles.mrnRow}><Star field="mrn" />MRN: {myRequest.mrn}</div>}
-          {myRequest.notes && <div style={styles.mrnRow}>{myRequest.notes}</div>}
-          {myRequest.requirements && myRequest.requirements.length > 0 && (
-            <div style={styles.checklistRow}>
-              {reqLabels(myRequest).map((label, i) => (
-                <span key={i} style={styles.reqBadge}>{label}</span>
-              ))}
+              {myRequest.scheduledFor && (
+                <span style={styles.scheduledTag}>
+                  <CalendarClock size={11} /> booked for {hhmm(myRequest.scheduledFor)}
+                </span>
+              )}
             </div>
           )}
 
-          {/* Corrections. A crew can say the details are wrong; only the desk can
-              make that stick. Anything already sent shows here so the same crew
-              doesn't report it twice while they wait. */}
+          {/* ---- the route block: pick-up → destination, needs, MRN, notes ---- */}
+          <div style={{ marginTop: 12, borderRadius: 12, background: "var(--inset)", border: "1px solid var(--hair)", padding: "12px 14px", minWidth: 0 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", minWidth: 0 }}>
+              <div style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6, gap: 3 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 999, border: "2px solid var(--ink-3)", boxSizing: "border-box" }} />
+                <span style={{ width: 2, height: 22, background: "var(--hair-2)" }} />
+                <span style={{ width: 8, height: 8, borderRadius: 999, background: "var(--ink)" }} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 1.1, color: "var(--ink-4)" }}>PICK UP</span>
+                  <span style={{ fontSize: 16.5, fontWeight: 600, color: "var(--ink-2)", overflowWrap: "anywhere" }}><Star field="locationFrom" />{callFrom(myRequest) || "—"}</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 1.1, color: "var(--ink-4)" }}>DESTINATION</span>
+                  <span style={{ fontSize: 16.5, fontWeight: 650, color: "var(--ink)", overflowWrap: "anywhere" }}><Star field="locationTo" />{callTo(myRequest) || "—"}</span>
+                </div>
+              </div>
+            </div>
+            {(reqLabels(myRequest).length > 0 || myRequest.mrn) && (
+              <React.Fragment>
+                <div style={{ height: 1, background: "var(--hair)", margin: "12px 0 10px" }} />
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", minWidth: 0 }}>
+                    {reqLabels(myRequest).map((label, i) => (
+                      <span key={i} style={{ padding: "3px 8px", borderRadius: 6, background: "var(--inset-2)", border: "1px solid var(--hair-2)", fontSize: 11, fontWeight: 700, color: "var(--ink-2)", whiteSpace: "nowrap" }}>{label}</span>
+                    ))}
+                  </div>
+                  {myRequest.mrn && (
+                    <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, marginLeft: "auto", minWidth: 0 }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 1.1, color: "var(--ink-4)" }}>MRN</span>
+                      <span style={{ fontSize: 19, fontWeight: 700, letterSpacing: 0.5, color: "var(--ink)", fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}><Star field="mrn" />{myRequest.mrn}</span>
+                    </span>
+                  )}
+                </div>
+              </React.Fragment>
+            )}
+            {myRequest.notes && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--hair)", fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45, overflowWrap: "anywhere" }}>
+                {myRequest.notes}
+              </div>
+            )}
+          </div>
+
           {/* What the desk changed, in full, until the crew say they have
               seen it. The stars above mark WHERE; this says WHAT it was and
               what it is now, because "the destination changed" is not enough
               to act on. */}
           {unseenEdits.length > 0 && (
-            <div style={{ marginTop: 10, border: "1px solid var(--crit)", background: "color-mix(in srgb, var(--crit) 10%, var(--panel))", borderRadius: 10, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ marginTop: 10, border: "1px solid var(--crit)", background: "color-mix(in srgb, var(--crit) 10%, var(--panel))", borderRadius: 10, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
               <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: 0.6, color: "var(--crit-2)" }}>★ DISPATCH CHANGED THIS CALL</div>
               {unseenEdits.map((e) => (
-                <div key={e.id} style={{ fontSize: 13.5, color: "var(--ink)" }}>
+                <div key={e.id} style={{ fontSize: 13.5, color: "var(--ink)", overflowWrap: "anywhere" }}>
                   <strong>{editFieldLabel(e.field)}</strong>: {editValueText(e.from, e.field) || "—"} → <strong>{editValueText(e.to, e.field)}</strong>
                   <span style={{ color: "var(--ink-3)" }}> · {e.by} · {clockStr(e.at)}</span>
                 </div>
@@ -1825,111 +1859,114 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
               </button>
             </div>
           )}
-          {!assisting && (
-            <div style={styles.editCrewBlock}>
-              {pendingCallEdits(myRequest).length > 0 && (
-                <div style={styles.editPendingNote}>
-                  <Clock size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-                  Sent to dispatch — waiting for them to confirm:{" "}
-                  {pendingCallEdits(myRequest)
-                    .map((e) => `${editFieldLabel(e.field)} → ${editValueText(e.to, e.field)}`)
-                    .join(", ")}
-                </div>
-              )}
-              <EditHistory req={myRequest} />
-              {!editOpen ? (
-                <button style={styles.ghostBtnSm} onClick={() => setEditOpen(true)}>
-                  <PencilLine size={12} /> These details are wrong
-                </button>
-              ) : (
-                <CallEditForm
-                  req={myRequest}
-                  mode="propose"
-                  onSubmit={proposeCallEdits}
-                  onCancel={() => setEditOpen(false)}
-                />
-              )}
-            </div>
-          )}
 
-          <CallStepper req={myRequest} />
+          {/* ---- the five stamps as a stepper: ticks behind, a ring on now, nothing ahead ---- */}
+          {(() => {
+            const tm = myRequest.times || {};
+            const SHORT = { enroute: "EN ROUTE", arrival: "SCENE", departure: "DEPART", arrivalDestination: "ARRIVED", backInService: "IN SERVICE" };
+            const rows = [];
+            TIME_STEPS.forEach((s) => {
+              rows.push({ key: s.timeKey, label: SHORT[s.timeKey] || s.timeLabel, ts: tm[s.timeKey] || null });
+              if (s.timeKey === "arrival" && tm[REFUSAL_TIME_KEY]) rows.push({ key: REFUSAL_TIME_KEY, label: "REFUSED", ts: tm[REFUSAL_TIME_KEY], color: NO_TRANSPORT.color });
+            });
+            const cur = rows.findIndex((r) => !r.ts);
+            const tight = rows.length > 5;
+            return (
+              <div style={{ display: "flex", alignItems: "flex-start", marginTop: 14, minWidth: 0 }}>
+                {rows.map((r, i) => {
+                  const done = !!r.ts, now = i === cur;
+                  const tint = r.color || (done ? "var(--ok)" : now ? "var(--flow)" : "var(--hair-2)");
+                  return (
+                    <React.Fragment key={r.key}>
+                      {i > 0 && <div style={{ flex: 1, height: 2, marginTop: 12, marginLeft: -4, marginRight: -4, background: rows[i - 1].ts ? (rows[i - 1].color || "var(--ok)") : "var(--hair-2)" }} />}
+                      <div style={{ flex: "none", width: tight ? 50 : 58, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, minWidth: 0 }}>
+                        <div style={{ width: 26, height: 26, borderRadius: 999, boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
+                          background: done ? tint : "var(--inset)", border: done ? "none" : `${now ? 2.5 : 2}px solid ${tint}`,
+                          boxShadow: now ? "0 0 0 5px color-mix(in srgb, var(--flow) 16%, transparent)" : "none" }}>
+                          {done && <span style={{ color: "var(--ground)", fontSize: 13, fontWeight: 900, lineHeight: 1 }}>✓</span>}
+                          {now && <span style={{ width: 8, height: 8, borderRadius: 999, background: "var(--flow)" }} />}
+                        </div>
+                        <span style={{ fontSize: tight ? 8.5 : 9.5, fontWeight: now ? 800 : 700, letterSpacing: 0.3, whiteSpace: "nowrap", color: done ? tint : now ? "var(--ink)" : "var(--ink-4)" }}>{r.label}</span>
+                        <span style={{ fontSize: 11, marginTop: -3, fontVariantNumeric: "tabular-nums", color: done ? "var(--ink-3)" : "var(--flow)", whiteSpace: "nowrap" }}>{done ? hhmm(r.ts) : now ? "now" : ""}</span>
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
-          {/* Where the ask for a second ambulance has got to, on the card of the
-              team who asked for it — a crew waiting for help should not have to
-              radio the desk to find out whether it is coming. */}
           <AssistStatusLine req={myRequest} units={units} />
 
-          {/* The paperwork name. One button per seat, each carrying the name of
-              whoever is sitting in it — a crew picking "Alpha" are picking a
-              person, so the person is what the button says. It can be answered
-              from the moment the call is theirs, and only becomes the thing
-              holding the call open at the last step, which is where the record
-              actually needs it. */}
-          {!alarmActive && showPcrBlock && (
-            <div style={pcrBlocking ? styles.pcrBlockRequired : styles.pcrBlock}>
-              <div style={pcrBlocking ? styles.pcrHeaderRequired : styles.pcrHeader}>
-                <FileSignature size={11} /> PCR AUTHOR
-                {pcrAuthor ? "" : " — REQUIRED BEFORE BACK IN SERVICE"}
+          {/* ---- paperwork: PCR author, call type, loaded km — three ticks to earn ---- */}
+          {!alarmActive && showPcrBlock && (() => {
+            const type = callTypeOf(myRequest);
+            const km = loadedKmOf(myRequest);
+            const suggested = type ? null : suggestedCallType(myRequest);
+            const needType = codingBlocking.includes("callType");
+            const needKm = codingBlocking.includes("loadedKm");
+            const required = pcrBlocking || needType || needKm;
+            const doneCount = (pcrAuthor ? 1 : 0) + (type ? 1 : 0) + (km ? 1 : 0);
+            const accent = required ? "var(--hold)" : "var(--hair-2)";
+            const rowStyle = (miss) => ({ minHeight: 44, display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", borderRadius: 10, background: "var(--inset)", border: `1px solid ${miss ? "var(--hold)" : "var(--hair)"}`, minWidth: 0 });
+            const mark = (ok, miss) => ok
+              ? <span style={{ flex: "none", width: 18, height: 18, borderRadius: 999, background: "var(--ok)", color: "var(--ground)", fontSize: 11, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center" }}>✓</span>
+              : <span style={{ flex: "none", width: 18, height: 18, borderRadius: 999, boxSizing: "border-box", border: `2px solid ${miss ? "var(--hold)" : "var(--hair-3)"}` }} />;
+            const lab = (text, miss) => <span style={{ flex: "none", width: 82, fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: miss ? "var(--hold-2)" : "var(--ink-3)", whiteSpace: "nowrap" }}>{text}</span>;
+            const chip = (on, color, extra) => ({ minWidth: 34, height: 32, padding: "0 8px", display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: 8, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: on ? `color-mix(in srgb, ${color} 18%, transparent)` : "transparent", border: `1px solid ${on ? color : extra || "var(--hair-2)"}`, color: on ? color : "var(--ink-2)", whiteSpace: "nowrap" });
+            return (
+              <div style={{ marginTop: 14, borderRadius: 12, border: `1px solid ${accent}`, background: required ? "color-mix(in srgb, var(--hold) 7%, transparent)" : "transparent", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 1.1, color: required ? "var(--hold-2)" : "var(--ink-4)" }}>{required ? "BEFORE BACK IN SERVICE" : "PAPERWORK"}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: required ? "var(--hold-2)" : "var(--ink-4)", whiteSpace: "nowrap" }}>{required ? `${3 - doneCount} of 3 left` : `${doneCount} of 3 done`}</span>
+                </div>
+                <div style={rowStyle(pcrBlocking && !pcrAuthor)}>
+                  {mark(!!pcrAuthor, pcrBlocking)}{lab("PCR AUTHOR", pcrBlocking && !pcrAuthor)}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginLeft: "auto", justifyContent: "flex-end", minWidth: 0 }}>
+                    {pcrChoices.length === 0
+                      ? <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Nobody signed on to {myUnit.name}</span>
+                      : pcrChoices.map((c) => {
+                          const on = !!pcrAuthor && pcrAuthor.seat === c.seat;
+                          return <button key={c.seat} type="button" style={chip(on, "var(--flow)")} onClick={() => setPcrAuthor(c)}>{seatLabel(c.seat)} · {c.name}</button>;
+                        })}
+                  </div>
+                </div>
+                <div style={{ ...rowStyle(needType), flexWrap: "wrap", rowGap: 8 }}>
+                  {mark(!!type, needType)}{lab("CALL TYPE", needType)}
+                  <div style={{ flex: "1 1 100%", display: "flex", gap: 5, flexWrap: "wrap", minWidth: 0 }}>
+                    {CALL_TYPES.map((t) => {
+                      const on = !!type && type.key === t.key;
+                      return <button key={t.key} type="button" title={`${t.key} — ${t.desc}`} style={{ ...chip(on, t.color, suggested === t.key ? "rgba(245,158,11,0.7)" : null), flex: "1 1 0", minWidth: 40 }} onClick={() => setCoding("callType", t.key)}>{t.key}</button>;
+                    })}
+                  </div>
+                </div>
+                <div style={{ ...rowStyle(needKm), flexWrap: "wrap", rowGap: 8 }}>
+                  {mark(!!km, needKm)}{lab("LOADED KM", needKm)}
+                  {km && <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--ink-3)", whiteSpace: "nowrap" }}>{km.name}</span>}
+                  <div style={{ flex: "1 1 100%", display: "flex", gap: 5, flexWrap: "wrap", minWidth: 0 }}>
+                    {LOADED_KM.map((k) => {
+                      const on = !!km && km.key === k.key;
+                      return <button key={k.key} type="button" title={`${k.name} — ${k.desc}`} style={{ ...chip(on, LOADED_KM_COLOR), flex: "1 1 0", minWidth: 40 }} onClick={() => setCoding("loadedKm", k.key)}>{k.key === "NA" ? "N/A" : k.key}</button>;
+                    })}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-4)", overflowWrap: "anywhere" }}>
+                  {type ? `${type.key} · ${type.name}` : "Type: A ALS · B BLS · C critical · D auxiliary · E no transport"}
+                  {" — "}
+                  {km ? `${km.name} loaded` : "Km bands: 1 ≤50 · 2 51–150 · 3 151–250 · 4 251–400 · 5 400+"}
+                </div>
               </div>
-              {pcrChoices.length === 0 ? (
-                <div style={styles.pcrEmpty}>
-                  Nobody is signed on to {myUnit.name}, so there is no name to put the report on. Take a
-                  seat on this unit to name the PCR author.
-                </div>
-              ) : (
-                <div style={styles.pcrChoices}>
-                  {pcrChoices.map((c) => {
-                    const picked = !!pcrAuthor && pcrAuthor.seat === c.seat;
-                    return (
-                      <button
-                        key={c.seat}
-                        style={picked ? styles.pcrChoiceOn : styles.pcrChoice}
-                        onClick={() => setPcrAuthor(c)}
-                      >
-                        {picked && <CheckCircle2 size={12} />} {seatLabel(c.seat)} — {c.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              {/* The fact of who is writing it stays on the card; the
-                  explanation of what that means folds away. */}
-              {pcrAuthor ? (
-                <div style={styles.pcrNote}>
-                  {pcrAuthorText(myRequest)} is writing the report
-                  {pcrAuthor.assignedAt ? ` · named at ${clockStr(pcrAuthor.assignedAt)}` : ""}
-                </div>
-              ) : (
-                <div style={styles.pcrNote}>Nobody named yet</div>
-              )}
-              <InfoNote>
-                {pcrAuthor
-                  ? "Tap the other seat to move it while the call is still open."
-                  : "Whoever is writing the patient care report for this call. The call cannot go back in service until one of you is on it."}
-              </InfoNote>
-            </div>
+            );
+          })()}
+
+          {/* The handover, sitting with the step it belongs to. */}
+          {!alarmActive && !assisting && !isNoTransport(myRequest) && (myRequest.times || {}).arrivalDestination && (
+            <div style={{ marginTop: 10 }}><ReceiverBanner req={myRequest} canEdit onSave={setReceiver} /></div>
           )}
 
-          {/* The two codes for the sheet. Always open on the crew's card — they
-              have one call in front of them, not ten, and the distance is
-              something only they can answer. For most of the call nothing here
-              blocks the timeline: a crew who need to clear a scene are not held
-              up by a billing code. At the last step both codes are required,
-              because "the desk will finish it off the history list afterwards"
-              is exactly the habit that left the column blank. */}
-          {!alarmActive && myRequest.status !== "completed" && (
-            <CallCodingBlock
-              req={myRequest}
-              onSet={setCoding}
-              missing={codingBlocking}
-              hint={assisting ? "Second ambulance — usually a D." : ""}
-            />
-          )}
-
-          <div style={styles.callCardActions}>
-            {alarmActive && (
-              <span style={styles.pendingAckTag}>Acknowledge the call above to continue</span>
-            )}
+          {/* ---- the one primary action ---- */}
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+            {alarmActive && <span style={styles.pendingAckTag}>Acknowledge the call above to continue</span>}
             {!alarmActive && assisting && (
               <React.Fragment>
                 <span style={styles.assistNote}>
@@ -1942,40 +1979,47 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
               </React.Fragment>
             )}
             {!alarmActive && !assisting && nextStep && (
-              <React.Fragment>
-                {stepBlocked && (
-                  <span style={styles.pcrPendingNote}>
-                    Record {closeoutMissingText(blockers)} above to go back in service
-                  </span>
+              <button
+                style={{ ...(stepBlocked ? styles.stepBtnBlocked : styles.stepBtn), marginTop: 0, minHeight: 64, borderRadius: 14 }}
+                onClick={() => runAction("step", () => recordStep(nextStep))}
+                disabled={stepBlocked || !!acting}
+                title={stepBlocked ? `This call needs ${closeoutMissingText(blockers)} before it can close` : ""}
+              >
+                <span style={{ ...styles.stepBtnCue, ...(stepBlocked ? { color: "var(--hold-2)", borderColor: "var(--hair-3)" } : null) }}>
+                  {stepBlocked ? "BLOCKED" : acting === "step" ? "SAVING" : "NEXT"}
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, textAlign: "left" }}>
+                  <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: -0.2, overflowWrap: "anywhere" }}>{acting === "step" ? "Recording…" : nextStep.buttonLabel}</span>
+                  {stepBlocked && <span style={{ fontSize: 12, fontWeight: 500, color: "var(--hold-2)", overflowWrap: "anywhere" }}>record {closeoutMissingText(blockers)} above</span>}
+                </span>
+                {!stepBlocked && <ChevronRight size={18} style={{ marginLeft: "auto", flex: "none" }} />}
+              </button>
+            )}
+            {/* Quiet: the things pressed on a handful of calls. */}
+            {!alarmActive && (
+              <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+                {!assisting && !editOpen && (
+                  <button type="button" style={{ background: "none", border: "none", padding: "6px 2px", minHeight: 36, fontFamily: "inherit", fontSize: 13, color: "var(--ink-3)", textDecoration: "underline", textUnderlineOffset: 3, cursor: "pointer" }} onClick={() => setEditOpen(true)}>
+                    Details are wrong
+                  </button>
                 )}
-                {/* The one thing this crew is meant to do next. It was the same
-                    size as everything else around it, which is the wrong shape
-                    for a control pressed once per stage, with a glove on, in a
-                    moving vehicle — it should be the obvious target on the
-                    screen and hard to miss. */}
-                {/* The handover, sitting with the step it belongs to.
-                    By the time the next stamp is "Back in service" the crew are
-                    standing at the destination having just handed the patient
-                    over — so the question about who took them belongs here,
-                    beside that button, not further up the card where it is read
-                    on the way out instead of on the way in. */}
-                {!assisting && !isNoTransport(myRequest) && (myRequest.times || {}).arrivalDestination && (
-                  <ReceiverBanner req={myRequest} canEdit onSave={setReceiver} />
+                <EscalationChip req={myRequest} viewer={escViewer} open={escOpen} onToggle={() => setEscOpen((v) => !v)} />
+              </div>
+            )}
+            {!assisting && (pendingCallEdits(myRequest).length > 0 || editOpen || callEditsApplied(myRequest)) && (
+              <div style={{ minWidth: 0 }}>
+                {pendingCallEdits(myRequest).length > 0 && (
+                  <div style={styles.editPendingNote}>
+                    <Clock size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                    Sent to dispatch — waiting for them to confirm:{" "}
+                    {pendingCallEdits(myRequest).map((e) => `${editFieldLabel(e.field)} → ${editValueText(e.to, e.field)}`).join(", ")}
+                  </div>
                 )}
-
-                <button
-                  style={stepBlocked ? styles.stepBtnBlocked : styles.stepBtn}
-                  onClick={() => runAction("step", () => recordStep(nextStep))}
-                  disabled={stepBlocked || !!acting}
-                  title={stepBlocked ? `This call needs ${closeoutMissingText(blockers)} before it can close` : ""}
-                >
-                  <span style={styles.stepBtnCue}>
-                    {stepBlocked ? "BLOCKED" : acting === "step" ? "SAVING" : "NEXT"}
-                  </span>
-                  {acting === "step" ? "Recording…" : nextStep.buttonLabel}
-                  {!stepBlocked && <ChevronRight size={18} style={{ marginLeft: "auto" }} />}
-                </button>
-              </React.Fragment>
+                {unseenEdits.length === 0 && <EditHistory req={myRequest} />}
+                {editOpen && (
+                  <CallEditForm req={myRequest} mode="propose" onSubmit={proposeCallEdits} onCancel={() => setEditOpen(false)} />
+                )}
+              </div>
             )}
           </div>
 

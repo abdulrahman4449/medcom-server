@@ -1075,6 +1075,23 @@ patch", that document is the target — do not start a fresh exploration.
   crew tap Seen; "seen" is a per-device timestamp in `lib/edits-seen.jsx`, so
   a phone that was locked while the desk edited catches up on its next read.
 
+- **The crew's call card is the approved "one glance, one thumb" design.**
+  `TeamView` — category colour on the SIDE (ALS red, CCT amber, BLS blue),
+  status and elapsed time above the call, one route block (pick-up →
+  destination, needs, MRN large and tabular, notes), the five stamps as a
+  HORIZONTAL stepper (ticks behind, ring on now, nothing ahead, times under),
+  the next stamp pinned under it, and PCR author / call type / loaded km as
+  ONE paperwork strip that turns amber at the last step. Chips are the short
+  codes (A–E, bands 1–5) with the names in a caption line, because the band
+  names wrapped the strip onto four lines on a phone. Verified by rendering
+  the real bundle at 390px (`scratchpad` harness: real server, seeded call,
+  real sign-in) — that is the check to repeat when touching the card.
+- **The sign-in screen reads the board before deciding where to send you.**
+  `routeAfterPassword` used the `units` prop, which is empty on a phone that
+  has just signed in for the first time (the poll waits for a token), so the
+  person changing phones mid-shift — the one "Continue as MEDIC 1" exists
+  for — was sent to pick a shift and a truck as if they were new.
+
 ## Checking your work
 
 Two commands, and both must pass before you build.
