@@ -11,6 +11,7 @@ import { APP_NAME, APP_SLUG } from "../brand/brand.jsx";
 import {
   SCHEDULE_CODES, SCHEDULE_CODE_ORDER, SCHEDULE_COVERAGE, parseScheduleCode,
   scheduleCoverageCount, scheduleDayIsWeekend, scheduleView, scheduleWorkingPerDay,
+  effectiveScheduleCodes,
 } from "../domain/schedule.jsx";
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -41,7 +42,12 @@ const CODE_PRINT = {
   L: ["#F2F2F2", "#7F7F7F"], SL: ["#F8CBAD", "#843C0C"], CS: ["#F4B6B6", "#8B1A1A"],
   BD: ["#DDD9C4", "#5C5426"], BN: ["#C4BD97", "#3F3A17"],
 };
-function codePrint(code) { return CODE_PRINT[code] || ["#FFFFFF", "#111111"]; }
+function codePrint(code, CODES) {
+  if (CODE_PRINT[code]) return CODE_PRINT[code];
+  const meta = CODES && CODES[code];
+  if (meta && meta.color) return ["#FFFFFF", meta.color];
+  return ["#FFFFFF", "#111111"];
+}
 
 // The legend, in the six columns the department groups it in.
 const LEGEND_COLS = [
@@ -56,9 +62,9 @@ const LEGEND_COLS = [
 function orgTitle() {
   return ORG_NAME ? `${ORG_NAME} — Ambulance Department` : "Ambulance Department — Employees Schedule";
 }
-function cellGlyph(token) {
+function cellGlyph(token, CODES) {
   const { code, hours } = parseScheduleCode(token);
-  const meta = SCHEDULE_CODES[code];
+  const meta = (CODES || SCHEDULE_CODES)[code];
   if (!meta) return "";
   const shown = meta.show || code;
   return `${shown}${hours ? `<span class="hh">${hours}</span>` : ""}`;
@@ -66,13 +72,14 @@ function cellGlyph(token) {
 
 // ---------- the staff PDF: grid only, the KFSH look ----------
 export function buildSchedulePdfHtml({ view, dayKeys, meta }) {
+  const CODES = (meta && meta.codes) || SCHEDULE_CODES;
   const metas = dayKeys.map(dayMeta);
   const today = meta && meta.todayKey ? dayKeys.indexOf(meta.todayKey) : -1;
   const dcell = (i, extra) => `class="d${metas[i].dow === 0 ? " wk" : ""}${i === today ? " today" : ""}"${extra || ""}`;
 
   const legend = LEGEND_COLS.map((col) => `<td class="lgcol">${col.map(([k, label]) => {
     if (!k) return "";
-    const c = codePrint(k);
+    const c = codePrint(k, CODES);
     const glyph = (SCHEDULE_CODES[k] && SCHEDULE_CODES[k].show) || k;
     return `<div class="lgrow"><b style="background:${c[0]};color:${c[1]}">${glyph}</b><span>${label}</span></div>`;
   }).join("")}</td>`).join("");
@@ -89,11 +96,12 @@ export function buildSchedulePdfHtml({ view, dayKeys, meta }) {
     g.rows.forEach((r, ri) => {
       body += `<tr class="${ri % 2 ? "alt" : ""}"><td class="nm">${esc(r.name)}</td><td class="id">${esc(r.empId)}</td>${r.cells.map((t, i) => {
         const { code } = parseScheduleCode(t);
-        const c = SCHEDULE_CODES[code] ? codePrint(code) : null;
+        const known = !!CODES[code];
+        const c = known ? codePrint(code, CODES) : null;
         const bg = c ? c[0] : (i === today ? "#FFF2CC" : (metas[i].weekend ? "#EAF0F6" : "#FFFFFF"));
         const fg = c ? c[1] : "#000";
-        const bold = ["H", "P", "CH", "CP"].includes(code) || parseScheduleCode(t).hours;
-        return `<td ${dcell(i)} style="background:${bg};color:${fg};font-weight:${bold ? 800 : 600}">${cellGlyph(t)}</td>`;
+        const bold = (CODES[code] && CODES[code].ot) || parseScheduleCode(t).hours;
+        return `<td ${dcell(i)} style="background:${bg};color:${fg};font-weight:${bold ? 800 : 600}">${cellGlyph(t, CODES)}</td>`;
       }).join("")}</tr>`;
     });
   });
@@ -149,8 +157,9 @@ tr.alt td.nm,tr.alt td.id{background:#F4F8FB}
 
 // Open the staff PDF in a new tab and send it to print.
 export function openSchedulePdf({ schedule, accounts, dayKeys, meta }) {
-  const view = scheduleView(schedule, accounts, dayKeys);
-  const html = buildSchedulePdfHtml({ view, dayKeys, meta });
+  const codes = effectiveScheduleCodes(schedule);
+  const view = scheduleView(schedule, accounts, dayKeys, codes);
+  const html = buildSchedulePdfHtml({ view, dayKeys, meta: { ...(meta || {}), codes } });
   const w = window.open("", "_blank");
   if (!w) { window.alert("Allow pop-ups for this site to produce the schedule PDF."); return false; }
   w.document.write(html);
@@ -166,7 +175,8 @@ const XL_FG = {};
 Object.keys(CODE_PRINT).forEach((k) => { XL_FG[k] = "FF" + CODE_PRINT[k][1].slice(1); });
 
 export async function exportScheduleExcel({ schedule, accounts, dayKeys, meta }) {
-  const view = scheduleView(schedule, accounts, dayKeys);
+  const CODES = effectiveScheduleCodes(schedule);
+  const view = scheduleView(schedule, accounts, dayKeys, CODES);
   const cells = (schedule && schedule.cells) || {};
   const metas = dayKeys.map(dayMeta);
   const nDay = dayKeys.length;
@@ -184,7 +194,7 @@ export async function exportScheduleExcel({ schedule, accounts, dayKeys, meta })
   view.groups.forEach((g) => {
     aoa.push([g.name, "", ...Array(nDay + 2).fill("")]); rowKinds.push("group");
     g.rows.forEach((r) => {
-      aoa.push([r.name, r.empId, ...r.cells.map((t) => { const { code, hours } = parseScheduleCode(t); const m = SCHEDULE_CODES[code]; return m ? (m.show || code) + (hours ? hours : "") : ""; }), r.summary.exempt ? "" : r.summary.shifts, r.summary.otHours || ""]);
+      aoa.push([r.name, r.empId, ...r.cells.map((t) => { const { code, hours } = parseScheduleCode(t); const m = CODES[code]; return m ? (m.show || code) + (hours ? hours : "") : ""; }), r.summary.exempt ? "" : r.summary.shifts, r.summary.otHours || ""]);
       rowKinds.push("emp");
     });
   });
@@ -194,7 +204,7 @@ export async function exportScheduleExcel({ schedule, accounts, dayKeys, meta })
     aoa.push([c.label, "", ...metas.map((m) => { const need = c.need(m.weekend); const n = scheduleCoverageCount(cells, view.allIds, dayKeys[metas.indexOf(m)], c.codes); return need === 0 ? "" : n; }), "", ""]);
     rowKinds.push("cover");
   });
-  const perDay = scheduleWorkingPerDay(cells, view.allIds, dayKeys);
+  const perDay = scheduleWorkingPerDay(cells, view.allIds, dayKeys, CODES);
   aoa.push(["TOTAL TEAMS ON DUTY (people ÷ 2)", "", ...perDay.map((n) => (n ? Math.floor(n / 2) : "")), "", ""]); rowKinds.push("total");
   aoa.push(["TOTAL PEOPLE ON DUTY", "", ...perDay.map((n) => n || ""), "", ""]); rowKinds.push("total");
 
@@ -223,7 +233,8 @@ export async function exportScheduleExcel({ schedule, accounts, dayKeys, meta })
         const token = (aoa[r][2 + i] || "");
         const code = parseScheduleCode(token).code;
         const fill = XL_ARGB[code];
-        set(r, 2 + i, { alignment: { horizontal: "center" }, font: { sz: 8, bold: !!code, color: { rgb: XL_FG[code] || "FF000000" } }, border, ...(fill ? { fill: { patternType: "solid", fgColor: { rgb: fill } } } : (metas[i].weekend ? { fill: { patternType: "solid", fgColor: { rgb: "FFEAF0F6" } } } : {})) });
+        const custColor = !fill && CODES[code] && CODES[code].color ? "FF" + String(CODES[code].color).replace("#", "") : null;
+        set(r, 2 + i, { alignment: { horizontal: "center" }, font: { sz: 8, bold: !!code, color: { rgb: XL_FG[code] || custColor || "FF000000" } }, border, ...(fill ? { fill: { patternType: "solid", fgColor: { rgb: fill } } } : (metas[i].weekend ? { fill: { patternType: "solid", fgColor: { rgb: "FFEAF0F6" } } } : {})) });
       }
       set(r, nDay + 2, { alignment: { horizontal: "center" }, font: { sz: 9, bold: true }, border });
       set(r, nDay + 3, { alignment: { horizontal: "center" }, font: { sz: 9, bold: true, color: { rgb: "FF8A5A00" } }, border });

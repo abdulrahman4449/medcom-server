@@ -170,6 +170,17 @@ export function run(D, t) {
     t.is("schedule: the view drops the owner from the group", view.groups[0].rows.length, 2);
     t.ok("schedule: the view never lists the owner", !view.allIds.includes("F1525518"));
     t.is("schedule: a row carries its 42 tokens", view.groups[0].rows[0].cells.length, 42);
+    // editable codes: add a custom code, hide a built-in, override a label
+    const withCodes = { ...sched, customCodes: { X: { label: "Special", color: "#FF00FF", kind: "night" }, D: { label: "Main day (renamed)" } }, hiddenCodes: ["SL"] };
+    const eff = D.effectiveScheduleCodes(withCodes);
+    t.ok("codes: a custom code is added with its kind's flags", eff.X && eff.X.work === true && eff.X.period === "night");
+    t.is("codes: a built-in label can be overridden", eff.D.label, "Main day (renamed)");
+    t.ok("codes: a hidden built-in is gone", !eff.SL);
+    t.ok("codes: the order lists the custom code and drops the hidden one",
+      D.effectiveScheduleCodeOrder(withCodes).includes("X") && !D.effectiveScheduleCodeOrder(withCodes).includes("SL"));
+    // a custom night code counts as a worked shift in the summary
+    const cc = {}; cc[D.scheduleCellKey("Z1", keys[0])] = "X";
+    t.is("codes: a custom worked code counts toward shifts", D.employeeScheduleSummary(cc, "Z1", keys, eff).shifts, 1);
     const perDay = D.scheduleWorkingPerDay(sched.cells, view.allIds, keys);
     t.is("schedule: two people working on day 0", perDay[0], 2);
     t.is("schedule: nobody working on day 1", perDay[1], 0);

@@ -833,6 +833,18 @@ patch", that document is the target — do not start a fresh exploration.
   next revision. The PDF is offered only once the schedule is APPROVED. The
   owner/admin account never appears on the roster (`scheduleEligibleAccounts`
   filters the `isOwner` row from the picker and the view).
+- **The schedule's codes are editable, and the edits travel with the sheet.**
+  `effectiveScheduleCodes` / `effectiveScheduleCodeOrder` merge the built-in
+  legend with the schedule's own `customCodes` (added or label/colour-overridden)
+  and `hiddenCodes`, and EVERY reader goes through them — the picker, the
+  legend, the grid, `employeeScheduleSummary` (which takes a `codes` map), and
+  both exports — so a custom code is the same code everywhere. `normalise` in
+  `SchedulePage.jsx` MUST carry `customCodes`/`hiddenCodes` or the next edit
+  wipes them (it read them back stripped once). A custom code's `kind`
+  (day/night/overtime/office/off) decides how it counts; coverage rows stay on
+  the built-in sites. The admin's own account is excluded, and the employee
+  NAME column is `position: sticky; left: 0` so it holds while the 42 days
+  scroll.
 - **The schedule is prepared, submitted and approved, and any edit reopens it.**
   `status` on `ems:schedule` is draft → submitted → approved with a climbing
   `version`. A preparer (schedule area) submits; a REAL admin (`role === "admin"`

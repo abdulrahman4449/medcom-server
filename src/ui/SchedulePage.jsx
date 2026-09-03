@@ -14,6 +14,7 @@ import {
   SCHEDULE_REQUIRED_SHIFTS, defaultScheduleStart, employeeScheduleSummary,
   parseScheduleCode, scheduleCellKey, scheduleCoverageCount, scheduleDayIsWeekend,
   scheduleDayKeys, scheduleEligibleAccounts, scheduleIsApproved, scheduleStatusLabel,
+  effectiveScheduleCodes, effectiveScheduleCodeOrder, SCHEDULE_CODE_KINDS,
 } from "../domain/schedule.jsx";
 import { exportScheduleExcel, openSchedulePdf } from "../export/schedule-export.jsx";
 import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
@@ -30,9 +31,10 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 
 // A colour per code, from the status/brand tokens, so the grid reads at a
 // glance without inventing a new palette.
-function codeColor(code) {
-  const meta = SCHEDULE_CODES[code];
+function codeColor(code, codes) {
+  const meta = (codes || SCHEDULE_CODES)[code];
   if (!meta) return "var(--ink-3)";
+  if (meta.color) return meta.color;
   if (meta.off) return code === "L" ? "var(--ink-4)" : "var(--crit-2)";
   if (meta.ot) return "var(--hold)";
   switch (meta.site) {
@@ -66,6 +68,8 @@ function normalise(schedule) {
     version: typeof s.version === "number" ? s.version : 0,
     submittedBy: s.submittedBy || "", submittedAt: s.submittedAt || null,
     approvedBy: s.approvedBy || "", approvedAt: s.approvedAt || null,
+    customCodes: s.customCodes && typeof s.customCodes === "object" ? s.customCodes : {},
+    hiddenCodes: Array.isArray(s.hiddenCodes) ? s.hiddenCodes : [],
   };
 }
 
@@ -81,6 +85,9 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
   const dayKeys = useMemo(() => scheduleDayKeys(start), [start]);
   const groups = model.groups;
   const cells = model.cells;
+  const codes = effectiveScheduleCodes(model);
+  const codeOrder = effectiveScheduleCodeOrder(model);
+  const [codeEditor, setCodeEditor] = useState(false);
 
   const accountName = (id) => {
     const a = (accounts || []).find((x) => x.id === id);
@@ -100,6 +107,8 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
       ...next,
       cells: next.cells || live.cells,
       groups: next.groups || live.groups,
+      customCodes: next.customCodes || live.customCodes,
+      hiddenCodes: next.hiddenCodes || live.hiddenCodes,
       start: next.start != null ? next.start : live.start,
       updatedAt: Date.now(),
       updatedBy: (user && user.name) || "",
@@ -273,6 +282,7 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
           dayKeys={dayKeys}
           groups={groups}
           cells={cells}
+          codes={codes}
           accountName={accountName}
           onCell={(accountId, dayKey) => { setPicker({ accountId, dayKey }); setOtHours(parseScheduleCode(cells[scheduleCellKey(accountId, dayKey)] || "").hours || ""); }}
           onRenameGroup={renameGroup}
@@ -283,7 +293,20 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
         />
       </div>
 
-      <ScheduleLegend />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+        <button style={styles.bannerBtn} onClick={() => setCodeEditor(true)}>Manage codes</button>
+        <span style={{ fontSize: 11, color: "var(--ink-4)" }}>add a code, rename one, change its colour, or remove one you don't use</span>
+      </div>
+      <ScheduleLegend codes={codes} codeOrder={codeOrder} />
+      {codeEditor && (
+        <CodeEditor
+          model={model}
+          codes={codes}
+          codeOrder={codeOrder}
+          onClose={() => setCodeEditor(false)}
+          onSave={saveEdit}
+        />
+      )}
 
       {/* The cell code picker. */}
       {picker && (() => {
@@ -298,14 +321,14 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
                 <button style={sx.modalX} onClick={() => setPicker(null)}>✕</button>
               </div>
               <div style={sx.codeGrid}>
-                {SCHEDULE_CODE_ORDER.map((code) => {
-                  const meta = SCHEDULE_CODES[code];
+                {codeOrder.map((code) => {
+                  const meta = codes[code];
                   const on = cur.code === code;
                   return (
                     <button
                       key={code}
                       title={meta.label}
-                      style={{ ...sx.codeBtn, color: codeColor(code), borderColor: on ? "var(--flow)" : "var(--hair-2)", background: on ? "rgba(10,132,255,.18)" : "var(--inset-2)" }}
+                      style={{ ...sx.codeBtn, color: codeColor(code, codes), borderColor: on ? "var(--flow)" : "var(--hair-2)", background: on ? "rgba(10,132,255,.18)" : "var(--inset-2)" }}
                       onClick={() => setCell(picker.accountId, picker.dayKey, code, meta.ot ? (otHours || "") : "")}
                     >
                       {meta.show || code}
@@ -368,14 +391,15 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
   );
 }
 
-function ScheduleGrid({ dayKeys, groups, cells, accountName, onCell, onRenameGroup, onRemoveGroup, onRemoveMember, onAddMember, allIds }) {
+function ScheduleGrid({ dayKeys, groups, cells, codes, accountName, onCell, onRenameGroup, onRemoveGroup, onRemoveMember, onAddMember, allIds }) {
+  const CODES = codes || SCHEDULE_CODES;
   const NAME_W = 150, CW = 30, SUM_W = 132;
   const weekendBg = "var(--inset)";
   return (
     <div style={{ minWidth: NAME_W + dayKeys.length * CW + SUM_W }}>
       {/* header */}
       <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 1 }}>
-        <div style={{ width: NAME_W, flex: "none" }} />
+        <div style={{ width: NAME_W, flex: "none", position: "sticky", left: 0, zIndex: 3, background: "var(--panel)" }} />
         {dayKeys.map((k, i) => {
           const p = dayLabelParts(k);
           const wknd = scheduleDayIsWeekend(k);
@@ -406,21 +430,21 @@ function ScheduleGrid({ dayKeys, groups, cells, accountName, onCell, onRenameGro
             <button style={sx.groupBtn} onClick={() => onRemoveGroup(g)}>Remove group</button>
           </div>
           {(g.memberIds || []).map((id) => {
-            const sum = employeeScheduleSummary(cells, id, dayKeys);
+            const sum = employeeScheduleSummary(cells, id, dayKeys, CODES);
             const bad = sum.flags.length > 0;
             return (
               <div key={id} style={{ display: "flex", borderBottom: "1px solid var(--hair)", background: bad ? "rgba(255,69,58,.04)" : "transparent" }}>
-                <div style={{ width: NAME_W, flex: "none", display: "flex", alignItems: "center", gap: 4, padding: "0 6px", borderRight: "1px solid var(--hair-2)", minWidth: 0 }}>
+                <div style={{ width: NAME_W, flex: "none", position: "sticky", left: 0, zIndex: 2, background: bad ? "#2a1518" : "var(--panel)", display: "flex", alignItems: "center", gap: 4, padding: "0 6px", borderRight: "1px solid var(--hair-2)", minWidth: 0 }}>
                   <button style={sx.memberX} title="Take off the schedule" onClick={() => onRemoveMember(g.id, id)}>✕</button>
                   <span style={{ fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{accountName(id)}</span>
                 </div>
                 {dayKeys.map((k) => {
                   const tok = parseScheduleCode(cells[scheduleCellKey(id, k)] || "");
                   const wknd = scheduleDayIsWeekend(k);
-                  const meta = SCHEDULE_CODES[tok.code];
+                  const meta = CODES[tok.code];
                   return (
                     <button key={k} onClick={() => onCell(id, k)}
-                      style={{ width: CW, height: 26, flex: "none", boxSizing: "border-box", border: "none", borderLeft: dayLabelParts(k).dow === "SUN" ? "1px solid var(--hair-2)" : "1px solid var(--hair)", background: wknd ? weekendBg : "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: tok.code.length > 1 ? 8.5 : 10.5, fontWeight: meta && meta.ot ? 800 : 700, color: codeColor(tok.code), padding: 0 }}>
+                      style={{ width: CW, height: 26, flex: "none", boxSizing: "border-box", border: "none", borderLeft: dayLabelParts(k).dow === "SUN" ? "1px solid var(--hair-2)" : "1px solid var(--hair)", background: wknd ? weekendBg : "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: tok.code.length > 1 ? 8.5 : 10.5, fontWeight: meta && meta.ot ? 800 : 700, color: codeColor(tok.code, CODES), padding: 0 }}>
                       {meta ? (meta.show || tok.code) : ""}{tok.hours ? <span style={{ fontSize: 7 }}>{tok.hours}</span> : ""}
                     </button>
                   );
@@ -446,7 +470,7 @@ function ScheduleGrid({ dayKeys, groups, cells, accountName, onCell, onRenameGro
           <div style={sx.groupHead}><span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: 1, color: "var(--ink-3)" }}>COVERAGE — PEOPLE ON, PER DAY</span></div>
           {SCHEDULE_COVERAGE.map((c) => (
             <div key={c.key} style={{ display: "flex", borderBottom: "1px solid var(--hair)" }}>
-              <div style={{ width: NAME_W, flex: "none", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 6px", borderRight: "1px solid var(--hair-2)" }}>
+              <div style={{ width: NAME_W, flex: "none", position: "sticky", left: 0, zIndex: 2, background: "var(--panel)", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 6px", borderRight: "1px solid var(--hair-2)" }}>
                 <span style={{ fontSize: 10.5, color: "var(--ink-2)" }}>{c.label}</span>
               </div>
               {dayKeys.map((k) => {
@@ -469,14 +493,16 @@ function ScheduleGrid({ dayKeys, groups, cells, accountName, onCell, onRenameGro
   );
 }
 
-function ScheduleLegend() {
+function ScheduleLegend({ codes, codeOrder }) {
+  const CODES = codes || SCHEDULE_CODES;
+  const order = codeOrder || SCHEDULE_CODE_ORDER;
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px", alignItems: "center", marginTop: 12 }}>
-      {SCHEDULE_CODE_ORDER.map((code) => {
-        const meta = SCHEDULE_CODES[code];
+    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px", alignItems: "center", marginTop: 8 }}>
+      {order.map((code) => {
+        const meta = CODES[code]; if (!meta) return null;
         return (
           <span key={code} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <span style={{ minWidth: 20, height: 17, padding: "0 4px", boxSizing: "border-box", borderRadius: 5, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "var(--inset-2)", color: codeColor(code), fontSize: 9.5, fontWeight: 800 }}>{meta.show || code}</span>
+            <span style={{ minWidth: 20, height: 17, padding: "0 4px", boxSizing: "border-box", borderRadius: 5, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "var(--inset-2)", color: codeColor(code, CODES), fontSize: 9.5, fontWeight: 800 }}>{meta.show || code}</span>
             <span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{meta.label}</span>
           </span>
         );
@@ -486,8 +512,94 @@ function ScheduleLegend() {
   );
 }
 
+// Add, rename, recolour or remove the codes the department schedules with. The
+// built-in legend is the starting point; changes are stored on the schedule
+// (customCodes / hiddenCodes) so they travel with it and never touch another.
+function CodeEditor({ model, codes, codeOrder, onClose, onSave }) {
+  const [code, setCode] = useState("");
+  const [label, setLabel] = useState("");
+  const [color, setColor] = useState("#4CD3C8");
+  const [kind, setKind] = useState("day");
+  const [busy, setBusy] = useState(false);
+  const custom = model.customCodes || {};
+  const hidden = model.hiddenCodes || [];
+
+  async function write(nextCustom, nextHidden, note) {
+    setBusy(true);
+    await onSave({ customCodes: nextCustom, hiddenCodes: nextHidden }, note);
+    setBusy(false);
+  }
+  async function addCode() {
+    const k = code.trim().toUpperCase().replace(/[^A-Z&]/g, "");
+    if (!k || !label.trim()) return;
+    await write({ ...custom, [k]: { label: label.trim(), color, kind } }, hidden.filter((h) => h !== k), `Schedule code ${k} added`);
+    setCode(""); setLabel("");
+  }
+  async function editCode(k, patch) {
+    await write({ ...custom, [k]: { ...(custom[k] || {}), ...patch } }, hidden, `Schedule code ${k} changed`);
+  }
+  async function removeCode(k) {
+    if (SCHEDULE_CODES[k]) { await write(custom, [...new Set([...hidden, k])], `Schedule code ${k} hidden`); }
+    else { const c = { ...custom }; delete c[k]; await write(c, hidden, `Schedule code ${k} removed`); }
+  }
+  async function restore(k) { await write(custom, hidden.filter((h) => h !== k), `Schedule code ${k} restored`); }
+
+  return (
+    <div style={sx.modalWrap} onClick={onClose}>
+      <div style={{ ...sx.modal, width: 460, maxHeight: "80vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={sx.modalHead}>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>Manage codes</span>
+          <button style={sx.modalX} onClick={onClose}>✕</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {codeOrder.map((k) => {
+            const meta = codes[k]; if (!meta) return null;
+            const isBuiltin = !!SCHEDULE_CODES[k];
+            return (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 8, background: "var(--inset)", border: "1px solid var(--hair)" }}>
+                <span style={{ minWidth: 26, height: 20, borderRadius: 5, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "var(--inset-2)", color: codeColor(k, codes), fontSize: 11, fontWeight: 800 }}>{meta.show || k}</span>
+                <input style={{ ...styles.input, flex: 1, fontSize: 16, padding: "6px 8px" }} value={meta.label} onChange={(e) => editCode(k, { label: e.target.value })} />
+                <input type="color" value={meta.color || "#888888"} onChange={(e) => editCode(k, { color: e.target.value })} style={{ width: 30, height: 30, border: "none", background: "none", padding: 0, cursor: "pointer" }} title="Colour" />
+                <button style={sx.groupBtn} disabled={busy} onClick={() => removeCode(k)}>{isBuiltin ? "Hide" : "Delete"}</button>
+              </div>
+            );
+          })}
+          {hidden.filter((k) => SCHEDULE_CODES[k]).length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-4)" }}>HIDDEN — tap to restore</span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5 }}>
+                {hidden.filter((k) => SCHEDULE_CODES[k]).map((k) => (
+                  <button key={k} style={sx.groupBtn} onClick={() => restore(k)}>{k} · {SCHEDULE_CODES[k].label}</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={{ height: 1, background: "var(--hair)", margin: "12px 0" }} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>ADD A CODE</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          <input style={{ ...styles.input, width: 70, fontSize: 16, padding: "8px" }} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Code" maxLength={3} />
+          <input style={{ ...styles.input, flex: 1, minWidth: 140, fontSize: 16, padding: "8px" }} value={label} onChange={(e) => setLabel(e.target.value)} placeholder="What it means" />
+          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={{ width: 34, height: 34, border: "none", background: "none", padding: 0, cursor: "pointer" }} />
+          <select style={{ ...styles.input, width: 130, fontSize: 16, padding: "8px" }} value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="day">Day shift</option>
+            <option value="night">Night shift</option>
+            <option value="overtime">Overtime</option>
+            <option value="office">Office (exempt)</option>
+            <option value="off">Off / leave</option>
+          </select>
+          <button style={styles.primaryBtnSm} disabled={busy || !code.trim() || !label.trim()} onClick={addCode}>Add</button>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--ink-4)", marginTop: 8, lineHeight: 1.5 }}>
+          A code's kind decides how it counts: a day, night or office code is a worked shift; overtime adds hours; off is a rest or leave day. Built-in codes can be hidden and brought back; codes you add can be deleted outright. Coverage rows follow the built-in sites.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const sx = {
-  groupHead: { display: "flex", alignItems: "center", gap: 8, background: "var(--inset-2)", borderTop: "1px solid var(--hair-2)", borderBottom: "1px solid var(--hair)", padding: "4px 8px" },
+  groupHead: { display: "flex", alignItems: "center", gap: 8, background: "var(--inset-2)", borderTop: "1px solid var(--hair-2)", borderBottom: "1px solid var(--hair)", padding: "4px 8px", position: "sticky", left: 0, zIndex: 2, width: "fit-content", minWidth: 150 },
   groupName: { fontSize: 10, fontWeight: 800, letterSpacing: 0.8, color: "var(--ink-2)", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: 0 },
   groupBtn: { fontSize: 10.5, fontWeight: 600, color: "var(--ink-3)", background: "var(--veil)", border: "1px solid var(--hair-2)", borderRadius: 999, padding: "2px 8px", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 3 },
   memberX: { flex: "none", width: 16, height: 16, borderRadius: 999, border: "1px solid var(--hair-2)", background: "var(--veil)", color: "var(--ink-4)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },

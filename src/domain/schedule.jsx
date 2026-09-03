@@ -64,8 +64,9 @@ export function scheduleCodeMeta(token) {
 }
 
 // A worked day: a code the department counts as being at work.
-export function scheduleIsWork(token) {
-  const meta = scheduleCodeMeta(token);
+export function scheduleIsWork(token, codes) {
+  const map = codes || SCHEDULE_CODES;
+  const meta = map[parseScheduleCode(token).code];
   return !!(meta && meta.work);
 }
 
@@ -112,12 +113,13 @@ export function scheduleCellKey(accountId, dayKey) {
 }
 
 // Everything a single employee's row is judged on.
-export function employeeScheduleSummary(cells, accountId, dayKeys) {
+export function employeeScheduleSummary(cells, accountId, dayKeys, codes) {
+  const map = codes || SCHEDULE_CODES;
   const tokens = dayKeys.map((k) => (cells || {})[scheduleCellKey(accountId, k)] || "");
   let shifts = 0, otHours = 0, exempt = false;
   tokens.forEach((t) => {
     const { code, hours } = parseScheduleCode(t);
-    const meta = SCHEDULE_CODES[code];
+    const meta = map[code];
     if (!meta) return;
     if (meta.exemptShifts) exempt = true;
     if (meta.ot) { otHours += hours != null ? hours : 12; if (meta.work) shifts += 1; }
@@ -125,7 +127,7 @@ export function employeeScheduleSummary(cells, accountId, dayKeys) {
   });
   let maxWorkRun = 0, workRun = 0, maxOffRun = 0, offRun = 0;
   tokens.forEach((t) => {
-    if (scheduleIsWork(t)) { workRun += 1; maxWorkRun = Math.max(maxWorkRun, workRun); offRun = 0; }
+    if (scheduleIsWork(t, map)) { workRun += 1; maxWorkRun = Math.max(maxWorkRun, workRun); offRun = 0; }
     else { offRun += 1; maxOffRun = Math.max(maxOffRun, offRun); workRun = 0; }
   });
   const flags = [];
@@ -140,8 +142,8 @@ export function employeeScheduleSummary(cells, accountId, dayKeys) {
     if (parseScheduleCode(t).code !== "L") return;
     const prevIsL = i > 0 && parseScheduleCode(tokens[i - 1]).code === "L";
     const nextIsL = i < tokens.length - 1 && parseScheduleCode(tokens[i + 1]).code === "L";
-    if (!prevIsL) { if (i === 0 || !scheduleIsWork(tokens[i - 1])) flags.push("leave not worked into"); }
-    if (!nextIsL) { if (i === tokens.length - 1 || !scheduleIsWork(tokens[i + 1])) flags.push("leave not worked out of"); }
+    if (!prevIsL) { if (i === 0 || !scheduleIsWork(tokens[i - 1], map)) flags.push("leave not worked into"); }
+    if (!nextIsL) { if (i === tokens.length - 1 || !scheduleIsWork(tokens[i + 1], map)) flags.push("leave not worked out of"); }
   });
   // One message per kind, in order.
   return { shifts, otHours, exempt, flags: [...new Set(flags)] };
@@ -206,7 +208,7 @@ export function scheduleEligibleAccounts(accounts) {
 // with its rows (name, id, the 42 tokens, and the row's summary), the owner
 // account filtered out, plus the flat list of everyone on it for the coverage
 // count.
-export function scheduleView(schedule, accounts, dayKeys) {
+export function scheduleView(schedule, accounts, dayKeys, codes) {
   const model = schedule && typeof schedule === "object" ? schedule : {};
   const cells = model.cells && typeof model.cells === "object" ? model.cells : {};
   const byId = new Map((accounts || []).map((a) => [a.id, a]));
@@ -223,7 +225,7 @@ export function scheduleView(schedule, accounts, dayKeys) {
           name: a ? (a.name || id) : id,
           empId: id,
           cells: dayKeys.map((k) => cells[scheduleCellKey(id, k)] || ""),
-          summary: employeeScheduleSummary(cells, id, dayKeys),
+          summary: employeeScheduleSummary(cells, id, dayKeys, codes),
         };
       }),
   }));
@@ -233,8 +235,46 @@ export function scheduleView(schedule, accounts, dayKeys) {
 
 // The per-day team totals the Excel working copy carries and the staff PDF
 // never does. A team is two people; the count is the working people that day.
-export function scheduleWorkingPerDay(cells, allIds, dayKeys) {
+export function scheduleWorkingPerDay(cells, allIds, dayKeys, codes) {
   return dayKeys.map((k) =>
-    (allIds || []).reduce((n, id) => (scheduleIsWork(cells[scheduleCellKey(id, k)]) ? n + 1 : n), 0)
+    (allIds || []).reduce((n, id) => (scheduleIsWork(cells[scheduleCellKey(id, k)], codes) ? n + 1 : n), 0)
   );
+}
+
+// The code set in force for THIS schedule: the built-in legend the department
+// started from, minus any the admin hid, plus any the admin added, and with
+// label/colour overrides applied. Every reader — the picker, the legend, the
+// grid, the summary and both exports — goes through this so a custom code is
+// the same code everywhere.
+export const SCHEDULE_CODE_KINDS = {
+  day: { work: true, period: "day" },
+  night: { work: true, period: "night" },
+  overtime: { work: true, ot: true, period: "day" },
+  office: { work: true, exemptShifts: true, period: "day" },
+  off: { off: true },
+};
+export function effectiveScheduleCodes(schedule) {
+  const custom = (schedule && schedule.customCodes) || {};
+  const hidden = new Set((schedule && schedule.hiddenCodes) || []);
+  const out = {};
+  SCHEDULE_CODE_ORDER.forEach((k) => {
+    if (hidden.has(k)) return;
+    const ov = custom[k] || {};
+    out[k] = { ...SCHEDULE_CODES[k] };
+    if (ov.label != null) out[k].label = ov.label;
+    if (ov.color) out[k].color = ov.color;
+  });
+  Object.keys(custom).forEach((k) => {
+    if (SCHEDULE_CODES[k] || hidden.has(k)) return;
+    const c = custom[k];
+    const kind = SCHEDULE_CODE_KINDS[c.kind] ? c.kind : "day";
+    out[k] = { label: c.label || k, color: c.color, custom: true, kind, ...SCHEDULE_CODE_KINDS[kind] };
+  });
+  return out;
+}
+export function effectiveScheduleCodeOrder(schedule) {
+  const hidden = new Set((schedule && schedule.hiddenCodes) || []);
+  const builtins = SCHEDULE_CODE_ORDER.filter((k) => !hidden.has(k));
+  const custom = Object.keys((schedule && schedule.customCodes) || {}).filter((k) => !SCHEDULE_CODES[k] && !hidden.has(k));
+  return [...builtins, ...custom];
 }
