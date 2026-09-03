@@ -1,7 +1,7 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
-import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, shellBuildNote, shellReport, soundCallAlert, soundSpeakerCheck, standDownOutcome } from "../lib/dates.jsx";
+import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, shellBuildNote, shellReport, volumeFloorNote, soundCallAlert, soundSpeakerCheck, standDownOutcome } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
@@ -90,7 +90,7 @@ export function SoundDiagnostics({ audioCtxRef }) {
       last stand-down: {standDownOutcome()}
       {bg ? `${bg.platform === "ios"
         ? ` · device volume ${bg.alarmVolumePct}% (no floor on iPhone)`
-        : ` · alarm volume ${bg.alarmVolumePct}%${bg.volumeFloorOk === false ? ` · FLOOR ${bg.volumeFloor}` : ""}`
+        : ` · alarm volume ${bg.alarmVolumePct}%${volumeFloorNote(bg)}`
       } · notifications ${
         bg.notificationsEnabled ? "on" : "OFF"
       }${bg.platform === "ios" ? "" : ` · channel ${bg.channelSilenced ? "SILENCED" : "ok"} · battery saver ${

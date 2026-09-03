@@ -95,7 +95,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-03.2";
+    private static final String PLUGIN_BUILD = "2026-09-03.3";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -113,6 +113,14 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // The floor's own heartbeat. See startFloorWatch().
     private Handler floorHandler;
     private Runnable floorTick;
+    // What actually happened to the alarm stream WHILE the last alert was
+    // sounding: the lowest level seen, and how many times the floor put it
+    // back. A reading taken afterwards is 86% and says nothing — the whole
+    // question is what it was during the tone, and nobody can watch a number
+    // and a phone at the same time. Reset when an alert starts, kept
+    // afterwards so it can be read off the screen once the call is over.
+    private int alarmVolumeMinPct = -1;
+    private int floorRaises = 0;
 
     @Override
     public void load() {
@@ -291,6 +299,12 @@ public class PulseOpsAlarmPlugin extends Plugin {
             }
             stopPlayer();
 
+            // A new alert, so a new trace. The repeat above returns before
+            // this, or every pass would wipe the record of the dip it is
+            // there to catch.
+            alarmVolumeMinPct = -1;
+            floorRaises = 0;
+
             // An alarm nobody can hear over a diesel engine is not an alarm.
             //
             // STREAM_ALARM has a volume of its own, separate from the media
@@ -416,6 +430,8 @@ public class PulseOpsAlarmPlugin extends Plugin {
             int max = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
             int now = am.getStreamVolume(AudioManager.STREAM_ALARM);
             int want = (int) Math.ceil(max * MIN_ALARM_SHARE);
+            int nowPct = pctOf(now, max);
+            if (alarmVolumeMinPct < 0 || nowPct < alarmVolumeMinPct) alarmVolumeMinPct = nowPct;
             if (now >= want) {
                 noteFloor(true, "already at or above the floor");
                 return;
@@ -438,7 +454,8 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 // there. A refused raise must not arm the restore at all: it
                 // changed nothing, so it has nothing to put back.
                 if (volumeBefore < 0) volumeBefore = now;
-                noteFloor(true, "raised to " + pctOf(after, max) + "%");
+                floorRaises++;
+                noteFloor(true, "put it back to " + pctOf(after, max) + "% (from " + nowPct + "%)");
             } else {
                 noteFloor(false, "REFUSED - the alarm stream stayed at "
                     + pctOf(after, max) + "%" + (dndOn() ? ", Do Not Disturb is on" : ""));
@@ -767,6 +784,8 @@ public class PulseOpsAlarmPlugin extends Plugin {
         // this, a refused raise is indistinguishable from one that worked.
         out.put("volumeFloorOk", volumeFloorOk);
         out.put("volumeFloor", volumeFloorNote);
+        out.put("alarmVolumeMinPct", alarmVolumeMinPct);
+        out.put("floorRaises", floorRaises);
         out.put("dnd", dndOn());
         try {
             PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);

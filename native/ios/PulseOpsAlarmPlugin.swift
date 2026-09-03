@@ -62,7 +62,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // The PLUGIN's own build date, which is not the web build's. See the same
     // constant in the Android plugin for why a method list is not a version.
-    private let pluginBuild = "2026-09-03.2"
+    private let pluginBuild = "2026-09-03.3"
 
     private var player: AVAudioPlayer?
     // The buzz that runs alongside the tone. iOS has no repeating vibration

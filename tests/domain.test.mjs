@@ -657,6 +657,21 @@ export function run(D, t) {
     t.ok("plugin build: one too old to carry a stamp is still old",
       /PLUGIN IS OLD/.test(D.shellBuildNote({ platform: "android" })));
     t.is("plugin build: no shell at all is not a rebuild message", D.shellBuildNote(null), "");
+
+    // The floor must say what it did even when it WORKED. Printing only on a
+    // refusal meant "FLOOR not attempted yet" vanished after the first call
+    // and the screen went quiet — which is not an answer to "what happened
+    // while the tone was playing". And the reading taken afterwards is the
+    // volume NOW, so the dip and the corrections are carried with it.
+    t.ok("floor line: says so when it worked",
+      / FLOOR put it back to 70%/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70% (from 0%)", alarmVolumeMinPct: 0, floorRaises: 3 })));
+    t.ok("floor line: carries the dip and the corrections",
+      /dipped to 0%/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70%", alarmVolumeMinPct: 0, floorRaises: 3 }))
+      && /put back 3×/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70%", alarmVolumeMinPct: 0, floorRaises: 3 })));
+    t.ok("floor line: an untouched alert carries no dip",
+      !/dipped/.test(D.volumeFloorNote({ volumeFloor: "already at or above the floor", alarmVolumeMinPct: -1, floorRaises: 0 })));
+    t.is("floor line: an iPhone has no floor to report", D.volumeFloorNote({ platform: "ios" }), " · no floor on iPhone");
+    t.is("floor line: nothing to say without a shell", D.volumeFloorNote(null), "");
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

@@ -702,6 +702,19 @@ patch", that document is the target — do not start a fresh exploration.
   unconditionally in `stopPlayer()` — a watch left behind holds somebody's
   phone at 70% after the call was acknowledged. `noteFloor` logs to logcat only
   when the outcome CHANGES, or a once-a-second line buries everything else.
+- **A guard that only speaks when it FAILS cannot answer "what happened".**
+  The floor line printed only on a refusal, so "FLOOR not attempted yet"
+  vanished after the first call and the screen went quiet — the crew line said
+  nothing at all about an alert that had just gone wrong. `volumeFloorNote`
+  (`npm test`) always says what the floor last did. And a reading taken after
+  the call is the volume NOW, which is not the question: the plugin keeps
+  `alarmVolumeMinPct` (the lowest the alarm stream reached while the tone was
+  playing) and `floorRaises` (how many times it put it back), reset when a
+  FRESH alert starts and never on the 1.7-second repeat, so the line reads
+  `FLOOR put it back to 70%, dipped to 0%, put back 3×` once the call is over.
+  That one line separates "volume-down hit the alarm stream and we corrected
+  it" from "volume-down hit some other stream and the sound died for another
+  reason" — which no amount of watching a phone can.
 - **A raise that is REFUSED looks exactly like one that worked — so verify it,
   and say which.** `raiseAlarmVolume` used to call `setStreamVolume` and assume
   it landed. Android accepts that call and quietly does nothing under Do Not

@@ -531,11 +531,33 @@ export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNo
 // was simply not on the device. A method list says what a plugin can do; only
 // a version says which one it is. Bump this and the constant in BOTH plugins
 // together.
-export const SHELL_BUILD_WANTED = "2026-09-03.2";
+export const SHELL_BUILD_WANTED = "2026-09-03.3";
 
 // What to say about the plugin's own build, given whatever backgroundStatus
 // last answered. Empty when there is nothing to complain about — the line is
 // long enough without a badge saying everything is fine.
+// What the volume floor did, ALWAYS said — not only when it failed.
+//
+// It used to print only on a refusal, so after a call the line went silent
+// and there was nothing on the screen saying what had happened while the tone
+// was playing. "Not attempted yet" disappearing is not an answer. And a
+// reading taken after the call is the volume NOW; the whole question is what
+// the stream did DURING it, which is why the plugin keeps the low-water mark
+// and the number of corrections and they are printed here.
+export function volumeFloorNote(bg) {
+  if (!bg || typeof bg !== "object") return "";
+  if (bg.platform === "ios") return " · no floor on iPhone";
+  const what = bg.volumeFloor ? String(bg.volumeFloor) : "";
+  if (!what) return "";
+  const low = typeof bg.alarmVolumeMinPct === "number" && bg.alarmVolumeMinPct >= 0
+    ? `, dipped to ${bg.alarmVolumeMinPct}%`
+    : "";
+  const puts = typeof bg.floorRaises === "number" && bg.floorRaises > 0
+    ? `, put back ${bg.floorRaises}×`
+    : "";
+  return ` · FLOOR ${what}${low}${puts}`;
+}
+
 export function shellBuildNote(bg) {
   if (!bg || typeof bg !== "object") return "";
   const has = bg.pluginBuild ? String(bg.pluginBuild) : "";
