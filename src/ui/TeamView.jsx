@@ -13,7 +13,7 @@ import { NO_TRANSPORT, REFUSAL_FROM_STATUSES, REFUSAL_TIME_KEY } from "../domain
 import { pcrAuthorChoices, pcrAuthorOf, pcrAuthorText } from "../domain/pcr-author.jsx";
 import { callsAwaitingRestock, markRestocked } from "../domain/restock.jsx";
 import { activeAssistUnitIds, assistOf, assistPending, assistTeamFor, assistTeams, isNoTransport } from "../domain/second-ambulance.jsx";
-import { CALL_TYPES, LOADED_KM, LOADED_KM_COLOR, applyCallCoding, callTypeOf, loadedKmOf, suggestedCallType } from "../domain/sheet-vocabulary.jsx";
+import { ADDED_SERVICES, CALL_TYPES, LOADED_KM, LOADED_KM_COLOR, applyCallCoding, callTypeOf, loadedKmOf, suggestedCallType } from "../domain/sheet-vocabulary.jsx";
 import { overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
@@ -84,11 +84,15 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
     markEditsSeen(myRequest.id, newestDeskEdit);
     setEditsSeenAt(newestDeskEdit);
   }
-  // The elapsed-time figure on the card. A quarter-minute tick is plenty for
-  // "12:40 on call"; it must not re-render the card every second.
+  // The elapsed-time figure on the card, and it ticks every SECOND. A quarter
+  // minute was cheaper and read as a broken clock: the seconds sat on 00:02:58
+  // for fifteen seconds and then jumped to 00:03:13, which a crew watching a
+  // response time reads as the app having frozen. A card is a handful of
+  // elements; one re-render a second is nothing beside a stopwatch nobody
+  // trusts.
   const [clockNow, setClockNow] = useState(Date.now());
   useEffect(() => {
-    const t = setInterval(() => setClockNow(Date.now()), 15000);
+    const t = setInterval(() => setClockNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
   const callEditsApplied = (req) => (req && Array.isArray(req.edits) ? req.edits : []).some((e) => e && e.status === "applied");
@@ -140,13 +144,6 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   const [escOpen, setEscOpen] = useState(false);
   // Whether the "these details are wrong" form is open on the live call.
   const [editOpen, setEditOpen] = useState(false);
-  // Extra services rendered on the call, free text, for billing. Optional — it
-  // does not gate going back in service. Seeded from the call and mirrored on
-  // every poll EXCEPT while the crew are typing, the same guard the ambulance
-  // field uses, so a partner's edit lands but a half-typed word is not wiped.
-  const [addedServicesInput, setAddedServicesInput] = useState("");
-  const addedServicesTouched = useRef(false);
-  const addedServicesSaving = useRef(false);
   // Whether the refusal is being signed for.
   const [refusalOpen, setRefusalOpen] = useState(false);
   const [assistOpen, setAssistOpen] = useState(false);
@@ -916,34 +913,39 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
   // has until the desk confirms the change. A crew correcting the record from
   // the bedside on their own would leave dispatch working from a call that
   // quietly changed underneath them.
-  // Recording who took the patient at the destination.
-  useEffect(() => {
-    if (addedServicesTouched.current || addedServicesSaving.current) return;
-    setAddedServicesInput((myRequest && myRequest.addedServices) || "");
-  }, [myRequest && myRequest.id, myRequest && myRequest.addedServices]);
-
-  async function saveAddedServices() {
+  // ADDED SERVICE — the sheet's own column Q, picked from the department's own
+  // list rather than typed, so what a crew choose is the word that lands in the
+  // column and the desk's editor offers the same three. It is not one of the
+  // three paperwork ticks and never blocks going back in service. Tapping the
+  // code already on the call clears it, because a picker with no free text is
+  // otherwise a choice that cannot be taken back.
+  async function setAddedService(key) {
     if (!myRequest) return;
-    const text = addedServicesInput.trim();
-    if (text === ((myRequest.addedServices || "").trim())) { addedServicesTouched.current = false; return; }
-    addedServicesSaving.current = true;
-    const who = user && user.name ? user.name : (myUnit ? myUnit.name : "Crew");
+    const now = Date.now();
     const fresh = await readKey("ems:requests", requests);
+    const target = fresh.find((r) => r.id === myRequest.id);
+    if (!target) return;
+    const previous = (target.addedService || "").trim();
+    const next = previous === key ? "" : key;
+    if (next === previous) return;
+    const who = user && user.name ? user.name : (myUnit ? myUnit.name : "Crew");
     await saveRequests(
       fresh.map((r) =>
         r.id === myRequest.id
-          ? { ...r, addedServices: text, addedServicesBy: who, addedServicesAt: Date.now() }
+          ? { ...r, addedService: next, addedServiceBy: who, addedServiceAt: now }
           : r
       )
     );
-    addedServicesTouched.current = false;
-    addedServicesSaving.current = false;
     await addLog(
-      `${myUnit ? myUnit.name : "Crew"} (${who}) recorded added services on "${myRequest.nature}"` +
-        (text ? ` — ${text}` : " — cleared"),
+      (next
+        ? `Added service ${next} set on "${target.nature}"`
+        : `Added service cleared on "${target.nature}"`) +
+        `${previous && next ? ` — was ${previous}` : ""} — ${who}`,
       "status"
     );
   }
+
+  // Recording who took the patient at the destination.
 
   async function setReceiver({ name, receiverId }) {
     if (!myRequest) return;
@@ -1880,9 +1882,16 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
                 </div>
               </React.Fragment>
             )}
+            {/* What the desk wrote on the call. It used to be an unlabelled
+                paragraph at the foot of the route block, which reads as part
+                of the address rather than as a note somebody left for this
+                crew — so it carries its own caption. Drawn only when there is
+                something to say: an empty NOTES banner on every call teaches a
+                crew to stop looking at it. */}
             {myRequest.notes && (
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--hair)", fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45, overflowWrap: "anywhere" }}>
-                {myRequest.notes}
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--hair)", display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 1.1, color: "var(--ink-4)" }}>NOTES FROM DISPATCH</span>
+                <span style={{ fontSize: 14, color: "var(--ink-2)", lineHeight: 1.45, overflowWrap: "anywhere" }}>{myRequest.notes}</span>
               </div>
             )}
           </div>
@@ -2001,20 +2010,29 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
                   {" — "}
                   {km ? `${km.name} loaded` : "Km bands: 1 ≤50 · 2 51–150 · 3 151–250 · 4 251–400 · 5 400+"}
                 </div>
-                {/* Added services — extra services rendered on the call, for
-                    billing. Free text, optional: it is not one of the three
-                    ticks and never blocks going back in service, so it sits
-                    below the count. 16px, or iOS zooms the whole board on
-                    focus. Saved when the field loses focus. */}
-                <div style={{ ...rowStyle(false), alignItems: "flex-start", flexWrap: "wrap", rowGap: 8 }}>
-                  <span style={{ flex: "none", width: 18 }} />{lab("ADDED SVCS", false)}
-                  <input
-                    style={{ flex: "1 1 100%", minWidth: 0, background: "var(--panel)", border: "1px solid var(--hair-2)", borderRadius: 8, color: "var(--ink)", fontSize: 16, padding: "9px 10px", fontFamily: "inherit" }}
-                    value={addedServicesInput}
-                    onChange={(e) => { addedServicesTouched.current = true; setAddedServicesInput(e.target.value); }}
-                    onBlur={saveAddedServices}
-                    placeholder="e.g. oxygen, cardiac monitor, splint"
-                  />
+                {/* ADDED SERVICE — sheet column Q, under the kilometre band
+                    because that is where it sits on the sheet and the two are
+                    filled in together. A picker, not free text: the sheet has
+                    a vocabulary of three and typing beside it produced a
+                    column somebody had to translate at month end. No ring
+                    beside it — it is optional and is not one of the three
+                    ticks, so it never blocks going back in service. */}
+                <div style={{ ...rowStyle(false), flexWrap: "wrap", rowGap: 8 }}>
+                  <span style={{ flex: "none", width: 18 }} />{lab("ADDED SVC", false)}
+                  <div style={{ flex: "1 1 100%", display: "flex", gap: 5, flexWrap: "wrap", minWidth: 0 }}>
+                    {ADDED_SERVICES.map((k) => {
+                      const on = (myRequest.addedService || "").trim() === k;
+                      return <button key={k} type="button" title={on ? "Tap again to clear it" : `Added service ${k}`} style={{ ...chip(on, "var(--flow)"), flex: "1 1 0", minWidth: 40 }} onClick={() => setAddedService(k)}>{k === "NA" ? "N/A" : k}</button>;
+                    })}
+                  </div>
+                  {/* A note typed on a build that took free text here. Kept in
+                      view rather than hidden behind the picker that replaced
+                      it — it is billing information somebody wrote down. */}
+                  {myRequest.addedServices && (
+                    <span style={{ flex: "1 1 100%", fontSize: 11.5, color: "var(--ink-3)", overflowWrap: "anywhere" }}>
+                      Noted earlier: {myRequest.addedServices}
+                    </span>
+                  )}
                 </div>
               </div>
             );

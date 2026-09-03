@@ -801,13 +801,31 @@ patch", that document is the target — do not start a fresh exploration.
   hours at NOW for a still-running shift (not at shift end) and logs it as
   "mid-shift, seat left by a signed-out phone". The crew's own recovery is
   unchanged: sign in on the new phone and Continue as MEDIC N.
-- **Added services are the crew's free-text billing note, optional and never a
-  gate.** `addedServices` on the request, edited under LOADED KM on the crew
-  call card (`TeamView`), 16px like every field or iOS zooms the board, saved
-  on blur, mirrored on the poll except while typing (the ambulance-field
-  guard). It is NOT one of the three paperwork ticks and never blocks going
-  back in service. Not yet a sheet column — add it to `SHIFT_LOG_COLUMNS` and
-  `buildShiftReport` together if it is ever wanted there.
+- **ADDED SERVICE is the sheet's own column, and it is a PICKER.** `addedService`
+  (singular) — sheet column Q, vocabulary `ADDED_SERVICES` in
+  `sheet-vocabulary.jsx`, already on the export, already in `EDITABLE_FIELDS`
+  for the desk and already chased by `LOG_COMPLETENESS`. The crew's control sits
+  under LOADED KM on the call card (`TeamView`, `setAddedService`) as the same
+  chip row CALL TYPE and LOADED KM use, so the crew and the desk pick from one
+  list and what is chosen is the word that lands in the column. A free-text
+  `addedServices` (plural) shipped for one build and was a SECOND field for the
+  same thing, typed beside a column that has a vocabulary; a record still
+  carrying one shows it as a caption under the picker rather than losing it. It
+  is NOT one of the three paperwork ticks and never blocks going back in
+  service — no ring beside it — and tapping the code already set clears it,
+  because a picker with no free text is otherwise a choice that cannot be
+  taken back.
+- **The elapsed clock on the call card ticks every SECOND.** It ran on a
+  15-second interval to save re-renders and read as a frozen app: 00:02:58 sat
+  still and then jumped to 00:03:13, on the one number a crew watch to know
+  their response time. Reported as "the counter is not smooth". A card is a
+  handful of elements; one re-render a second costs nothing beside a stopwatch
+  nobody trusts.
+- **The desk's note on a call carries its own caption.** `NOTES FROM DISPATCH`
+  in the route block — an unlabelled paragraph under the destination reads as
+  part of the address, and the crew asked where the notes banner had gone. It
+  is drawn only when the call has notes: an empty banner on every call teaches
+  a crew to stop looking at it.
 - **The employees schedule is the plan, not the board.** `src/domain/schedule.jsx`
   (rules under `npm test`) + `src/ui/SchedulePage.jsx`, on the admin Teams page,
   gated on the `schedule` delegation area so it can be lent to a preparer. Six
