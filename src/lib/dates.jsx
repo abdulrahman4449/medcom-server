@@ -531,7 +531,7 @@ export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNo
 // was simply not on the device. A method list says what a plugin can do; only
 // a version says which one it is. Bump this and the constant in BOTH plugins
 // together.
-export const SHELL_BUILD_WANTED = "2026-09-03.4";
+export const SHELL_BUILD_WANTED = "2026-09-03.5";
 
 // What to say about the plugin's own build, given whatever backgroundStatus
 // last answered. Empty when there is nothing to complain about — the line is
@@ -549,13 +549,27 @@ export function volumeFloorNote(bg) {
   if (bg.platform === "ios") return " · no floor on iPhone";
   const what = bg.volumeFloor ? String(bg.volumeFloor) : "";
   if (!what) return "";
+  const min = typeof bg.floorMinPct === "number" ? bg.floorMinPct : 70;
   const low = typeof bg.alarmVolumeMinPct === "number" && bg.alarmVolumeMinPct >= 0
     ? `, dipped to ${bg.alarmVolumeMinPct}%`
     : "";
   const puts = typeof bg.floorRaises === "number" && bg.floorRaises > 0
     ? `, put back ${bg.floorRaises}×`
     : "";
-  return ` · FLOOR ${what}${low}${puts}`;
+  // How many times the watch actually looked.
+  //
+  // Without this, "the stream never dipped" and "nothing was watching when it
+  // dipped" read identically — and the second one is what a floor that has
+  // quietly died looks like from the outside. A long alert reporting one look
+  // is a dead watch, and the line says so in those words rather than leaving
+  // it to be worked out from a number.
+  const ticks = typeof bg.floorTicks === "number" ? bg.floorTicks : null;
+  const watch = ticks === null
+    ? ""
+    : ticks <= 1
+      ? `, WATCHED ${ticks}× — the floor was not being held`
+      : `, held ${ticks}×`;
+  return ` · FLOOR ≥${min}% ${what}${low}${puts}${watch}`;
 }
 
 export function shellBuildNote(bg) {

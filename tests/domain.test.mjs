@@ -664,7 +664,7 @@ export function run(D, t) {
     // while the tone was playing". And the reading taken afterwards is the
     // volume NOW, so the dip and the corrections are carried with it.
     t.ok("floor line: says so when it worked",
-      / FLOOR put it back to 70%/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70% (from 0%)", alarmVolumeMinPct: 0, floorRaises: 3 })));
+      /FLOOR ≥70% put it back to 70%/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70% (from 0%)", alarmVolumeMinPct: 0, floorRaises: 3, floorMinPct: 70 })));
     t.ok("floor line: carries the dip and the corrections",
       /dipped to 0%/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70%", alarmVolumeMinPct: 0, floorRaises: 3 }))
       && /put back 3×/.test(D.volumeFloorNote({ volumeFloor: "put it back to 70%", alarmVolumeMinPct: 0, floorRaises: 3 })));
@@ -672,6 +672,17 @@ export function run(D, t) {
       !/dipped/.test(D.volumeFloorNote({ volumeFloor: "already at or above the floor", alarmVolumeMinPct: -1, floorRaises: 0 })));
     t.is("floor line: an iPhone has no floor to report", D.volumeFloorNote({ platform: "ios" }), " · no floor on iPhone");
     t.is("floor line: nothing to say without a shell", D.volumeFloorNote(null), "");
+    // "The stream never dipped" and "nothing was watching when it dipped" read
+    // identically from the outside, and the second is what a floor that has
+    // quietly died looks like. The number of looks is the one thing that
+    // separates them.
+    t.ok("floor line: one look on a whole alert is a dead watch, said in words",
+      /WATCHED 1× — the floor was not being held/.test(
+        D.volumeFloorNote({ volumeFloor: "HOLDING", alarmVolumeMinPct: 86, floorTicks: 1, floorMinPct: 70 })));
+    t.ok("floor line: a live watch says how many times it held",
+      /held 74×/.test(D.volumeFloorNote({ volumeFloor: "HOLDING", floorTicks: 74, floorMinPct: 70 })));
+    t.ok("floor line: names the minimum it guarantees",
+      /FLOOR ≥70%/.test(D.volumeFloorNote({ volumeFloor: "HOLDING", floorTicks: 5, floorMinPct: 70 })));
 
     // ---- the speaker check at sign-on ----
     //

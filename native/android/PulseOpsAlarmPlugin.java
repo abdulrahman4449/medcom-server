@@ -101,7 +101,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-03.4";
+    private static final String PLUGIN_BUILD = "2026-09-03.5";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -130,6 +130,12 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // afterwards so it can be read off the screen once the call is over.
     private int alarmVolumeMinPct = -1;
     private int floorRaises = 0;
+    // How many times the watch has actually LOOKED during this alert. The one
+    // number that separates "the stream never moved" from "nothing was
+    // watching when it moved" — a trace saying the volume never dipped is
+    // worthless if the eye that would have seen it had already closed. A long
+    // alert that reports one tick is a watch that died.
+    private int floorTicks = 0;
 
     @Override
     public void load() {
@@ -313,6 +319,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
             // there to catch.
             alarmVolumeMinPct = -1;
             floorRaises = 0;
+            floorTicks = 0;
 
             // An alarm nobody can hear over a diesel engine is not an alarm.
             //
@@ -446,7 +453,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
             int nowPct = pctOf(now, max);
             if (alarmVolumeMinPct < 0 || nowPct < alarmVolumeMinPct) alarmVolumeMinPct = nowPct;
             if (now >= want) {
-                noteFloor(true, "already at or above the floor");
+                noteFloor(true, "HOLDING - the stream is at or above the floor");
                 return;
             }
             am.setStreamVolume(AudioManager.STREAM_ALARM, want, 0);
@@ -527,6 +534,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
                 // thing that ends this, and stopPlayer() is the only thing that
                 // calls it.
                 if (player == null) return;
+                floorTicks++;
                 raiseAlarmVolume();
                 if (floorHandler != null) floorHandler.postDelayed(this, FLOOR_TICK_MS);
             }
@@ -837,6 +845,9 @@ public class PulseOpsAlarmPlugin extends Plugin {
         out.put("volumeFloor", volumeFloorNote);
         out.put("alarmVolumeMinPct", alarmVolumeMinPct);
         out.put("floorRaises", floorRaises);
+        out.put("floorTicks", floorTicks);
+        out.put("floorWatching", floorHandler != null);
+        out.put("floorMinPct", (int) Math.round(MIN_ALARM_SHARE * 100));
         out.put("dnd", dndOn());
         try {
             PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);

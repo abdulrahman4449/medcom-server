@@ -690,6 +690,16 @@ patch", that document is the target — do not start a fresh exploration.
   entitlement, which needs a developer account and Apple's approval. Reported
   as a real thumb-on-volume-down test that "the foreground guaranteed volume
   floor did not kick in", on both handsets.
+- **A trace is only worth what the eye behind it was doing.** "The stream
+  never dipped" and "nothing was watching when it dipped" read identically
+  from the outside, and the second is exactly what a floor that has quietly
+  died looks like — an alert reported `dipped to 86%` on a phone whose sound
+  had just vanished, because the watch had stopped on its first tick and that
+  86% was simply the last reading anyone took. `floorTicks` counts how many
+  times the watch actually looked during THIS alert; `volumeFloorNote` prints
+  `held 74×`, or `WATCHED 1× — the floor was not being held` when a whole
+  alert produced one look. Never publish a min/max trace without the count of
+  observations beside it.
 - **A floor with a case where it stops holding is not a floor.** Three ways it
   quietly stopped: the watch bailed out on a momentary `false` from
   `isPlaying()` and never rescheduled — MediaPlayer gives that freely while
