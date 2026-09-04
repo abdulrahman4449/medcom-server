@@ -2291,5 +2291,22 @@ export function run(D, t) {
     // A delegate keeps what the account lends them.
     t.is("role switch: a lent desk is still offered", D.roleSwitchTarget({ role: "admin", roles: ["admin", "dispatcher"] }), "dispatcher");
   }
+  // ---------- the desk is LENT, not assigned
+  {
+    t.ok("desk: a new dispatcher ACCOUNT cannot be created", !D.roleAssignable("dispatcher", null));
+    t.ok("desk: nor by editing a crew member into one", !D.roleAssignable("dispatcher", "crew"));
+    t.ok("desk: an account that already holds the role keeps it", D.roleAssignable("dispatcher", "dispatcher"));
+    t.ok("desk: crew and admin are still assignable", D.roleAssignable("crew", null) && D.roleAssignable("admin", null));
+    t.ok("desk: an unknown role is refused", !D.roleAssignable("wizard", null));
+    t.is("desk: the assignable roles are crew and admin, in that order", D.ASSIGNABLE_ROLES, ["crew", "admin"]);
+    // The app draws the screen, the server enforces it; they must not drift.
+    for (const [role, existing] of [["dispatcher", null], ["dispatcher", "dispatcher"], ["crew", null], ["admin", null], ["wizard", null]]) {
+      t.is(`desk: app and server agree on ${role}/${existing || "new"}`,
+        D.roleAssignable(role, existing), D.roleAssignableServer(role, existing));
+    }
+    // The desk is still a real area somebody can be lent.
+    t.ok("desk: dispatch is still a delegation area", D.DELEGATION_AREAS.some((a) => a.key === "dispatch"));
+    t.ok("desk: and is deliberately NOT one of the administration areas", !D.ADMIN_AREAS.some((a) => a.key === "dispatch"));
+  }
   }
 }

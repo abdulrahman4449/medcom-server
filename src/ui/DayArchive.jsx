@@ -632,11 +632,6 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
   const [adminMissing, setAdminMissing] = useState({});
   const [adminBusy, setAdminBusy] = useState(false);
 
-  const [dispName, setDispName] = useState("");
-  const [dispId, setDispId] = useState("");
-  const [dispError, setDispError] = useState("");
-  const [dispMissing, setDispMissing] = useState({});
-  const [dispBusy, setDispBusy] = useState(false);
 
   // { role, message } — scoped so the message renders under the roster the
   // admin actually clicked in, not always under the admin list.
@@ -705,33 +700,6 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
     setAdminName("");
     setAdminId("");
     setAdminBusy(false);
-  }
-
-  async function addDispatcherAccount() {
-    const missingDisp = { name: !dispName.trim(), id: !dispId.trim() };
-    setDispMissing(missingDisp);
-    if (missingDisp.name || missingDisp.id) {
-      setDispError("Both a name and an employee ID are needed.");
-      return;
-    }
-    setDispBusy(true);
-    setDispError("");
-    setDispMissing({});
-    const accts = accounts || [];
-    if (accts.some((a) => a.id.toLowerCase() === dispId.trim().toLowerCase())) {
-      setDispBusy(false);
-      setDispError("That ID already exists.");
-      return;
-    }
-    const next = [
-      ...accts,
-      { id: dispId.trim(), name: dispName.trim(), role: "dispatcher", team: null, createdAt: Date.now() },
-    ];
-    setIssuedCodes(await saveAccounts(next));
-    await addLog(`Admin added a dispatcher ID for ${dispName.trim()}`, "status");
-    setDispName("");
-    setDispId("");
-    setDispBusy(false);
   }
 
   // Removing an account is a clean delete: the same ID can be added again
@@ -1318,29 +1286,30 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       </div>
       </FoldingSection>
 
+      {/* THE DESK IS LENT, NOT ASSIGNED.
+          There is no "add dispatcher" here any more: a dispatcher account was
+          a second kind of person to create and remember, and it turned
+          covering the desk into a staffing question. Lending somebody the
+          dispatch area does the same job under their own name, with a date
+          and a giver on it, and it is taken back in one tap. The section
+          stays because accounts created under the old rule are still real —
+          they can still be removed and still get a sign-in code. */}
       <FoldingSection
-        title="ADD DISPATCHER"
-        count={accounts.filter((a) => a.role === "dispatcher").length}
+        title="DISPATCHERS ON FILE"
+        count={dispatcherAccounts.length}
         countLabel="on file"
         open={openDisp}
         onToggle={() => setOpenDisp((v) => !v)}
       >
       <div style={styles.requestForm}>
-        <div style={styles.formRow}>
-          <div style={{ flex: 1 }}>
-            <label style={styles.label}>Name</label>
-            <input style={{ ...styles.input, ...(dispMissing.name ? styles.inputMissing : null) }} value={dispName} onChange={(e) => setDispName(e.target.value)} placeholder="e.g. J. Alvarez" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={styles.label}>ID</label>
-            <input style={{ ...styles.input, ...(dispMissing.id ? styles.inputMissing : null) }} value={dispId} onChange={(e) => setDispId(e.target.value)} placeholder="e.g. D1000002" />
-          </div>
+        <div style={styles.formHint}>
+          The dispatch desk is <strong>lent, not assigned</strong>. Add the person as a team member,
+          then open <strong>Delegate authority</strong> and lend them <strong>The dispatch desk</strong> —
+          their sign-on goes on the log under their own name, and you take it back whenever you like.
+          {dispatcherAccounts.length > 0
+            ? " The accounts below were made under the old rule and still work."
+            : " No accounts hold the old dispatcher role."}
         </div>
-        <div style={styles.formHint}>Dispatchers can also join a team as crew when a unit is short-staffed.</div>
-        {dispError && <div style={styles.loginError}>{dispError}</div>}
-        <button style={styles.primaryBtnSm} disabled={dispBusy} onClick={addDispatcherAccount}>
-          <Plus size={14} /> Add Dispatcher
-        </button>
 
         {dispatcherAccounts.length > 0 && (
           <div style={styles.accountList}>

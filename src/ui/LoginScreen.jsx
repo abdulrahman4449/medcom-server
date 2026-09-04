@@ -12,7 +12,7 @@ import { crewShiftSummary, overtimeMs, scheduledShiftKey, seatLabel, shiftAssign
 import { HANDOVER_GRACE_MS } from "../domain/shifts.jsx";
 import { actorStamp } from "../export/name-stamps.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
-import { CheckCircle2, ChevronRight, Users } from "../lib/icons.jsx";
+import { Ambulance, Archive, CheckCircle2, ChevronRight, Radio, Users } from "../lib/icons.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
@@ -22,13 +22,6 @@ import { ShiftPicker } from "./ShiftPicker.jsx";
 import { GlobalFont } from "./font.jsx";
 
 // ---------- login ----------
-
-// Maps a first-screen choice to the account role it accepts.
-export const ROLE_CHOICES = {
-  dispatcher: { accountRole: "dispatcher", label: "Dispatcher", other: "Team or Admin" },
-  team: { accountRole: "crew", label: "Team", other: "Dispatcher or Admin" },
-  admin: { accountRole: "admin", label: "Admin", other: "Dispatcher or Team" },
-};
 
 // Is this person already sitting somewhere?
 //
@@ -61,14 +54,32 @@ function loginNoticeText(notice) {
   return "";
 }
 
-export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme, loginNotice }) {
-  // The tab that is selected, never null. The screen used to open on a menu of
-  // three buttons and only then show a form; the approved design is one card
-  // with the choice as a tab strip along the top of it, so there is a field to
-  // type in the moment the app opens. Crew is the default because crew are
-  // most of the people signing in.
-  const [role, setRole] = useState("team"); // "dispatcher" | "team" | "admin"
+// One choice on the role screen, drawn to the card contract in
+// design/README.md: 16px radius, hairline, lift, and a 4px status bar across
+// the top so what kind of work it is survives distance and colour blindness —
+// the same rule the fleet cards on the board follow.
+function RoleCard({ tone, icon, title, sub, onClick, disabled, held, pill }) {
+  return (
+    <button
+      style={{ ...styles.roleCard, ...(held ? styles.roleCardHeld : null) }}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <span style={{ ...styles.roleCardBar, background: tone }} />
+      <span style={{ ...styles.roleCardIcon, background: `color-mix(in srgb, ${tone} 14%, transparent)` }}>
+        {icon}
+      </span>
+      <span style={styles.roleCardBody}>
+        {pill && <span style={styles.roleCardPill}>{pill}</span>}
+        <span style={{ ...styles.roleCardTitle, display: "block" }}>{title}</span>
+        {sub && <span style={{ ...styles.roleCardSub, display: "block" }}>{sub}</span>}
+      </span>
+      <ChevronRight size={18} color="var(--ink-4)" />
+    </button>
+  );
+}
 
+export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggleTheme, loginNotice }) {
   // ---- account sign-in state machine ----
   const [stage, setStage] = useState("id"); // "id" | "createPassword" | "roleChoice" | "chooseShift" | "chooseStation" | "chooseTeam" | "chooseSeat"
   const [idInput, setIdInput] = useState("");
@@ -365,12 +376,12 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       );
       return;
     }
-    const expected = ROLE_CHOICES[role];
-    if (expected && found.role !== expected.accountRole) {
-      setBusy(false);
-      setError(`That isn't a ${expected.label.toLowerCase()} ID — try the ${expected.other} tab instead.`);
-      return;
-    }
+    // No role is checked here any more, because none was asked for. The tab
+    // strip made a person name their own role BEFORE the app knew who they
+    // were, and answered a wrong guess with "that isn't a team ID — try the
+    // Dispatcher or Admin tab instead": a refusal for a question that should
+    // never have been put. The account says what it is, and `routeAfterPassword`
+    // offers only what it actually holds.
     setFoundAccount(found);
 
     // No password on the account yet: this is their first time, and the next
@@ -1034,33 +1045,12 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
         <div style={styles.loginMark}>
           <BrandLockup size={168} />
         </div>
-        {/* Which door, as a tab strip rather than a menu that has to be got
-            past. The choice is visible the whole time, so somebody who picked
-            the wrong one corrects it with one tap instead of a Back button. */}
-        {stage === "id" && (
-          <div style={styles.loginTabs}>
-            {[
-              { key: "team", label: "Crew" },
-              { key: "dispatcher", label: "Dispatch" },
-              { key: "admin", label: "Admin" },
-            ].map((t) => (
-              <button
-                key={t.key}
-                style={role === t.key ? styles.loginTabOn : styles.loginTab}
-                onClick={() => {
-                  if (role === t.key) return;
-                  setRole(t.key);
-                  resetAccountFlow();
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {role && (
-          <div style={{ marginTop: 18 }}>
+        {/* No door to pick. One ID, one password, and the ROLE comes after —
+            see `routeAfterPassword`, which offers only what this account
+            holds. The tab strip that used to sit here asked a person to name
+            their own role before anything had identified them, and a wrong
+            guess was answered with a refusal rather than an answer. */}
+        <div style={{ marginTop: 18 }}>
             {loginNotice && loginNoticeText(loginNotice) && (
               <div style={styles.claimCodeBanner}>{loginNoticeText(loginNotice)}</div>
             )}
@@ -1071,7 +1061,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                   style={styles.loginInput}
                   value={idInput}
                   onChange={(e) => setIdInput(e.target.value)}
-                  placeholder={role === "dispatcher" ? "D1000001" : "F1525518"}
+                  placeholder="F1525518"
                   autoCapitalize="characters"
                   autoCorrect="off"
                   spellCheck={false}
@@ -1168,36 +1158,29 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
 
             {stage === "roleChoice" && (
               <>
-                <div style={styles.loginSub}>Welcome back, {foundAccount.name || foundAccount.id}.</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                  {canJoinTeam(foundAccount.role) && (
-                    <button style={styles.roleBtn} onClick={continueAsSelf}>
-                      <div style={{ textAlign: "left" }}>
-                        <div style={styles.roleBtnTitle}>
-                          Continue as {foundAccount.role === "admin" ? "Admin" : "Dispatcher"}
-                        </div>
-                      </div>
-                      <ChevronRight size={18} color="var(--ink-3)" />
-                    </button>
-                  )}
-                  {/* A crew member with a delegation reaches this screen too,
-                      and their own way in is their team — not "continue as
-                      dispatcher", which they are not. */}
-                  <button
-                    style={styles.roleBtn}
+                <div style={styles.loginSub}>
+                  Welcome back, {foundAccount.name || foundAccount.id}.
+                </div>
+                <div style={{ ...styles.loginSub, marginTop: 4, color: "var(--ink-3)" }}>
+                  What are you working as today?
+                </div>
+                {/* Only what this account actually holds. The tab strip that
+                    used to sit on the first screen asked the same question
+                    BEFORE anything had identified them, and answered a wrong
+                    guess with a refusal; by the time this screen is drawn the
+                    server has already said what they are. */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 11, marginTop: 14 }}>
+                  <RoleCard
+                    tone="var(--ok)"
+                    icon={<Ambulance size={20} color="var(--ok)" />}
+                    title={canJoinTeam(foundAccount.role) ? "Join a team" : "Continue as team member"}
+                    sub="Work a truck. You pick the shift and the vehicle next."
                     onClick={() => {
                       setActingDelegated(false);
                       setPendingRole("team");
                       setStage("chooseShift");
                     }}
-                  >
-                    <div style={{ textAlign: "left" }}>
-                      <div style={styles.roleBtnTitle}>
-                        {canJoinTeam(foundAccount.role) ? "Join a Team" : "Continue as Team Member"}
-                      </div>
-                    </div>
-                    <ChevronRight size={18} color="var(--ink-3)" />
-                  </button>
+                  />
                   {/* An administrator covering the desk is a dispatcher for
                       that shift, not an administrator with a dispatch tab:
                       they pick a shift and a station like anybody else taking
@@ -1207,52 +1190,66 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                       somebody else's ID, which put the wrong name on the
                       night's log. */}
                   {foundAccount.role === "admin" && (
-                    <button
-                      style={styles.roleBtn}
+                    <RoleCard
+                      tone="var(--flow)"
+                      icon={<Radio size={20} color="var(--flow)" />}
+                      title="Take the dispatch desk"
+                      sub="Raise and assign calls. Signs you on to the desk for this shift."
                       onClick={() => {
                         setPendingRole("dispatcher");
                         setStage("chooseShift");
                       }}
-                    >
-                      <div style={{ textAlign: "left" }}>
-                        <div style={styles.roleBtnTitle}>Take the Dispatch Desk</div>
-                      </div>
-                      <ChevronRight size={18} color="var(--ink-3)" />
-                    </button>
+                    />
+                  )}
+                  {canJoinTeam(foundAccount.role) && (
+                    <RoleCard
+                      tone="var(--move)"
+                      icon={<Archive size={20} color="var(--move)" />}
+                      title={foundAccount.role === "admin" ? "Administration" : "Continue as Dispatcher"}
+                      sub={
+                        foundAccount.role === "admin"
+                          ? "Statistics, teams, the schedule and the archive."
+                          : "Your own desk view."
+                      }
+                      onClick={continueAsSelf}
+                    />
                   )}
                   {/* Authority somebody lent them. Named, dated, and under
                       their own name — which is the whole point: the alternative
                       people were using was signing in on the administrator's
                       own ID, which put the wrong name on every line of the
-                      night's log. */}
+                      night's log. The desk is now ONLY ever reached this way
+                      for anybody who is not an administrator. */}
                   {lentDesk && (
-                    <button style={styles.delegatedBtn} disabled={busy} onClick={() => actAsDelegated("dispatcher")}>
-                      <div style={{ textAlign: "left" }}>
-                        <div style={styles.roleBtnTitle}>Work the Dispatch Desk</div>
-                        <div style={styles.roleBtnSub}>
-                          Delegated by {delegation.by || "an administrator"}
-                        </div>
-                      </div>
-                      <ChevronRight size={18} color="var(--ink-3)" />
-                    </button>
+                    <RoleCard
+                      tone="var(--move)"
+                      icon={<Radio size={20} color="var(--move)" />}
+                      title="Work the dispatch desk"
+                      sub={`Lent to you by ${delegation.by || "an administrator"}.`}
+                      disabled={busy}
+                      onClick={() => actAsDelegated("dispatcher")}
+                    />
                   )}
                   {lentAdminAreas.length > 0 && (
-                    <button style={styles.delegatedBtn} disabled={busy} onClick={() => actAsDelegated("admin")}>
-                      <div style={{ textAlign: "left" }}>
-                        {/* Named for what they can actually do, not "as an
-                            administrator" — they are not one, and the screen
-                            they get is only the part they were lent. */}
-                        <div style={styles.roleBtnTitle}>Work on {areaSentence(lentAdminAreas)}</div>
-                        <div style={styles.roleBtnSub}>
-                          Delegated by {delegation.by || "an administrator"}
-                        </div>
-                      </div>
-                      <ChevronRight size={18} color="var(--ink-3)" />
-                    </button>
+                    <RoleCard
+                      tone="var(--move)"
+                      icon={<Archive size={20} color="var(--move)" />}
+                      /* Named for what they can actually do, not "as an
+                         administrator" — they are not one, and the screen
+                         they get is only the part they were lent. */
+                      title={`Work on ${areaSentence(lentAdminAreas)}`}
+                      sub={`Lent to you by ${delegation.by || "an administrator"}.`}
+                      disabled={busy}
+                      onClick={() => actAsDelegated("admin")}
+                    />
                   )}
                 </div>
+                <div style={styles.loginFootnote}>
+                  You can change this without signing out — whatever you choose, the other
+                  roles you hold stay one tap away in the header.
+                </div>
                 <div style={styles.loginActions}>
-                  <button style={styles.ghostBtn} onClick={resetAccountFlow}>Back</button>
+                  <button style={styles.ghostBtn} onClick={resetAccountFlow}>Not you? Back</button>
                 </div>
               </>
             )}
@@ -1534,8 +1531,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                 </div>
               </>
             )}
-          </div>
-        )}
+        </div>
 
       </div>
 

@@ -956,7 +956,7 @@ app.post("/api/board", requireAuth, (req, res) => {
 // server, and the handful of keys that are not records at all.
 const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
 const { settledResetsHold, resetReplayCount } = require("./lib/reset-requests.cjs");
-const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
+const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, roleAssignable, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
 
 // ---------- waking a locked phone ----------
 //
@@ -2815,6 +2815,27 @@ app.post("/api/accounts", requireArea("teams"), (req, res) => {
   if (!key) return res.status(400).json({ error: "An employee ID is required." });
   if (!["admin", "dispatcher", "crew"].includes(role)) {
     return res.status(400).json({ error: "Unknown role." });
+  }
+  // THE DESK IS NOT AN ACCOUNT ROLE ANY MORE — it is lent.
+  //
+  // A dispatcher account was a second kind of person to create, remember and
+  // remove, and it made covering the desk into a staffing question rather
+  // than a delegation: an administrator who wanted somebody on the desk for a
+  // fortnight either created an account for them or handed over their own ID,
+  // and the second is what people actually did. Lending the `dispatch` area
+  // does the same job, under that person's own name, with a date and a giver
+  // on it, and it is taken back in one tap.
+  //
+  // Accounts that already carry the role keep it: they are staffed, they may
+  // be seated right now, and a rule introduced today must not brick them.
+  // Only CREATING one is refused, and editing an existing dispatcher — a
+  // rename, a station — still goes through.
+  const existing = findAccount(key);
+  if (!roleAssignable(role, existing && existing.role)) {
+    noteFinding("refused-role", `${req.user.id}: tried to make ${key} a dispatcher account`);
+    return res.status(400).json({
+      error: "The dispatch desk is lent, not assigned. Add them as a team member, then lend them the dispatch area from Delegate authority.",
+    });
   }
   // The owner account answers only to itself, and can never stop being an
   // administrator — see ownerAccountRefusal in lib/restore-guard.cjs.

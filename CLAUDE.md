@@ -1091,6 +1091,38 @@ patch", that document is the target — do not start a fresh exploration.
   a call with no patient cannot be missing a patient care report. The PDF's
   summary tiles say TRANSFERRED and CANCELLED / NO TRANSPORT, never
   "Completed" over rows the sheet itself calls CANCELLED.
+- **The sign-in screen asks WHO, never WHAT — the role comes after the
+  password.** There is no tab strip. It made a person name their own role
+  before anything had identified them, and answered a wrong guess with a
+  refusal — *"That isn't a team ID — try the Dispatcher or Admin tab
+  instead"* — for a question that should never have been put: by the time the
+  password is checked the server has already said what the account is.
+  `routeAfterPassword` is the whole routing rule and it was already right —
+  a seat already held goes to `resume`, more than one way in goes to
+  `roleChoice`, exactly one way in skips straight to the shift picker, so a
+  crew member (most people signing in) still pays no extra tap. Only the tabs
+  and their refusal were removed. `roleChoice` is drawn to the card contract
+  in `design/README.md`: 16px radius, hairline, lift, and a 4px status bar
+  across the top of each card, because what kind of work it is must survive
+  distance and colour blindness like every other card on this board.
+- **THE DESK IS LENT, NOT ASSIGNED.** `roleAssignable` in
+  `domain/delegation.jsx` and `lib/delegation.cjs`, under `npm test` — which
+  asserts the two answer identically, like the areas list beside them.
+  `dispatcher` was an account role: a second kind of person to create,
+  remember and remove, which turned covering the desk into a staffing question
+  rather than a delegation. An administrator who needed somebody on the desk
+  for a fortnight either made them an account or handed over their own ID, and
+  the second is what people did — putting the wrong name on every line of that
+  night's log. Lending the `dispatch` area does the same job under the
+  person's own name, with a date and a giver on it, and is taken back in one
+  tap. So `POST /api/accounts` refuses to CREATE one (and files a
+  `refused-role` finding — a guard that fires silently is how the ghost hid),
+  and Add Dispatcher is gone from the admin's Teams page. **Accounts made
+  under the old rule keep the role**: they are staffed, they may be seated
+  right now, and a rule introduced today must not brick them — editing one
+  still goes through, the section still lists them, and they can still be
+  removed and re-coded. An ADMINISTRATOR taking the desk is unaffected: that
+  was never an account role, it is a shift they sign on for.
 - **The sign-in screen draws every list off the board it read itself.**
   `boardUnits` in `LoginScreen.jsx` — the `units` prop is the app's poll, and
   on a phone that has just signed in the poll has not run (it waits for a

@@ -23,6 +23,27 @@ export const DELEGATION_AREAS = [
 
 export const ADMIN_AREAS = DELEGATION_AREAS.filter((a) => a.key !== "dispatch");
 
+// THE DESK IS LENT, NOT ASSIGNED.
+//
+// `dispatcher` was an account role: a second kind of person to create,
+// remember and remove, which turned covering the desk into a staffing
+// question. An administrator who needed somebody on the desk for a fortnight
+// either made them an account or handed over their own ID, and the second is
+// what people did — which put the wrong name on every line of that night's
+// log. Lending the `dispatch` area does the same job under the person's own
+// name, with a date and a giver on it, and it is taken back in one tap.
+//
+// Accounts made under the old rule keep the role: they are staffed, they may
+// be seated right now, and a rule introduced today must not brick them. Only
+// CREATING one is refused. `lib/delegation.cjs` carries the same function for
+// the server, and `npm test` asserts the two agree.
+export const ASSIGNABLE_ROLES = ["crew", "admin"];
+
+export function roleAssignable(role, existingRole) {
+  if (role === "dispatcher") return existingRole === "dispatcher";
+  return ASSIGNABLE_ROLES.includes(role);
+}
+
 export function areaLabel(key) {
   const a = DELEGATION_AREAS.find((x) => x.key === key);
   return a ? a.label : key;

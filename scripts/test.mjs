@@ -56,6 +56,7 @@ export { toneKeyFor, alarmLoudnessNote, shellBuildNote, volumeFloorNote, shellBu
 export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};
 export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "src/domain/second-ambulance.jsx")};
 export { crewShiftWindow, deskShiftWindow } from ${JSON.stringify(ROOT + "src/domain/shift-helpers.jsx")};
+export { roleAssignable as roleAssignableServer } from ${JSON.stringify(ROOT + "lib/delegation.cjs")};
 export { callClosedTs } from ${JSON.stringify(ROOT + "src/ui/Escalations.jsx")};
 `;
 

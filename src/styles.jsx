@@ -4881,6 +4881,68 @@ export const styles = {
   },
   roleBtnTitle: { fontWeight: 600, fontSize: 20, letterSpacing: -0.42 },
   roleBtnSub: { fontSize: 13, color: "var(--ink-3)", marginTop: 2 },
+  // The role cards on the sign-in screen. Same card contract as the fleet
+  // (16px radius, hairline, lift) and the same rule the board follows: status
+  // is carried by a 4px bar across the top AND by position, never by colour
+  // alone. The bar is what tells a crew card from a desk card at a glance.
+  roleCard: {
+    position: "relative",
+    overflow: "hidden",
+    background: "var(--raised)",
+    border: "1px solid var(--hair)",
+    borderRadius: 16,
+    boxShadow: "0 6px 18px var(--lift)",
+    padding: "15px 16px",
+    minHeight: 74,
+    color: "var(--ink)",
+    display: "flex",
+    alignItems: "center",
+    gap: 13,
+    cursor: "pointer",
+    fontFamily: display,
+    textAlign: "left",
+    width: "100%",
+  },
+  roleCardBar: { position: "absolute", top: 0, left: 0, right: 0, height: 4 },
+  roleCardIcon: {
+    width: 42,
+    height: 42,
+    flex: "0 0 42px",
+    borderRadius: 12,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  roleCardBody: { flex: 1, minWidth: 0 },
+  roleCardTitle: { fontSize: 15.5, fontWeight: 700, letterSpacing: -0.15, color: "var(--ink)" },
+  roleCardSub: { fontSize: 12, color: "var(--ink-3)", marginTop: 3, lineHeight: 1.45 },
+  // A seat this person is already sitting in. It is not a fourth choice, it is
+  // the one they almost certainly came here for — somebody changing phones
+  // mid-shift — so it is lifted out of the list and named.
+  roleCardHeld: {
+    background: "linear-gradient(180deg, rgba(48,209,88,.10), rgba(48,209,88,.03))",
+    borderColor: "rgba(48,209,88,.30)",
+  },
+  roleCardPill: {
+    display: "inline-block",
+    fontSize: 9.5,
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+    fontWeight: 800,
+    padding: "3px 8px",
+    borderRadius: 999,
+    background: "rgba(48,209,88,.16)",
+    color: "var(--ok)",
+    marginBottom: 6,
+  },
+  roleCardOr: {
+    fontSize: 10.5,
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    color: "var(--ink-4)",
+    fontWeight: 800,
+    margin: "16px 0 2px 2px",
+  },
   loginActions: { display: "flex", gap: 8, marginTop: 16 },
   loginFootnote: { fontSize: 12.5, color: "var(--ink-4)", marginTop: 20, lineHeight: 1.5 },
   loginError: { fontSize: 13.5, color: "var(--crit-2)", marginTop: 8 },
