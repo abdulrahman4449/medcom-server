@@ -1059,8 +1059,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
             </SectionBanner>
             {stays.length === 0 ? (
               <div style={styles.formHint}>
-                No dispatcher sign-on in the shift log for the current window. The desk is signed
-                on from the sign-in screen, and this reads the log that sign-on writes.
+                Nobody on the desk this shift.
               </div>
             ) : (
               <div style={{ ...styles.unitGrid, gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>

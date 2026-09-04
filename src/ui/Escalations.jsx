@@ -1022,7 +1022,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
               ? `${completed.length} closed this shift`
               : unitId
                 ? `${completed.length} closed`
-                : `${todayCount} completed today. Closed calls stay here with their full timeline for dispatch and admin.` +
+                : `${todayCount} completed today.` +
                   (cancelledCount > 0
                     ? ` ${cancelledCount} of them ${cancelledCount === 1 ? "was" : "were"} cancelled rather than run — "Cancelled requests" has ${cancelledCount === 1 ? "it" : "those"} on ${cancelledCount === 1 ? "its" : "their"} own.`
                     : "") +
