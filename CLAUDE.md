@@ -823,6 +823,15 @@ patch", that document is the target — do not start a fresh exploration.
   `MediaPlayer.create()` here again.** The plugin also logs the whole path —
   which source, whether it opened, whether it started, and any error mid-loop —
   because silence with no explanation is the one outcome nobody can act on.
+- **An API-level guard travels with the code it guards.** `makeChannel` in the
+  Android plugin was extracted out of `ensureChannel`, and the
+  `Build.VERSION.SDK_INT < O` check stayed behind in the caller — so a method
+  full of API 26 calls sat in a project whose minimum is 24, and the build
+  failed with eight `Call requires API level 26` errors at once. Android's
+  linter reads each method on its own: it cannot see that the only caller
+  already returned. So the guard is the first line of the extracted method too,
+  not only of the one that calls it. The same applies to any `@RequiresApi`
+  body pulled into a helper.
 - **A floor with a case where it stops holding is not a floor.** Three ways it
   quietly stopped: the watch bailed out on a momentary `false` from
   `isPlaying()` and never rescheduled — MediaPlayer gives that freely while

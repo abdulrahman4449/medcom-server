@@ -117,7 +117,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-04.1";
+    private static final String PLUGIN_BUILD = "2026-09-04.2";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -211,6 +211,12 @@ public class PulseOpsAlarmPlugin extends Plugin {
      * tone falls back to the phone's own alarm sound rather than to silence.
      */
     private void makeChannel(NotificationManager nm, String id, String name, String why, Uri sound) {
+        // The guard belongs HERE, not only in the caller. NotificationChannel
+        // is API 26 and this project's minimum is 24; the linter checks each
+        // method on its own and cannot see that ensureChannel() already
+        // returned. Extracting the body without bringing the check with it is
+        // what broke the build.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         if (nm.getNotificationChannel(id) != null) return;
         NotificationChannel channel = new NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH);
         channel.setDescription(why);
