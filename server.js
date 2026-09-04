@@ -961,7 +961,7 @@ const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSente
 // the dispatch channel, which sounds on the alarm stream through silent. Needs
 // FIREBASE_SERVICE_ACCOUNT set (see native/README.md); without it every part
 // of this is a no-op and the board behaves exactly as before.
-const { newAssignments, newHandoverAsks } = require("./lib/push-triggers.cjs");
+const { newAssignments, newHandoverAsks, callStillNeedsWaking } = require("./lib/push-triggers.cjs");
 const { pushConfigured, sendCallAlert, pushProbe, sendOwnerNotice } = require("./lib/push-fcm.cjs");
 
 db.exec(`
@@ -1040,6 +1040,90 @@ function pushForUnitsWrite(prevList, nextList) {
   });
 }
 
+// ---------- waking a truck, and going on waking it ----------
+//
+// A push is ONE banner and ONE tone, on both platforms. A crew asleep at
+// 03:00, or in a bay with a diesel running, can miss a single buzz — and the
+// app's own repeating alarm cannot help, because it only runs once the app is
+// open and the app being shut is why the push was needed. So the server asks
+// again until somebody answers.
+//
+// Every 25 seconds, up to six times: a bit over two minutes. Past that the
+// desk should be picking up a telephone rather than trusting a notification,
+// and a phone buzzing for ever in a locker helps nobody. The stop conditions
+// live in `callStillNeedsWaking` (under `npm test`) — acknowledged, completed,
+// moved to another truck, or gone from the board.
+const PUSH_REPEAT_MS = 25000;
+const PUSH_REPEAT_MAX = 6;
+// Keyed truck|call, so two calls on one truck nag independently and a second
+// dispatch never cancels the first one's chase.
+const pushChases = new Map();
+
+function chaseKey(unitId, requestId) {
+  return `${unitId}|${requestId}`;
+}
+
+function stopChase(key) {
+  const t = pushChases.get(key);
+  if (t) clearTimeout(t);
+  pushChases.delete(key);
+}
+
+// The call as the board holds it right now. Only ever read while a chase is
+// live — that is, while an unacknowledged call is sitting on a truck, which
+// is rare and brief — so this never becomes a poll.
+function liveRequest(requestId) {
+  try {
+    const row = db.prepare("SELECT value FROM board WHERE key = ?").get("ems:requests");
+    if (!row) return null;
+    const list = JSON.parse(row.value);
+    if (!Array.isArray(list)) return null;
+    return list.find((r) => r && String(r.id) === String(requestId)) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function wakeUnit(unitId, requestId, priority, attempt) {
+  let rows = [];
+  try {
+    rows = db.prepare("SELECT token FROM push_tokens WHERE unit_id = ?").all(unitId);
+  } catch (e) {
+    rows = [];
+  }
+  for (const { token } of rows) {
+    try {
+      const r = await sendCallAlert(token, {
+        title: "NEW CALL",
+        body: "Your truck has been dispatched. Open the app and acknowledge.",
+        // The attempt rides along so a crew who look at the phone can see this
+        // is the same call being asked again, not a second dispatch.
+        data: { kind: "assigned", requestId, priority, attempt: String(attempt) },
+      });
+      if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+    } catch (e) {
+      // never let a push problem near the board
+    }
+  }
+}
+
+function chaseCall(unitId, requestId, priority, attempts) {
+  const key = chaseKey(unitId, requestId);
+  stopChase(key);
+  if (attempts >= PUSH_REPEAT_MAX) return;
+  const t = setTimeout(() => {
+    pushChases.delete(key);
+    const req = liveRequest(requestId);
+    if (!callStillNeedsWaking(req, unitId, attempts, PUSH_REPEAT_MAX)) return;
+    wakeUnit(unitId, requestId, priority, attempts + 1)
+      .then(() => chaseCall(unitId, requestId, priority, attempts + 1))
+      .catch(() => {});
+  }, PUSH_REPEAT_MS);
+  // Never hold the process open for a notification.
+  if (t.unref) t.unref();
+  pushChases.set(key, t);
+}
+
 function pushForRequestsWrite(prevList, nextList) {
   if (!pushConfigured()) return;
   let hits;
@@ -1048,27 +1132,28 @@ function pushForRequestsWrite(prevList, nextList) {
   } catch (e) {
     return;
   }
+  // Every write is a chance to call off a chase that has been answered — the
+  // acknowledgement IS a board write, so this costs nothing extra and stops
+  // the nagging within one poll of the crew tapping the button.
+  try {
+    if (pushChases.size) {
+      const live = new Map();
+      (Array.isArray(nextList) ? nextList : []).forEach((r) => {
+        if (r && r.id) live.set(String(r.id), r);
+      });
+      for (const key of [...pushChases.keys()]) {
+        const [unitId, requestId] = key.split("|");
+        if (!callStillNeedsWaking(live.get(requestId), unitId, 0, PUSH_REPEAT_MAX)) stopChase(key);
+      }
+    }
+  } catch (e) {
+    /* a tidy-up that throws must never stop a dispatch */
+  }
   if (!hits.length) return;
   setImmediate(async () => {
     for (const hit of hits) {
-      let rows = [];
-      try {
-        rows = db.prepare("SELECT token FROM push_tokens WHERE unit_id = ?").all(hit.unitId);
-      } catch (e) {
-        rows = [];
-      }
-      for (const { token } of rows) {
-        try {
-          const r = await sendCallAlert(token, {
-            title: "NEW CALL",
-            body: "Your truck has been dispatched. Open the app and acknowledge.",
-            data: { kind: "assigned", requestId: hit.requestId, priority: hit.priority },
-          });
-          if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
-        } catch (e) {
-          // never let a push problem near the board
-        }
-      }
+      await wakeUnit(hit.unitId, hit.requestId, hit.priority, 1);
+      chaseCall(hit.unitId, hit.requestId, hit.priority, 1);
     }
   });
 }

@@ -261,6 +261,21 @@ patch", that document is the target — do not start a fresh exploration.
   with no network answers rather than hanging the sign-on), and the refresh
   delegate caches whatever arrives so a token that lands after the ask is
   never lost. A cached token answers the next ask immediately.
+- **A push is ONE banner and ONE tone, so the SERVER asks again.**
+  `callStillNeedsWaking` in `lib/push-triggers.cjs` (under `npm test`) +
+  `chaseCall` in `server.js` — a crew asleep at 03:00 or in a bay with a diesel
+  running can miss a single buzz, and the app's own 1.7-second alarm loop
+  cannot help because it only runs once the app is OPEN, and the app being
+  shut is the whole reason a push was needed. So an unacknowledged call is
+  pushed again every `PUSH_REPEAT_MS` (25 s) up to `PUSH_REPEAT_MAX` (6) — a
+  bit over two minutes, after which the desk should be telephoning rather than
+  trusting a notification, and a phone buzzing for ever in a locker helps
+  nobody. It stops on acknowledgement, completion, a move to another truck, or
+  the call leaving the board; the acknowledgement IS a board write, so every
+  write also sweeps the chase list and the nagging ends within one poll of the
+  crew's tap. Keyed truck|call so a second dispatch never cancels the first
+  one's chase, and the timer is `unref`'d so a notification can never hold the
+  process open.
 - **A push carries BOTH platforms or it silently carries one.** `callMessage`
   / `ownerMessage` in `lib/push-fcm.cjs` (under `npm test`) — the payload had
   an `android` block and nothing else, which on an iPhone is a DATA-ONLY

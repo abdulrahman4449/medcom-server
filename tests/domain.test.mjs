@@ -764,6 +764,29 @@ export function run(D, t) {
       t.is("push: an owner notice is not time-sensitive", o.apns.payload.aps["interruption-level"], "active");
       t.ok("push: an owner notice is off the dispatch channel", !o.android.notification.channel_id);
     }
+
+    // ---- and again, until somebody answers ----
+    //
+    // A push is ONE banner and ONE tone. A crew asleep at 03:00, or in a bay
+    // with a diesel running, can miss a single buzz — and the app's own
+    // repeating alarm cannot help, because it only runs once the app is open
+    // and the app being shut is why the push was needed.
+    {
+      const live = { id: "r1", assignedUnitId: "u1", status: "assigned" };
+      t.ok("chase: an unanswered call is asked again", D.callStillNeedsWaking(live, "u1", 1, 6));
+      t.ok("chase: acknowledging stops it — that is the answer we waited for",
+        !D.callStillNeedsWaking({ ...live, acknowledged: true }, "u1", 1, 6));
+      t.ok("chase: a completed call stops it",
+        !D.callStillNeedsWaking({ ...live, status: "completed" }, "u1", 1, 6));
+      t.ok("chase: a call moved to another truck stops it",
+        !D.callStillNeedsWaking({ ...live, assignedUnitId: "u2" }, "u1", 1, 6));
+      t.ok("chase: a call gone from the board stops it", !D.callStillNeedsWaking(null, "u1", 1, 6));
+      // A phone buzzing for ever in a locker helps nobody; past a couple of
+      // minutes the desk should be telephoning.
+      t.ok("chase: it gives up rather than nagging for ever",
+        !D.callStillNeedsWaking(live, "u1", 6, 6));
+      t.ok("chase: and one short of the cap still asks", D.callStillNeedsWaking(live, "u1", 5, 6));
+    }
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.
