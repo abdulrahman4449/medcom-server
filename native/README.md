@@ -488,12 +488,19 @@ off to Apple. Four steps, and the first two are done once in the consoles.
 3. **Xcode project:**
    - Drag `GoogleService-Info.plist` into the `App` group (tick *Copy items if
      needed*, and make sure the **App** target is checked).
-   - `ios/App/Podfile`, inside `target 'App' do`, add:
-
-         pod 'FirebaseMessaging'
-
-     then in `ios/App`, run `pod install`.
-   - Add `PulseOpsPushPlugin.swift` to the App target.
+   - Add the Firebase SDK. **Which way depends on the Capacitor version, so
+     look before you follow either:** if the Project navigator shows a
+     **Package Dependencies** section with `capacitor-swift-pm`, this project
+     is on **Swift Package Manager** (Capacitor 8+) and there is no Podfile —
+     `pod install` would do nothing at all.
+     - **SPM:** File → *Add Package Dependencies…* →
+       `https://github.com/firebase/firebase-ios-sdk` → Add Package → tick
+       **FirebaseMessaging** only, target **App**.
+     - **CocoaPods (older projects, `ios/App/Podfile` exists):** add
+       `pod 'FirebaseMessaging'` inside `target 'App' do`, then run
+       `pod install` in `ios/App` and reopen `App.xcworkspace`.
+   - Add `PulseOpsPushPlugin.swift` to the App target, beside
+     `PulseOpsAlarmPlugin.swift`.
    - In **Signing & Capabilities**, add **Push Notifications** and, under
      **Background Modes**, tick **Remote notifications**.
 4. **`AppDelegate.swift`** — three additions:
