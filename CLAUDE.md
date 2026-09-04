@@ -250,6 +250,17 @@ patch", that document is the target — do not start a fresh exploration.
   The accounts screen opts out (`SectionScreen flat={false}`) because its
   five drawers ARE the content, siblings, not the chosen section repeated;
   the KPI band's two mixes are outside any tile and keep their folds.
+- **Firebase cannot mint a token before Apple has issued one.**
+  `registerForRemoteNotifications()` is a round trip to Apple, and asking
+  `Messaging.messaging().token` before it returns fails with "No APNS token
+  specified before fetching FCM Token" — which reads like a broken setup and
+  is only an ask made too early. Found on a real handset: the console showed
+  the failure and then `token refreshed (142 chars)` a moment later, so the
+  token DID arrive and had already been thrown away. `awaitApnsToken` waits
+  for `Messaging.messaging().apnsToken` (250 ms poll, 15 s deadline so a phone
+  with no network answers rather than hanging the sign-on), and the refresh
+  delegate caches whatever arrives so a token that lands after the ask is
+  never lost. A cached token answers the next ask immediately.
 - **A push carries BOTH platforms or it silently carries one.** `callMessage`
   / `ownerMessage` in `lib/push-fcm.cjs` (under `npm test`) — the payload had
   an `android` block and nothing else, which on an iPhone is a DATA-ONLY

@@ -46,13 +46,44 @@ public class PulseOpsPushPlugin: CAPPlugin, CAPBridgedPlugin, MessagingDelegate 
     // The plugin's own build, stamped like the alarm plugin's. A method list
     // is not a version: every method this web layer needs could already exist
     // in an older plugin, and then a stale build reports itself healthy.
-    private let pluginBuild = "2026-09-04.1"
+    private let pluginBuild = "2026-09-04.2"
+
+    /// The last token Firebase handed us, kept so a later ask is answered
+    /// instantly and so a token that arrived AFTER the first ask is not lost.
+    private var cachedToken: String?
 
     public override func load() {
         // Printed so "is push even wired on this phone?" is answerable from
         // the Xcode console before the web layer gets a say.
         NSLog("PulseOpsPush: plugin loaded, build %@", pluginBuild)
         Messaging.messaging().delegate = self
+    }
+
+    /**
+     * Wait for Apple to issue the APNs token before asking Firebase for its
+     * own.
+     *
+     * `registerForRemoteNotifications()` is a round trip to Apple, and asking
+     * Firebase for a token before it returns fails with "No APNS token
+     * specified before fetching FCM Token" — which is not a fault in the
+     * setup, just an ask made too early. Observed on a real handset: the
+     * token arrived a moment later through the refresh delegate, by which
+     * time getToken had already answered with nothing and the seat was
+     * registered without a token.
+     *
+     * Polling rather than a notification because the APNs token has no
+     * publisher of its own; 250 ms is far below anything a person notices,
+     * and the deadline means a phone that never registers answers rather
+     * than hanging the sign-on.
+     */
+    private func awaitApnsToken(until deadline: Date, then done: @escaping () -> Void) {
+        if Messaging.messaging().apnsToken != nil || Date() >= deadline {
+            done()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.awaitApnsToken(until: deadline, then: done)
+        }
     }
 
     /**
@@ -75,6 +106,12 @@ public class PulseOpsPushPlugin: CAPPlugin, CAPBridgedPlugin, MessagingDelegate 
      * need different responses from the desk.
      */
     @objc func getToken(_ call: CAPPluginCall) {
+        // Already have one? Answer at once. Tokens are stable between
+        // rotations, and the web layer asks on every sign-on.
+        if let cached = cachedToken, !cached.isEmpty {
+            call.resolve(["token": cached, "granted": true, "platform": "ios", "pluginBuild": pluginBuild])
+            return
+        }
         let centre = UNUserNotificationCenter.current()
         centre.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error {
@@ -89,18 +126,44 @@ public class PulseOpsPushPlugin: CAPPlugin, CAPBridgedPlugin, MessagingDelegate 
                 // Idempotent: iOS returns the existing registration if there
                 // already is one, so this is safe on every sign-on.
                 UIApplication.shared.registerForRemoteNotifications()
-            }
-            Messaging.messaging().token { token, err in
-                if let err = err {
-                    NSLog("PulseOpsPush: no FCM token - %@", err.localizedDescription)
-                    call.resolve(["token": "", "granted": true, "reason": String(describing: err)])
-                    return
+                // ...and then WAIT for it. Asking Firebase before Apple has
+                // answered is the "No APNS token specified" failure.
+                self.awaitApnsToken(until: Date().addingTimeInterval(15)) {
+                    if Messaging.messaging().apnsToken == nil {
+                        // Never registered. A token may still arrive through
+                        // the refresh delegate, and it is cached there for the
+                        // next ask rather than lost.
+                        NSLog("PulseOpsPush: Apple never issued an APNs token - is the device online?")
+                        call.resolve([
+                            "token": self.cachedToken ?? "",
+                            "granted": true,
+                            "reason": "apns-pending",
+                            "platform": "ios",
+                            "pluginBuild": self.pluginBuild,
+                        ])
+                        return
+                    }
+                    Messaging.messaging().token { token, err in
+                        if let err = err {
+                            NSLog("PulseOpsPush: no FCM token - %@", err.localizedDescription)
+                            call.resolve([
+                                "token": self.cachedToken ?? "",
+                                "granted": true,
+                                "reason": String(describing: err),
+                                "platform": "ios",
+                                "pluginBuild": self.pluginBuild,
+                            ])
+                            return
+                        }
+                        let t = token ?? ""
+                        self.cachedToken = t
+                        // The token itself is never logged: it is the address
+                        // of one specific phone, and it lives in a console
+                        // people screenshot.
+                        NSLog("PulseOpsPush: FCM token obtained (%d chars)", t.count)
+                        call.resolve(["token": t, "granted": true, "platform": "ios", "pluginBuild": self.pluginBuild])
+                    }
                 }
-                let t = token ?? ""
-                // The token itself is never logged: it is the address of one
-                // specific phone, and it lives in a console people screenshot.
-                NSLog("PulseOpsPush: FCM token obtained (%d chars)", t.count)
-                call.resolve(["token": t, "granted": true, "platform": "ios", "pluginBuild": self.pluginBuild])
             }
         }
     }
@@ -110,6 +173,9 @@ public class PulseOpsPushPlugin: CAPPlugin, CAPBridgedPlugin, MessagingDelegate 
     /// picked up then; this notifies the page as well, for the case where a
     /// crew is signed on and stays on through a rotation.
     public func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+        // Cached, so a token that arrived after the first ask is not lost —
+        // which is exactly what happened on the handset this was found on.
+        if let t = fcmToken, !t.isEmpty { cachedToken = t }
         NSLog("PulseOpsPush: token refreshed (%d chars)", (fcmToken ?? "").count)
         notifyListeners("pushTokenRefreshed", data: ["token": fcmToken ?? ""])
     }
