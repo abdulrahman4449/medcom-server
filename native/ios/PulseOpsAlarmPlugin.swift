@@ -62,7 +62,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // The PLUGIN's own build date, which is not the web build's. See the same
     // constant in the Android plugin for why a method list is not a version.
-    private let pluginBuild = "2026-09-04.3"
+    private let pluginBuild = "2026-09-04.4"
 
     /**
      * EVERY piece of audio work in this plugin runs here, and NOT on the main
@@ -575,6 +575,25 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
      * the output volume are the two an iPhone can be asked for.
      */
     @objc func backgroundStatus(_ call: CAPPluginCall) {
+        // ON THE AUDIO QUEUE, like every other method here that reads the
+        // session — and this one was missed when the rest moved off main.
+        //
+        // Capacitor dispatches a plugin method on the main thread unless the
+        // plugin says otherwise, and `deviceStatus()` below reads
+        // `outputVolume` and `category`: both are round trips to mediaserverd,
+        // and both are SLOW exactly when the session is being re-established —
+        // which is what happens the moment the app comes back to the
+        // foreground. That did not matter while the only caller was the crew
+        // screen. Then the SYSTEM chip went into the masthead, on every screen
+        // and every role, asking every few seconds — so an administrator
+        // returning to the app landed a mediaserverd read on the main thread
+        // during the resume, and iOS reported a fence hang and a 2.2-second
+        // hang against the app. Reported from a handset with the correction
+        // form open and no alarm anywhere near it.
+        audioQueue.async { self.answerBackgroundStatus(call) }
+    }
+
+    private func answerBackgroundStatus(_ call: CAPPluginCall) {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             var out = self.deviceStatus()
             let enabled = settings.authorizationStatus == .authorized

@@ -122,8 +122,14 @@ export function SoundDiagnostics({ audioCtxRef }) {
 // and none of them is visible from inside a web page. Ten seconds is often
 // enough: a crew fixing one of these is standing at the phone, and the line has
 // to tell them it worked.
-export function useBackgroundStatus() {
+export function useBackgroundStatus(every = 10000) {
   const [status, setStatus] = useState(null);
+  // A NATIVE round trip, not a free read — and on iOS it reads the audio
+  // session, which is slow exactly when the app is coming back to the
+  // foreground. Ten seconds is right on the crew screen, where the line has to
+  // track the volume buttons while somebody is standing at the phone holding
+  // them down. It is wrong everywhere else, and the masthead chip made
+  // "everywhere else" mean every screen of every role: pass it a slow one.
   useEffect(() => {
     let live = true;
     const read = () => {
@@ -134,12 +140,12 @@ export function useBackgroundStatus() {
       });
     };
     read();
-    const t = setInterval(read, 10000);
+    const t = setInterval(read, Math.max(1000, every));
     return () => {
       live = false;
       clearInterval(t);
     };
-  }, []);
+  }, [every]);
   return status;
 }
 

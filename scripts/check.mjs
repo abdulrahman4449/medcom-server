@@ -152,7 +152,47 @@ for (const imp of importsOf) {
   }
 }
 
+// ---------- the iOS plugin: nothing that reads the audio session on main ----------
+//
+// `AVAudioSession` is a synchronous round trip to mediaserverd — tens to
+// hundreds of milliseconds, far worse while the session is being
+// re-established, which is exactly what happens as the app returns to the
+// foreground. Capacitor dispatches a plugin method on the MAIN thread unless
+// the plugin says otherwise, so a method that touches the session and does not
+// hop onto `audioQueue` is a hang against the app, and iOS reports it as one.
+//
+// This has now been the same bug twice. The first time it was every method at
+// once (700 ms, 894 ms, 1873 ms, 2121 ms on a handset). The second time the
+// audio methods had been moved and `backgroundStatus` had not — invisible until
+// the SYSTEM chip put it on a timer on every screen, and then it was a fence
+// hang and 2.2 seconds on an administrator's phone with no alarm in sight.
+// Nothing in `npm test` can see a Swift file, so the check lives here.
+const IOS_PLUGIN = path.join(root, "native/ios/PulseOpsAlarmPlugin.swift");
+if (fs.existsSync(IOS_PLUGIN)) {
+  const swift = fs.readFileSync(IOS_PLUGIN, "utf8");
+  const re = /@objc func (\w+)\(_ call: CAPPluginCall\) \{/g;
+  let m;
+  while ((m = re.exec(swift))) {
+    // The method body, by brace balance from the opening one.
+    let depth = 1, i = re.lastIndex;
+    while (i < swift.length && depth > 0) {
+      if (swift[i] === "{") depth++;
+      else if (swift[i] === "}") depth--;
+      i++;
+    }
+    const body = swift.slice(re.lastIndex, i);
+    const readsSession = /AVAudioSession|deviceStatus\s*\(/.test(body);
+    if (readsSession && !body.includes("audioQueue.async")) {
+      console.log(
+        `native/ios/PulseOpsAlarmPlugin.swift: ${m[1]}() reads the audio session on the MAIN thread ` +
+        `— wrap its body in audioQueue.async, or iOS will report a hang against the app`
+      );
+      failures++;
+    }
+  }
+}
+
 console.log(failures
   ? `\nFAILED - ${failures} problem${failures === 1 ? "" : "s"} across ${files.length} modules`
-  : `OK - ${files.length} modules parse, resolve, import and declare cleanly`);
+  : `OK - ${files.length} modules parse, resolve, import and declare cleanly, and the iOS plugin stays off the main thread`);
 process.exit(failures ? 1 : 0);

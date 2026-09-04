@@ -12,7 +12,13 @@ import { useBackgroundStatus } from "./AlarmOverlay.jsx";
 // place that reads it — so the chip in the masthead and the crew screen's
 // banner can never disagree about whether this phone is well.
 export function useSystemReading(audioCtxRef) {
-  const bg = useBackgroundStatus();
+  // Once a minute, not once every ten seconds. This chip sits on EVERY screen
+  // for every role, and each read is a native round trip that touches the
+  // audio session; the four handset settings it watches are things a person
+  // changes in Settings, not things that move second to second. The crew
+  // screen's own notice keeps the fast one, because that is where somebody
+  // stands at the phone pressing volume-down to see the line react.
+  const bg = useBackgroundStatus(60000);
   const [, force] = useState(0);
 
   // The sync half moves on events, not on a timer: a status line that

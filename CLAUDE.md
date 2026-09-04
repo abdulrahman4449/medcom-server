@@ -885,6 +885,31 @@ patch", that document is the target — do not start a fresh exploration.
   `watchForInterruptions` also registers ONCE: `standby(on:true)` added a
   fresh observer on every sign-on and removed none, so one interruption ran
   `startStandby()` once per handler ever added.
+- **A plugin method that reads the audio session must hop off MAIN — and
+  `npm run check` now proves it.** Capacitor dispatches a plugin method on the
+  main thread unless the plugin says otherwise, and `AVAudioSession` is a
+  synchronous round trip to mediaserverd that is slowest exactly while the
+  session is being re-established — which is what happens as the app returns to
+  the foreground. This has been the same bug TWICE. First every method at once
+  (700/894/1873/2121 ms). Then `backgroundStatus` alone: the audio methods had
+  moved to `audioQueue` and it had not, and nothing noticed because its only
+  caller was the crew screen. Putting the `SYSTEM` chip in the masthead made it
+  every screen and every role on a ten-second timer, and an administrator with
+  the correction form open — no alarm anywhere near it — got a **Fence Hang
+  507 ms** and **2205 ms** against the app on coming back from another app.
+  Measured first, not guessed: the real bundle on a 401-call board with 60
+  submissions, on that exact screen, blocked for **0 ms** steady and 0 ms on
+  resume, so the web layer was ruled out before a line of Swift was touched.
+  Two halves to the fix, and both matter: `backgroundStatus` moved onto
+  `audioQueue`, and `useBackgroundStatus(every)` — the crew screen keeps ten
+  seconds, because that is where somebody stands at the phone holding
+  volume-down to watch the line react; the masthead chip takes SIXTY, because
+  the four handset settings it watches are things a person changes in Settings,
+  not things that move second to second. **`scripts/check.mjs` reads the Swift
+  file** and fails on any `@objc` method that names `AVAudioSession` or
+  `deviceStatus(` without `audioQueue.async` in its body — `npm test` cannot
+  see a Swift file, and this class of bug is invisible until a handset reports
+  it.
 - **An API-level guard travels with the code it guards.** `makeChannel` in the
   Android plugin was extracted out of `ensureChannel`, and the
   `Build.VERSION.SDK_INT < O` check stayed behind in the caller — so a method
