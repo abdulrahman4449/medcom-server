@@ -270,7 +270,7 @@ export function useMessageAlerts(messages, mine, unitIds, audioCtxRef) {
   }, [messages, mine]);
 }
 
-export function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages, locations, archives, log }) {
+export function DispatcherView({ user, units, requests, scheduled, saveUnits, saveRequests, saveScheduled, addLog, audioCtxRef, coverage, setCoverage, newCallSignal, page, messages, setMessages, locations, archives, log, submissions }) {
   const [showForm, setShowForm] = useState(false);
   // Which call is open as a full card. Null means the tile board.
   const [openCallId, setOpenCallId] = useState(null);
@@ -1916,6 +1916,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
             user={user}
             shiftWindow={deskShiftWindow(user, Date.now(), SHIFT_MS)}
             canCorrect
+            submissions={submissions}
           />
 
           {/* Calls that ran while the board was not there. It belongs on this

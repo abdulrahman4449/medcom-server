@@ -3941,6 +3941,20 @@ export const styles = {
     background: "rgba(233,196,106,.08)", border: "1px solid rgba(233,196,106,.4)",
     borderRadius: 8, padding: "6px 9px",
   },
+  // Said inside the amber "needs" tag, so it reads as part of the same warning
+  // rather than as a second banner competing with it.
+  recordClosingNote: {
+    marginTop: 5, fontSize: 12, fontWeight: 500, lineHeight: 1.5,
+    color: "var(--hold-2)",
+  },
+  // A filed record. Deliberately quiet and green rather than amber: nothing is
+  // wrong here and nothing is owed — the sheet is in, which is the good outcome.
+  recordFiledNote: {
+    marginTop: 8, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-3)",
+    background: "color-mix(in srgb, var(--ok) 8%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--ok) 35%, transparent)",
+    borderRadius: 8, padding: "7px 10px",
+  },
 
   coverageRow: { marginBottom: 12 },
   coverageTotal: {

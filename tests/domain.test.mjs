@@ -2412,5 +2412,102 @@ export function run(D, t) {
     t.ok("system: and an empty reading still produces a line", D.systemDetailLine({}).length > 0);
     t.ok("system: a null reading does not throw", D.systemSummary(null).ok);
   }
+  // ---------- a filed record is closed, to everybody
+  {
+    const HOUR = 3600000;
+    // A complete record: every LOG_COMPLETENESS field answered.
+    const complete = (over) => ({
+      id: "r1",
+      status: "completed",
+      createdAt: 1000,
+      patientOrigin: "MAIN HOSPITAL Bldg.",
+      locationTo: "Ward 3",
+      mrn: "3727",
+      callType: "E",
+      callCategory: "EMERGENCY (INTERNAL)",
+      loadedKm: "NA",
+      emergencyCode: "CARDIAC EMERGENCY",
+      addedService: "NA",
+      times: { arrivalDestination: 0 },
+      ...over,
+    });
+    t.is("filed: the sample record really is complete", D.missingLogFields(complete()).length, 0);
+
+    const now = 100 * HOUR;
+    const sub = (over) => ({
+      id: "2026-09-04::day::main",
+      shiftLabel: "Day shift",
+      dayLabel: "4 Sep 2026",
+      station: "main",
+      submittedAt: now - HOUR,
+      windowEnd: now - HOUR,
+      status: "final",
+      requestIds: ["r1"],
+      ...over,
+    });
+    const idx = (subs) => D.filedCallIndex(subs);
+
+    // The rule itself, one condition at a time.
+    t.ok("filed: a complete record whose shift is filed and over is LOCKED",
+      D.callRecordLock(complete(), idx([sub()]), now).locked);
+    t.ok("filed: a call still running is never locked",
+      !D.callRecordLock(complete({ status: "assigned" }), idx([sub()]), now).locked);
+    t.is("filed: a call no submitted log covers is not locked",
+      D.callRecordLock(complete(), idx([sub({ requestIds: ["other"] })]), now).why, "not-filed");
+    t.is("filed: nor is one whose shift window has not ended yet",
+      D.callRecordLock(complete(), idx([sub({ windowEnd: now + HOUR })]), now).why, "shift-running");
+    t.is("filed: a record still short of sheet data stays OPEN so it can be finished",
+      D.callRecordLock(complete({ mrn: "" }), idx([sub()]), now).why, "incomplete");
+    t.ok("filed: and says which fields are keeping it open",
+      D.callRecordLock(complete({ mrn: "" }), idx([sub()]), now).missing.some((f) => f.key === "mrn"));
+    // Filling the last one is what closes it — the reason the warning exists.
+    t.ok("filed: filling the last missing field closes the record",
+      D.callRecordLock(complete(), idx([sub()]), now).locked &&
+      !D.callRecordLock(complete({ mrn: "" }), idx([sub()]), now).locked);
+
+    // A submission filed with a call still running (status "open") has still
+    // been submitted — the sheet is in, and it is re-cut from the LIVE record.
+    t.ok("filed: an open submission still files the calls it covers",
+      D.callRecordLock(complete(), idx([sub({ status: "open" })]), now).locked);
+
+    // The index.
+    t.is("filed: the index maps a call to the log that took it",
+      D.filedCallIndex([sub()]).get("r1").shiftLabel, "Day shift");
+    t.is("filed: an empty submissions list indexes nothing", D.filedCallIndex([]).size, 0);
+    t.is("filed: a null submissions list does not throw", D.filedCallIndex(null).size, 0);
+    t.is("filed: a submission with no requestIds is skipped",
+      D.filedCallIndex([{ id: "x" }]).size, 0);
+    // The first log that names a call owns it; a re-file is not a second home.
+    t.is("filed: the FIRST log that names a call owns it",
+      D.filedCallIndex([sub(), sub({ id: "second", shiftLabel: "Night shift" })]).get("r1").shiftLabel,
+      "Day shift");
+
+    // Nothing may throw on the shapes a real board hands it.
+    t.ok("filed: a null call is not locked", !D.callRecordLock(null, idx([sub()]), now).locked);
+    t.ok("filed: a missing index is not a lock", !D.callRecordLock(complete(), null, now).locked);
+
+    // The words on the card. A control that vanishes with no explanation reads
+    // as a broken screen, and the desk's next move is to report it.
+    const locked = D.callRecordLock(complete(), idx([sub()]), now);
+    t.ok("filed: the note names the log the record went onto",
+      /Day shift/.test(D.recordLockNote(locked)) && /4 Sep 2026/.test(D.recordLockNote(locked)));
+    t.ok("filed: and says plainly that it cannot be changed",
+      /cannot be changed/.test(D.recordLockNote(locked)));
+    t.is("filed: an unlocked record has no filed note",
+      D.recordLockNote(D.callRecordLock(complete({ mrn: "" }), idx([sub()]), now)), "");
+    // Said BEFORE the last field goes in, never after.
+    const shortOne = D.callRecordLock(complete({ mrn: "" }), idx([sub()]), now);
+    t.ok("filed: a short record is warned that finishing it closes it",
+      /cannot be changed/.test(D.recordClosingNote(shortOne)));
+    t.ok("filed: and counts what is left in the singular",
+      /the last detail is in/.test(D.recordClosingNote(shortOne)));
+    t.ok("filed: two missing details are counted in the plural",
+      /the last 2 details are in/.test(
+        D.recordClosingNote(D.callRecordLock(complete({ mrn: "", emergencyCode: "" }), idx([sub()]), now))));
+    t.is("filed: a locked record gets no closing warning — it is already closed",
+      D.recordClosingNote(locked), "");
+    t.is("filed: nor does a call no log covers",
+      D.recordClosingNote(D.callRecordLock(complete(), idx([]), now)), "");
+  }
   }
 }

@@ -6,6 +6,7 @@ import { clockStr, msDurationStr, notifyEscalation } from "../domain/messages.js
 import { pcrAuthorText } from "../domain/pcr-author.jsx";
 import { assistTeamNames, isAssistingUnit, isNoTransport } from "../domain/second-ambulance.jsx";
 import { callsNeedingDetail, missingLogFields } from "../domain/sheet-gaps.jsx";
+import { callRecordLock, filedCallIndex, recordClosingNote, recordLockNote } from "../domain/record-lock.jsx";
 import { applyCallCoding, callTypeOf, loadedKmOf } from "../domain/sheet-vocabulary.jsx";
 import { hhmm, scheduledShiftKey, seatLabel, shiftMeta, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { SHIFT_MS } from "../domain/shifts.jsx";
@@ -654,7 +655,7 @@ export function callSearchText(req, units, escalations) {
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
-export function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect, focusSignal }) {
+export function CompletedCalls({ requests, units, saveRequests, addLog, user, unitId, shiftWindow, viewer, canCorrect, focusSignal, submissions }) {
   const [open, setOpen] = useState(!!shiftWindow);
   // Folded, with the count still on the header. The number is the part that
   // needs to be seen; the list of which calls is what you open it for.
@@ -664,6 +665,11 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
   // Which call has the correction form open, keyed by id for the same reason
   // the coding picker is: this list is a map over calls.
   const [editFor, setEditFor] = useState(null);
+
+  // Which calls a submitted log already covers. Built once for the whole list —
+  // see `filedCallIndex`; asking per card is what turns a month of history into
+  // a screen that will not scroll.
+  const filedIndex = React.useMemo(() => filedCallIndex(submissions), [submissions]);
 
   async function applyEdits(req, changes, note) {
     const ok = await applyCallEditsTo({
@@ -1043,6 +1049,11 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
               // a tap away; a running call stays open, because that one is being
               // worked.
               const isOpen = live || openCards.includes(req.id);
+              // Filed, shift over, nothing missing: the record is closed and
+              // nobody edits it. See `domain/record-lock.jsx` — this is the
+              // department's rule, not a permission, so it applies to the desk,
+              // the crew and an administrator alike.
+              const lock = callRecordLock(req, filedIndex);
               return (
                 <div
                   key={req.id}
@@ -1159,6 +1170,21 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                   {canCorrect && missingLogFields(req).length > 0 && (
                     <div style={styles.needsDetailTag}>
                       💡 needs: {missingLogFields(req).map((f) => f.label).join(", ")}
+                      {/* Said before the last field goes in, not after. A record
+                          that closes for ever on somebody's next tap has to say
+                          so while they can still check what they are typing. */}
+                      {recordClosingNote(lock) && (
+                        <div style={styles.recordClosingNote}>{recordClosingNote(lock)}</div>
+                      )}
+                    </div>
+                  )}
+                  {/* And the answer to "where did the buttons go". A control
+                      that simply vanishes reads as a broken screen, and the
+                      desk's next move is to report it. */}
+                  {lock.locked && (
+                    <div style={styles.recordFiledNote}>
+                      <CheckCircle2 size={12} style={{ verticalAlign: -2, marginRight: 6 }} />
+                      {recordLockNote(lock)}
                     </div>
                   )}
 
@@ -1171,7 +1197,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                   {!isNoTransport(req) && (req.times || {}).arrivalDestination && (
                     <ReceiverBanner
                       req={req}
-                      canEdit={canCorrect || canProposeEditOn(req, viewer)}
+                      canEdit={!lock.locked && (canCorrect || canProposeEditOn(req, viewer))}
                       onSave={(v) => saveReceiverOn(req, v)}
                     />
                   )}
@@ -1181,7 +1207,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                       after they are back in service: the call has left the
                       active board, but it is still here, and it can still be
                       put right. */}
-                  {canCorrect && (
+                  {canCorrect && !lock.locked && (
                     <>
                       <PendingEditReview
                         req={req}
@@ -1203,7 +1229,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                       )}
                     </>
                   )}
-                  {!canCorrect && canProposeEditOn(req, viewer) && (
+                  {!canCorrect && !lock.locked && canProposeEditOn(req, viewer) && (
                     <>
                       {pendingCallEdits(req).length > 0 && (
                         <div style={styles.editPendingNote}>
@@ -1230,6 +1256,11 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                     </>
                   )}
 
+                  {/* A locked record keeps its history — what was corrected,
+                      by whom and when is the evidence the lock is worth having.
+                      Only the way to add to it is gone. */}
+                  {lock.locked && <EditHistory req={req} />}
+
                   <CallTimes times={req.times} req={req} />
                   <AssistStatusLine req={req} units={units} />
                   {/* Coding a call is a closed-call job — a call still running
@@ -1237,6 +1268,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                       still stamping times on it. */}
                   {canCode &&
                     !live &&
+                    !lock.locked &&
                     (codingFor === req.id ? (
                       <React.Fragment>
                         <CallCodingBlock

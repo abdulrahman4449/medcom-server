@@ -40,7 +40,7 @@ import { AssistStatusLine, CallCodingBlock, CallStepper, CallTypeTag, LoadedKmTa
 
 // ---------- team view ----------
 
-export function TeamView({ onHandOver, user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, coldReady, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent }) {
+export function TeamView({ onHandOver, user, units, requests, saveUnits, saveRequests, addLog, audioCtxRef, checklists, checklistRuns, setChecklistRuns, page, onGoToPage, messages, setMessages, inventory, inventoryMoves, setInventoryMoves, restockDone, setRestockDone, coldReady, locations, setLocations, trackingConsents, setTrackingConsents, overtimeSent, setOvertimeSent, submissions }) {
   const myUnit = units.find((u) => u.id === user.unitId);
   // A crew belongs to the station their truck is at, and sees nothing of the
   // other one. As on the desk, the full arrays are left alone for saving —
@@ -2316,6 +2316,7 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
             viewer={escViewer}
             saveRequests={saveRequests}
             addLog={addLog}
+            submissions={submissions}
           />
         </div>
       )}

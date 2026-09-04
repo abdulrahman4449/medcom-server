@@ -1080,6 +1080,36 @@ patch", that document is the target — do not start a fresh exploration.
   waiting and a checklist was owed — an amber banner that flashed and vanished
   on every open, on film. Anything new that prompts a person off a cold key
   must gate on it too; `loadCold` reads its keys together for the same reason.
+- **A FILED record is closed, to everybody.** `src/domain/record-lock.jsx`
+  (rules under `npm test`) — the department's rule in the owner's words: once a
+  call has all its information, its shift has ended and that shift's log has
+  been submitted, NOBODY changes a detail of it. It was enforced nowhere: a
+  call closed at 09:07 still carried `Correct call details` and `Change call
+  type / km` at half past ten that night, from the owner's own board, with the
+  day shift long filed — and because `finaliseOpenSubmissions` re-cuts a
+  submission's snapshot from the LIVE record, an edit made then genuinely
+  rewrites the sheet that was already handed in. `callRecordLock` takes the
+  four conditions and each does real work: **completed** (a running call is
+  being worked, not recorded), **its log is filed** (a station whose desk has
+  not submitted is still writing that shift up), **the shift window has ENDED**
+  (a desk may submit early — `amendSubmissionsWithLateCalls` exists because one
+  submitted at 16:00 — and the rest of that window is still theirs), and
+  **nothing missing** (`missingLogFields`). The last one is what keeps the
+  record usable: the System page lists completed calls short of sheet data with
+  a button to go and fix each one, and locking those would point somebody at
+  21 calls nobody is allowed to finish. So a short record stays open, says what
+  it still needs, and **warns before the last field goes in** that filling it
+  closes the record for good. `filedCallIndex` is built once per list, never
+  searched per card. `CompletedCalls` is the ONLY edit surface for a finished
+  call — the desk's board list and the crew's own card both filter completed
+  calls out — so the lock has one place to live; it removes the correction
+  form, the crew's propose form, the coding block and the receiver edit, and
+  KEEPS `EditHistory`, which is the evidence the lock is worth having. There is
+  deliberately **no override, for anybody, the owner included**: that is the
+  department's decision and the reason the record can be trusted, and the cost
+  is that a wrong value typed into the last missing field is wrong for good.
+  **This is enforced in the app and NOT YET on the server** — say so rather
+  than implying the board would refuse the write.
 - **A call stood down before arrival, or refused, was run as NO service: Svc
   is E.** `serviceTypeFor` in `uhu-person.jsx`, under `npm test` — never ALS,
   BLS or CCT, whatever category or code the record carries: the category says

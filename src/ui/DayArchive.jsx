@@ -1577,6 +1577,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           viewer={escViewer}
           user={user}
           canCorrect
+          submissions={submissions}
           focusSignal={focusCall}
         />
       )}

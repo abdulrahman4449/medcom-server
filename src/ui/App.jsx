@@ -2767,6 +2767,7 @@ export function App() {
               locations={locations}
               archives={archives}
               log={log}
+              submissions={submissions}
             />
           )}
           {!onSharedPage && user.role === "team" && (
@@ -2798,6 +2799,7 @@ export function App() {
               saveRequests={saveRequests}
               addLog={addLog}
               audioCtxRef={audioCtxRef}
+              submissions={submissions}
             />
           )}
           {!onSharedPage && user.role === "admin" && (
