@@ -17,13 +17,18 @@ import Capacitor
  * the web layer starts asking for plugins, which is the only window where this
  * can be done.
  *
- * For this file to be used at all, the view controller in Main.storyboard has
- * to have its custom class set to MainViewController. Adding the file without
- * that changes nothing — the storyboard would go on creating a plain
- * CAPBridgeViewController and this code would never run.
+ * For this file to be used at all, SOMETHING has to construct it. On
+ * Capacitor 8 that is `SceneDelegate.swift`, which builds the screen in code —
+ * `Main.storyboard` is never used, so setting a custom class on the storyboard
+ * changes nothing. Check which applies with
+ * `grep -rn CAPBridgeViewController ios/App/App/*.swift` rather than assuming.
+ *
+ * EVERY plugin that lives in the app target is registered here. One missing
+ * line is one plugin the web layer can never see, with no error anywhere.
  */
 class MainViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(PulseOpsAlarmPlugin())
+        bridge?.registerPluginInstance(PulseOpsPushPlugin())
     }
 }
