@@ -216,15 +216,19 @@ patch", that document is the target — do not start a fresh exploration.
   the week that is ending — and a past shift or week is named by the date it
   OPENED, like everything else on this board. The picker never offers a period
   that has not happened.
-- **One dial carries a caption; the rest carry a number.** The KPI band is
-  four gauges side by side and every one of them used to have two lines of
-  small print under it — a row nobody reads, and the row is the first thing on
-  the page. Only EMERGENCY RESPONSE keeps words: its denominator is genuinely
-  load-bearing (`13 of 13 within 10 min`, and the exclusions line from
-  `responseNote`). The average response moved onto the dial's FACE, under the
-  percentage (`sub` on `Gauge`) — they answer different questions, how often
-  ten minutes was made and what a patient actually waits, and it is the one
-  dial where the second number is asked for as often as the first.
+- **A dial on the KPI band is a number, and the band explains itself ONCE
+  underneath.** All four gauges used to carry two lines of small print each —
+  a row nobody reads, and the row is the first thing on the page. They carry
+  none now. The average response is the one thing that moved INTO a dial,
+  onto the face under the percentage (`sub` on `Gauge`): the two answer
+  different questions — how often ten minutes was made, and what a patient
+  actually waits — and it is the one dial whose second number is asked for as
+  often as the first. Everything else went to `styles.bandFoot`, one sentence
+  for the whole row: the counts (`4 of 4 within 10 minutes`) and the
+  exclusions from `responseNote`. That sentence is not optional decoration —
+  a 100% measured over thirteen of thirty-nine calls has to state its
+  denominator somewhere, or it is the kind of percentage that gets reported
+  upward and turns out to have meant something else.
   **DEPARTMENT UHU is a FLOOR: under the target is red, at or over it green,
   and there is no amber** (`sharp` on `Gauge`). It used to read the other way
   — `lowerIsBetter`, darkening ABOVE the target, on the argument that a service

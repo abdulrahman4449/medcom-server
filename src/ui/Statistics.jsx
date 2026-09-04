@@ -1572,19 +1572,10 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
           // and what a patient actually waits — and this is the one dial where
           // the second number is asked for as often as the first.
           sub={resp.total && resp.avg !== null ? shortDurationStr(resp.avg) : null}
-          // The only caption left on the band. The other three dials say their
-          // number and nothing else: a row of four gauges each carrying two
-          // lines of small print is a row nobody reads, and this is the one
-          // whose denominator is genuinely load-bearing.
-          caption={
-            resp.total
-              ? `${resp.within} of ${resp.total} within 10 min`
-              : "none yet this period"
-          }
-          // A stood-down call has no response time and never will have one; it
-          // is not a measurement the department still owes. Said as an
-          // exclusion, not as a backlog — see `responseCompliance`.
-          note={responseNote(resp)}
+          // Nothing under this one either. Every dial on the band is now its
+          // number and nothing else — the counts and the exclusions moved to
+          // the band's foot, which is one sentence for the whole row instead
+          // of four captions nobody read.
         />
         <Gauge
           label="Department UHU"
@@ -1630,10 +1621,18 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
       {/* The level of the work, beside what the work was for. */}
       <ServiceMix requests={requests} from={win.start} to={win.end} />
 
-      {resp.avg !== null && (
+      {/* The one sentence the band still owes a reader.
+          The dials carry no words now, and a 100% measured over thirteen of
+          thirty-nine calls has to say so SOMEWHERE — a percentage with an
+          unstated denominator is the thing that gets reported upward and turns
+          out to have meant something else. So the counts and the exclusions
+          land here, once, under the whole row, rather than as a caption on
+          each dial. */}
+      {resp.total > 0 && (
         <div style={styles.bandFoot}>
-          Average dispatch to arrival: <strong>{msDurationStr(resp.avg)}</strong> · internal
-          emergencies only, against a 10-minute standard.
+          Response: <strong>{resp.within} of {resp.total}</strong> within 10 minutes, average{" "}
+          <strong>{msDurationStr(resp.avg)}</strong> · internal emergencies only.
+          {responseNote(resp) ? ` ${responseNote(resp)}.` : ""}
         </div>
       )}
     </div>
