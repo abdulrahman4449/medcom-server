@@ -46,11 +46,46 @@ export function overtimeSubmitted(claim, sent) {
   return !!(sent && claim && sent[claim.id]);
 }
 
+// A claim nobody was HELD on has to say why.
+//
+// The two kinds of overtime are different conversations. A call still running
+// at seven o'clock is a fact the board watched happen — the department kept
+// them, it pays either way, and there is nothing for anybody to explain. Time
+// after a shift with no call on it is the person's own decision to stay, and
+// an administrator looking at "0.37 h claimed · not on a call" has nothing to
+// approve or decline it ON. Restocking, a late handover, a truck fault, an
+// hour covering for a partner who did not arrive — those are all reasonable
+// and they are all invisible from the board, so the person has to say which.
+//
+// Required only where it is a choice: an automatic claim is never asked.
+export function overtimeReasonRequired(claim) {
+  return !!claim && !overtimeIsAutomatic(claim);
+}
+
+// Empty is refused; so is a stray keypress. Deliberately not much more than
+// that — a minimum length people cannot meet honestly is a minimum that
+// teaches them to type "aaaaaa".
+export function overtimeReasonProblem(claim, reason) {
+  if (!overtimeReasonRequired(claim)) return "";
+  const said = String(reason == null ? "" : reason).trim();
+  if (!said) return "Say what kept you past the end of your shift.";
+  // Three, not more. A stray keypress is one or two characters; "PCR" is a real
+  // answer and is three, and a minimum people cannot meet honestly is a
+  // minimum that teaches them to type "aaaaaa".
+  if (said.length < 3) return "A few more words — administration has to be able to act on this.";
+  return "";
+}
+
 // Recording that somebody sent theirs in. Written by the person it belongs to,
 // which is why it is its own key: the decisions are administration's and a
 // crew tablet has no business writing into them.
-export async function sendOvertimeClaim({ claim, sent, setSent, user, addLog }) {
+export async function sendOvertimeClaim({ claim, sent, setSent, user, addLog, reason }) {
   if (!claim) return false;
+  // The rule, at the one door every send goes through — the crew card and the
+  // sign-out prompt both come here, and a check written in only one of them is
+  // a rule the other route walks around.
+  if (overtimeReasonProblem(claim, reason)) return false;
+  const said = String(reason == null ? "" : reason).trim();
   const next = {
     ...(sent || {}),
     [claim.id]: {
@@ -58,6 +93,10 @@ export async function sendOvertimeClaim({ claim, sent, setSent, user, addLog }) 
       by: (user && user.name) || claim.name || "",
       accountId: (user && user.accountId) || claim.accountId || "",
       claimedMs: claim.claimedMs || 0,
+      // Kept on the SENT record rather than on the decision: it is what the
+      // person said when they asked, and it must not be editable by the person
+      // answering.
+      reason: said,
     },
   };
   const ok = await mergeWrite(OVERTIME_SENT_KEY, next, sent || {});
@@ -69,7 +108,8 @@ export async function sendOvertimeClaim({ claim, sent, setSent, user, addLog }) 
   if (addLog) {
     await addLog(
       `Overtime sent to administration by ${claim.name || (user && user.name) || "crew"}` +
-        `${claim.unitName ? ` (${claim.unitName})` : ""} — ${otHoursStr(claim.claimedMs)}`,
+        `${claim.unitName ? ` (${claim.unitName})` : ""} — ${otHoursStr(claim.claimedMs)}` +
+        `${said ? ` — ${said}` : ""}`,
       "status"
     );
   }
@@ -146,6 +186,11 @@ export function overtimeClaims(log, requests, from, to, decisions, sent) {
       sentAt: onCall ? e.ts : (submitted[id] && submitted[id].at) || null,
       submitted: onCall || !!submitted[id],
       automatic: onCall,
+      // What the person said kept them. Carried onto the claim so the panel
+      // deciding it can read it without going to the shift log for it — an
+      // administrator looking at hours with no call behind them has nothing
+      // else to go on.
+      sentReason: (submitted[id] && submitted[id].reason) || "",
     });
   });
 

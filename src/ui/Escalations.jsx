@@ -1036,7 +1036,18 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
             {completed.slice(0, shown).map(({ req, live, closedAt, escalations }) => {
               const unit = units.find((u) => u.id === req.assignedUnitId);
-              const shift = shiftMeta(req.shift || scheduledShiftKey(req.createdAt));
+              // Which shift OWNS the call, and there is only one answer to
+              // that: the window its createdAt falls in.
+              //
+              // This read `req.shift` first — the shift of the DESK SESSION
+              // that raised it — so a night dispatcher still at the desk at
+              // 09:05, in overtime, stamped a day call NIGHT. Every other
+              // reader files by the clock: `requestsForShift` cuts a
+              // submission on createdAt, and `isNightCall` shades the sheet on
+              // createdAt. The badge was the only thing in the app answering
+              // differently, so a call read NIGHT on the card and printed on
+              // the day sheet, white.
+              const shift = shiftMeta(scheduledShiftKey(req.createdAt));
               // A call that is still running has no end to measure to, so its
               // time on call is read up to now rather than up to its last stamp.
               const busy = callBusyMs(req, live ? Date.now() : closedAt);

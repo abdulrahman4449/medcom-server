@@ -2378,6 +2378,24 @@ export const styles = {
     lineHeight: 1, fontVariantNumeric: "tabular-nums",
   },
   gaugePct: { fontSize: 15, fontWeight: 600, color: "var(--ink-4)", marginLeft: 1 },
+  // The second figure on a dial's face. Same tabular mono as the percentage
+  // above it so the two line up, and small enough that the percentage is still
+  // plainly the headline.
+  // The crew's own words on an overtime claim no call held them on. 16px like
+  // every field in this app — anything smaller zooms the whole board on iOS.
+  otReasonLabel: {
+    fontSize: 10.5, letterSpacing: ".1em", color: "var(--ink-4)", marginTop: 4,
+  },
+  otReasonInput: {
+    background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 10,
+    color: "var(--ink)", padding: "9px 11px", fontSize: 16, fontFamily: "inherit",
+    resize: "none", lineHeight: 1.4, width: "100%", boxSizing: "border-box",
+  },
+  otReasonProblem: { fontSize: 12, color: "var(--hold-2)", lineHeight: 1.45 },
+  gaugeSub: {
+    fontFamily: mono, fontSize: 14, fontWeight: 600, color: "var(--ink-3)",
+    letterSpacing: -0.2, lineHeight: 1, marginTop: 5, fontVariantNumeric: "tabular-nums",
+  },
   gaugeCaption: {
     fontSize: 11.5, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.4, textAlign: "center",
   },
@@ -2732,6 +2750,12 @@ export const styles = {
   otApproved: { fontSize: 13.5, fontWeight: 650, color: "var(--ok)", fontVariantNumeric: "tabular-nums" },
   otHeld: { fontSize: 11.5, fontWeight: 650, color: "var(--flow-2)" },
   otNotHeld: { fontSize: 11.5, color: "var(--ink-4)" },
+  // What the CREW said when they sent it, distinct from the decision's note
+  // below it — one is the ask, the other is the answer.
+  otCardSaid: {
+    fontSize: 12.5, fontStyle: "italic", color: "var(--ink-2)", marginTop: 6,
+    borderLeft: "2px solid var(--hair-2)", paddingLeft: 9, lineHeight: 1.5,
+  },
   otCardNote: { fontSize: 12.5, fontStyle: "italic", color: "var(--ink-3)", marginTop: 6 },
   otCardBy: { fontSize: 11, color: "var(--ink-4)", marginTop: 5 },
   otCardBtns: { display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" },

@@ -14,7 +14,7 @@ import { pcrAuthorChoices, pcrAuthorOf, pcrAuthorText } from "../domain/pcr-auth
 import { callsAwaitingRestock, markRestocked } from "../domain/restock.jsx";
 import { activeAssistUnitIds, assistOf, assistPending, assistTeamFor, assistTeams, isNoTransport } from "../domain/second-ambulance.jsx";
 import { ADDED_SERVICES, CALL_TYPES, LOADED_KM, LOADED_KM_COLOR, applyCallCoding, callTypeOf, loadedKmOf, suggestedCallType } from "../domain/sheet-vocabulary.jsx";
-import { overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
+import { overtimeClaimId, overtimeReasonProblem, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { crewShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftPhrase, shiftRemainingMs, shiftWindowAt, shiftWindowStr } from "../domain/shift-helpers.jsx";
 import { consentFor, needsConsentPrompt, recordConsent } from "../domain/truck-locations.jsx";
 import { nativeAlarm, soundCallAlert, soundReminderTone, soundSpeakerCheck, soundStandDownTone, speakStandDown } from "../lib/dates.jsx";
@@ -2356,6 +2356,11 @@ export function CrewShiftCard({ user, unit, onCall, overtimeSent, setOvertimeSen
   // sentences about pay on a screen whose job is the next call.
   const [otOpen, setOtOpen] = useState(false);
   const [otBusy, setOtBusy] = useState(false);
+  // Why they stayed. Required on a claim no call held them on — see
+  // `overtimeReasonRequired`: an administrator cannot approve "0.37 h, not on
+  // a call" without being told what it was for.
+  const [otReason, setOtReason] = useState("");
+  const [otSaid, setOtSaid] = useState("");
   const now = Date.now();
   const ot = overtimeMs(user, now);
   const left = shiftRemainingMs(user, now);
@@ -2379,14 +2384,25 @@ export function CrewShiftCard({ user, unit, onCall, overtimeSent, setOvertimeSen
     accountId: user.accountId || "",
     unitName: unit ? unit.name : "",
     claimedMs: ot,
+    // Carried onto the claim so the reason rule reads the same thing here as
+    // it does at sign-out.
+    onCall: !!onCall,
   };
   const alreadySent = !!(overtimeSent && overtimeSent[claim.id]);
 
   async function send() {
     if (otBusy) return;
+    const problem = overtimeReasonProblem(claim, otReason);
+    if (problem) {
+      setOtSaid(problem);
+      return;
+    }
+    setOtSaid("");
     setOtBusy(true);
     try {
-      await sendOvertimeClaim({ claim, sent: overtimeSent, setSent: setOvertimeSent, user, addLog });
+      await sendOvertimeClaim({
+        claim, sent: overtimeSent, setSent: setOvertimeSent, user, addLog, reason: otReason,
+      });
     } finally {
       setOtBusy(false);
     }
@@ -2456,6 +2472,19 @@ export function CrewShiftCard({ user, unit, onCall, overtimeSent, setOvertimeSen
                     anybody is asked to approve them. You will be offered this again when you sign
                     off.
                   </span>
+                  {/* No call held them, so the board cannot say what this was
+                      for and an administrator has nothing to decide on. 16px
+                      like every field in this app, or focusing it zooms the
+                      whole board on iOS. */}
+                  <label style={styles.otReasonLabel}>WHAT KEPT YOU</label>
+                  <textarea
+                    style={styles.otReasonInput}
+                    rows={2}
+                    value={otReason}
+                    placeholder="Restocking after the last call, late handover, truck fault…"
+                    onChange={(e) => { setOtReason(e.target.value); if (otSaid) setOtSaid(""); }}
+                  />
+                  {otSaid && <span style={styles.otReasonProblem}>{otSaid}</span>}
                   <button style={styles.primaryBtnSm} onClick={send} disabled={otBusy}>
                     {otBusy ? "Sending…" : `Send ${otHoursStr(ot)} to administration`}
                   </button>

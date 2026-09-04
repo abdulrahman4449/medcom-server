@@ -367,6 +367,11 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
                     </span>
                   )}
                 </div>
+                {/* Their words, above the decision's. A claim no call held
+                    is otherwise "0.37 h, not on a call" and nothing to act on. */}
+                {c.sentReason && (
+                  <div style={styles.otCardSaid}>“{c.sentReason}”</div>
+                )}
                 {c.decision && c.decision.note && (
                   <div style={styles.otCardNote}>“{c.decision.note}”</div>
                 )}

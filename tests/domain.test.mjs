@@ -2509,5 +2509,120 @@ export function run(D, t) {
     t.is("filed: nor does a call no log covers",
       D.recordClosingNote(D.callRecordLock(complete(), idx([]), now)), "");
   }
+  // ---------- the server enforces the same lock, and cannot drift from the app
+  {
+    const HOUR = 3600000;
+    const now = 100 * HOUR;
+    const base = {
+      id: "r1", status: "completed", createdAt: 1000,
+      patientOrigin: "MAIN HOSPITAL Bldg.", locationTo: "Ward 3", mrn: "3727",
+      callType: "E", callCategory: "EMERGENCY (INTERNAL)", loadedKm: "NA",
+      emergencyCode: "CARDIAC EMERGENCY", addedService: "NA",
+      times: { arrivalDestination: 0 },
+    };
+    const filedAt = { windowEnd: now - HOUR };
+    const appIdx = (rec, f) => new Map(f ? [[rec.id, f]] : []);
+
+    // The two implementations must answer identically on every shape that
+    // matters — the same contract the delegation list is held to.
+    const shapes = [
+      base,
+      { ...base, status: "assigned" },
+      { ...base, mrn: "" },
+      { ...base, mrn: "   " },
+      { ...base, patientOrigin: "" },
+      { ...base, locationTo: "" },
+      { ...base, callType: "" },
+      { ...base, callType: "Z" },          // a code this build does not know
+      { ...base, callCategory: "" },
+      { ...base, loadedKm: "" },
+      { ...base, loadedKm: "9" },
+      { ...base, emergencyCode: "" },
+      { ...base, addedService: "" },
+      // The receiver is asked only where somebody was handed over.
+      { ...base, noTransport: false },
+      { ...base, noTransport: false, receiver: { name: "Sister Amal" } },
+      { ...base, noTransport: false, times: {} },
+      { ...base, noTransport: true },
+    ];
+    for (const rec of shapes) {
+      const label = JSON.stringify(rec).slice(0, 70);
+      const appMissing = D.missingLogFields(rec).map((f) => f.key).sort();
+      const srvMissing = D.missingLogFieldKeysServer(rec).slice().sort();
+      t.is(`lock: app and server agree on what is missing — ${label}`, appMissing, srvMissing);
+      for (const f of [filedAt, null, { windowEnd: now + HOUR }]) {
+        t.is(`lock: app and server agree on the lock — ${label} / ${f ? f.windowEnd : "unfiled"}`,
+          D.callRecordLock(rec, appIdx(rec, f), now).locked,
+          D.callIsLockedServer(rec, f, now));
+      }
+    }
+
+    // What the board actually does with a write against a locked record.
+    const hold = (incoming, current) => D.holdFiledRecords({
+      current: current || [base], incoming, filedIndex: new Map([["r1", filedAt]]), now,
+    });
+    t.is("lock: an unchanged record is written through", hold([base]).refused.length, 0);
+    const edited = hold([{ ...base, mrn: "9999" }]);
+    t.is("lock: a changed MRN on a filed record is REFUSED", edited.refused.length, 1);
+    t.is("lock: and the finding names the field", edited.refused[0].field, "mrn");
+    t.is("lock: the board keeps what was filed, not what was sent",
+      edited.records[0].mrn, "3727");
+    // The one thing a filed record may still take.
+    const esc = hold([{ ...base, escalations: [{ id: "e1" }] }]);
+    t.is("lock: an escalation raised on a filed call is allowed", esc.refused.length, 0);
+    t.is("lock: and it lands on the record", esc.records[0].escalations.length, 1);
+    // An escalation arriving alongside a refused edit keeps the escalation and
+    // drops the edit — a crew reporting a problem must never be silenced by
+    // somebody else's bad write in the same merge.
+    const both = hold([{ ...base, mrn: "9999", escalations: [{ id: "e1" }] }]);
+    t.is("lock: an edit beside an escalation is still refused", both.refused.length, 1);
+    t.is("lock: the escalation still lands", both.records[0].escalations.length, 1);
+    t.is("lock: and the MRN does not", both.records[0].mrn, "3727");
+    // The edit HISTORY of a filed record is the evidence the lock is worth
+    // having, so it is frozen too.
+    t.is("lock: the edit history of a filed record cannot be rewritten",
+      hold([{ ...base, edits: [{ field: "mrn" }] }]).refused[0].field, "edits");
+    // Everything the lock does not cover passes untouched.
+    t.is("lock: a record the board has never seen is written through",
+      hold([{ ...base, id: "new" }]).refused.length, 0);
+    t.is("lock: a call still running is written through",
+      hold([{ ...base, mrn: "9999" }], [{ ...base, status: "assigned" }]).refused.length, 0);
+    t.is("lock: a filed record still MISSING something is written through",
+      hold([{ ...base, mrn: "9999" }], [{ ...base, mrn: "" }]).refused.length, 0);
+    // Removals are how pruneArchivedWork tidies the board and must go through.
+    t.is("lock: a filed record simply absent from the write is not refused",
+      hold([]).refused.length, 0);
+    t.is("lock: nothing throws on rubbish", D.holdFiledRecords({
+      current: null, incoming: null, filedIndex: new Map(), now,
+    }).records.length, 0);
+  }
+
+  // ---------- overtime nobody was held on has to say why
+  {
+    const stayed = { id: "c1", claimedMs: 1320000, onCall: false };
+    const held = { id: "c2", claimedMs: 1320000, onCall: true };
+    const granted = { id: "c3", claimedMs: 1320000, granted: true };
+
+    t.ok("overtime: a claim no call held must say why", D.overtimeReasonRequired(stayed));
+    t.ok("overtime: a claim a call HELD is never asked — nobody chose it",
+      !D.overtimeReasonRequired(held));
+    t.ok("overtime: nor is a shift administration granted outright",
+      !D.overtimeReasonRequired(granted));
+
+    t.ok("overtime: blank is refused", !!D.overtimeReasonProblem(stayed, ""));
+    t.ok("overtime: so is whitespace", !!D.overtimeReasonProblem(stayed, "   "));
+    t.ok("overtime: so is a stray keypress", !!D.overtimeReasonProblem(stayed, "x"));
+    t.ok("overtime: and two characters", !!D.overtimeReasonProblem(stayed, "ok"));
+    t.is("overtime: a real reason goes through",
+      D.overtimeReasonProblem(stayed, "Restocking after the last call"), "");
+    // Three is the floor, because "PCR" is a real answer somebody gives.
+    t.is("overtime: three characters is the floor", D.overtimeReasonProblem(stayed, "PCR "), "");
+    t.is("overtime: an automatic claim needs no words at all",
+      D.overtimeReasonProblem(held, ""), "");
+    t.is("overtime: null does not throw", D.overtimeReasonProblem(null, null), "");
+    // The words say what is wrong, not that something is.
+    t.ok("overtime: an empty reason is told what to write",
+      /what kept you/i.test(D.overtimeReasonProblem(stayed, "")));
+  }
   }
 }

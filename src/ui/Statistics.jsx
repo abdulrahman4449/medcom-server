@@ -848,7 +848,7 @@ export function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units
 // service running at 85% has no capacity left for the call it has not had yet.
 // Painted by the same rule as the others it read bright green at 85% and red at
 // 20%, which is precisely backwards on the one dial that warns about workload.
-export function Gauge({ label, pct, caption, good = 90, note, lowerIsBetter }) {
+export function Gauge({ label, pct, caption, good = 90, note, lowerIsBetter, sharp, sub }) {
   const size = 132;
   const stroke = 11;
   const r = (size - stroke) / 2 - 2;
@@ -870,8 +870,14 @@ export function Gauge({ label, pct, caption, good = 90, note, lowerIsBetter }) {
 
   const has = pct !== null && pct !== undefined;
   const value = has ? Math.max(0, Math.min(100, pct)) : 0;
+  // `sharp` is a dial with no middle: made or not made, and nothing in
+  // between. It is for a figure whose target is a floor the department either
+  // reaches or does not — an amber band there invites "nearly", and the
+  // department does not grade its utilisation on nearly.
   const color = !has
     ? "var(--hair-3)"
+    : sharp
+    ? (lowerIsBetter ? value <= good : value >= good) ? "var(--ok)" : "var(--crit)"
     : lowerIsBetter
     ? value <= good
       ? "var(--ok)"
@@ -913,6 +919,11 @@ export function Gauge({ label, pct, caption, good = 90, note, lowerIsBetter }) {
             {has ? Math.round(value) : "—"}
             {has && <span style={styles.gaugePct}>%</span>}
           </div>
+          {/* On the face, under the number, and only where a second figure
+              answers a different question from the percentage. A percentage
+              says how often ten minutes was made; the average says what a
+              patient actually waits, and it is the figure people ask for. */}
+          {sub && <div style={styles.gaugeSub}>{sub}</div>}
         </div>
       </div>
       {caption && <div style={styles.gaugeCaption}>{caption}</div>}
@@ -1556,12 +1567,18 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
           label="Emergency response"
           pct={resp.pct}
           good={RESPONSE_GOOD}
-          // The average belongs on the face of this one. A percentage says how
-          // often the department made ten minutes; the average says what a
-          // patient actually waits, and it is the figure people ask for.
+          // The average belongs on the FACE of this one, under the percentage.
+          // They answer different questions — how often ten minutes was made,
+          // and what a patient actually waits — and this is the one dial where
+          // the second number is asked for as often as the first.
+          sub={resp.total && resp.avg !== null ? shortDurationStr(resp.avg) : null}
+          // The only caption left on the band. The other three dials say their
+          // number and nothing else: a row of four gauges each carrying two
+          // lines of small print is a row nobody reads, and this is the one
+          // whose denominator is genuinely load-bearing.
           caption={
             resp.total
-              ? `${resp.within} of ${resp.total} within 10 min · average ${shortDurationStr(resp.avg)}`
+              ? `${resp.within} of ${resp.total} within 10 min`
               : "none yet this period"
           }
           // A stood-down call has no response time and never will have one; it
@@ -1575,17 +1592,17 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
           // target against — not across the vehicles, which was counting hours
           // a truck sat on the forecourt with nobody in it.
           pct={deptUhu}
-          lowerIsBetter
-          // The department's own target: 45%. It is a workload reading, so the
-          // dial darkens above the target rather than below it — a service
-          // running past its target has no slack left for the call it has not
-          // had yet.
+          // The department's own target: 45%, and it is a FLOOR. Under it is
+          // red, at or over it is green, and there is no amber — the
+          // department does not grade its utilisation on nearly.
+          //
+          // This used to read the other way (`lowerIsBetter`, darkening ABOVE
+          // the target on the argument that a service past its target has no
+          // slack left). That is a real reading of the number and it is not
+          // the department's: 45% is what the crews are asked to reach, so a
+          // fleet sitting at 1% must not be painted green for it.
           good={UHU_TARGET}
-          caption={
-            staff && staff.length
-              ? `${staff.length} crew · target ${UHU_TARGET}% · fleet ${uhu.toFixed(0)}%`
-              : "no crew on duty this period"
-          }
+          sharp
         />
         {/* Was labelled "PCR compliance", and was not.
             It counted calls where somebody had tapped a name into the PCR
@@ -1599,17 +1616,11 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
           label="PCR author named"
           pct={pcr.pct}
           good={PCR_GOOD}
-          caption={
-            pcr.total
-              ? `${pcr.named} of ${pcr.total} closed calls · not yet report completion`
-              : "no closed calls"
-          }
         />
         <Gauge
           label="Checklist compliance"
           pct={checklistPct}
           good={CHECKLIST_GOOD}
-          caption={shiftsWorked ? `${listsFiled} filed over ${shiftsWorked} shifts` : "no shifts worked"}
         />
       </div>
 
@@ -1888,10 +1899,15 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
                 <div style={styles.statName}>
                   {p.name} {p.id && <span style={styles.statId}>{p.id}</span>}
                 </div>
+                {/* The trucks and the shifts worked, and nothing else.
+                    The two minute counts — time on call and time signed on —
+                    are the numerator and the denominator of the percentage
+                    already printed beside them, in a unit nobody thinks in:
+                    "235 min signed on" is a twelve-hour shift said the hard
+                    way. The percentage is the answer; these were the working. */}
                 <div style={styles.statMeta}>
-                  {p.unitList || "—"} · {Math.round(p.onCallMs / 60000)} min on call over{" "}
-                  {p.shiftsWorked} {p.shiftsWorked === 1 ? "shift" : "shifts"} ·{" "}
-                  {Math.round(p.shiftMs / 60000)} min signed on
+                  {p.unitList || "—"} · {p.shiftsWorked}{" "}
+                  {p.shiftsWorked === 1 ? "shift" : "shifts"}
                 </div>
               </div>
               {mode === "uhu" ? (

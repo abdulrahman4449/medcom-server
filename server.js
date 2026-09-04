@@ -542,6 +542,48 @@ function bumpAllBoardKeys() {
   boardGen += 1;
   boardVersions.clear();
 }
+// Which calls a submitted shift log already covers, and when that shift's
+// window closed — the two facts `callIsLocked` needs.
+//
+// Read INSIDE SQLite rather than parsed into the heap: `ems:submissions` holds
+// a full snapshot of every filed shift, which on a mature board is tens of
+// megabytes, and `JSON.parse` over that on a board write is the same mistake
+// the self-test made once already (measured at a 50-second p95 on every
+// phone's poll). json_each walks it in C and hands back two columns.
+//
+// Cached on the key's own write counter, so it is rebuilt when a log is filed
+// — a few times a day — and never on the write path itself.
+const SUBMISSION_KEY = "ems:submissions";
+let filedIndexCache = null;
+let filedIndexVersion = null;
+function filedCallIndexFromDb() {
+  const version = `${boardGen}:${boardVersions.get(SUBMISSION_KEY) || 0}`;
+  if (filedIndexCache && filedIndexVersion === version) return filedIndexCache;
+  const map = new Map();
+  try {
+    const rows = db.prepare(
+      `SELECT je.value AS rid, json_extract(s.value, '$.windowEnd') AS we
+         FROM board,
+              json_each(board.value) AS s,
+              json_each(json_extract(s.value, '$.requestIds')) AS je
+        WHERE board.key = ?`
+    ).all(SUBMISSION_KEY);
+    // The FIRST log that names a call owns it, exactly as `filedCallIndex`
+    // does in the app: a call is raised inside one window, so a second naming
+    // is a re-file rather than a second home.
+    for (const r of rows) {
+      if (r && r.rid && !map.has(r.rid)) map.set(r.rid, { windowEnd: Number(r.we) || 0 });
+    }
+  } catch (e) {
+    // A board with no submissions yet, or a shape json_each cannot walk. An
+    // empty index locks nothing, which is the safe way to be wrong here.
+    noteFinding("server-fault", `The filed-call index could not be built: ${String((e && e.message) || e).slice(0, 160)}`);
+  }
+  filedIndexCache = map;
+  filedIndexVersion = version;
+  return map;
+}
+
 function boardEtagFor(key, row) {
   const v = boardVersions.get(key);
   if (v) return `"${BOOT_ID}:v${v}"`;
@@ -910,6 +952,26 @@ app.post("/api/board", requireAuth, (req, res) => {
     }
   }
   let stored = value ?? null;
+  // The whole-key path is the other way onto `ems:requests`, and a filed record
+  // is closed on this one too. Removals still go through — `pruneArchivedWork`
+  // legitimately takes filed calls off the board, and `holdFiledRecords` only
+  // inspects records that are actually being written.
+  if (key === "ems:requests" && Array.isArray(stored) && prevRequests) {
+    const held = holdFiledRecords({
+      current: prevRequests,
+      incoming: stored,
+      filedIndex: filedCallIndexFromDb(),
+      now: Date.now(),
+    });
+    stored = held.records;
+    if (held.refused.length) {
+      const what = held.refused.slice(0, 4).map((r) => `${r.id} (${r.field})`).join(", ");
+      noteFinding(
+        "refused-write",
+        `${req.user.id} tried to change ${held.refused.length} filed call${held.refused.length === 1 ? "" : "s"} in a whole-key write — refused: ${what}.`
+      );
+    }
+  }
   // A settled password request stays settled, whatever a stale device
   // replays — see lib/reset-requests.cjs. When the guard fires, it SAYS so
   // on the System page: a silent correction is how the last ghost hid.
@@ -956,6 +1018,7 @@ app.post("/api/board", requireAuth, (req, res) => {
 // server, and the handful of keys that are not records at all.
 const { RECORD_CAP_MAX, mergeRecordsInto } = require("./lib/merge-records.cjs");
 const { settledResetsHold, resetReplayCount } = require("./lib/reset-requests.cjs");
+const { holdFiledRecords } = require("./lib/record-lock.cjs");
 const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, roleAssignable, scopeAllowsKey, scopeSentence } = require("./lib/delegation.cjs");
 
 // ---------- waking a locked phone ----------
@@ -1301,6 +1364,7 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   // serialise here rather than one of them reading before the other has
   // written — which would be the whole-board bug again, in miniature.
   let merged;
+  let filedRefusals = null;
   let prevRequests = null;
   let prevUnits = null;
   let prevMessages = null;
@@ -1319,6 +1383,23 @@ app.post("/api/board/records", requireAuth, (req, res) => {
       }
       let next = mergeRecordsInto(current, body);
       if (next === null) return "SHAPE";
+      // A FILED record is closed, to everybody — see lib/record-lock.cjs and
+      // the rule in CLAUDE.md. The app removes the buttons; this is the board
+      // refusing the write, which is the half that makes the record something
+      // a person who was not in the room can rely on. Every refusal is a
+      // finding: a guard that fires silently is how the ghost hid.
+      if (key === "ems:requests" && Array.isArray(next)) {
+        const held = holdFiledRecords({
+          current: Array.isArray(current) ? current : [],
+          incoming: next,
+          filedIndex: filedCallIndexFromDb(),
+          now: Date.now(),
+        });
+        next = held.records;
+        if (held.refused.length) {
+          filedRefusals = held.refused;
+        }
+      }
       // A settled password request stays settled, whatever a stale device
       // replays — see lib/reset-requests.cjs. The guard reports itself: a
       // silent correction is how the last ghost hid.
@@ -1346,6 +1427,16 @@ app.post("/api/board/records", requireAuth, (req, res) => {
     return res.status(409).json({ error: "That key does not hold records of this shape.", shape: true });
   }
   bumpBoardKey(key);
+  if (filedRefusals && filedRefusals.length) {
+    // Named so it can be acted on: which call, and what the device tried to
+    // change. Almost always a phone on a build older than the lock, which is
+    // exactly the thing this page exists to surface.
+    const what = filedRefusals.slice(0, 4).map((r) => `${r.id} (${r.field})`).join(", ");
+    noteFinding(
+      "refused-write",
+      `${req.user.id} tried to change ${filedRefusals.length} filed call${filedRefusals.length === 1 ? "" : "s"} — refused: ${what}. A filed record cannot be edited; that device may be on an old build.`
+    );
+  }
   // A call that just landed on a truck wakes that truck's phone, even locked —
   // fired after the write has committed, and never able to fail it.
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, merged);

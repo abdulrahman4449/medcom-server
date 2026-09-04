@@ -14,7 +14,7 @@ import { INVENTORY_KEY, INVENTORY_MOVES_KEY } from "../domain/inventory.jsx";
 import { DEFAULT_ACCOUNTS, DEFAULT_STATION, DEFAULT_UNITS, STATIONS, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
 import { MESSAGES_KEY, clockStr, msDurationStr, otHoursStr } from "../domain/messages.jsx";
 import { ARCHIVE_KEY, archiveOpDay, opDayComplete, opDayEnd, opDayLabel, opDayStart, requestsForOpDay, unarchivedOpDays } from "../domain/op-day.jsx";
-import { OVERTIME_KEY, OVERTIME_SENT_KEY, heldByCallAt, overtimeClaimId, sendOvertimeClaim } from "../domain/overtime.jsx";
+import { OVERTIME_KEY, OVERTIME_SENT_KEY, heldByCallAt, overtimeClaimId, overtimeReasonProblem, sendOvertimeClaim } from "../domain/overtime.jsx";
 import { RESTOCK_KEY, callsAwaitingRestock } from "../domain/restock.jsx";
 import { SCHEDULE_KEY } from "../domain/schedule.jsx";
 import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
@@ -2123,6 +2123,9 @@ export function App() {
               accountId: user.accountId || "",
               unitName: unit.name,
               claimedMs: ot,
+              // So the reason rule reads the same fact here as it does on the
+              // crew card: a claim a call held is automatic and never asked.
+              onCall: !!heldBy,
             },
           };
         }
@@ -2301,22 +2304,29 @@ export function App() {
             `running when it ended${otAsk.heldBy.nature ? ` — ${otAsk.heldBy.nature}` : ""}.\n\n` +
             `This has been sent to administration for you. You do not need to do anything.`
         );
-      } else if (
-        window.confirm(
-          `You are ${otHoursStr(otAsk.claim.claimedMs)} past the end of your shift.\n\n` +
-            `You were not on a call when it ended, so this is yours to claim or leave. ` +
-            `Send it to administration?\n\n` +
-            `It is on the shift log either way — this only decides whether anybody is asked to ` +
-            `approve it.`
-        )
-      ) {
-        await sendOvertimeClaim({
-          claim: otAsk.claim,
-          sent: overtimeSent,
-          setSent: setOvertimeSent,
-          user,
-          addLog,
-        });
+      } else {
+        // No call held them, so nothing on the board says what this time was
+        // for — the claim has to carry their own words or an administrator has
+        // nothing to decide on. The ask IS the reason box: typing something is
+        // sending it, and cancelling or leaving it blank leaves the hours on
+        // the shift log unclaimed, which is a real answer and not a failure.
+        const said = window.prompt(
+          `You are ${otHoursStr(otAsk.claim.claimedMs)} past the end of your shift, and you were ` +
+            `not on a call when it ended.\n\n` +
+            `Say what kept you and it goes to administration. Leave it blank to claim nothing — ` +
+            `the hours are on the shift log either way.\n\n` +
+            `e.g. Restocking after the last call, late handover, truck fault`
+        );
+        if (!overtimeReasonProblem(otAsk.claim, said)) {
+          await sendOvertimeClaim({
+            claim: otAsk.claim,
+            sent: overtimeSent,
+            setSent: setOvertimeSent,
+            user,
+            addLog,
+            reason: said,
+          });
+        }
       }
     }
   }

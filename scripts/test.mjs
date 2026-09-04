@@ -57,6 +57,7 @@ export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/co
 export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "src/domain/second-ambulance.jsx")};
 export { crewShiftWindow, deskShiftWindow } from ${JSON.stringify(ROOT + "src/domain/shift-helpers.jsx")};
 export { roleAssignable as roleAssignableServer } from ${JSON.stringify(ROOT + "lib/delegation.cjs")};
+export { missingLogFieldKeys as missingLogFieldKeysServer, callIsLocked as callIsLockedServer, holdFiledRecords, lockedRecordChange, LOCKED_RECORD_MAY_CHANGE } from ${JSON.stringify(ROOT + "lib/record-lock.cjs")};
 export { callClosedTs } from ${JSON.stringify(ROOT + "src/ui/Escalations.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/system-analysis.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/record-lock.jsx")};

@@ -216,6 +216,24 @@ patch", that document is the target — do not start a fresh exploration.
   the week that is ending — and a past shift or week is named by the date it
   OPENED, like everything else on this board. The picker never offers a period
   that has not happened.
+- **One dial carries a caption; the rest carry a number.** The KPI band is
+  four gauges side by side and every one of them used to have two lines of
+  small print under it — a row nobody reads, and the row is the first thing on
+  the page. Only EMERGENCY RESPONSE keeps words: its denominator is genuinely
+  load-bearing (`13 of 13 within 10 min`, and the exclusions line from
+  `responseNote`). The average response moved onto the dial's FACE, under the
+  percentage (`sub` on `Gauge`) — they answer different questions, how often
+  ten minutes was made and what a patient actually waits, and it is the one
+  dial where the second number is asked for as often as the first.
+  **DEPARTMENT UHU is a FLOOR: under the target is red, at or over it green,
+  and there is no amber** (`sharp` on `Gauge`). It used to read the other way
+  — `lowerIsBetter`, darkening ABOVE the target, on the argument that a service
+  past its target has no slack left. That is a real reading of the number and
+  it is not the department's: 45% is what the crews are asked to REACH, so a
+  fleet sitting at 1% must not be painted green for it. **The per-person rows
+  carry the trucks and the shifts worked and no minute counts** — "27 min on
+  call over 4 shifts · 235 min signed on" is the numerator and the denominator
+  of the percentage printed beside it, in a unit nobody thinks in.
 - **The service mix never assumes a level.** `serviceMixRows` — CCT, ALS and
   BLS as shares of every call the period received, read the way the sheet's
   Svc column reads them: the category decides (`serviceTypeFor`), an explicit
@@ -1108,8 +1126,22 @@ patch", that document is the target — do not start a fresh exploration.
   deliberately **no override, for anybody, the owner included**: that is the
   department's decision and the reason the record can be trusted, and the cost
   is that a wrong value typed into the last missing field is wrong for good.
-  **This is enforced in the app and NOT YET on the server** — say so rather
-  than implying the board would refuse the write.
+  **The BOARD refuses the write too** — `lib/record-lock.cjs`, the server's
+  copy, on both write paths, with `npm test` asserting the two implementations
+  answer identically on every shape (the same contract the delegation list is
+  held to). A screen that hides a button is not a permission, and the whole
+  value of this rule is to somebody who was not in the room. Two things the
+  server guard must keep letting through, both found by writing the test:
+  **an ESCALATION** (`LOCKED_RECORD_MAY_CHANGE`) — a crew raising a problem is
+  a report attached to the record, not a change to it, and refusing those
+  closes the one channel the lock exists to protect, so an escalation lands
+  even in the same merge as a refused edit — and **a REMOVAL**, because
+  `pruneArchivedWork` legitimately takes filed calls off the board;
+  `holdFiledRecords` only inspects records actually being written. The stored
+  record wins outright rather than being merged field by field. The filed-call
+  index is read INSIDE SQLite (`json_each` over `ems:submissions`, cached on
+  that key's write counter) — `JSON.parse` over a mature board's submissions
+  on a write path is the self-test's 50-second-p95 mistake a second time.
 - **A call stood down before arrival, or refused, was run as NO service: Svc
   is E.** `serviceTypeFor` in `uhu-person.jsx`, under `npm test` — never ALS,
   BLS or CCT, whatever category or code the record carries: the category says
@@ -1121,6 +1153,18 @@ patch", that document is the target — do not start a fresh exploration.
   a call with no patient cannot be missing a patient care report. The PDF's
   summary tiles say TRANSFERRED and CANCELLED / NO TRANSPORT, never
   "Completed" over rows the sheet itself calls CANCELLED.
+- **Which shift OWNS a call is the window its `createdAt` falls in, and only
+  that.** The closed-call card read `req.shift || scheduledShiftKey(createdAt)`
+  — and `req.shift` is the shift of the DESK SESSION that raised it, stamped in
+  `ChatDock` from `user.shift`. So a night dispatcher still at the desk at
+  09:05, in overtime, raised a call that read **NIGHT** on the card and printed
+  on the DAY sheet, white. Every other reader files by the clock:
+  `requestsForShift` cuts a submission on `createdAt`, `isNightCall` shades the
+  sheet on `createdAt`. The badge was the only thing in the app answering
+  differently. `req.shift` is still right on a BOOKING (`schedIsOccurrence`,
+  the workbook's scheduled rows) — a booking is placed into a shift by the
+  person who booked it — and it is a SEAT's field on a unit; it is a call's
+  display badge it must never decide.
 - **The sign-in screen asks WHO, never WHAT — the role comes after the
   password.** There is no tab strip. It made a person name their own role
   before anything had identified them, and answered a wrong guess with a
@@ -1454,6 +1498,23 @@ patch", that document is the target — do not start a fresh exploration.
   they on a call?" was always no. Whether a call held them is decided at
   sign-off and **stamped on the entry**; deriving it later from a live board
   that no longer carries the call gives the wrong answer every time.
+- **Overtime nobody was HELD on has to say why.** `overtimeReasonRequired` /
+  `overtimeReasonProblem` in `domain/overtime.jsx`, under `npm test`, checked
+  inside `sendOvertimeClaim` itself so the crew card and the sign-out prompt
+  cannot disagree — a rule written into one of two doors is a rule the other
+  walks around. The two kinds of overtime are different conversations: a call
+  still running at seven o'clock is a fact the board watched happen and the
+  department pays either way, so an automatic claim is never asked anything.
+  Time after a shift with no call on it is the person's own decision to stay,
+  and "0.37 h claimed · not on a call" gives an administrator nothing to
+  approve or decline it ON — restocking, a late handover, a truck fault and an
+  hour covering for a partner who never arrived are all reasonable and all
+  invisible from the board. Three characters is the floor, because "PCR" is a
+  real answer; a minimum people cannot meet honestly teaches them to type
+  "aaaaaa". The words ride on `ems:overtimeSent` (the ask), never on
+  `ems:overtime` (the answer) — the person deciding must not be able to edit
+  what was asked. At sign-out the ask IS the reason box: leaving it blank
+  claims nothing, which is a real answer.
 - **Overtime is sent, not merely observed.** A stay a call held them through
   goes to administration on its own; anything else is the person's to send
   (`ems:overtimeSent`, written by them) or to leave. `ems:overtime` — the
