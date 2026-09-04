@@ -261,6 +261,19 @@ patch", that document is the target — do not start a fresh exploration.
   with no network answers rather than hanging the sign-on), and the refresh
   delegate caches whatever arrives so a token that lands after the ask is
   never lost. A cached token answers the next ask immediately.
+- **The dispatch tone belongs to a DISPATCH, and to nothing else.**
+  `callMessage` takes an explicit `sound` and `channelId`, and every caller
+  that is not a call says what it is. A message from the desk takes the
+  phone's ordinary notification sound and, on Android, NO channel id at all —
+  Firebase's fallback channel, off the alarm stream. A stand-down has its own
+  DESCENDING tone (`dispatch_stand_down.wav`, 880→660→440, where a dispatch
+  alternates) on the dispatch channel, because a crew must be able to tell
+  "go" from "stop" without looking and a stand-down nobody hears leaves them
+  driving to a patient who does not need moving. If all of them sounded like a
+  call, a crew would learn that the alarm tone means "look at your phone"
+  rather than "get up", and the distinction is the whole value of having a
+  tone. A caller passing neither gets a dispatch — the only thing that should
+  ever be sent without saying what it is.
 - **A dispatch is chased; everything else is told ONCE.** `newCrewMessages`,
   `newStandDowns` and `newDeskEdits` in `lib/push-triggers.cjs` (all under
   `npm test`) + `pushOnce` in `server.js` — a message from the desk, a call

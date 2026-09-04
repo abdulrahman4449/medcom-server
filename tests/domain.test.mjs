@@ -841,6 +841,29 @@ export function run(D, t) {
       t.is("call changed: a completed call tells nobody",
         D.newDeskEdits([before], [{ ...before, status: "completed", edits: [edit("applied", "dispatcher")] }]).length, 0);
     }
+
+    // ---- the dispatch tone belongs to a dispatch ----
+    //
+    // If a message, a stand-down and a changed destination all arrive sounding
+    // like a call, a crew learns that the alarm tone means "look at your
+    // phone" rather than "get up" — and the distinction is the whole value of
+    // having a tone at all.
+    {
+      const call = D.callMessage("T", { title: "NEW CALL", body: "x", priority: "als", data: { kind: "assigned" } }).message;
+      const msg = D.callMessage("T", { title: "Desk", body: "hi", sound: "default", channelId: null, data: { kind: "message" } }).message;
+      const sd = D.callMessage("T", { title: "STOOD DOWN", body: "x", sound: "dispatch_stand_down.wav", data: { kind: "stand-down" } }).message;
+      t.is("tone: a call keeps the dispatch tone", call.apns.payload.aps.sound, "dispatch_alert_cct.wav");
+      t.is("tone: a message does NOT sound like a call", msg.apns.payload.aps.sound, "default");
+      t.is("tone: a stand-down has its own", sd.apns.payload.aps.sound, "dispatch_stand_down.wav");
+      // On Android the sound belongs to the channel, so an ordinary notice
+      // must go down no channel at all rather than the alarm one.
+      t.is("tone: a call is on the dispatch channel", call.android.notification.channel_id, "pulseops_dispatch_v2");
+      t.ok("tone: a message is off the alarm stream entirely", !msg.android.notification.channel_id);
+      t.is("tone: a stand-down is loud, on the dispatch channel", sd.android.notification.channel_id, "pulseops_dispatch_v2");
+      // And a message replaces its own banner rather than the call's.
+      t.ok("tone: a message never collapses onto the call's banner",
+        msg.apns.headers["apns-collapse-id"] !== call.apns.headers["apns-collapse-id"]);
+    }
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

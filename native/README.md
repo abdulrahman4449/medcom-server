@@ -538,7 +538,8 @@ message. The banner now carries the department's own tone, chosen by the same
 rule as everywhere else: **ALS and CCT share the urgent tone, BLS keeps its
 own** (`pushSound` in `lib/push-fcm.cjs`, under `npm test`).
 
-`dispatch_alert_cct.wav` and `dispatch_alert_bls.wav` are in `native/`,
+`dispatch_alert_cct.wav`, `dispatch_alert_bls.wav` and
+`dispatch_stand_down.wav` are in `native/`,
 generated from the same note figures as `playAlertTone`, `builtToneUri` and
 `alarmWav` — change one and change all of them.
 
@@ -556,3 +557,9 @@ channel's sound cannot be changed after it is created. So put the tone in
 every phone that already has it. Android therefore has ONE push tone, not two;
 the two-tone distinction is carried by the in-app alarm, which is what a crew
 hears once the phone is in their hand.
+
+**Only a CALL gets the dispatch tone.** A message from the desk takes the
+phone's ordinary notification sound and, on Android, no channel id at all, so
+it is an ordinary notification rather than something on the alarm stream. A
+stand-down has its own descending tone. A crew has to be able to tell "get up"
+from "look at your phone" without looking at it.

@@ -1156,7 +1156,7 @@ function chaseCall(unitId, requestId, priority, attempts) {
 // One banner, once. Everything that is not a dispatch goes through here:
 // there is no acknowledgement to wait for, and a phone that buzzed twice for a
 // message is a phone whose owner turns notifications off.
-function pushOnce(unitId, { title, body, data }) {
+function pushOnce(unitId, { title, body, data, sound, channelId }) {
   setImmediate(async () => {
     let rows = [];
     try {
@@ -1166,7 +1166,7 @@ function pushOnce(unitId, { title, body, data }) {
     }
     for (const { token } of rows) {
       try {
-        const r = await sendCallAlert(token, { title, body, data });
+        const r = await sendCallAlert(token, { title, body, data, sound, channelId });
         if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
       } catch (e) {
         // never let a push problem near the board
@@ -1194,6 +1194,11 @@ function pushForMessagesWrite(prevList, nextList) {
     pushOnce(hit.unitId, {
       title: hit.byName ? `${hit.byName} — Dispatch` : "Dispatch",
       body: hit.text,
+      // The phone's ordinary notification sound, and NO dispatch channel on
+      // Android. A message that arrives sounding like a call teaches a crew
+      // that the alarm tone means "look at your phone" rather than "get up".
+      sound: "default",
+      channelId: null,
       data: { kind: "message", messageId: hit.messageId },
     });
   }
@@ -1232,6 +1237,11 @@ function pushForRequestsWrite(prevList, nextList) {
       pushOnce(s.unitId, {
         title: "CALL STOOD DOWN",
         body: `${s.nature} has been called off. Do not continue — open the app.`,
+        // Its own descending tone, on the dispatch channel: a crew must be
+        // able to tell "go" from "stop" without looking, and a stand-down
+        // nobody hears leaves them driving to a patient who does not need
+        // moving — which is worse than a missed alert, not better.
+        sound: "dispatch_stand_down.wav",
         data: { kind: "stand-down", requestId: s.requestId },
       });
     }
@@ -1239,6 +1249,10 @@ function pushForRequestsWrite(prevList, nextList) {
       pushOnce(e.unitId, {
         title: "CALL CHANGED",
         body: `Dispatch has changed ${e.nature}. Open the app to see what.`,
+        // Ordinary sound: the crew are already on the call and looking at the
+        // card. This tells them to look again, not to get up.
+        sound: "default",
+        channelId: null,
         data: { kind: "call-changed", requestId: e.requestId },
       });
     }
