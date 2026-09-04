@@ -2241,5 +2241,31 @@ export function run(D, t) {
     t.is("desk change: a call with no edits has none", D.newestDispatchEditAt({ id: "x" }), 0);
     t.is("desk change: a call never assigned falls back to when it was raised", D.seenBaselineFor({ createdAt: 5 }), 5);
   }
+  // ---------- a shift ends when the people working it go home, on BOTH lists
+  {
+    const start = at(2026, 9, 3, 7), end = at(2026, 9, 3, 19);
+    const desk = { shiftStart: start, shiftEnd: end, signedOnAt: start, shift: "day" };
+    const now = at(2026, 9, 3, 19, 20); // still at the desk, twenty minutes over
+    const closedInOvertime = { id: "ot", createdAt: at(2026, 9, 3, 18, 40), times: { backInService: at(2026, 9, 3, 19, 1) } };
+    const closedInShift = { id: "in", createdAt: at(2026, 9, 3, 17), times: { backInService: at(2026, 9, 3, 18) } };
+    const inWindow = (w, req) => D.callClosedTs(req) >= w.start && D.callClosedTs(req) <= w.end;
+
+    const crew = D.crewShiftWindow(desk, now);
+    t.ok("crew window: held open past the nominal end while they are still on", crew.end >= now);
+    t.ok("crew window: a call closed at 19:01 is on the shift it was worked on", inWindow(crew, closedInOvertime));
+
+    const deskW = D.deskShiftWindow(desk, now, 12 * H);
+    t.ok("desk window: reaches back over the shift it took over from", deskW.start <= start - 12 * H);
+    t.ok("desk window: a call closed inside the shift is on the list", inWindow(deskW, closedInShift));
+    t.ok("desk window: a call closed at 19:01, in overtime, is STILL on the list", inWindow(deskW, closedInOvertime));
+    t.ok("desk window: it ends no earlier than the crew's, so the two lists agree",
+      D.deskShiftWindow(desk, now, 12 * H).end === D.crewShiftWindow(desk, now).end);
+    t.is("desk window: the shift is still NAMED by its roster hours", deskW.windowStr, crew.windowStr);
+
+    // Before the fix the desk's window stopped dead at shiftEnd.
+    const hardStop = { start: start - 12 * H, end };
+    t.ok("desk window: the old hand-built window is what dropped the call",
+      !inWindow(hardStop, closedInOvertime));
+  }
   }
 }

@@ -114,6 +114,30 @@ export function crewShiftWindow(person, now) {
   };
 }
 
+// The DESK's window: this shift and the one it took over from.
+//
+// The desk reads a wider span than a crew — it is answerable for the handover
+// as well as for its own work — but the END of the window is the same
+// question, and it had a different answer. The dispatcher's list built its
+// window by hand and stopped it dead at `shiftEnd`, so a call closed at 19:01
+// by a desk still sitting there in overtime dropped off "closed this shift"
+// the moment it was closed: not codeable, not correctable, and not on the
+// list the log is finished from. It was still findable by SEARCH, because
+// searching lifts the window — which is exactly how it was reported, as a
+// call that "did not appear" and yet could be found by name.
+//
+// A shift does not end because the clock says so; it ends when the people
+// working it go home. `crewShiftWindow` has always known that. This is the
+// same rule for the desk, so there is one idea of when a shift stops rather
+// than two that disagree by however long somebody stayed late.
+export function deskShiftWindow(person, now, lookBackMs) {
+  const own = crewShiftWindow(person, now);
+  return {
+    ...own,
+    start: own.start - (lookBackMs || 0),
+  };
+}
+
 // The date a shift is filed under: the day it started. A night shift that runs
 // to 07:00 belongs to the evening it began, not the morning it ended.
 export function shiftDateOf(windowStart) {

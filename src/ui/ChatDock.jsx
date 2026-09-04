@@ -11,7 +11,7 @@ import { opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { oosRequestOf } from "../domain/out-of-service.jsx";
 import { activeAssistUnitIds, assistOf, assistPending, assistTeams } from "../domain/second-ambulance.jsx";
 import { CALL_CATEGORIES, PATIENT_ORIGINS, applyCallCoding, callTypeMeta, callTypeOf, loadedKmMeta, loadedKmOf } from "../domain/sheet-vocabulary.jsx";
-import { hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftWindowAt } from "../domain/shift-helpers.jsx";
+import { deskShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { SHIFTS, SHIFT_MS } from "../domain/shifts.jsx";
 import { callStartTs, uhuWindowStart } from "../domain/uhu.jsx";
 import { soundReminderTone } from "../lib/dates.jsx";
@@ -1914,10 +1914,7 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
             saveRequests={saveRequests}
             addLog={addLog}
             user={user}
-            shiftWindow={{
-              start: (user.shiftStart || shiftWindowAt(Date.now()).start) - SHIFT_MS,
-              end: user.shiftEnd || (user.shiftStart || shiftWindowAt(Date.now()).start) + SHIFT_MS,
-            }}
+            shiftWindow={deskShiftWindow(user, Date.now(), SHIFT_MS)}
             canCorrect
           />
 

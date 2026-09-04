@@ -1019,6 +1019,22 @@ patch", that document is the target — do not start a fresh exploration.
   board no longer holds. Anything new that counts a PERIOD must do the same.
   `FiledNote` says how much came from the archive, because a figure that grew
   without the board changing is one somebody has to be able to explain.
+- **A shift ends when the people working it go home, and the DESK's list has
+  to agree with the crew's.** `deskShiftWindow` in `domain/shift-helpers.jsx`,
+  under `npm test`. `crewShiftWindow` has always held its window open past the
+  nominal end (`end: Math.max(nominalEnd, now)`) so a call finishing on
+  overtime stays on the list of the shift it was worked on. The dispatcher's
+  closed-call list built its own window inline in `ChatDock.jsx` and stopped it
+  dead at `user.shiftEnd` — so a call closed at 19:01 by a desk still sitting
+  there in overtime dropped off "closed this shift" the moment it was closed:
+  not codeable, not correctable, and missing from the list the log is finished
+  from. It was still findable by SEARCH, because `filtering` turns `windowed`
+  off — which is exactly how it was reported, as a call that "did not appear"
+  and could nevertheless be found by name. Reported off a handset alongside a
+  spell in airplane mode, which was a coincidence: the record had synced
+  perfectly. Two windows that disagree about when a shift stops is one idea too
+  many; the desk now goes through the same helper with a look-back for the
+  shift it took over from.
 - **A log line belongs to ONE shift, and the line says which.** `logShiftHome`
   / `logForFiledShift` in `domain/shift-log.jsx`. Both re-cuts of a filed
   submission used to end the window at `Date.now()` to pick up the sign-offs

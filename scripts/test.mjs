@@ -55,6 +55,8 @@ export { serverAddress, serverUnreachable } from ${JSON.stringify(ROOT + "src/li
 export { toneKeyFor, alarmLoudnessNote, shellBuildNote, volumeFloorNote, shellBuildWanted, SHELL_BUILD_WANTED } from ${JSON.stringify(ROOT + "src/lib/dates.jsx")};
 export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};
 export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "src/domain/second-ambulance.jsx")};
+export { crewShiftWindow, deskShiftWindow } from ${JSON.stringify(ROOT + "src/domain/shift-helpers.jsx")};
+export { callClosedTs } from ${JSON.stringify(ROOT + "src/ui/Escalations.jsx")};
 `;
 
 const dir = mkdtempSync(join(tmpdir(), "pulseops-test-"));
