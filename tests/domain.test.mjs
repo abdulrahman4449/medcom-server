@@ -2267,5 +2267,29 @@ export function run(D, t) {
     t.ok("desk window: the old hand-built window is what dropped the call",
       !inWindow(hardStop, closedInOvertime));
   }
+  // ---------- a seat is a role: switching hats has to go BOTH ways
+  {
+    // The owner's account: its own role is admin, so `roles` never lists crew.
+    const ownerOnTruck = { role: "team", roles: ["admin"], unitId: "u1", ownRole: "admin" };
+    const ownerAtDesk = { ...ownerOnTruck, role: "admin" };
+    t.is("role switch: on the truck, administration is offered", D.roleSwitchTarget(ownerOnTruck), "admin");
+    t.is("role switch: from administration, the truck is offered BACK", D.roleSwitchTarget(ownerAtDesk), "team");
+    t.ok("role switch: the seat counts as a held role", D.heldRoles(ownerAtDesk).includes("team"));
+
+    // The same fault hit a dispatcher who took a truck.
+    const deskOnTruck = { role: "team", roles: ["dispatcher"], unitId: "u1", ownRole: "dispatcher" };
+    t.is("role switch: a dispatcher on a truck is offered the desk", D.roleSwitchTarget(deskOnTruck), "dispatcher");
+    t.is("role switch: and the truck back from the desk", D.roleSwitchTarget({ ...deskOnTruck, role: "dispatcher" }), "team");
+
+    // No seat, no way onto a truck from here.
+    t.is("role switch: an admin holding no seat is offered nothing", D.roleSwitchTarget({ role: "admin", roles: ["admin"] }), null);
+    t.ok("role switch: a seatless session never claims the truck role", !D.heldRoles({ role: "admin", roles: ["admin"] }).includes("team"));
+
+    // A plain crew member has one role and nothing to switch to.
+    t.is("role switch: a crew member is offered nothing", D.roleSwitchTarget({ role: "team", roles: ["crew"], unitId: "u1" }), null);
+
+    // A delegate keeps what the account lends them.
+    t.is("role switch: a lent desk is still offered", D.roleSwitchTarget({ role: "admin", roles: ["admin", "dispatcher"] }), "dispatcher");
+  }
   }
 }

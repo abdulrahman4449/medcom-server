@@ -1311,6 +1311,19 @@ patch", that document is the target — do not start a fresh exploration.
   always reads "Dispatch" on a crew tablet: naming the trucks that are talking
   is the desk's behaviour, and on a crew screen it put the crew's own truck name
   on the pill.
+- **A SEAT IS A ROLE, so switching hats goes both ways.** `heldRoles` /
+  `roleSwitchTarget` in `Header.jsx`, under `npm test`. `roles` comes from the
+  ACCOUNT — the person's own role plus anything lent — and for an
+  administrator or a dispatcher that list never contains `crew`. So somebody
+  whose account says `admin`, who joined a team for the shift, was offered
+  "Administration" and then, from there, NOTHING: the way back to their own
+  truck did not exist and the only route was to sign out and sign in again.
+  Reported on the owner's account and not confined to it — every dispatcher
+  who took a truck had the same one-way door. The seat is the proof: a session
+  holding `unitId` may work the truck whatever the account list says, so
+  `heldRoles` appends it rather than looking for it inside `roles`.
+  `switchRole` in `App.jsx` tests the same helper — the button and the switch
+  must agree, or one offers what the other refuses.
 - **Moving to a lent area is not a sign-out.** `switchRole` in `App.jsx` flips
   the role the SCREEN is drawn for and writes nothing: the desk is kept, no
   sign-off/sign-on pair goes into the shift log, and the board never shows the

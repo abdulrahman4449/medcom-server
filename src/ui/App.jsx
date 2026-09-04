@@ -41,7 +41,7 @@ import { BottomBar } from "./AssistanceTasks.jsx";
 import { SyncStatus } from "./BackupPanel.jsx";
 import { DispatcherView } from "./ChatDock.jsx";
 import { AdminView } from "./DayArchive.jsx";
-import { Header } from "./Header.jsx";
+import { Header, heldRoles } from "./Header.jsx";
 import { LoginScreen } from "./LoginScreen.jsx";
 import { PWRESET_KEY, pendingResets } from "./PasswordResets.jsx";
 import { POLICY_KEY, PolicyLibrary, readPolicyFile } from "./PolicyLibrary.jsx";
@@ -2657,8 +2657,11 @@ export function App() {
       // truck is "team", and "team" needs a seat to go back to. A role the
       // app has no view for must be unreachable from here — a session set to
       // "crew" drew an empty screen with nothing to press (see `RoleSwitch`).
-      const held = u && Array.isArray(u.roles) ? u.roles.map((r) => (r === "crew" ? "team" : r)) : [];
-      if (!u || !held.includes(next)) return;
+      // heldRoles, not the raw account list: a session holding a seat may go
+      // back to it even though an administrator's account never lists "crew".
+      // The button and the switch must agree, or one offers what the other
+      // refuses.
+      if (!u || !heldRoles(u).includes(next)) return;
       if (next === "team" && !u.unitId) return;
       // Switching INTO administration on lent authority has to carry the areas
       // with it, exactly as signing in that way does.

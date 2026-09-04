@@ -44,7 +44,7 @@ export * from ${JSON.stringify(ROOT + "src/domain/desk-duty.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/schedule.jsx")};
 export { dedupeById } from ${JSON.stringify(ROOT + "src/lib/helpers.jsx")};
 export { staffStatsFor, departmentUhu, categoryMixRows, serviceMixRows, responseNote } from ${JSON.stringify(ROOT + "src/ui/Statistics.jsx")};
-export { roleSwitchTarget } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
+export { roleSwitchTarget, heldRoles } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/seat-handover.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/call-changes.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/speaker-check.jsx")};

@@ -232,10 +232,27 @@ export function DelegatedTag({ user }) {
 // only ever hand the app its own word back. "My truck" is the way BACK for a
 // crew member working a lent area, so it also needs a seat to go back to —
 // a delegate who signed straight into the lent area never took one.
-export function roleSwitchTarget(user) {
+// A SEAT IS A ROLE. `roles` comes from the account — the person's own role plus
+// anything lent to them — and for an administrator or a dispatcher that list
+// never contains "crew". So somebody whose account says `admin`, who joined a
+// team for the shift, was offered "Administration" and then, from there,
+// nothing: the way back to their own truck did not exist and the only route
+// was to sign out and sign in again. Reported on the owner's account; it hit
+// every dispatcher who took a truck as well.
+//
+// The seat is the proof. If this session is holding one, working the truck is
+// a role they hold, whatever the account list says — so it is offered
+// alongside the list rather than looked for inside it.
+export function heldRoles(user) {
   const asSession = (r) => (r === "crew" ? "team" : r);
-  const roles = Array.isArray(user && user.roles) ? user.roles.map(asSession) : [];
-  return roles.find((r) => r && r !== user.role && (r !== "team" || user.unitId)) || null;
+  const listed = Array.isArray(user && user.roles) ? user.roles.map(asSession) : [];
+  const held = listed.filter((r) => r && (r !== "team" || (user && user.unitId)));
+  if (user && user.unitId && !held.includes("team")) held.push("team");
+  return held;
+}
+
+export function roleSwitchTarget(user) {
+  return heldRoles(user).find((r) => r !== (user && user.role)) || null;
 }
 
 export function RoleSwitch({ user, onSwitchRole }) {
