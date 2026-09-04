@@ -267,10 +267,15 @@ patch", that document is the target — do not start a fresh exploration.
   running can miss a single buzz, and the app's own 1.7-second alarm loop
   cannot help because it only runs once the app is OPEN, and the app being
   shut is the whole reason a push was needed. So an unacknowledged call is
-  pushed again every `PUSH_REPEAT_MS` (25 s) up to `PUSH_REPEAT_MAX` (6) — a
-  bit over two minutes, after which the desk should be telephoning rather than
-  trusting a notification, and a phone buzzing for ever in a locker helps
-  nobody. It stops on acknowledgement, completion, a move to another truck, or
+  pushed again every `PUSH_REPEAT_MS` (5 s) up to `PUSH_REPEAT_MAX` (24) — two
+  minutes, after which the desk should be telephoning rather than trusting a
+  notification, and a phone buzzing for ever in a locker helps nobody. **5 s is
+  the floor, not a preference**: below it APNs merges the repeats into one
+  delivery and the phone goes QUIETER, not louder. The collapse id makes the
+  repeats REPLACE one another in Notification Centre rather than stacking
+  twenty-four banners, so it behaves like a ringing telephone — one entry,
+  sounding again until answered — and a phone that was offline for the whole
+  two minutes gets ONE banner on reconnect instead of twenty-four. It stops on acknowledgement, completion, a move to another truck, or
   the call leaving the board; the acknowledgement IS a board write, so every
   write also sweeps the chase list and the nagging ends within one poll of the
   crew's tap. Keyed truck|call so a second dispatch never cancels the first

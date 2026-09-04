@@ -1048,13 +1048,23 @@ function pushForUnitsWrite(prevList, nextList) {
 // open and the app being shut is why the push was needed. So the server asks
 // again until somebody answers.
 //
-// Every 25 seconds, up to six times: a bit over two minutes. Past that the
-// desk should be picking up a telephone rather than trusting a notification,
-// and a phone buzzing for ever in a locker helps nobody. The stop conditions
-// live in `callStillNeedsWaking` (under `npm test`) — acknowledged, completed,
-// moved to another truck, or gone from the board.
-const PUSH_REPEAT_MS = 25000;
-const PUSH_REPEAT_MAX = 6;
+// Every 5 seconds for two minutes — the department asked for the shortest
+// interval, and this is it. Below 5 s the repeats stop being separate
+// deliveries and start being merged by APNs, so the phone would go QUIETER,
+// not louder.
+//
+// The collapse id means these replace one another in Notification Centre
+// rather than stacking twenty-four banners to dismiss, so from the crew's
+// side it behaves like a ringing telephone: one entry, sounding again and
+// again until it is answered.
+//
+// Two minutes and then it stops. Past that the desk should be picking up a
+// telephone rather than trusting a notification, and a phone buzzing for
+// ever in a locker helps nobody. The stop conditions live in
+// `callStillNeedsWaking` (under `npm test`) — acknowledged, completed, moved
+// to another truck, or gone from the board.
+const PUSH_REPEAT_MS = 5000;
+const PUSH_REPEAT_MAX = 24;
 // Keyed truck|call, so two calls on one truck nag independently and a second
 // dispatch never cancels the first one's chase.
 const pushChases = new Map();
