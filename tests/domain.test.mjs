@@ -802,6 +802,45 @@ export function run(D, t) {
     t.is("push tone: and it reaches the payload",
       D.callMessage("T", { title: "NEW CALL", body: "x", priority: "bls" }).message.apns.payload.aps.sound,
       "dispatch_alert_bls.wav");
+
+    // ---- everything else the crew must not miss ----
+    //
+    // A dispatch is not the only thing that has to reach a locked phone. These
+    // all fire ONCE: only a dispatch has an acknowledgement to wait for, and a
+    // phone that buzzed twice for a message is a phone whose owner turns
+    // notifications off.
+    {
+      const m = { id: "m1", unitId: "u1", from: "dispatcher", byName: "Desk", text: "ring the ward first" };
+      t.is("message: a desk message wakes the truck", D.newCrewMessages([], [m]).length, 1);
+      t.is("message: the words travel with it", D.newCrewMessages([], [m])[0].text, "ring the ward first");
+      t.is("message: a crew's own message wakes nobody — the desk is watching the board",
+        D.newCrewMessages([], [{ ...m, from: "crew" }]).length, 0);
+      t.is("message: one already on the board is not sent twice", D.newCrewMessages([m], [m]).length, 0);
+    }
+    {
+      const running = { id: "r1", assignedUnitId: "u1", status: "assigned", nature: "Chest pain" };
+      const closed = { ...running, status: "completed" };
+      t.is("stand-down: a call ended under a driving crew reaches them",
+        D.newStandDowns([running], [closed]).length, 1);
+      // A crew who stamped Back in Service closed their own call.
+      t.is("stand-down: a crew who closed it themselves are not told",
+        D.newStandDowns([running], [{ ...closed, times: { backInService: 1 } }]).length, 0);
+      // A completed call is written many times over.
+      t.is("stand-down: only the moment it closed, never every write after",
+        D.newStandDowns([closed], [closed]).length, 0);
+    }
+    {
+      const edit = (status, byRole) => ({ id: "e1", status, byRole });
+      const before = { id: "r1", assignedUnitId: "u1", status: "assigned", nature: "Chest pain", edits: [] };
+      t.is("call changed: an applied desk edit reaches the crew",
+        D.newDeskEdits([before], [{ ...before, edits: [edit("applied", "dispatcher")] }]).length, 1);
+      t.is("call changed: a crew's own correction is already theirs",
+        D.newDeskEdits([before], [{ ...before, edits: [edit("applied", "crew")] }]).length, 0);
+      t.is("call changed: an edit only proposed is not a change yet",
+        D.newDeskEdits([before], [{ ...before, edits: [edit("proposed", "dispatcher")] }]).length, 0);
+      t.is("call changed: a completed call tells nobody",
+        D.newDeskEdits([before], [{ ...before, status: "completed", edits: [edit("applied", "dispatcher")] }]).length, 0);
+    }
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

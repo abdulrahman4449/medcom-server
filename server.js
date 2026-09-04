@@ -895,14 +895,18 @@ app.post("/api/board", requireAuth, (req, res) => {
   // which trucks were just handed a call. Read only for that one key.
   let prevRequests = null;
   let prevUnits = null;
-  if (key === "ems:requests" || key === "ems:units") {
+  let prevMessages = null;
+  if (key === "ems:requests" || key === "ems:units" || key === MESSAGES_KEY) {
     try {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
       const before = row ? JSON.parse(row.value) : null;
-      if (key === "ems:requests") prevRequests = before; else prevUnits = before;
+      if (key === "ems:requests") prevRequests = before;
+      else if (key === "ems:units") prevUnits = before;
+      else prevMessages = before;
     } catch (e) {
       prevRequests = null;
       prevUnits = null;
+      prevMessages = null;
     }
   }
   let stored = value ?? null;
@@ -929,6 +933,7 @@ app.post("/api/board", requireAuth, (req, res) => {
   bumpBoardKey(key);
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, value);
   if (key === "ems:units") pushForUnitsWrite(prevUnits, value);
+  if (key === MESSAGES_KEY) pushForMessagesWrite(prevMessages, value);
   res.json({ ok: true });
 });
 
@@ -961,7 +966,17 @@ const { ADMIN_SCOPES, DELEGATION_SCOPES, cleanScopes, scopeAllowsKey, scopeSente
 // the dispatch channel, which sounds on the alarm stream through silent. Needs
 // FIREBASE_SERVICE_ACCOUNT set (see native/README.md); without it every part
 // of this is a no-op and the board behaves exactly as before.
-const { newAssignments, newHandoverAsks, callStillNeedsWaking } = require("./lib/push-triggers.cjs");
+// The crew message store, named here so the push hooks below cannot drift
+// from the app's own constant by a typo.
+const MESSAGES_KEY = "ems:messages";
+const {
+  newAssignments,
+  newHandoverAsks,
+  callStillNeedsWaking,
+  newCrewMessages,
+  newStandDowns,
+  newDeskEdits,
+} = require("./lib/push-triggers.cjs");
 const { pushConfigured, sendCallAlert, pushProbe, sendOwnerNotice } = require("./lib/push-fcm.cjs");
 
 db.exec(`
@@ -1138,6 +1153,52 @@ function chaseCall(unitId, requestId, priority, attempts) {
   pushChases.set(key, t);
 }
 
+// One banner, once. Everything that is not a dispatch goes through here:
+// there is no acknowledgement to wait for, and a phone that buzzed twice for a
+// message is a phone whose owner turns notifications off.
+function pushOnce(unitId, { title, body, data }) {
+  setImmediate(async () => {
+    let rows = [];
+    try {
+      rows = db.prepare("SELECT token FROM push_tokens WHERE unit_id = ?").all(unitId);
+    } catch (e) {
+      rows = [];
+    }
+    for (const { token } of rows) {
+      try {
+        const r = await sendCallAlert(token, { title, body, data });
+        if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+      } catch (e) {
+        // never let a push problem near the board
+      }
+    }
+  });
+}
+
+// A message from the desk. The words themselves go in the banner — the
+// department asked for that, so a crew can read it without unlocking.
+//
+// WORTH KNOWING: this is the one push that carries free text somebody typed,
+// and a banner sits on a lock screen and travels through Apple and Google. The
+// desk must not type an MRN into a message. Everything else the server sends
+// is composed here and names no patient by construction.
+function pushForMessagesWrite(prevList, nextList) {
+  if (!pushConfigured()) return;
+  let hits;
+  try {
+    hits = newCrewMessages(prevList, nextList);
+  } catch (e) {
+    return;
+  }
+  for (const hit of hits) {
+    pushOnce(hit.unitId, {
+      title: hit.byName ? `${hit.byName} — Dispatch` : "Dispatch",
+      body: hit.text,
+      data: { kind: "message", messageId: hit.messageId },
+    });
+  }
+}
+
 function pushForRequestsWrite(prevList, nextList) {
   if (!pushConfigured()) return;
   let hits;
@@ -1162,6 +1223,27 @@ function pushForRequestsWrite(prevList, nextList) {
     }
   } catch (e) {
     /* a tidy-up that throws must never stop a dispatch */
+  }
+  // A call ended out from under a crew who are already driving, and a
+  // destination changed mid-run. Both are one-shot: there is nothing to
+  // acknowledge, and the app puts the detail in front of them when they look.
+  try {
+    for (const s of newStandDowns(prevList, nextList)) {
+      pushOnce(s.unitId, {
+        title: "CALL STOOD DOWN",
+        body: `${s.nature} has been called off. Do not continue — open the app.`,
+        data: { kind: "stand-down", requestId: s.requestId },
+      });
+    }
+    for (const e of newDeskEdits(prevList, nextList)) {
+      pushOnce(e.unitId, {
+        title: "CALL CHANGED",
+        body: `Dispatch has changed ${e.nature}. Open the app to see what.`,
+        data: { kind: "call-changed", requestId: e.requestId },
+      });
+    }
+  } catch (err) {
+    /* a notice that throws must never stop a dispatch */
   }
   if (!hits.length) return;
   setImmediate(async () => {
@@ -1198,12 +1280,14 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   let merged;
   let prevRequests = null;
   let prevUnits = null;
+  let prevMessages = null;
   try {
     merged = db.transaction(() => {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
       const current = row ? JSON.parse(row.value) : null;
       if (key === "ems:requests") prevRequests = current;
       if (key === "ems:units") prevUnits = current;
+      if (key === MESSAGES_KEY) prevMessages = current;
       // A key that holds a list cannot be merged with a map, or the other way
       // round. The client is told so and falls back to writing the key whole.
       if (current !== null && current !== undefined) {
@@ -1243,6 +1327,9 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   // fired after the write has committed, and never able to fail it.
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, merged);
   if (key === "ems:units") pushForUnitsWrite(prevUnits, merged);
+  // A message from the desk reaches a locked phone too — the crew's own
+  // messages back are not pushed; the desk is looking at the board.
+  if (key === MESSAGES_KEY) pushForMessagesWrite(prevMessages, merged);
   // The merged board goes back, so the device that wrote adopts what everybody
   // else has done in the same breath rather than waiting for the next poll.
   res.json({ ok: true, value: merged });

@@ -261,6 +261,21 @@ patch", that document is the target — do not start a fresh exploration.
   with no network answers rather than hanging the sign-on), and the refresh
   delegate caches whatever arrives so a token that lands after the ask is
   never lost. A cached token answers the next ask immediately.
+- **A dispatch is chased; everything else is told ONCE.** `newCrewMessages`,
+  `newStandDowns` and `newDeskEdits` in `lib/push-triggers.cjs` (all under
+  `npm test`) + `pushOnce` in `server.js` — a message from the desk, a call
+  stood down under a crew already driving, and a destination the desk changed
+  mid-run all reach a locked phone, because each is useless if nobody is
+  looking. None of them repeats: only a dispatch has an acknowledgement to wait
+  for, and a phone that buzzed twice for a message is a phone whose owner turns
+  notifications off. A crew's own message back is never pushed — the desk is
+  sitting in front of the board. A stand-down fires at the MOMENT the call
+  closed (a completed call is written many times over) and not to a crew who
+  stamped Back in Service themselves. **The message push is the one that
+  carries free text somebody typed**, at the department's request so a crew can
+  read it without unlocking: everything else the server sends is composed in
+  `server.js` and names no patient by construction, so the desk must be told
+  not to type an MRN into a message.
 - **A push is ONE banner and ONE tone, so the SERVER asks again.**
   `callStillNeedsWaking` in `lib/push-triggers.cjs` (under `npm test`) +
   `chaseCall` in `server.js` — a crew asleep at 03:00 or in a bay with a diesel
