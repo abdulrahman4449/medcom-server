@@ -261,6 +261,20 @@ patch", that document is the target — do not start a fresh exploration.
   with no network answers rather than hanging the sign-on), and the refresh
   delegate caches whatever arrives so a token that lands after the ask is
   never lost. A cached token answers the next ask immediately.
+- **On Android a tone IS a channel, so there are three of them.** A
+  per-message sound is ignored once a channel exists and a channel's sound can
+  never be changed afterwards, so the only way to have a dispatch, a BLS
+  dispatch and a stand-down sound different from one another is three
+  channels: `CHANNEL_ID` (v3, the urgent tone), `CHANNEL_BLS_ID` and
+  `CHANNEL_STAND_DOWN_ID`, all `IMPORTANCE_HIGH` + `USAGE_ALARM` + bypass DND,
+  built by one `makeChannel`. `pushChannel(priority)` in `lib/push-fcm.cjs` is
+  the Android twin of `pushSound`, and `npm test` asserts the two AGREE for
+  every priority — a call that is BLS on iOS must be BLS on Android, or the
+  platforms disagree about what a call sounds like. Bumping a channel id means
+  adding the old one to `OLD_CHANNEL_IDS`, or it sits in the phone's settings
+  for ever as a stale second "Dispatch alerts" entry. A build that does not
+  bundle the raw tone falls back to the phone's own alarm sound, never to
+  silence.
 - **The dispatch tone belongs to a DISPATCH, and to nothing else.**
   `callMessage` takes an explicit `sound` and `channelId`, and every caller
   that is not a call says what it is. A message from the desk takes the

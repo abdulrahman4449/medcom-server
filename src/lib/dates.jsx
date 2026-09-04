@@ -531,7 +531,7 @@ export const SHELL_METHODS = ["alert", "stop", "standDown", "notify", "requestNo
 // was simply not on the device. A method list says what a plugin can do; only
 // a version says which one it is. Bump this and the constant in BOTH plugins
 // together.
-export const SHELL_BUILD_WANTED = { android: "2026-09-03.6", ios: "2026-09-03.5" };
+export const SHELL_BUILD_WANTED = { android: "2026-09-04.1", ios: "2026-09-03.5" };
 
 // What to say about the plugin's own build, given whatever backgroundStatus
 // last answered. Empty when there is nothing to complain about — the line is

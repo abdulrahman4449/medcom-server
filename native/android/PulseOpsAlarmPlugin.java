@@ -78,8 +78,24 @@ public class PulseOpsAlarmPlugin extends Plugin {
      * Do it whenever the sound, the importance or the bypass below changes,
      * and the old one is deleted on the way past.
      */
-    private static final String CHANNEL_ID = "pulseops_dispatch_v2";
-    private static final String[] OLD_CHANNEL_IDS = { "pulseops_dispatch" };
+    // THREE channels, because on Android the SOUND belongs to the channel.
+    //
+    // A per-message sound is ignored once a channel exists, and a channel's
+    // sound can never be changed afterwards — so the only way to have a
+    // dispatch, a BLS dispatch and a stand-down sound different from one
+    // another is to have three of them. iOS does this with one field on the
+    // payload; this is the Android half of the same idea.
+    //
+    // The version suffix is not decoration. Android refuses to change an
+    // existing channel's sound, importance or DND bypass FOR EVER, so a
+    // handset that installed an earlier build keeps whatever that build
+    // created. Bump the id whenever any of those three change, and add the
+    // old one to OLD_CHANNEL_IDS so it is deleted rather than left sitting in
+    // the phone's settings as a second, stale "Dispatch alerts" entry.
+    private static final String CHANNEL_ID = "pulseops_dispatch_v3";
+    private static final String CHANNEL_BLS_ID = "pulseops_dispatch_bls_v1";
+    private static final String CHANNEL_STAND_DOWN_ID = "pulseops_stand_down_v1";
+    private static final String[] OLD_CHANNEL_IDS = { "pulseops_dispatch", "pulseops_dispatch_v2" };
     // One id for the call banner, so a repeat replaces it rather than stacking.
     private static final int CALL_NOTIFICATION_ID = 4101;
     // Below this, an alarm on a truck's tablet is not going to be heard over a
@@ -101,7 +117,7 @@ public class PulseOpsAlarmPlugin extends Plugin {
     // carrying a fortnight-old plugin reported "shell up to date" and there
     // was nothing anywhere that disagreed. A version says what a method list
     // cannot. Bump it whenever this file changes.
-    private static final String PLUGIN_BUILD = "2026-09-03.6";
+    private static final String PLUGIN_BUILD = "2026-09-04.1";
 
     private MediaPlayer player;
     // Separate from the alarm player, so a stand-down can never stop an alarm
@@ -165,17 +181,43 @@ public class PulseOpsAlarmPlugin extends Plugin {
         for (String old : OLD_CHANNEL_IDS) {
             try { nm.deleteNotificationChannel(old); } catch (Exception ignored) {}
         }
-        if (nm.getNotificationChannel(CHANNEL_ID) != null) return;
+        makeChannel(nm, CHANNEL_ID, "Dispatch alerts",
+            "A call assigned to this ambulance. Plays as an alarm.",
+            rawUri(rawId("dispatch_alert_cct")));
+        makeChannel(nm, CHANNEL_BLS_ID, "Dispatch alerts (BLS)",
+            "A BLS call assigned to this ambulance. Plays as an alarm.",
+            rawUri(rawId("dispatch_alert_bls")));
+        makeChannel(nm, CHANNEL_STAND_DOWN_ID, "Stand-downs",
+            "A call called off. Plays as an alarm, with its own tone.",
+            rawUri(rawId("dispatch_stand_down")));
+    }
 
-        // IMPORTANCE_HIGH so it can interrupt; USAGE_ALARM so it plays on the
-        // alarm stream rather than the media one.
-        NotificationChannel channel = new NotificationChannel(
-            CHANNEL_ID, "Dispatch alerts", NotificationManager.IMPORTANCE_HIGH);
-        channel.setDescription("A call assigned to this ambulance. Plays as an alarm.");
+    /** A raw resource id by name, or 0 when this build does not bundle it. */
+    private int rawId(String name) {
+        try {
+            return getContext().getResources()
+                .getIdentifier(name, "raw", getContext().getPackageName());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * One channel, built the same way every time.
+     *
+     * IMPORTANCE_HIGH so it can interrupt; USAGE_ALARM so it plays on the
+     * alarm stream rather than the media one; bypassDnd so a crew's Do Not
+     * Disturb does not silence a dispatch. A build that does not bundle the
+     * tone falls back to the phone's own alarm sound rather than to silence.
+     */
+    private void makeChannel(NotificationManager nm, String id, String name, String why, Uri sound) {
+        if (nm.getNotificationChannel(id) != null) return;
+        NotificationChannel channel = new NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH);
+        channel.setDescription(why);
         channel.enableVibration(true);
         channel.setVibrationPattern(new long[] { 0, 600, 300, 600, 300, 600 });
         channel.setBypassDnd(true);
-        channel.setSound(alarmSoundUri(), alarmAttributes());
+        channel.setSound(sound != null ? sound : alarmSoundUri(), alarmAttributes());
         nm.createNotificationChannel(channel);
     }
 

@@ -851,19 +851,30 @@ export function run(D, t) {
     {
       const call = D.callMessage("T", { title: "NEW CALL", body: "x", priority: "als", data: { kind: "assigned" } }).message;
       const msg = D.callMessage("T", { title: "Desk", body: "hi", sound: "default", channelId: null, data: { kind: "message" } }).message;
-      const sd = D.callMessage("T", { title: "STOOD DOWN", body: "x", sound: "dispatch_stand_down.wav", data: { kind: "stand-down" } }).message;
+      const sd = D.callMessage("T", { title: "STOOD DOWN", body: "x", sound: "dispatch_stand_down.wav", channelId: D.STAND_DOWN_CHANNEL, data: { kind: "stand-down" } }).message;
       t.is("tone: a call keeps the dispatch tone", call.apns.payload.aps.sound, "dispatch_alert_cct.wav");
       t.is("tone: a message does NOT sound like a call", msg.apns.payload.aps.sound, "default");
       t.is("tone: a stand-down has its own", sd.apns.payload.aps.sound, "dispatch_stand_down.wav");
       // On Android the sound belongs to the channel, so an ordinary notice
       // must go down no channel at all rather than the alarm one.
-      t.is("tone: a call is on the dispatch channel", call.android.notification.channel_id, "pulseops_dispatch_v2");
+      t.is("tone: a call is on the dispatch channel", call.android.notification.channel_id, D.pushChannel("als"));
       t.ok("tone: a message is off the alarm stream entirely", !msg.android.notification.channel_id);
-      t.is("tone: a stand-down is loud, on the dispatch channel", sd.android.notification.channel_id, "pulseops_dispatch_v2");
+      t.is("tone: a stand-down is loud, on its own alarm channel", sd.android.notification.channel_id, D.STAND_DOWN_CHANNEL);
       // And a message replaces its own banner rather than the call's.
       t.ok("tone: a message never collapses onto the call's banner",
         msg.apns.headers["apns-collapse-id"] !== call.apns.headers["apns-collapse-id"]);
     }
+    // On Android the sound belongs to the CHANNEL, so the two functions have
+    // to agree: a priority that picks the BLS tone on iOS must pick the BLS
+    // channel here, or the two platforms disagree about what a call sounds
+    // like — which is the fault this whole split exists to prevent.
+    for (const p of ["cct", "als", "bls", "routine", ""]) {
+      const iosBls = D.pushSound(p) === "dispatch_alert_bls.wav";
+      const androidBls = D.pushChannel(p) === "pulseops_dispatch_bls_v1";
+      t.ok(`tone: iOS and Android agree on "${p || "uncoded"}"`, iosBls === androidBls);
+    }
+    t.ok("tone: a stand-down has a channel of its own on Android",
+      D.STAND_DOWN_CHANNEL !== D.pushChannel("cct") && D.STAND_DOWN_CHANNEL !== D.pushChannel("bls"));
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

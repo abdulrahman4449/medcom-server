@@ -977,7 +977,13 @@ const {
   newStandDowns,
   newDeskEdits,
 } = require("./lib/push-triggers.cjs");
-const { pushConfigured, sendCallAlert, pushProbe, sendOwnerNotice } = require("./lib/push-fcm.cjs");
+const {
+  pushConfigured,
+  sendCallAlert,
+  pushProbe,
+  sendOwnerNotice,
+  STAND_DOWN_CHANNEL,
+} = require("./lib/push-fcm.cjs");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS push_tokens (
@@ -1242,6 +1248,9 @@ function pushForRequestsWrite(prevList, nextList) {
         // nobody hears leaves them driving to a patient who does not need
         // moving — which is worse than a missed alert, not better.
         sound: "dispatch_stand_down.wav",
+        // Android's half of the same choice: its own channel, because a
+        // channel is where a sound lives there.
+        channelId: STAND_DOWN_CHANNEL,
         data: { kind: "stand-down", requestId: s.requestId },
       });
     }
