@@ -1096,6 +1096,10 @@ async function wakeUnit(unitId, requestId, priority, attempt) {
       const r = await sendCallAlert(token, {
         title: "NEW CALL",
         body: "Your truck has been dispatched. Open the app and acknowledge.",
+        // So the banner arrives with the department's own tone rather than
+        // the phone's notification chime — a crew has to know what it is
+        // before they have looked at the screen.
+        priority,
         // The attempt rides along so a crew who look at the phone can see this
         // is the same call being asked again, not a second dispatch.
         data: { kind: "assigned", requestId, priority, attempt: String(attempt) },

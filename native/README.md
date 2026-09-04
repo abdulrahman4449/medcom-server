@@ -529,3 +529,30 @@ breaks through Focus modes. It does not beat the silent switch, the volume
 slider or Do Not Disturb — that needs Apple's **Critical Alert** entitlement,
 requested separately and granted at Apple's discretion. Until then, an iPhone
 on silent can still miss a call, and the honest thing is to say so.
+
+
+## The push tone
+
+A push that arrives with the phone's ordinary chime sounds like a text
+message. The banner now carries the department's own tone, chosen by the same
+rule as everywhere else: **ALS and CCT share the urgent tone, BLS keeps its
+own** (`pushSound` in `lib/push-fcm.cjs`, under `npm test`).
+
+`dispatch_alert_cct.wav` and `dispatch_alert_bls.wav` are in `native/`,
+generated from the same note figures as `playAlertTone`, `builtToneUri` and
+`alarmWav` — change one and change all of them.
+
+**iOS.** Drag both files into the Xcode project (App group, *Copy items if
+needed*, target **App**). iOS looks them up by name in the app bundle; the
+server sends the filename in `aps.sound`. Nothing else to do — and if the
+files are missing, iOS quietly uses the default sound, so a build without them
+still rings.
+
+**Android.** The sound belongs to the notification CHANNEL, not to the
+message: Android ignores a per-message sound once a channel exists, and a
+channel's sound cannot be changed after it is created. So put the tone in
+`android/app/src/main/res/raw/dispatch_alert.wav` and **bump `CHANNEL_ID`** in
+`PulseOpsAlarmPlugin.java` — the old channel keeps the old sound for ever, on
+every phone that already has it. Android therefore has ONE push tone, not two;
+the two-tone distinction is carried by the in-app alarm, which is what a crew
+hears once the phone is in their hand.

@@ -787,6 +787,21 @@ export function run(D, t) {
         !D.callStillNeedsWaking(live, "u1", 6, 6));
       t.ok("chase: and one short of the cap still asks", D.callStillNeedsWaking(live, "u1", 5, 6));
     }
+
+    // ---- the push carries the department's own tone ----
+    //
+    // A push that arrives with the phone's ordinary chime sounds like a text
+    // message. A crew has to know what it is before they have looked at the
+    // screen. Same two-tone rule as everywhere else: ALS and CCT share the
+    // urgent one, BLS keeps its own.
+    t.is("push tone: CCT is the urgent one", D.pushSound("cct"), "dispatch_alert_cct.wav");
+    t.is("push tone: ALS shares it", D.pushSound("als"), "dispatch_alert_cct.wav");
+    t.is("push tone: BLS keeps its own", D.pushSound("bls"), "dispatch_alert_bls.wav");
+    t.ok("push tone: BLS is never the urgent tone", D.pushSound("bls") !== D.pushSound("als"));
+    t.is("push tone: an uncoded call is treated as urgent", D.pushSound(""), "dispatch_alert_cct.wav");
+    t.is("push tone: and it reaches the payload",
+      D.callMessage("T", { title: "NEW CALL", body: "x", priority: "bls" }).message.apns.payload.aps.sound,
+      "dispatch_alert_bls.wav");
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.
