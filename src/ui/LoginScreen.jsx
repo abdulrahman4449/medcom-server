@@ -12,7 +12,7 @@ import { crewShiftSummary, overtimeMs, scheduledShiftKey, seatLabel, shiftAssign
 import { HANDOVER_GRACE_MS } from "../domain/shifts.jsx";
 import { actorStamp } from "../export/name-stamps.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
-import { Ambulance, Archive, CheckCircle2, ChevronRight, Radio, Users } from "../lib/icons.jsx";
+import { Ambulance, Archive, CheckCircle2, ChevronRight, Radio, UserTie, Users } from "../lib/icons.jsx";
 import { readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
@@ -1204,7 +1204,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                   {canJoinTeam(foundAccount.role) && (
                     <RoleCard
                       tone="var(--move)"
-                      icon={<Archive size={20} color="var(--move)" />}
+                      icon={<UserTie size={20} color="var(--move)" />}
                       title={foundAccount.role === "admin" ? "Administration" : "Continue as Dispatcher"}
                       sub={
                         foundAccount.role === "admin"

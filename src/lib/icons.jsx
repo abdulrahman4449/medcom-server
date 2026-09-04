@@ -36,6 +36,10 @@ export const Share2 = makeIcon("⤴");
 export const Trash = makeIcon("🗑");
 export const CalendarClock = makeIcon("🗓");
 export const Archive = makeIcon("🗂");
+// The Administration role card on the sign-in screen. Deliberately NOT
+// Archive: a card index reads as "the filed record", and the choice being
+// made there is which JOB you are signing on to do.
+export const UserTie = makeIcon("🧑‍💼");
 export const ArrowRight = makeIcon("→");
 export const ChevronDown = makeIcon("⌄");
 export const Volume2 = makeIcon("🔊");
