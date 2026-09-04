@@ -229,6 +229,15 @@ patch", that document is the target — do not start a fresh exploration.
   a 100% measured over thirteen of thirty-nine calls has to state its
   denominator somewhere, or it is the kind of percentage that gets reported
   upward and turns out to have meant something else.
+  **The board does not explain itself.** A launcher tile's note carries a
+  NUMBER or nothing — `12 kept`, `3 filed`, `40 IDs on file` answer a question
+  that would otherwise cost a tap; "copies & restore", "every gap, kept",
+  "owner's eyes only" are straplines under a title that already said it, read
+  once on somebody's first day and never again. `RushFoot` says which hour was
+  busiest and how many calls landed in it, and no longer explains what the bars
+  weigh or where the day shift hands to the night. The pattern for anything
+  that genuinely needs explaining is `InfoNote` — a fold somebody opens — not a
+  line under the thing.
   **DEPARTMENT UHU is a FLOOR: under the target is red, at or over it green,
   and there is no amber** (`sharp` on `Gauge`). It used to read the other way
   — `lowerIsBetter`, darkening ABOVE the target, on the argument that a service

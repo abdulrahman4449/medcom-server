@@ -813,6 +813,12 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
               ONE of them — "the backups", "that Tuesday" — and a tile is how
               that is asked for. */}
           {!openPanel && (
+            /* A tile's note carries a NUMBER or nothing. The title already
+               says what the section is; a strapline under it — "copies &
+               restore", "every gap, kept" — is the app explaining itself to
+               somebody who has been using it for a month. A COUNT is different:
+               it is the answer to a question ("how many are kept?") that would
+               otherwise cost a tap. */
             <SectionHub
               onOpen={setOpenPanel}
               tiles={[
@@ -822,18 +828,13 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                   note: `${(submissions || []).length} filed` },
                 { key: "checks", title: "Filed checklists", icon: <ClipboardList size={26} />,
                   note: `${(checklistRuns || []).length} kept` },
-                { key: "pastcall", title: "Add a call the board missed", icon: <FileSignature size={26} />,
-                  note: "write up an outage" },
-                { key: "patients", title: "Patient records", icon: <Search size={26} />,
-                  note: "every patient, one list" },
-                canArea(user, "archive") && { key: "backups", title: "Backups", icon: <Save size={26} />,
-                  note: "copies & restore" },
-                { key: "issues", title: "Resolved issues", icon: <HandRaised size={26} />,
-                  note: "the standing record" },
+                { key: "pastcall", title: "Add a call the board missed", icon: <FileSignature size={26} /> },
+                { key: "patients", title: "Patient records", icon: <Search size={26} /> },
+                canArea(user, "archive") && { key: "backups", title: "Backups", icon: <Save size={26} /> },
+                { key: "issues", title: "Resolved issues", icon: <HandRaised size={26} /> },
                 // The owner's System page. Drawn for the owner alone — the
                 // server refuses everyone else regardless (requireOwner).
-                !!(user && user.isOwner) && { key: "system", title: "System", icon: <ShieldAlert size={26} />,
-                  note: "owner's eyes only" },
+                !!(user && user.isOwner) && { key: "system", title: "System", icon: <ShieldAlert size={26} /> },
               ]}
             />
           )}
@@ -956,16 +957,11 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
           tiles={[
             // Overtime first: it is the thing with a deadline on it — a pay
             // period closes — and everything else here is a thing you read.
-            canArea(user, "overtime") && { key: "overtime", title: "Overtime", icon: <Clock size={26} />,
-              note: "claims & decisions" },
-            canArea(user, "stats") && { key: "staff", title: "Staff statistics", icon: <Users size={26} />,
-              note: "per-person figures & report" },
-            canArea(user, "checklists") && { key: "checklists", title: "Vehicle checklists", icon: <ClipboardList size={26} />,
-              note: "lists & today's runs" },
-            canArea(user, "stats") && { key: "coverage", title: "No coverage — record", icon: <ShieldAlert size={26} />,
-              note: "every gap, kept" },
-            canArea(user, "stats") && { key: "consent", title: "Location consent", icon: <MapPin size={26} />,
-              note: "tracking answers" },
+            canArea(user, "overtime") && { key: "overtime", title: "Overtime", icon: <Clock size={26} /> },
+            canArea(user, "stats") && { key: "staff", title: "Staff statistics", icon: <Users size={26} /> },
+            canArea(user, "checklists") && { key: "checklists", title: "Vehicle checklists", icon: <ClipboardList size={26} /> },
+            canArea(user, "stats") && { key: "coverage", title: "No coverage — record", icon: <ShieldAlert size={26} /> },
+            canArea(user, "stats") && { key: "consent", title: "Location consent", icon: <MapPin size={26} /> },
           ]}
         />
       )}
@@ -1181,10 +1177,8 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
         <SectionHub
           onOpen={setOpenPanel}
           tiles={[
-            canArea(user, "schedule") && { key: "empschedule", title: "Employees schedule", icon: <CalendarClock size={26} />,
-              note: "the six-week roster" },
-            { key: "scheduled", title: "Scheduled requests", icon: <CalendarClock size={26} />,
-              note: "bookings & repeating" },
+            canArea(user, "schedule") && { key: "empschedule", title: "Employees schedule", icon: <CalendarClock size={26} /> },
+            { key: "scheduled", title: "Scheduled requests", icon: <CalendarClock size={26} /> },
             { key: "accounts", title: "Accounts & access", icon: <Users size={26} />,
               note: pendingResets(passwordResets).length
                 ? `${pendingResets(passwordResets).length} waiting for password help`

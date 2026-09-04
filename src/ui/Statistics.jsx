@@ -1222,16 +1222,20 @@ function RushFoot({ p }) {
     const row = p.rows.find((r) => r.hour === h);
     return sum + (row ? row.raised : 0);
   }, 0);
+  // The FINDING, and not a word about how the chart works.
+  //
+  // "Bars weigh how long calls held trucks in each hour of the day; the seam
+  // after 19 is where the day shift hands to the night" was two lines of
+  // instructions under a chart somebody reads every day. The busiest hour and
+  // how many calls landed in it is the answer; the rest was the app explaining
+  // itself.
+  if (!p.peaks.length) return null;
   return (
     <div style={styles.formHint}>
-      {p.peaks.length
-        ? peakCalls > 0
-          ? `Busiest ${rushHourRanges(p.peaks)} — ${peakCalls} of ${p.total} call${p.total === 1 ? "" : "s"} ` +
-            `landed in ${p.peaks.length === 1 ? "this hour" : "these hours"}. `
-          : `Busiest ${rushHourRanges(p.peaks)}. `
-        : ""}
-      Bars weigh how long calls held trucks in each hour of the day; the seam
-      after 19 is where the day shift hands to the night.
+      {peakCalls > 0
+        ? `Busiest ${rushHourRanges(p.peaks)} — ${peakCalls} of ${p.total} call${p.total === 1 ? "" : "s"} ` +
+          `landed in ${p.peaks.length === 1 ? "this hour" : "these hours"}.`
+        : `Busiest ${rushHourRanges(p.peaks)}.`}
     </div>
   );
 }
