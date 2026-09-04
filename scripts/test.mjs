@@ -112,6 +112,7 @@ try {
     ...require_(join(ROOT, "lib/backup-tiers.cjs")),
     // When a board write wakes a phone.
     ...require_(join(ROOT, "lib/push-triggers.cjs")),
+    ...require_(join(ROOT, "lib/push-fcm.cjs")),
     // Namespaced, because the app has a list of the same areas for its screens
     // and the point of the test is that the two agree.
     serverDelegation: require_(join(ROOT, "lib/delegation.cjs")),

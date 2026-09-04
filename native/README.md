@@ -471,3 +471,54 @@ Everything here is source. The keystore that signs your Android build, and the
 certificates that sign the iOS one, must never be pasted into a chat, committed
 to this repository, or emailed. If the Android keystore is lost you can never
 update the app again — a new key means a new listing.
+
+
+## Push on iOS (Firebase → APNs)
+
+The server does not change: it already sends through FCM, and Firebase hands
+off to Apple. Four steps, and the first two are done once in the consoles.
+
+1. **Apple** → Certificates, Identifiers & Profiles → **Keys** → new key with
+   **APNs** enabled, configured **Sandbox & Production**, **Team Scoped**.
+   Download the `.p8` (once only) and note the **Key ID**.
+2. **Firebase** → Project settings → **Your apps → Add app → iOS**, bundle id
+   `com.medcom.dispatch`; download `GoogleService-Info.plist`. Then
+   **Cloud Messaging → APNs Authentication Key → Upload** the `.p8` with the
+   Key ID and the Team ID.
+3. **Xcode project:**
+   - Drag `GoogleService-Info.plist` into the `App` group (tick *Copy items if
+     needed*, and make sure the **App** target is checked).
+   - `ios/App/Podfile`, inside `target 'App' do`, add:
+
+         pod 'FirebaseMessaging'
+
+     then in `ios/App`, run `pod install`.
+   - Add `PulseOpsPushPlugin.swift` to the App target.
+   - In **Signing & Capabilities**, add **Push Notifications** and, under
+     **Background Modes**, tick **Remote notifications**.
+4. **`AppDelegate.swift`** — three additions:
+
+       import FirebaseCore
+       import FirebaseMessaging
+
+       // in application(_:didFinishLaunchingWithOptions:)
+       FirebaseApp.configure()
+
+       // and, so Firebase can trade the APNs token for an FCM one:
+       func application(_ application: UIApplication,
+                        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+           Messaging.messaging().apnsToken = deviceToken
+       }
+
+   Capacitor registers the plugin from `MainViewController.swift`, beside the
+   alarm plugin — a class in the app target is never auto-discovered.
+
+**Checking it landed.** The Xcode console prints `PulseOpsPush: plugin loaded,
+build …` at launch and `FCM token obtained (N chars)` at sign-on. The token
+itself is never logged: it is the address of one specific phone.
+
+**What iOS push does NOT buy.** The message is sent `time-sensitive`, which
+breaks through Focus modes. It does not beat the silent switch, the volume
+slider or Do Not Disturb — that needs Apple's **Critical Alert** entitlement,
+requested separately and granted at Apple's discretion. Until then, an iPhone
+on silent can still miss a call, and the honest thing is to say so.

@@ -735,6 +735,35 @@ export function run(D, t) {
       && /Turn it up/.test(D.speakerCheckResult({ ok: true, alarmVolumePct: 10 }).say));
     t.ok("speaker check: a loud phone is told it will be heard",
       D.speakerCheckResult({ ok: true, tone: "critical", alarmVolumePct: 86 }).ok === true);
+
+    // ---- a push has to carry BOTH platforms ----
+    //
+    // The payload used to have an `android` block and nothing else, which on
+    // an iPhone is a data-only message: no banner, no sound, delivered
+    // silently to an app that is not running. The same call woke Android and
+    // not iOS, with nothing anywhere saying so.
+    {
+      const m = D.callMessage("TOKEN", { title: "NEW CALL", body: "MEDIC 1 — open the app" }).message;
+      t.ok("push: still carries the Android half", !!(m.android && m.android.notification.channel_id));
+      t.ok("push: carries the iOS half too", !!(m.apns && m.apns.payload && m.apns.payload.aps));
+      t.is("push: iOS alert title", m.apns.payload.aps.alert.title, "NEW CALL");
+      t.is("push: delivered now, never held back", m.apns.headers["apns-priority"], "10");
+      // Time Sensitive is the strongest thing available without Apple's
+      // Critical Alert entitlement: it breaks through Focus modes. It does
+      // NOT beat the silent switch or the volume slider.
+      t.is("push: breaks through Focus", m.apns.payload.aps["interruption-level"], "time-sensitive");
+      t.is("push: a second push replaces the banner, never stacks",
+        m.apns.headers["apns-collapse-id"], "dispatch-call");
+      // Nothing patient-shaped travels through Google and Apple and sits on a
+      // lock screen. The words are the server's and they name no patient.
+      t.ok("push: the body names no patient", !/MRN|\d{6}/.test(JSON.stringify(m.apns)));
+    }
+    {
+      // A disk warning must not sound like a dispatch on either platform.
+      const o = D.ownerMessage("TOKEN", { title: "PulseOps", body: "Backups are stale" }).message;
+      t.is("push: an owner notice is not time-sensitive", o.apns.payload.aps["interruption-level"], "active");
+      t.ok("push: an owner notice is off the dispatch channel", !o.android.notification.channel_id);
+    }
     // iOS has no Vibration API in a WKWebView, so a shell that does not buzz
     // has to say so — an iPhone that never vibrated for a dispatch went
     // unnoticed for months because nothing anywhere reported it.

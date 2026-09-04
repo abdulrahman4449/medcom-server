@@ -250,6 +250,23 @@ patch", that document is the target — do not start a fresh exploration.
   The accounts screen opts out (`SectionScreen flat={false}`) because its
   five drawers ARE the content, siblings, not the chosen section repeated;
   the KPI band's two mixes are outside any tile and keep their folds.
+- **A push carries BOTH platforms or it silently carries one.** `callMessage`
+  / `ownerMessage` in `lib/push-fcm.cjs` (under `npm test`) — the payload had
+  an `android` block and nothing else, which on an iPhone is a DATA-ONLY
+  message: no banner, no sound, delivered silently to an app that is not
+  running. The same call woke Android and not iOS with nothing anywhere saying
+  so. The `apns` block sends `apns-priority: 10`, a collapse id (the iOS twin
+  of the Android tag, so a second push replaces the banner) and
+  `interruption-level: time-sensitive`, which is the strongest thing available
+  WITHOUT Apple's Critical Alert entitlement: it breaks through Focus modes
+  and not through the silent switch, the volume slider or Do Not Disturb. An
+  owner notice is `active`, never time-sensitive — a disk warning has no
+  business breaking through somebody's Focus at three in the morning.
+  `native/ios/PulseOpsPushPlugin.swift` is the iPhone half: permission, then
+  APNs registration, then the FCM token, in that order and in one method,
+  because asking out of order returns an empty string that reads like a bug.
+  Firebase rather than a second APNs sender — the server already speaks FCM
+  and does not change. Setup: `native/README.md` → "Push on iOS".
 - **A locked phone is woken by the SERVER, and the push names no patient.**
   The WebView freezes when a phone locks, the poll stops, and no alarm in the
   app can sound about a call it never learned of — so the server sends the
