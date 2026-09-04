@@ -2280,8 +2280,7 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
                 <span style={styles.restockQueueCount}>{awaitingRestock.length}</span>
               </div>
               <div style={styles.restockQueueNote}>
-                Tick what you used on each call, then mark the truck restocked. These stay here
-                until you do — signing out does not clear them.
+                Tick what you used on each call, then mark the truck restocked.
               </div>
               {awaitingRestock.map((req, i) => (
                 <CallRestock

@@ -238,6 +238,19 @@ patch", that document is the target — do not start a fresh exploration.
   weigh or where the day shift hands to the night. The pattern for anything
   that genuinely needs explaining is `InfoNote` — a fold somebody opens — not a
   line under the thing.
+  **The sweep is a harness, not an opinion:** `scratchpad/e2e/sweep-prose.js`
+  signs in as all three roles, walks every tab, opens every section tile and
+  every fold (`data-section-tile` / `data-fold` / `data-section-back` exist for
+  exactly that) and prints every VISIBLE text node long enough to be a
+  sentence. It found 38 and they were nowhere near the screens anybody had
+  looked at. Three kinds SURVIVE the cut and must not be trimmed by a later
+  pass: a warning before something irreversible (the board reset, a restore,
+  sync-all, signing another phone out of a seat — these are the words standing
+  between somebody and a mistake they cannot undo), the not-a-medical-device
+  disclaimer (Google Play requires it), and the FIRST sentence of an empty
+  state, which says what to put on a shelf that has nothing on it. Everything
+  else — a second sentence explaining where a thing appears from, a strapline
+  under a title, "why is this empty" mechanics — goes.
   **DEPARTMENT UHU is a FLOOR: under the target is red, at or over it green,
   and there is no amber** (`sharp` on `Gauge`). It used to read the other way
   — `lowerIsBetter`, darkening ABOVE the target, on the argument that a service

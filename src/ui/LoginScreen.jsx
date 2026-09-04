@@ -1237,10 +1237,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     />
                   )}
                 </div>
-                <div style={styles.loginFootnote}>
-                  You can change this without signing out — whatever you choose, the other
-                  roles you hold stay one tap away in the header.
-                </div>
+
                 <div style={styles.loginActions}>
                   <button style={styles.ghostBtn} onClick={resetAccountFlow}>Not you? Back</button>
                 </div>
@@ -1364,8 +1361,7 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     Continue as {held.unit.name}
                   </button>
                   <div style={styles.formHint}>
-                    Nothing is changed by this — your seat, your shift and your hours carry on
-                    exactly as they are. Use it whenever you sign in on a second device.
+                    Your seat, shift and hours carry on unchanged.
                   </div>
                   <div style={styles.loginActions}>
                     <button style={styles.ghostBtn} onClick={resetAccountFlow}>

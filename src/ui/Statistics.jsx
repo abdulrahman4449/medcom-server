@@ -666,7 +666,7 @@ export function ChecklistAdmin({ checklists, setChecklists, checklistRuns, units
       {groups.length === 0 ? (
         <div style={styles.formHint}>
           Nothing on this list yet. Add a section below — “Airway”, “Drugs bag”, “Vehicle” — then
-          the items in it. Crews see no checklist until something is added.
+          the items in it.
         </div>
       ) : (
         <div style={styles.catGrid}>
@@ -1364,8 +1364,7 @@ export function ServiceMix({ requests, from, to }) {
               </div>
             ))}
             <div style={styles.formHint}>
-              Share of the {total} call{total === 1 ? "" : "s"} received in this period, by level
-              of care — the same rule as the sheet's Svc column.
+              {total} call{total === 1 ? "" : "s"} in this period.
             </div>
           </div>
         </>
@@ -1437,8 +1436,7 @@ export function CategoryMix({ requests, from, to }) {
             )}
             <div style={styles.formHint}>
               {total} call{total === 1 ? "" : "s"} in this period, across {ran} of{" "}
-              {rows.length} categor{rows.length === 1 ? "y" : "ies"}. The rest are listed at nought
-              because nothing came in against them.
+              {rows.length} categor{rows.length === 1 ? "y" : "ies"}.
             </div>
           </div>
         </>

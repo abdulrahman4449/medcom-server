@@ -193,7 +193,6 @@ export function FiledChecklists({ checklistRuns, checklists }) {
       onToggle={() => setOpen((v) => !v)}
     >
       <div style={styles.sectionNote}>
-        Every vehicle check a crew has filed, kept as the department's record.{" "}
         {flaggedTotal > 0
           ? `${flaggedTotal} of them reported something.`
           : "None of them reported anything."}
@@ -223,7 +222,7 @@ export function FiledChecklists({ checklistRuns, checklists }) {
       {shown.length === 0 ? (
         <div style={styles.emptyState}>
           {all.length === 0
-            ? "No checklists have been filed yet. One appears here the moment a crew files theirs."
+            ? "No checklists have been filed yet."
             : "Nothing on file matches that."}
         </div>
       ) : (

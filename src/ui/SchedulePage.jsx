@@ -295,7 +295,6 @@ export function SchedulePage({ schedule, setSchedule, accounts, user, addLog }) 
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
         <button style={styles.bannerBtn} onClick={() => setCodeEditor(true)}>Manage codes</button>
-        <span style={{ fontSize: 11, color: "var(--ink-4)" }}>add a code, rename one, change its colour, or remove one you don't use</span>
       </div>
       <ScheduleLegend codes={codes} codeOrder={codeOrder} />
       {codeEditor && (

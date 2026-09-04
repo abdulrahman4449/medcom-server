@@ -27,7 +27,7 @@ export const ROLE_LABELS = { crew: "team member", dispatcher: "dispatcher", admi
 // reset waiting) says so in amber on its own line.
 export function SectionTile({ title, icon, note, tone, onClick }) {
   return (
-    <button style={styles.sectionTile} onClick={onClick}>
+    <button data-section-tile style={styles.sectionTile} onClick={onClick}>
       <span style={styles.sectionTileTitle}>{title}</span>
       <span style={styles.sectionTileIcon}>{icon}</span>
       {note ? (
@@ -58,7 +58,7 @@ export function SectionHub({ tiles, onOpen }) {
 export function SectionScreen({ onBack, flat, children }) {
   return (
     <div>
-      <button style={styles.sectionBackRow} onClick={onBack}>
+      <button data-section-back style={styles.sectionBackRow} onClick={onBack}>
         <ChevronRight size={13} style={{ transform: "rotate(180deg)", marginRight: 6 }} />
         ALL SECTIONS
       </button>
@@ -97,7 +97,7 @@ export function FoldingSection({ title, count, countLabel, open, onToggle, alway
   }
   return (
     <div style={{ marginTop: 14 }}>
-      <button style={styles.foldHeader} onClick={onToggle}>
+      <button data-fold style={styles.foldHeader} onClick={onToggle}>
         <ChevronRight
           size={13}
           style={{

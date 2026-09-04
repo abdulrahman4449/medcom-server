@@ -318,7 +318,7 @@ export function OvertimePanel({ log: liveLog, requests: liveRequests, units, use
       <div style={styles.otList}>
         {pending.length + claims.filter((c) => c.decision).length === 0 ? (
           <div style={styles.formHint}>
-            No overtime in this period. A stay that ran past its shift end appears here on sign-off.
+            No overtime in this period.
           </div>
         ) : (
           [...pending, ...claims.filter((c) => c.decision)].map((c) => {

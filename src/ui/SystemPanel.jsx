@@ -121,7 +121,7 @@ export function SystemPanel({ requests, accounts, onOpenCall }) {
               )}
             </>
           ) : (
-            <div style={styles.formHint}>Not run yet — it runs shortly after every start, then daily.</div>
+            <div style={styles.formHint}>Not run yet.</div>
           )}
           <button
             style={{ ...styles.ghostBtnSm, marginTop: 6 }}
@@ -138,7 +138,7 @@ export function SystemPanel({ requests, accounts, onOpenCall }) {
 
           {head("ERRORS DEVICES REPORTED")}
           {(data.reports || []).length === 0 ? (
-            <div style={styles.formHint}>Nothing reported. Errors caught on any signed-in device land here by themselves.</div>
+            <div style={styles.formHint}>Nothing reported.</div>
           ) : (
             <>
               {(data.reports || []).slice(0, 20).map((r, i) => (
@@ -188,8 +188,7 @@ export function SystemPanel({ requests, accounts, onOpenCall }) {
           {head("DEVICES — WHO THE SERVER HAS HEARD FROM")}
           {(data.devices || []).length === 0 ? (
             <div style={styles.formHint}>
-              No device has said hello since the server started. Devices report themselves every few
-              minutes once they run this build.
+              No device has said hello since the server started.
             </div>
           ) : (
             (data.devices || []).map((d) => {
@@ -247,7 +246,7 @@ export function SystemPanel({ requests, accounts, onOpenCall }) {
           )}
           <div style={styles.formHint}>
             {(data.accountsSeen || []).filter((a) => !a.stale).length} account(s) active in the last
-            two minutes · a signed-on truck going SILENT here is a crew that will miss a call.
+            two minutes.
           </div>
 
           {head("THE RECORD — WHAT IS INCOMPLETE")}
@@ -364,10 +363,7 @@ export function SystemPanel({ requests, accounts, onOpenCall }) {
             );
           })()}
           {(data.history || []).length === 0 ? (
-            <div style={styles.formHint}>
-              The first row is written by the first self-test; one small row per day after that, so
-              a slow week reads as a slope instead of a feeling.
-            </div>
+            <div style={styles.formHint}>No history yet.</div>
           ) : (
             (data.history || []).slice(-14).reverse().map((h) =>
               row(
