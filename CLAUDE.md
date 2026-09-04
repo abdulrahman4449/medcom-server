@@ -823,6 +823,31 @@ patch", that document is the target — do not start a fresh exploration.
   `MediaPlayer.create()` here again.** The plugin also logs the whole path —
   which source, whether it opened, whether it started, and any error mid-loop —
   because silence with no explanation is the one outcome nobody can act on.
+- **The audio plugin does not belong on the main thread, and iOS measures
+  exactly that.** Reported as "I left the alarms for a while in the background
+  and when I came back it stalled for a few seconds", with iOS's hang overlay
+  showing 700 ms, 894 ms, 1873 ms and 2121 ms against the app. That overlay
+  watches the app's MAIN THREAD, so JavaScript cannot be the cause — a
+  400-call board profiled through the real bundle blocked for nothing at all,
+  steady or on resume. It was `PulseOpsAlarmPlugin.swift`, which wrapped every
+  method body in `DispatchQueue.main.async`. `AVAudioSession.setActive` is a
+  synchronous round trip to mediaserverd — tens to hundreds of milliseconds,
+  far worse backgrounded or contended — and a stand-down sounds three tones
+  every four seconds until the crew press Understood, each one re-activating
+  the session, re-synthesising 17,199 samples of `sin()`, and allocating a
+  two-byte `Data` PER SAMPLE to assemble the WAV. Nothing in AVAudioSession or
+  AVAudioPlayer has ever needed the main thread: they run on `audioQueue` (one
+  serial queue, so the player state stays confined) and only the vibration
+  `Timer` (RunLoop.main) and `isIdleTimerDisabled` stay behind. Three
+  supporting rules, each a cost that should never have been paid twice:
+  `configureSession` returns early when the session is ALREADY active with the
+  same ducking; the tones are `static let`, built once for the process; and
+  the stand-down player is re-triggered with `currentTime = 0` instead of
+  rebuilt (identical sound — a replacement player released the old one
+  mid-note, which cut the previous tone exactly as seeking to zero does).
+  `watchForInterruptions` also registers ONCE: `standby(on:true)` added a
+  fresh observer on every sign-on and removed none, so one interruption ran
+  `startStandby()` once per handler ever added.
 - **An API-level guard travels with the code it guards.** `makeChannel` in the
   Android plugin was extracted out of `ensureChannel`, and the
   `Build.VERSION.SDK_INT < O` check stayed behind in the caller — so a method

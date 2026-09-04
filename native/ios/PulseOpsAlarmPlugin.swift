@@ -62,16 +62,58 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // The PLUGIN's own build date, which is not the web build's. See the same
     // constant in the Android plugin for why a method list is not a version.
-    private let pluginBuild = "2026-09-03.5"
+    private let pluginBuild = "2026-09-04.3"
+
+    /**
+     * EVERY piece of audio work in this plugin runs here, and NOT on the main
+     * thread.
+     *
+     * Reported as "I left the alarms for a while in the background and when I
+     * came back the app stalled for a few seconds", with iOS's own hang
+     * overlay showing 700 ms, 894 ms, 1873 ms and 2121 ms. That overlay
+     * measures the app's MAIN THREAD — JavaScript could not have caused it, and
+     * a 400-call board profiled in a browser blocked for nothing at all. It was
+     * this file. Every method wrapped its body in `DispatchQueue.main.async`,
+     * and `AVAudioSession.setActive` is a synchronous round trip to
+     * mediaserverd that takes tens to hundreds of milliseconds — far longer
+     * when the app is in the background or another app holds the session. A
+     * stand-down repeating three tones every four seconds was three of those
+     * per burst, for as long as the banner was up.
+     *
+     * AVAudioSession and AVAudioPlayer are not UIKit and have never needed the
+     * main thread. Only two things here do: the vibration Timer (RunLoop.main)
+     * and `isIdleTimerDisabled`. Those stay on main; everything else moves
+     * here. Serial, so the player state below is still confined to one queue
+     * and needs no further locking.
+     */
+    private let audioQueue = DispatchQueue(label: "com.pulseops.alarm.audio", qos: .userInitiated)
 
     private var player: AVAudioPlayer?
     // The buzz that runs alongside the tone. iOS has no repeating vibration
     // primitive - one call is one short buzz - so an alarm-length vibration is
     // a timer re-triggering it, held here so it can be stopped with the alarm.
     private var vibrateTimer: Timer?
+    // Whether the buzz is running, readable from the audio queue. The Timer
+    // itself is main-thread-only (it is scheduled on RunLoop.main and must be
+    // invalidated there), but `deviceStatus()` is built off-main now and still
+    // has to report it, so the fact is mirrored here behind a lock rather than
+    // read across threads.
+    private let vibeLock = NSLock()
+    private var vibratingNow = false
     // Held so ARC does not release it mid-note; the alarm player is separate
     // because a stand-down must never stop an alarm that is still running.
     private var standDownPlayer: AVAudioPlayer?
+    // What the audio session is currently set to, so an already-correct session
+    // is not torn down and rebuilt. `setActive(true)` on a session that is
+    // already active changes nothing and still costs the full round trip.
+    private var sessionActive = false
+    private var sessionDucking = true
+    // The interruption observer is added ONCE. `standby(on:true)` used to add a
+    // new one every time it was called and never removed any, so each sign-on
+    // left another handler behind — and one interruption (a phone call, Siri,
+    // navigation speaking) then ran startStandby() once per handler, each
+    // building a player and re-activating the session.
+    private var watchingInterruptions = false
 
     public override func load() {
         // Printed so "is the plugin actually loaded?" is answerable from the
@@ -106,13 +148,21 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
             // out loud: going on duty interrupts music or a podcast playing on
             // that device. On a crew tablet that is the right trade. On
             // somebody's personal phone it is intrusive.
+            // Already set the way we want it? Then there is nothing to do.
+            // This is the single most expensive call in the plugin and it was
+            // being made three times every four seconds by the stand-down
+            // repeat, each one a synchronous wait on mediaserverd.
+            if sessionActive && sessionDucking == ducking { return }
             try AVAudioSession.sharedInstance().setCategory(
                 .playback,
                 mode: .default,
                 options: ducking ? [.duckOthers] : []
             )
             try AVAudioSession.sharedInstance().setActive(true)
+            sessionActive = true
+            sessionDucking = ducking
         } catch {
+            sessionActive = false
             NSLog("PulseOpsAlarm: could not configure the audio session: \(error)")
         }
     }
@@ -123,6 +173,8 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     /// shift would end standby for good and the app would be suspendable again
     /// from then on, silently.
     private func watchForInterruptions() {
+        if watchingInterruptions { return }
+        watchingInterruptions = true
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
@@ -133,11 +185,19 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                 let type = AVAudioSession.InterruptionType(rawValue: raw)
             else { return }
-            if type == .ended && self.standbyWanted {
-                NSLog("PulseOpsAlarm: audio interruption ended, restarting standby")
-                self.startStandby()
-            } else if type == .began {
-                NSLog("PulseOpsAlarm: audio interrupted by something else")
+            // Onto the audio queue before touching any of it: standbyWanted
+            // and the session bookkeeping live there, and this handler is
+            // delivered on main.
+            self.audioQueue.async {
+                // The session went away with the interruption, whatever we last
+                // recorded about it.
+                self.sessionActive = false
+                if type == .ended && self.standbyWanted {
+                    NSLog("PulseOpsAlarm: audio interruption ended, restarting standby")
+                    self.startStandby()
+                } else if type == .began {
+                    NSLog("PulseOpsAlarm: audio interrupted by something else")
+                }
             }
         }
     }
@@ -164,7 +224,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
      */
     @objc func standby(_ call: CAPPluginCall) {
         let on = call.getBool("on") ?? false
-        DispatchQueue.main.async {
+        audioQueue.async {
             if !on {
                 self.standbyWanted = false
                 self.standbyPlayer?.stop()
@@ -174,6 +234,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                 if self.player == nil {
                     try? AVAudioSession.sharedInstance().setActive(
                         false, options: .notifyOthersOnDeactivation)
+                    self.sessionActive = false
                 }
                 call.resolve(["standby": false])
                 return
@@ -192,13 +253,13 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     private var standbyWanted = false
 
     private func startStandby() {
-        DispatchQueue.main.async {
+        audioQueue.async {
             self.configureSession(ducking: false)
             do {
                 // Built here rather than shipped as a file: a silent asset is
                 // the sort of thing that goes missing from a bundle without
                 // anybody noticing, and this must not be able to fail quietly.
-                let p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.silentWav())
+                let p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.silence)
                 p.numberOfLoops = -1
                 // Full volume on silent samples, not volume 0 on audible ones.
                 // The content is silence either way and nothing is heard, but a
@@ -242,6 +303,26 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         case "cct", "critical", "als", "urgent": return "cct"
         default: return "bls"
         }
+    }
+
+    /**
+     * The finished tones, built once for the life of the process.
+     *
+     * Each of these is ~17,000 samples of sin() and was being synthesised
+     * afresh on every call — the stand-down three times every four seconds for
+     * as long as its banner was up, the alarm on every rebuild. They are
+     * constants: the same figures produce the same bytes every time. Building
+     * them lazily rather than at load() keeps a launch that never sounds
+     * anything from paying for them.
+     */
+    private static let urgentTone: Data = alarmWav(priority: "als")
+    private static let routineTone: Data = alarmWav(priority: "bls")
+    static let standDownTone: Data = standDownWav()
+    private static let silence: Data = silentWav()
+
+    /// The built tone for a priority, from the cache.
+    private static func tone(for priority: String) -> Data {
+        return toneKey(for: priority) == "bls" ? routineTone : urgentTone
     }
 
     private static func alarmWav(priority: String) -> Data {
@@ -295,6 +376,11 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     private static func wav(samples: [Int16], rate: Int) -> Data {
         let bytes = samples.count * 2
         var d = Data()
+        // Reserved up front, and the samples copied in one go. This used to
+        // allocate a two-byte Data per sample and append it — seventeen
+        // thousand heap allocations to produce thirty-four kilobytes, on the
+        // main thread, several times a second while a stand-down was up.
+        d.reserveCapacity(44 + bytes)
         func str(_ s: String) { d.append(s.data(using: .ascii)!) }
         func u32(_ v: UInt32) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 4)) }
         func u16(_ v: UInt16) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 2)) }
@@ -302,7 +388,14 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         str("fmt "); u32(16); u16(1); u16(1)
         u32(UInt32(rate)); u32(UInt32(rate * 2)); u16(2); u16(16)
         str("data"); u32(UInt32(bytes))
-        for s in samples { var x = s.littleEndian; d.append(Data(bytes: &x, count: 2)) }
+        // Two byte-appends into the capacity reserved above: no allocation,
+        // no pointer arithmetic, and it cannot be subtly wrong. These tones are
+        // built once for the life of the process now, so the loop's speed
+        // stopped mattering the moment the allocations went away.
+        for sample in samples {
+            d.append(UInt8(truncatingIfNeeded: sample))
+            d.append(UInt8(truncatingIfNeeded: sample >> 8))
+        }
         return d
     }
 
@@ -331,15 +424,31 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func standDown(_ call: CAPPluginCall) {
-        DispatchQueue.main.async {
+        audioQueue.async {
             self.configureSession()
             do {
-                let p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.standDownWav())
-                p.numberOfLoops = 0
-                p.volume = 1.0
-                p.prepareToPlay()
+                // The player is built once and re-triggered afterwards.
+                //
+                // The web layer sounds three of these 450 ms apart and repeats
+                // the set every four seconds until the crew press Understood,
+                // and this used to synthesise 17,199 samples and construct a
+                // fresh AVAudioPlayer on the main thread for every one of them.
+                // Re-triggering an existing player is the same sound — a new
+                // player replacing the old one released it mid-note, which cut
+                // the previous tone exactly as seeking to zero does — for none
+                // of the cost.
+                let p: AVAudioPlayer
+                if let existing = self.standDownPlayer {
+                    p = existing
+                } else {
+                    p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.standDownTone)
+                    p.numberOfLoops = 0
+                    p.volume = 1.0
+                    p.prepareToPlay()
+                    self.standDownPlayer = p
+                }
+                p.currentTime = 0
                 let started = p.play()
-                self.standDownPlayer = p
                 call.resolve(["ok": started])
             } catch {
                 call.reject("Could not sound the stand-down: \(error.localizedDescription)")
@@ -385,9 +494,23 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
      * 1.7 seconds and a restart each time would buzz forever on its first
      * pulse, the same lesson the player learned.
      */
+    private func setVibrating(_ on: Bool) {
+        vibeLock.lock()
+        vibratingNow = on
+        vibeLock.unlock()
+    }
+
+    private func isVibrating() -> Bool {
+        vibeLock.lock()
+        let on = vibratingNow
+        vibeLock.unlock()
+        return on
+    }
+
     private func startVibrating() {
         DispatchQueue.main.async {
             if self.vibrateTimer != nil { return }
+            self.setVibrating(true)
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
             let t = Timer(timeInterval: 1.6, repeats: true) { _ in
                 AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
@@ -399,8 +522,14 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func stopVibrating() {
-        vibrateTimer?.invalidate()
-        vibrateTimer = nil
+        // Always on main: the Timer is scheduled on RunLoop.main and has to be
+        // invalidated from the same thread. This is now reached from the audio
+        // queue, so the hop is not optional.
+        setVibrating(false)
+        DispatchQueue.main.async {
+            self.vibrateTimer?.invalidate()
+            self.vibrateTimer = nil
+        }
     }
 
     /**
@@ -432,7 +561,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         out["volumeFloorOk"] = false
         out["volumeFloor"] = "iOS has no volume floor - the alert plays at the phone's own volume"
         out["category"] = session.category.rawValue
-        out["vibrating"] = vibrateTimer != nil
+        out["vibrating"] = isVibrating()
         return out
     }
 
@@ -465,7 +594,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func alert(_ call: CAPPluginCall) {
-        DispatchQueue.main.async {
+        audioQueue.async {
             NSLog("PulseOpsAlarm: alert() called")
             // Already sounding? Leave it alone and say yes.
             //
@@ -526,7 +655,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                     p = try AVAudioPlayer(contentsOf: url)
                     source = "dispatch_alert_\(tone).mp3"
                 } else {
-                    p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.alarmWav(priority: priority))
+                    p = try AVAudioPlayer(data: PulseOpsAlarmPlugin.tone(for: priority))
                     source = "built in memory"
                 }
                 // Repeat until the crew acknowledges; the web layer calls stop().
@@ -613,7 +742,7 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func stop(_ call: CAPPluginCall) {
-        DispatchQueue.main.async {
+        audioQueue.async {
             self.stopPlayer()
             call.resolve()
         }
@@ -646,5 +775,6 @@ public class PulseOpsAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         // that from a real handset.
         if standDownPlayer?.isPlaying == true { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        sessionActive = false
     }
 }
