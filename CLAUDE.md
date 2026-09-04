@@ -250,6 +250,21 @@ patch", that document is the target — do not start a fresh exploration.
   The accounts screen opts out (`SectionScreen flat={false}`) because its
   five drawers ARE the content, siblings, not the chosen section repeated;
   the KPI band's two mixes are outside any tile and keep their folds.
+- **A deprecation warning on the push token is not a fix waiting to be
+  applied.** Xcode reports `'token(completion:)' is deprecated: Use
+  register(completion:) instead.` on `PulseOpsPushPlugin`, and doing what it
+  says would stop every iPhone being woken for a dispatch. Firebase 12.18
+  deprecated `token(completion:)` and `didReceiveRegistrationToken` in favour
+  of a Firebase Installation ID scheme: `register(completion:)` hands back an
+  error AND NOTHING ELSE, and the identifier arrives on a different delegate
+  as a FID, not an FCM token. The server addresses a phone by `token` in the
+  FCM v1 payload (`callMessage` in `lib/push-fcm.cjs`), so moving the app half
+  alone hands it something it cannot send to — and it fails SILENTLY: tokens
+  register, the System page says "configured", no phone rings. It is a
+  two-sided change whenever it is made, app and sender together, against a
+  real handset; both schemes are co-supported so there is no deadline. Do not
+  suppress the warning — it is the notice that this will one day stop
+  compiling.
 - **Firebase cannot mint a token before Apple has issued one.**
   `registerForRemoteNotifications()` is a round trip to Apple, and asking
   `Messaging.messaging().token` before it returns fails with "No APNS token

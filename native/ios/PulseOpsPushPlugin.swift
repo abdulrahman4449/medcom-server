@@ -143,6 +143,33 @@ public class PulseOpsPushPlugin: CAPPlugin, CAPBridgedPlugin, MessagingDelegate 
                         ])
                         return
                     }
+                    // XCODE WARNS THAT THIS IS DEPRECATED. LEAVE IT.
+                    //
+                    // Firebase 12.18 deprecated `token(completion:)` — and
+                    // `didReceiveRegistrationToken` below with it — in favour
+                    // of `register(completion:)`. That is NOT a like-for-like
+                    // swap and taking the warning at face value would stop
+                    // every iPhone being woken for a dispatch:
+                    //
+                    //   `register(completion:)` hands back an ERROR AND
+                    //   NOTHING ELSE. The identifier arrives separately, on
+                    //   `messaging(_:didReceiveRegistration:)`, and it is a
+                    //   Firebase Installation ID — not an FCM token.
+                    //
+                    // The server addresses a phone by `token` in the FCM v1
+                    // payload (`callMessage` in lib/push-fcm.cjs). Moving this
+                    // half alone would hand it an identifier it cannot send
+                    // to, and the failure would be silent: tokens register,
+                    // the board looks healthy, and no phone ever rings.
+                    //
+                    // So this is a TWO-SIDED change whenever it is made — this
+                    // file and the server's sender, together, tested against a
+                    // real handset. Google says both schemes are co-supported;
+                    // until the server speaks the new one, the warning is the
+                    // correct state to be in. Do not silence it either: it is
+                    // the advance notice that this will one day stop
+                    // compiling, and a suppressed warning arrives as a broken
+                    // build nobody can explain.
                     Messaging.messaging().token { token, err in
                         if let err = err {
                             NSLog("PulseOpsPush: no FCM token - %@", err.localizedDescription)
@@ -168,6 +195,11 @@ public class PulseOpsPushPlugin: CAPPlugin, CAPBridgedPlugin, MessagingDelegate 
         }
     }
 
+    /// Deprecated alongside `token(completion:)` in Firebase 12.18, and kept
+    /// for the same reason — see the note in getToken above. The replacement,
+    /// `messaging(_:didReceiveRegistration:)`, carries a Firebase Installation
+    /// ID rather than the FCM token this server sends to.
+    ///
     /// Firebase rotates tokens on its own schedule. The web layer re-registers
     /// once per app start and whenever the seat changes, so a rotated token is
     /// picked up then; this notifies the page as well, for the case where a

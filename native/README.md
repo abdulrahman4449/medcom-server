@@ -531,6 +531,30 @@ requested separately and granted at Apple's discretion. Until then, an iPhone
 on silent can still miss a call, and the honest thing is to say so.
 
 
+### The `token(completion:)` deprecation warning
+
+Xcode reports one warning on `PulseOpsPushPlugin`:
+
+> `'token(completion:)' is deprecated: Use register(completion:) instead.`
+
+**Leave it.** It is a warning, not an error; the build succeeds and push works.
+
+Firebase 12.18 deprecated `token(completion:)` — and the
+`didReceiveRegistrationToken` delegate with it — in favour of a registration
+scheme built on Firebase Installation IDs. It is not a like-for-like swap:
+`register(completion:)` hands back an error and nothing else, and the
+identifier arrives separately as a **Firebase Installation ID, not an FCM
+token**. This server addresses a phone by `token` in the FCM v1 payload
+(`callMessage` in `lib/push-fcm.cjs`), so changing the app alone would hand it
+an identifier it cannot send to — and the failure would be silent: tokens
+register, the System page says "configured", and no iPhone ever rings for a
+call.
+
+Whenever it is done it is a **two-sided change** — this plugin and the
+server's sender together, tested against a real handset. Google supports both
+schemes side by side, so there is no deadline. Do not suppress the warning
+either: it is the advance notice that this will one day stop compiling.
+
 ## The push tone
 
 A push that arrives with the phone's ordinary chime sounds like a text
