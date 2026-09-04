@@ -10,10 +10,11 @@ import { useState } from "../lib/react.jsx";
 import { SOUND_LEVELS, setSoundLevel, soundLevelMeta, useSoundLevel } from "../lib/sound.jsx";
 import { styles } from "../styles.jsx";
 import { InfoNote } from "./AssistanceTasks.jsx";
+import { SystemChip } from "./SystemChip.jsx";
 
 // ---------- header ----------
 
-export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, theme, onToggleTheme }) {
+export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, theme, onToggleTheme, audioCtxRef }) {
   return (
     <div style={styles.headerWrap}>
       {/* Two bodies own this service, so their crests take the two ends of the
@@ -67,6 +68,11 @@ export function Header({ user, clock, onLogout, onChangeShift, onSwitchRole, the
         </div>
         <div style={styles.headerBarGroup}>
           <AccountChip user={user} />
+          {/* Beside the name, because that is whose device it is. Quiet unless
+              this phone has something wrong with it — the whole diagnostic
+              line used to sit permanently on the crew screen, which taught
+              everybody to read past the one shift it said something. */}
+          <SystemChip audioCtxRef={audioCtxRef} />
           <RoleSwitch user={user} onSwitchRole={onSwitchRole} />
           <button style={styles.iconBtn} onClick={onLogout} title="Sign out">
             <LogOut size={16} />

@@ -3200,13 +3200,61 @@ export const styles = {
     display: "flex", gap: 8, padding: "10px 12px 12px",
     borderTop: "1px solid var(--hair)", alignItems: "flex-end",
   },
-  soundDiag: {
-    marginTop: 6,
+  // The system-analysis chip beside the name in the masthead. Quiet by
+  // construction: on a healthy device it is a dot and a word, and it is the
+  // only thing left on screen of what used to be a permanent diagnostic line.
+  sysChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    background: "transparent",
+    border: "1px solid var(--hair-2)",
+    borderRadius: 999,
+    color: "var(--ink-4)",
+    padding: "3px 8px",
+    fontFamily: "inherit",
+    fontSize: 11,
+    letterSpacing: ".06em",
+    cursor: "pointer",
+    lineHeight: 1.2,
+    whiteSpace: "nowrap",
+  },
+  sysChipDot: { width: 7, height: 7, borderRadius: 999, flex: "none" },
+  sysPanelLine: {
+    fontSize: 12.5,
+    lineHeight: 1.5,
+    color: "var(--ink-2)",
+    display: "flex",
+    gap: 8,
+    alignItems: "flex-start",
+  },
+  sysPanelDetail: {
+    marginTop: 2,
     fontSize: 10.5,
+    lineHeight: 1.6,
     color: "var(--ink-4)",
     letterSpacing: ".02em",
     fontVariantNumeric: "tabular-nums",
+    overflowWrap: "anywhere",
   },
+  // The crew screen's own copy, shown ONLY when there is something to say.
+  sysBanner: {
+    marginTop: 10,
+    borderRadius: 12,
+    padding: "9px 12px",
+    border: "1px solid var(--hold)",
+    background: "color-mix(in srgb, var(--hold) 10%, transparent)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+  },
+  sysBannerHead: {
+    fontSize: 11,
+    letterSpacing: ".08em",
+    color: "var(--hold-2)",
+    fontFamily: display,
+  },
+  sysBannerSay: { fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-2)", overflowWrap: "anywhere" },
   chatInput: {
     flex: 1, background: "var(--inset)", border: "1px solid var(--hair-2)",
     borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 16,

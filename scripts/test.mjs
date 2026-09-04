@@ -58,6 +58,7 @@ export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "
 export { crewShiftWindow, deskShiftWindow } from ${JSON.stringify(ROOT + "src/domain/shift-helpers.jsx")};
 export { roleAssignable as roleAssignableServer } from ${JSON.stringify(ROOT + "lib/delegation.cjs")};
 export { callClosedTs } from ${JSON.stringify(ROOT + "src/ui/Escalations.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/system-analysis.jsx")};
 `;
 
 const dir = mkdtempSync(join(tmpdir(), "pulseops-test-"));

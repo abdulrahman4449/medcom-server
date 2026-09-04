@@ -2308,5 +2308,109 @@ export function run(D, t) {
     t.ok("desk: dispatch is still a delegation area", D.DELEGATION_AREAS.some((a) => a.key === "dispatch"));
     t.ok("desk: and is deliberately NOT one of the administration areas", !D.ADMIN_AREAS.some((a) => a.key === "dispatch"));
   }
+  // ---------- system analysis: quiet on a healthy device, loud the moment it is not
+  {
+    const wellAndroid = {
+      build: "2026-09-04",
+      shell: "shell up to date",
+      shellNote: "",
+      pageAudio: "running",
+      screenHeld: true,
+      alarm: "alarm stream · als",
+      standDown: "plugin",
+      bg: {
+        platform: "android",
+        alarmVolumePct: 70,
+        notificationsEnabled: true,
+        channelSilenced: false,
+        batteryOptimised: false,
+        volumeFloorOk: true,
+        pluginBuild: "x",
+      },
+      floorNote: "",
+      held: 0,
+      connectionOk: true,
+      writeError: "",
+    };
+    const with_ = (over) => ({ ...wellAndroid, ...over });
+    const bgWith = (over) => with_({ bg: { ...wellAndroid.bg, ...over } });
+
+    // The whole point of the change: a device with nothing wrong says nothing.
+    t.is("system: a healthy device has no faults", D.systemFaults(wellAndroid).length, 0);
+    t.ok("system: and summarises as ok", D.systemSummary(wellAndroid).ok);
+    t.is("system: a healthy device's chip is green", D.systemSummary(wellAndroid).level, "ok");
+    // A browser with no shell at all is not a fault — it is the desk's PC.
+    t.is("system: no shell (a browser) is not a fault", D.systemFaults(with_({ shell: "no shell (browser)", bg: null })).length, 0);
+
+    // The four handset settings, each on its own.
+    t.ok("system: notifications off is a fault",
+      D.systemFaults(bgWith({ notificationsEnabled: false })).some((f) => /Notifications are turned off/.test(f.say)));
+    t.is("system: and it is a BAD one, not a warning",
+      D.systemSummary(bgWith({ notificationsEnabled: false })).level, "bad");
+    t.ok("system: notifications off carries the settings page that fixes it",
+      D.systemFaults(bgWith({ notificationsEnabled: false }))[0].which === "notifications");
+    t.ok("system: a silenced channel is a fault",
+      D.systemFaults(bgWith({ channelSilenced: true })).some((f) => f.which === "channel"));
+    t.ok("system: battery optimisation is a warning, not a refusal",
+      D.systemFaults(bgWith({ batteryOptimised: true })).some((f) => f.level === "warn" && f.which === "battery"));
+    t.ok("system: a REFUSED volume raise is a fault even at a healthy percentage",
+      D.systemFaults(bgWith({ volumeFloorOk: false })).some((f) => /refused to raise/.test(f.say)));
+    t.ok("system: a low alarm stream is a fault",
+      D.systemFaults(bgWith({ alarmVolumePct: 12 })).some((f) => /12%/.test(f.say)));
+
+    // iPhone has no floor and the words must say so rather than promising one.
+    const ios = bgWith({ platform: "ios", alarmVolumePct: 15 });
+    t.ok("system: a quiet iPhone is named before the shift, not after",
+      D.systemFaults(ios).some((f) => /cannot raise it/.test(f.say)));
+    t.ok("system: and an iPhone is never asked about its notification channel",
+      !D.systemFaults(bgWith({ platform: "ios", channelSilenced: true })).some((f) => f.which === "channel"));
+
+    // A build behind is a build the app is about to call a missing method on.
+    t.ok("system: an old shell is a fault",
+      D.systemFaults(with_({ shell: "SHELL IS OLD — rebuild the app (missing standDown)" })).some((f) => f.level === "bad"));
+    t.ok("system: an old PLUGIN is a fault even when the shell answers every method",
+      D.systemFaults(with_({ shellNote: " · PLUGIN IS 2026-08-20, THIS BUILD NEEDS 2026-09-04 — rebuild the app" })).some((f) => f.level === "bad"));
+    t.ok("system: and the leading separator is not printed as a sentence",
+      !/^\s*·/.test(D.systemFaults(with_({ shellNote: " · PLUGIN IS OLD" }))[0].say));
+
+    // Work this device is holding that the department cannot see.
+    t.ok("system: no signal with held writes is a fault that says nothing is lost",
+      D.systemFaults(with_({ connectionOk: false, held: 3 })).some((f) => /No signal/.test(f.say) && /Nothing is lost/.test(f.say)));
+    t.ok("system: a refusing server outranks a plain queue",
+      D.systemFaults(with_({ writeError: "The server is refusing to save.", held: 2 }))
+        .some((f) => f.level === "bad" && /refusing to save/.test(f.say)));
+    t.ok("system: catching up while online is only a warning",
+      D.systemFaults(with_({ held: 2 })).every((f) => f.level === "warn"));
+    t.is("system: one held change is said in the singular",
+      D.systemFaults(with_({ held: 1 }))[0].say, "1 change still going up.");
+
+    // Page audio only matters where it is the path a call would take.
+    t.is("system: an interrupted context on a SHELL is not a fault",
+      D.systemFaults(with_({ pageAudio: "interrupted" })).length, 0);
+    t.ok("system: an interrupted context in a BROWSER is",
+      D.systemFaults(with_({ shell: "no shell (browser)", bg: null, pageAudio: "interrupted" })).length === 1);
+
+    // The chip wears the worst fault's colour, and the list is ranked for it.
+    t.is("system: a bad fault beside a warning colours the chip red",
+      D.systemSummary(bgWith({ notificationsEnabled: false, batteryOptimised: true })).level, "bad");
+
+    // The detail line is the thing somebody diagnosing asks for, so it must
+    // keep carrying every reading whatever the faults say.
+    const line = D.systemDetailLine(wellAndroid);
+    for (const bit of ["build 2026-09-04", "shell up to date", "page audio running", "screen held yes",
+                       "last alarm:", "last stand-down:", "alarm volume 70%", "notifications on",
+                       "channel ok", "battery saver off", "sync ok"]) {
+      t.ok(`system: the detail line still carries "${bit}"`, line.includes(bit));
+    }
+    t.ok("system: the detail line names an iPhone's missing floor",
+      /no floor on iPhone/.test(D.systemDetailLine(bgWith({ platform: "ios" }))));
+    t.ok("system: the detail line says how many writes are held",
+      /sync OFFLINE \(3 held\)/.test(D.systemDetailLine(with_({ connectionOk: false, held: 3 }))));
+    // Nothing in either half may throw on a device that has answered nothing
+    // yet — which is every device for the first seconds after it opens.
+    t.is("system: an empty reading is not a fault", D.systemFaults({}).length, 0);
+    t.ok("system: and an empty reading still produces a line", D.systemDetailLine({}).length > 0);
+    t.ok("system: a null reading does not throw", D.systemSummary(null).ok);
+  }
   }
 }

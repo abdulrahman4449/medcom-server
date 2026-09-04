@@ -1292,6 +1292,24 @@ patch", that document is the target — do not start a fresh exploration.
   `SHELL_METHODS`/`shellReport()` name what this build needs and check it, and
   the crew line reads `SHELL IS OLD — rebuild the app (missing …)` rather than
   anything a crew would mistake for a settings problem.
+- **A diagnostic that is always on screen is a diagnostic nobody reads.**
+  `src/domain/system-analysis.jsx` (rules under `npm test`) — the build stamp,
+  the shell/plugin report, page audio, the last alarm, the four handset
+  settings and the sync state used to sit permanently on the crew screen as a
+  grey line saying everything was fine. That line has answered every "no tone"
+  report this app has had, so it may not be deleted; but a line that says
+  "fine" on every screen of every shift is one people learn to read past, and
+  the shift it finally says something is the shift nobody looks. So the
+  readings go through `systemFaults` FIRST: a healthy device carries one quiet
+  `SYSTEM` chip beside the person's name in the masthead (`SystemChip.jsx`, on
+  every screen and every role), and `systemDetailLine` — the whole old line,
+  unchanged — is one tap inside it. A fault colours the chip and shows itself:
+  the crew screen's `SoundDiagnostics` is now an amber SYSTEM ANALYSIS banner
+  that renders NOTHING when there is nothing wrong, and deliberately skips the
+  faults that carry a settings page, because `BackgroundAlertNotice` sits
+  directly above it saying those in the crew's own words with the button that
+  fixes them. Anything new worth diagnosing goes in the reading and gets a
+  fault rule, never a second permanent line.
 - **`BUILD_STAMP` is on the crew screen under the speaker check.** A whole round
   of testing once went into a fault that was already fixed, because the phone
   was still running the previous build and nothing on screen said so. The same

@@ -1,9 +1,11 @@
 import { BUILD_STAMP } from "../brand/build-stamp.jsx";
+import { systemSummary } from "../domain/system-analysis.jsx";
 import { callFrom, callTo } from "../domain/call-locations.jsx";
 import { PRIORITY, REQUIREMENTS, priorityKeyOf } from "../domain/constants.jsx";
 import { alarmOutcome, ensureAudioCtx, nativeAlarm, nativeBackgroundStatus, openNativeSettings, screenAwakeHeld, shellBuildNote, shellReport, volumeFloorNote, soundCallAlert, soundSpeakerCheck, standDownOutcome } from "../lib/dates.jsx";
 import { ArrowRight, Bell, MapPin, Volume2, VolumeX } from "../lib/icons.jsx";
 import { alertsSupported, requestAlertPermission } from "../lib/notify.jsx";
+import { connectionOk, lastWriteError, totalPendingCount } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { alertsArmedBefore, setSoundLevel, soundLevelMeta, useSoundLevel } from "../lib/sound.jsx";
 import { styles } from "../styles.jsx";
@@ -70,32 +72,45 @@ export function AlertToneCheck({ audioCtxRef, priority, label, style }) {
   );
 }
 
-// What this device is actually going to make a noise with, said out loud.
+// What this device is actually going to make a noise with — said out loud, and
+// only when there is something to say.
 //
 // Three rounds of testing went into "no tone" without anybody being able to see
 // which of the three possible paths was being taken, or which build was even
-// installed. A crew cannot read a console and neither can a supervisor on a
-// phone, so the answers are on the screen: the build, whether the operating
-// system's alarm path is available, and what state the page's own audio is in.
-// Small and grey — it is for the person diagnosing, not for the crew.
+// installed, so this line exists and must not be deleted. But it used to sit on
+// the crew screen permanently, reading "everything fine" on every screen of
+// every shift, which is how a line stops being read before the one shift it
+// says something. It is now silent on a healthy device — the masthead's SYSTEM
+// chip carries the full line one tap away — and shows itself, in the crew's
+// own words rather than the diagnostic ones, the moment a reading goes wrong.
 export function SoundDiagnostics({ audioCtxRef }) {
-  const plugin = !!nativeAlarm();
   const ctx = audioCtxRef ? audioCtxRef.current : null;
-  const state = ctx ? ctx.state : "none yet";
   const bg = useBackgroundStatus();
+  const { faults } = systemSummary({
+    build: BUILD_STAMP,
+    shell: shellReport(),
+    shellNote: shellBuildNote(bg),
+    pageAudio: ctx ? ctx.state : "none yet",
+    screenHeld: screenAwakeHeld(),
+    alarm: alarmOutcome(),
+    standDown: standDownOutcome(),
+    bg,
+    floorNote: volumeFloorNote(bg),
+    held: totalPendingCount(),
+    connectionOk,
+    writeError: lastWriteError || "",
+  });
+  // The four handset settings have their own notice directly above this one,
+  // with the button that opens the exact settings page — repeating them here
+  // would be the same sentence twice on the screen a crew is trying to read.
+  const mine = faults.filter((f) => !f.which);
+  if (!mine.length) return null;
   return (
-    <div style={styles.soundDiag}>
-      build {BUILD_STAMP} · {shellReport()}{shellBuildNote(bg)} · page audio {state} ·
-      screen held {screenAwakeHeld() ? "yes" : "no"} · last alarm: {alarmOutcome()} ·
-      last stand-down: {standDownOutcome()}
-      {bg ? `${bg.platform === "ios"
-        ? ` · device volume ${bg.alarmVolumePct}% (no floor on iPhone)`
-        : ` · alarm volume ${bg.alarmVolumePct}%${volumeFloorNote(bg)}`
-      } · notifications ${
-        bg.notificationsEnabled ? "on" : "OFF"
-      }${bg.platform === "ios" ? "" : ` · channel ${bg.channelSilenced ? "SILENCED" : "ok"} · battery saver ${
-        bg.batteryOptimised ? "ON" : "off"
-      }`}` : ""}
+    <div style={styles.sysBanner}>
+      <div style={styles.sysBannerHead}>SYSTEM ANALYSIS</div>
+      {mine.map((f, i) => (
+        <div key={i} style={styles.sysBannerSay}>{f.say}</div>
+      ))}
     </div>
   );
 }

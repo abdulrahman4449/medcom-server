@@ -1174,7 +1174,6 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                     tone="var(--ok)"
                     icon={<Ambulance size={20} color="var(--ok)" />}
                     title={canJoinTeam(foundAccount.role) ? "Join a team" : "Continue as team member"}
-                    sub="Work a truck. You pick the shift and the vehicle next."
                     onClick={() => {
                       setActingDelegated(false);
                       setPendingRole("team");
@@ -1194,7 +1193,6 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                       tone="var(--flow)"
                       icon={<Radio size={20} color="var(--flow)" />}
                       title="Take the dispatch desk"
-                      sub="Raise and assign calls. Signs you on to the desk for this shift."
                       onClick={() => {
                         setPendingRole("dispatcher");
                         setStage("chooseShift");
@@ -1206,11 +1204,6 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                       tone="var(--move)"
                       icon={<UserTie size={20} color="var(--move)" />}
                       title={foundAccount.role === "admin" ? "Administration" : "Continue as Dispatcher"}
-                      sub={
-                        foundAccount.role === "admin"
-                          ? "Statistics, teams, the schedule and the archive."
-                          : "Your own desk view."
-                      }
                       onClick={continueAsSelf}
                     />
                   )}

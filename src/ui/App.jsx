@@ -2711,6 +2711,7 @@ export function App() {
         onSwitchRole={switchRole}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        audioCtxRef={audioCtxRef}
       />
       {/* Directly under the header, above everything, for every role. Nobody
           should have to scroll to find out whether the board is reaching the
