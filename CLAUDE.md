@@ -842,7 +842,10 @@ patch", that document is the target — do not start a fresh exploration.
   Xcode rebuild that would have changed nothing but a constant, and a version
   that cries wolf on the platform it did not touch is one people learn to
   ignore. **Bump the constant in the plugin you actually changed and its entry
-  in `SHELL_BUILD_WANTED` — only that one.**
+  in `SHELL_BUILD_WANTED` — only that one.** `npm run check` reads both plugin files
+  and fails if a stamp and its `SHELL_BUILD_WANTED` entry disagree — two
+  constants in three hand-edited files, and a mismatch is every phone on that
+  platform told to rebuild for ever, or a genuinely stale plugin never noticed.
 - **The volume floor is ANDROID's, and iOS has none — say so rather than
   implying otherwise.** Android raises `STREAM_ALARM` to `MIN_ALARM_SHARE`
   (70%) for the length of an alert and re-asserts it on every 1.7-second

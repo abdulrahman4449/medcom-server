@@ -192,7 +192,37 @@ if (fs.existsSync(IOS_PLUGIN)) {
   }
 }
 
+// ---------- the plugin build stamps and what the web build asks for ----------
+//
+// `SHELL_BUILD_WANTED` in src/lib/dates.jsx names the plugin build each platform
+// must carry, and each plugin stamps its own. Bump one without the other and
+// every phone on that platform reads "PLUGIN IS X, THIS BUILD NEEDS Y" for ever
+// — or, the other way round, a plugin that really is stale is never noticed.
+// Two constants in three files, all edited by hand; this is the only thing that
+// keeps them equal.
+{
+  const wantedSrc = fs.readFileSync(path.join(SRC, "lib/dates.jsx"), "utf8");
+  const wm = /SHELL_BUILD_WANTED\s*=\s*\{\s*android:\s*"([^"]+)",\s*ios:\s*"([^"]+)"\s*\}/.exec(wantedSrc);
+  const stamps = [
+    ["android", path.join(root, "native/android/PulseOpsAlarmPlugin.java"), /PLUGIN_BUILD\s*=\s*"([^"]+)"/],
+    ["ios", path.join(root, "native/ios/PulseOpsAlarmPlugin.swift"), /pluginBuild\s*=\s*"([^"]+)"/],
+  ];
+  if (!wm) { console.log("src/lib/dates.jsx: SHELL_BUILD_WANTED is not in the shape { android, ios }"); failures++; }
+  else {
+    const wanted = { android: wm[1], ios: wm[2] };
+    for (const [platform, file, re] of stamps) {
+      if (!fs.existsSync(file)) continue;
+      const m = re.exec(fs.readFileSync(file, "utf8"));
+      if (!m) { console.log(`${path.relative(root, file)}: no plugin build stamp found`); failures++; continue; }
+      if (m[1] !== wanted[platform]) {
+        console.log(`${path.relative(root, file)} stamps ${m[1]} but SHELL_BUILD_WANTED.${platform} is ${wanted[platform]} — every ${platform} phone would be told to rebuild for ever`);
+        failures++;
+      }
+    }
+  }
+}
+
 console.log(failures
   ? `\nFAILED - ${failures} problem${failures === 1 ? "" : "s"} across ${files.length} modules`
-  : `OK - ${files.length} modules parse, resolve, import and declare cleanly, and the iOS plugin stays off the main thread`);
+  : `OK - ${files.length} modules parse, resolve, import and declare cleanly; the iOS plugin stays off the main thread; the plugin stamps match`);
 process.exit(failures ? 1 : 0);
