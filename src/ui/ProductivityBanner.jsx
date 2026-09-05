@@ -88,16 +88,13 @@ export function ProductivityBanner({ user, units, requests, log, submissions, ar
         <span>PRODUCTIVITY REQUEST</span>
         {pending > 0 && <span style={styles.prodBannerCount}>{pending} waiting</span>}
       </div>
-      {/* The number, and the working beside it — calls plus approved tasks
-          over the shifts worked — because a percentage that moved without a
-          call being run has to be explainable from the screen it is on. */}
+      {/* The number, and only the part this banner is about: the approved
+          tasks in it. The calls are the UHU square above. */}
       <div style={styles.prodUhuLine}>
         <span style={styles.prodUhuFig}>{me ? `${me.uhu.toFixed(1)}%` : "—"}</span>
         <span style={styles.prodUhuCaption}>
           UHU this month
-          {me
-            ? ` · ${otHoursStr(me.onCallMs)} on calls${me.productivityMs > 0 ? ` + ${otHoursStr(me.productivityMs)} approved tasks` : ""} over ${me.shiftsWorked} ${me.shiftsWorked === 1 ? "shift" : "shifts"}`
-            : " · no shift worked yet"}
+          {me && me.productivityMs > 0 ? ` · ${otHoursStr(me.productivityMs)} approved tasks` : ""}
         </span>
       </div>
 
