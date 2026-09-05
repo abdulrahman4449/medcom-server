@@ -46,6 +46,7 @@ import { LoginScreen } from "./LoginScreen.jsx";
 import { PWRESET_KEY, pendingResets } from "./PasswordResets.jsx";
 import { POLICY_KEY, PolicyLibrary, readPolicyFile } from "./PolicyLibrary.jsx";
 import { LogSheet } from "./ShiftReport.jsx";
+import { OvertimeAskSheet } from "./OvertimeAskSheet.jsx";
 import { TeamView } from "./TeamView.jsx";
 import { UhuPanel } from "./UhuPanel.jsx";
 import { schedDue, schedRepeatIsLive, whenStr } from "./booking-cancel.jsx";
@@ -930,6 +931,10 @@ export function App() {
   // start a second stay. A declined handover ends a reliever's wait the same
   // way, naming who declined.
   const [loginNotice, setLoginNotice] = useState("");
+  // The overtime question at sign-out, while it is on screen: the ask and the
+  // resolver the sign-out is waiting on. See OvertimeAskSheet for why this is
+  // a sheet and not a browser dialog.
+  const [otSheet, setOtSheet] = useState(null);
   useEffect(() => onAuthLost((reason) => {
     clearSession();
     setUser(null);
@@ -2055,7 +2060,17 @@ export function App() {
     if (signingOutRef.current) return;
     signingOutRef.current = true;
     try {
-      await recordSignOut();
+      // Asked BEFORE anything is written, so a phone put away with the question
+      // open has signed nobody out; the next press asks again. Only a stay no
+      // call held is asked — one a call held goes to administration on its own
+      // and the sign-in screen says so afterwards.
+      let answer = null;
+      const ask = overtimeAskFor(Date.now());
+      if (ask && !ask.heldBy) {
+        answer = await new Promise((resolve) => setOtSheet({ ask, resolve }));
+        setOtSheet(null);
+      }
+      await recordSignOut(answer);
       // While the auth token is still held: a phone whose crew has gone home
       // must not go on being woken for that truck all night. Best effort — a
       // token two months silent is pruned server-side anyway.
@@ -2066,7 +2081,39 @@ export function App() {
     setSession(null);
   }
 
-  async function recordSignOut() {
+  // What the sign-out is going to have to say about overtime, read off the
+  // board as it stands: nothing, a stay a call held (automatic, told only), or
+  // a stay that needs the person's own words. Pure, so the sheet can be shown
+  // before the sign-out writes anything.
+  function overtimeAskFor(now) {
+    if (!user || user.role !== "team" || !user.unitId || !user.slot || user.awaitingRelief) return null;
+    const unit = units.find((u) => u.id === user.unitId);
+    if (!unit) return null;
+    const ot = overtimeMs(user, now);
+    if (ot <= 0) return null;
+    const heldBy = heldByCallAt(requests, unit.id, user.shiftEnd);
+    return {
+      heldBy,
+      claim: {
+        id: overtimeClaimId({
+          accountId: user.accountId,
+          name: user.name,
+          shiftStart: user.shiftStart,
+          unitId: unit.id,
+          seat: user.slot,
+        }),
+        name: user.name,
+        accountId: user.accountId || "",
+        unitName: unit.name,
+        claimedMs: ot,
+        onCall: !!heldBy,
+      },
+    };
+  }
+
+  // `answer` is what the overtime sheet was told, when it was shown: `{reason}`
+  // to send the claim, null to claim nothing (or when nothing was asked).
+  async function recordSignOut(answer) {
     const now = Date.now();
     // Set inside the team branch below and answered once the seat has actually
     // been released. Asked before that, a crew member who cancelled the dialog
@@ -2299,34 +2346,25 @@ export function App() {
     // they are signed out and there is no tablet to offer it on.
     if (otAsk) {
       if (otAsk.heldBy) {
-        window.alert(
-          `You are ${otHoursStr(otAsk.claim.claimedMs)} past the end of your shift, and a call was ` +
-            `running when it ended${otAsk.heldBy.nature ? ` — ${otAsk.heldBy.nature}` : ""}.\n\n` +
-            `This has been sent to administration for you. You do not need to do anything.`
+        // Told on the sign-in screen, once this device is there — a browser
+        // dialog here stops the page dead for as long as it is read.
+        setLoginNotice(
+          `overtime-held:${otHoursStr(otAsk.claim.claimedMs)}:${otAsk.heldBy.nature || ""}`
         );
-      } else {
+      } else if (answer && !overtimeReasonProblem(otAsk.claim, answer.reason)) {
         // No call held them, so nothing on the board says what this time was
-        // for — the claim has to carry their own words or an administrator has
-        // nothing to decide on. The ask IS the reason box: typing something is
-        // sending it, and cancelling or leaving it blank leaves the hours on
-        // the shift log unclaimed, which is a real answer and not a failure.
-        const said = window.prompt(
-          `You are ${otHoursStr(otAsk.claim.claimedMs)} past the end of your shift, and you were ` +
-            `not on a call when it ended.\n\n` +
-            `Say what kept you and it goes to administration. Leave it blank to claim nothing — ` +
-            `the hours are on the shift log either way.\n\n` +
-            `e.g. Restocking after the last call, late handover, truck fault`
-        );
-        if (!overtimeReasonProblem(otAsk.claim, said)) {
-          await sendOvertimeClaim({
-            claim: otAsk.claim,
-            sent: overtimeSent,
-            setSent: setOvertimeSent,
-            user,
-            addLog,
-            reason: said,
-          });
-        }
+        // for — the claim carries their own words from the sheet, or an
+        // administrator has nothing to decide on. No answer, or "claim
+        // nothing", leaves the hours on the shift log unclaimed, which is a
+        // real answer and not a failure.
+        await sendOvertimeClaim({
+          claim: otAsk.claim,
+          sent: overtimeSent,
+          setSent: setOvertimeSent,
+          user,
+          addLog,
+          reason: answer.reason,
+        });
       }
     }
   }
@@ -2723,6 +2761,7 @@ export function App() {
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         audioCtxRef={audioCtxRef}
       />
+      <OvertimeAskSheet ask={otSheet && otSheet.ask} onAnswer={(a) => otSheet && otSheet.resolve(a)} />
       {/* Directly under the header, above everything, for every role. Nobody
           should have to scroll to find out whether the board is reaching the
           server. */}

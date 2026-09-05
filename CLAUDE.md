@@ -1572,6 +1572,19 @@ patch", that document is the target — do not start a fresh exploration.
   `ems:overtime` (the answer) — the person deciding must not be able to edit
   what was asked. At sign-out the ask IS the reason box: leaving it blank
   claims nothing, which is a real answer.
+- **A browser dialog stops the page dead, and on the iPhone that is a hang.**
+  `window.prompt` / `window.confirm` / `window.alert` are SYNCHRONOUS: web
+  content stops answering for as long as the dialog is open, and the shell,
+  waiting to draw, reports it as a hang exactly as long as the person took to
+  read it — the overtime question at sign-out measured 2001 ms, which was the
+  time taken to press Cancel. `OvertimeAskSheet.jsx` is that question drawn by
+  the app instead: nothing blocks, `handleLogout` awaits the answer, and it is
+  asked BEFORE anything is written so a phone put away with it open has signed
+  nobody out. A stay a call held is not asked at all — it is told on the
+  sign-in screen afterwards (`loginNotice` `overtime-held:`), not in an alert
+  the sign-out would have to wait on. The rest of the app still carries some
+  ninety browser dialogs, desk-side mostly; anything new on a CREW path is a
+  sheet, and one reported as a hang is converted the same way.
 - **Overtime is sent, not merely observed.** A stay a call held them through
   goes to administration on its own; anything else is the person's to send
   (`ems:overtimeSent`, written by them) or to leave. `ems:overtime` — the

@@ -47,6 +47,13 @@ function loginNoticeText(notice) {
   if (notice === "other-device") {
     return "You signed in on another phone, so this one was signed out. Nothing on the board changed — your seat, your shift and your hours carry on. Sign in here to continue as yourself.";
   }
+  if (notice && notice.startsWith("overtime-held:")) {
+    const rest = notice.slice("overtime-held:".length);
+    const cut = rest.indexOf(":");
+    const hours = cut < 0 ? rest : rest.slice(0, cut);
+    const nature = cut < 0 ? "" : rest.slice(cut + 1);
+    return `You are ${hours} past the end of your shift, and a call was running when it ended${nature ? ` — ${nature}` : ""}. This has been sent to administration for you.`;
+  }
   if (notice && notice.startsWith("declined:")) {
     const [, by, unit, seat] = notice.split(":");
     return `${by} declined your request to take over ${unit} · ${seat}. You have been signed off. If the seat has to change hands, ask the dispatcher.`;
