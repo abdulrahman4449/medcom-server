@@ -1681,6 +1681,42 @@ patch", that document is the target — do not start a fresh exploration.
   accounts carry role `crew` in the accounts table while a shift-log line for
   the same person carries `team`, so the merge accepts EITHER; a dispatcher and
   the owner are never crew. `accounts` is threaded PastCallSection → PastCallForm.
+- **THE TIMELINE BELONGS TO THE TRUCK, and every stamp says how the time was
+  known.** `src/domain/stamping.jsx` (rules under `npm test`) — a medic phone
+  that dies mid-call takes the five stamps with it, and the desk's correction
+  form never covered a single time. Three layers, in order: the PARTNER's
+  phone (the call is on the unit; both seats stamp it — nothing built); the
+  DESK BY RADIO, live (`RadioStamp` on the opened live card in
+  `DispatcherView`, one step at a time, at the time the crew REPORTED, which
+  defaults to now — `tsFromClock` puts "HH:MM" on the right day across
+  midnight); and AFTER THE FACT (`CallEditForm` on a closed call offers ONLY
+  the gaps, with a reason that is required). `stampStep` is the one
+  transformation for a stamp whoever pressed it — the crew's `recordStep`
+  goes through it too — and the crew's own stamp carries no source. A desk
+  stamp writes `timeSources[key]` (source, by, when typed, `reported` when it
+  differs, `reason` after the fact) AND an applied dispatch edit on
+  `times.<key>`, so it reaches the crew's card with the tone and the red star
+  like a changed destination, sits in the folded history, and can be proposed
+  against. Nothing ever overwrites a time the truck stamped:
+  `fillTimesAfterTheFact` fills gaps only. The workbook says it in the
+  ENTERED BY HAND column (`timeSourceNote`), the PDF under the request status,
+  the chips as RADIO / BY HAND. **The five stamps are on the completeness
+  list** (`time.*` in `LOG_COMPLETENESS` and the server's `COMPLETENESS`,
+  both exempting a refusal and a called-off call by `callWasCancelled`'s
+  words): a gap has to COUNT as missing, or the record locked with a blank
+  timeline nobody may fill. Never let the crew type times from memory into
+  their own card afterwards — a number typed an hour later by the person it
+  measures is the one nobody can defend.
+- **A UHU figure is never above 100.** `uhuPercent` in `domain/uhu.jsx` is the
+  ONE division: busy over available, clamped to `UHU_MAX` and to nought.
+  Overlapping calls on one truck, an assisting leg against a shorter tour, a
+  stay longer than the shift it is measured on — every way a ratio climbs past
+  one lands there. Every UHU in the app goes through it; a new one must too.
+- **The correction history on a call is folded to its count.** `EditHistory`
+  — a call corrected four times carried four lines on its card, on every card,
+  on a screen where the card is the thing being read. "3 corrections ▸" is the
+  line; the rows are one tap away. The crew's UNSEEN changes stay open — that
+  list is the alert, and it clears on Seen.
 - **A call the board never saw can still be written up, and it says so.**
   `PastCall.jsx` — the desk types the six times, the truck, the route and *why*
   it is being entered by hand, and the record carries `enteredAfterTheFact`

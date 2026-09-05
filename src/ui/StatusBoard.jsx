@@ -2,6 +2,7 @@ import { gregDateTimeStr } from "../lib/dates.jsx";
 import { callCloseReason, callWasCancelled } from "../domain/close-reasons.jsx";
 import { responseCompliance } from "../domain/compliance.jsx";
 import { REQ_STATUS, STATUS, TIME_STEPS } from "../domain/constants.jsx";
+import { timeSourceShort, timeSourcesOf } from "../domain/stamping.jsx";
 import { ON_CALL_STATUSES, effectiveStatus } from "../domain/in-service.jsx";
 import { stationOf } from "../domain/live-sheet.jsx";
 import { clockStr, msDurationStr } from "../domain/messages.jsx";
@@ -286,15 +287,28 @@ export function ByHandTag({ req }) {
 export function CallTimes({ times, req }) {
   const chips = callTimeChips(times);
   if (chips.length === 0) return null;
+  const sources = timeSourcesOf(req);
   return (
     <div style={styles.timesRow}>
       {req && req.enteredAfterTheFact && <ByHandTag req={req} />}
-      {chips.map((c) => (
-        <div key={c.key} style={c.color ? { ...styles.timeChip, borderColor: c.color } : styles.timeChip}>
-          <span style={c.color ? { ...styles.timeChipLabel, color: c.color } : styles.timeChipLabel}>{c.label}</span>
-          <span style={styles.timeChipValue}>{clockStr(c.ts)}</span>
-        </div>
-      ))}
+      {chips.map((c) => {
+        // A stamp the desk made — by radio, or after the fact — says so on
+        // the chip (stamping.jsx); the hover carries who and why.
+        const src = sources[c.key];
+        const mark = timeSourceShort(src);
+        return (
+          <div
+            key={c.key}
+            style={c.color ? { ...styles.timeChip, borderColor: c.color } : styles.timeChip}
+            title={src ? `${mark === "RADIO" ? "Stamped by radio" : "Entered after the fact"} by ${src.by || "Dispatch"}${src.reason ? ` — ${src.reason}` : ""}` : undefined}
+          >
+            <span style={c.color ? { ...styles.timeChipLabel, color: c.color } : styles.timeChipLabel}>
+              {c.label}{mark ? <span style={styles.timeChipSource}> {mark}</span> : null}
+            </span>
+            <span style={styles.timeChipValue}>{clockStr(c.ts)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

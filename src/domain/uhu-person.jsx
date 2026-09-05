@@ -13,7 +13,8 @@ import { assistOf, assistTeamNames, isNoTransport, requestOutcomeKey, requestOut
 import { missingLogFields } from "./sheet-gaps.jsx";
 import { scheduledShiftKey, seatLabel, shiftDateOf, shiftLabelWithWindow, shiftMeta, shiftWindowFor } from "./shift-helpers.jsx";
 import { SHIFT_EVENTS, SHIFT_MS } from "./shifts.jsx";
-import { computePersonUhu } from "./uhu.jsx";
+import { computePersonUhu, uhuPercent } from "./uhu.jsx";
+import { timeSourceNote } from "./stamping.jsx";
 import { gregDateTimeStr } from "../lib/dates.jsx";
 import { dedupeById } from "../lib/helpers.jsx";
 
@@ -95,7 +96,7 @@ export function personUhuRows(units, crewIndex, requests, now, from, to) {
     // One shift, however many trucks it was spent across. Zahrawi's nine and a
     // half only applies to somebody who spent the whole shift on Zahrawi.
     const shiftMs = a.onlyZahrawi ? ZAHRAWI_SHIFT_MS : SHIFT_MS;
-    const pct = shiftMs > 0 ? Math.min(100, (a.totalMs / shiftMs) * 100) : 0;
+    const pct = uhuPercent(a.totalMs, shiftMs);
     return {
       name: a.name,
       id: a.id,
@@ -889,10 +890,16 @@ export function buildDispatchLogAOA(requests, units, crewIndex, scheduled, now, 
       r.closedBy || "",
       r.status === "completed" ? callCloseReason(r) || "Not recorded" : "",
       journeyLabel(r),
-      r.enteredAfterTheFact
-        ? `${r.enteredAfterTheFact.by || "Desk"}` +
-          (r.enteredAfterTheFact.reason ? ` — ${r.enteredAfterTheFact.reason}` : "")
-        : "",
+      [
+        r.enteredAfterTheFact
+          ? `${r.enteredAfterTheFact.by || "Desk"}` +
+            (r.enteredAfterTheFact.reason ? ` — ${r.enteredAfterTheFact.reason}` : "")
+          : "",
+        // A stamp the desk made by radio, or filled after the fact, is said
+        // in the same column: it is the same question — was this row recorded
+        // live from the truck, or not.
+        timeSourceNote(r),
+      ].filter(Boolean).join(" · "),
       requestOutcomeLabel(r),
     ];
     return COLUMN_ORDER.map((i) => cells[i]);

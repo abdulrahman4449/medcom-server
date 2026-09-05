@@ -147,12 +147,22 @@ export const EDITABLE_FIELDS = [
 
 export function editFieldLabel(key) {
   const f = EDITABLE_FIELDS.find((x) => x.key === key);
-  return f ? f.label : key;
+  if (f) return f.label;
+  // A stamp the desk made (stamping.jsx) is an edit on `times.<key>`.
+  if (typeof key === "string" && key.startsWith("times.")) {
+    const s = TIME_STEPS.find((x) => x.timeKey === key.slice(6));
+    return s ? s.timeLabel : key;
+  }
+  return key;
 }
 
 // A blank value should read as blank rather than as the word "undefined" —
 // a missing MRN is the ordinary case, not an error.
 export function editValueText(v, field) {
+  if (typeof field === "string" && field.startsWith("times.") && typeof v === "number" && v > 0) {
+    const d = new Date(v);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
   const t = (v === null || v === undefined ? "" : String(v)).trim();
   if (!t) return "—";
   const f = field ? EDITABLE_FIELDS.find((x) => x.key === field) : null;

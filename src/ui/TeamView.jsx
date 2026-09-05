@@ -3,6 +3,7 @@ import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { CHECKLIST_RUNS_CAP, CHECKLIST_RUNS_KEY, CHECK_ANSWERS, checklistIsMandatory, checklistPartForSeat, checklistRunFor, isWriteItem, personChecklistRun, shiftKeyFor } from "../domain/checklist.jsx";
 import { callCloseReason } from "../domain/close-reasons.jsx";
 import { PRIORITY, REQ_STATUS, reqStatusMeta, TIME_STEPS, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf, proposeCallEditsTo, reqLabels } from "../domain/constants.jsx";
+import { stampStep } from "../domain/stamping.jsx";
 import { escalationViewer, lastAdminReply } from "../domain/escalations.jsx";
 import { effectiveStatusMeta, idleStatusFor, liveRequestFor, statusMeta } from "../domain/in-service.jsx";
 import { DEFAULT_STATION, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
@@ -858,47 +859,15 @@ export function TeamView({ onHandOver, user, units, requests, saveUnits, saveReq
       );
       return;
     }
-    const nextRequests = freshRequests.map((r) =>
-      r.id === myRequest.id
-        ? {
-            ...r,
-            status: step.to,
-            times: { ...r.times, [step.timeKey]: now },
-            // Closing the call closes the ask that came off it: a second
-            // ambulance for a call that is over is a task nobody should still
-            // be looking at on the desk.
-            assist:
-              step.to === "completed" && assistOf(r)
-                ? {
-                    ...assistOf(r),
-                    status: assistOf(r).status === "pending" ? "cancelled" : assistOf(r).status,
-                    cancelledAt: assistOf(r).status === "pending" ? now : assistOf(r).cancelledAt,
-                    cancelledBy: assistOf(r).status === "pending" ? "Call completed" : assistOf(r).cancelledBy,
-                    teams: assistTeams(r).map((t) => (t.clearedAt ? t : { ...t, clearedAt: now })),
-                  }
-                : r.assist,
-          }
-        : r
-    );
-    const nextUnitPatch = { status: step.unitStatus };
-    if (step.to === "completed") nextUnitPatch.assignedRequestId = null;
-    // A team that came to help is freed with the call rather than left pointing
-    // at a finished one until the next repair pass notices.
-    const assistIds = step.to === "completed" ? activeAssistUnitIds(target) : [];
-    const nextUnits = freshUnits.map((u) => {
-      if (u.id === myUnit.id) {
-        const patch = { ...nextUnitPatch };
-        // Going back in service only means "available" if a crew is still signed
-        // on. If the last seat emptied during the call, the team drops to out of
-        // service instead of sitting on the board as a unit dispatch can send.
-        if (step.to === "completed") patch.status = idleStatusFor(u);
-        return { ...u, ...patch };
-      }
-      if (assistIds.includes(u.id)) {
-        return { ...u, assignedRequestId: null, status: idleStatusFor(u) };
-      }
-      return u;
+    // The same transformation the desk's radio stamp goes through
+    // (stamping.jsx): the call advances, the truck follows, closing the call
+    // closes what hung off it. The crew's own stamp carries no source.
+    const stamped = stampStep({
+      requests: freshRequests, units: freshUnits, req: target, unit: myUnit, step,
+      at: now, stampedAt: now, by: user.name, byRole: "team", accountId: user.accountId, source: null,
     });
+    const nextRequests = stamped.requests;
+    const nextUnits = stamped.units;
     await saveRequests(nextRequests);
     await saveUnits(nextUnits);
     // Every step is logged and exported; the two the desk watches live are

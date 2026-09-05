@@ -149,6 +149,16 @@ export function overlapMs(a, b) {
 // One person's stay on one medic. `from`/`to` are the shift window the sheet
 // covers; `now` is the moment the sheet is taken, which is what an unfinished
 // call or an open stay is measured to.
+// THE ONE RULE FOR A UHU FIGURE: busy over available, never above 100 and
+// never below 0. Overlapping calls on one truck, an assisting leg counted
+// against a shorter tour, a stay longer than the shift it is measured on —
+// every way a ratio can climb past one lands here, and the answer is 100.
+export const UHU_MAX = 100;
+export function uhuPercent(busyMs, availableMs) {
+  if (!(availableMs > 0) || !(busyMs > 0)) return 0;
+  return Math.min(UHU_MAX, Math.max(0, (busyMs / availableMs) * 100));
+}
+
 export function computePersonUhu(unit, person, requests, now, from, to) {
   const shiftFrom = typeof from === "number" ? from : uhuWindowStart(now);
   const shiftTo = typeof to === "number" ? to : now;
@@ -188,6 +198,6 @@ export function computePersonUhu(unit, person, requests, now, from, to) {
     callIds,
     totalMs,
     shiftMs,
-    pct: shiftMs > 0 ? Math.min(100, (totalMs / shiftMs) * 100) : 0,
+    pct: uhuPercent(totalMs, shiftMs),
   };
 }

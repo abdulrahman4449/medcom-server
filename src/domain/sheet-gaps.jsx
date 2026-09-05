@@ -1,4 +1,5 @@
 import { callTo } from "./call-locations.jsx";
+import { callWasCancelled } from "./close-reasons.jsx";
 import { isNoTransport } from "./second-ambulance.jsx";
 import { callTypeOf, loadedKmOf } from "./sheet-vocabulary.jsx";
 
@@ -33,6 +34,18 @@ export const LOG_COMPLETENESS = [
     applies: (r) => !isNoTransport(r) && !!(r.times || {}).arrivalDestination,
     has: (r) => !!(r.receiver && r.receiver.name),
   },
+  // The five stamps. A truck whose phone died mid-call leaves gaps the desk
+  // fills by radio while the call runs, or after the fact with a reason
+  // (stamping.jsx) — and a gap has to COUNT as missing, or the record locks
+  // with a blank timeline nobody may fill. Not asked of a call that moved
+  // nobody: a refusal or a call called off legitimately stops short, and
+  // demanding five stamps of it would keep it open for ever.
+  ...["enroute", "arrival", "departure", "arrivalDestination", "backInService"].map((k, i) => ({
+    key: `time.${k}`,
+    label: ["en route time", "on-scene time", "departure time", "arrival at destination time", "back in service time"][i],
+    applies: (r) => !isNoTransport(r) && !callWasCancelled(r),
+    has: (r) => !!(r.times || {})[k],
+  })),
 ];
 
 export function missingLogFields(req) {

@@ -4380,7 +4380,22 @@ export const styles = {
   editReviewTo: { color: "var(--ink)", fontWeight: 700 },
   editReviewBy: { fontSize: 13, color: "var(--ink-4)", marginTop: 3 },
   editHistory: { marginTop: 8 },
-  editHistoryRow: { fontSize: 13, color: "var(--ink-4)", lineHeight: 1.6 },
+  editHistoryToggle: {
+    background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit",
+    fontSize: 12.5, fontWeight: 650, color: "var(--ink-3)", display: "inline-flex", alignItems: "center",
+  },
+  editHistoryRow: { fontSize: 13, color: "var(--ink-4)", lineHeight: 1.6, paddingLeft: 14 },
+  timeChipSource: { fontSize: 9.5, fontWeight: 800, letterSpacing: 0.6, color: "var(--move)" },
+  // The desk's radio stamp on a live call: one line, the time and the step.
+  radioStamp: {
+    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8,
+    padding: "8px 10px", borderRadius: 12, border: "1px dashed var(--hair-2)", background: "var(--inset)",
+  },
+  radioStampLabel: { fontSize: 10.5, fontWeight: 700, letterSpacing: 1, color: "var(--ink-3)" },
+  radioStampTime: {
+    minHeight: 40, fontSize: 16, fontWeight: 650, padding: "6px 10px", borderRadius: 10,
+    background: "var(--ground)", border: "1px solid var(--hair-2)", color: "var(--ink)", fontFamily: "inherit",
+  },
   editPendingNote: {
     fontSize: 13.5,
     color: "var(--hold)",

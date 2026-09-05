@@ -7,6 +7,7 @@ import { buzz, clockStr, shortDurationStr } from "../domain/messages.jsx";
 import { isReturnLeg, wantsReturn } from "../domain/return-journeys.jsx";
 import { assistOf, assistPending, assistTeams, pendingAssistCalls } from "../domain/second-ambulance.jsx";
 import { hhmm } from "../domain/shift-helpers.jsx";
+import { clockOf, missingTimeSteps, timeStepFor, tsFromClock } from "../domain/stamping.jsx";
 import { callStartTs } from "../domain/uhu.jsx";
 import { soundCallAlert } from "../lib/dates.jsx";
 import { AlertTriangle, ArrowRight, Ban, CheckCircle2, FileSignature, HandRaised, MapPin, PencilLine } from "../lib/icons.jsx";
@@ -875,6 +876,17 @@ export function CallEditForm({ req, mode, onSubmit, onCancel }) {
   });
   const [note, setNote] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  // Gaps in a closed call's timeline the desk may fill after the fact
+  // (stamping.jsx) — only what the truck never stamped, and only with a
+  // reason. Never offered while the call is running: a live call is stamped
+  // by radio from the board, and never to a crew proposing a correction.
+  const proposingNow = mode === "propose";
+  const gaps = !proposingNow && req && req.status === "completed" ? missingTimeSteps(req) : [];
+  const [fillVals, setFillVals] = React.useState({});
+  const fills = gaps
+    .map((s) => ({ timeKey: s.timeKey, at: tsFromClock(fillVals[s.timeKey], req ? req.createdAt : Date.now()) }))
+    .filter((f) => !!f.at);
+  const needsReason = fills.length > 0 && !note.trim();
 
   // Only what actually moved is worth recording — an untouched form should not
   // stamp the call with four "changes" that changed nothing.
@@ -887,10 +899,10 @@ export function CallEditForm({ req, mode, onSubmit, onCancel }) {
   const proposing = mode === "propose";
 
   async function submit() {
-    if (!changes.length || busy) return;
+    if ((!changes.length && !fills.length) || needsReason || busy) return;
     setBusy(true);
     try {
-      await onSubmit(changes, note.trim());
+      await onSubmit(changes, note.trim(), fills);
     } finally {
       setBusy(false);
     }
@@ -935,25 +947,48 @@ export function CallEditForm({ req, mode, onSubmit, onCancel }) {
         );
       })}
 
+      {gaps.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={styles.editPanelHead}>MISSING TIMES — ENTERED AFTER THE FACT</div>
+          <div style={styles.editPanelNote}>
+            Only what the truck never stamped. Each time goes on the record and the sheet as entered after the fact, under your name, with the reason below.
+          </div>
+          {gaps.map((s) => (
+            <div key={s.timeKey} style={{ marginTop: 8 }}>
+              <label style={styles.label}>{s.timeLabel}</label>
+              <input
+                type="time"
+                lang="en-GB"
+                style={styles.dateInput}
+                value={fillVals[s.timeKey] || ""}
+                onChange={(e) => setFillVals((v) => ({ ...v, [s.timeKey]: e.target.value }))}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ marginTop: 8 }}>
-        <label style={styles.label}>Note (optional)</label>
+        <label style={styles.label}>{fills.length ? "Reason — why these times are entered after the fact" : "Note (optional)"}</label>
         <input
           style={styles.input}
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder={proposing ? "e.g. ward gave us a different MRN at the bedside" : "e.g. MRN confirmed with the ward"}
+          placeholder={proposing ? "e.g. ward gave us a different MRN at the bedside" : fills.length ? "e.g. Alpha's phone died at the scene; times from the crew's paper note" : "e.g. MRN confirmed with the ward"}
         />
       </div>
 
       <div style={styles.editPanelActions}>
         <span style={styles.editPanelCount}>
-          {changes.length === 0
+          {changes.length === 0 && fills.length === 0
             ? "Nothing changed yet."
-            : `${changes.length} change${changes.length === 1 ? "" : "s"} ready.`}
+            : needsReason
+              ? "A reason is needed for times entered after the fact."
+              : `${changes.length + fills.length} change${changes.length + fills.length === 1 ? "" : "s"} ready.`}
         </span>
         <div style={{ display: "flex", gap: 8 }}>
           <button style={styles.ghostBtnSm} onClick={onCancel}>Cancel</button>
-          <button style={styles.primaryBtnSm} disabled={!changes.length || busy} onClick={submit}>
+          <button style={styles.primaryBtnSm} disabled={(!changes.length && !fills.length) || needsReason || busy} onClick={submit}>
             {proposing ? "Send to dispatch" : "Save correction"}
           </button>
         </div>
@@ -1014,19 +1049,62 @@ export function PendingEditReview({ req, onVerify, onReject }) {
 
 // The trail of corrections that were actually made, so the call always says who
 // changed what and when.
+// Folded by default: a call corrected four times carried four lines on its
+// card, on every card, on a screen where the card is the thing being read.
+// The count is the line; the rows are one tap away.
 export function EditHistory({ req }) {
   const done = callEdits(req).filter((e) => e.status === "applied");
+  const [open, setOpen] = React.useState(false);
   if (!done.length) return null;
   return (
     <div style={styles.editHistory}>
-      {done.map((e) => (
+      <button type="button" style={styles.editHistoryToggle} onClick={() => setOpen((o) => !o)}>
+        <PencilLine size={10} style={{ verticalAlign: -1, marginRight: 4 }} />
+        {done.length} correction{done.length === 1 ? "" : "s"} {open ? "▾" : "▸"}
+      </button>
+      {open && done.map((e) => (
         <div key={e.id} style={styles.editHistoryRow}>
-          <PencilLine size={10} style={{ verticalAlign: -1, marginRight: 4 }} />
           {editFieldLabel(e.field)}: {editValueText(e.from, e.field)} → <strong>{editValueText(e.to, e.field)}</strong>
+          {e.source === "radio" ? " · by radio" : e.source === "after-the-fact" ? " · after the fact" : ""}
           {" · "}{e.by}{e.verifiedBy && e.verifiedBy !== e.by ? ` (confirmed by ${e.verifiedBy})` : ""}
           {" · "}{hhmm(e.verifiedAt || e.at)}
+          {e.source === "after-the-fact" && e.note ? ` — ${e.note}` : ""}
         </div>
       ))}
+    </div>
+  );
+}
+
+// The desk stamping a LIVE call from what the crew report over the radio —
+// for the truck whose phone is dead (stamping.jsx). One step at a time, the
+// next one the call can take, at the time the crew said, which defaults to
+// now. The partner's phone is still the first answer; this is the second.
+export function RadioStamp({ req, unitName, onStamp }) {
+  const step = timeStepFor(req);
+  const [clock, setClock] = React.useState(() => clockOf(Date.now()));
+  const [busy, setBusy] = React.useState(false);
+  if (!step) return null;
+  async function stamp() {
+    // Left at "now", the stamp keeps its seconds like the crew's own; a time
+    // the desk changed is the minute the crew reported.
+    const nowTs = Date.now();
+    const at = clock === clockOf(nowTs) ? nowTs : tsFromClock(clock, nowTs);
+    if (!at || busy) return;
+    setBusy(true);
+    try {
+      await onStamp(step, at);
+      setClock(clockOf(Date.now()));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div style={styles.radioStamp}>
+      <span style={styles.radioStampLabel}>BY RADIO · {unitName || "the crew"} reports</span>
+      <input type="time" lang="en-GB" style={styles.radioStampTime} value={clock} onChange={(e) => setClock(e.target.value)} />
+      <button style={styles.primaryBtnSm} disabled={busy} onClick={stamp}>
+        {busy ? "Stamping…" : `Stamp ${step.buttonLabel}`}
+      </button>
     </div>
   );
 }

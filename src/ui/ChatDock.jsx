@@ -14,6 +14,7 @@ import { CALL_CATEGORIES, PATIENT_ORIGINS, applyCallCoding, callTypeMeta, callTy
 import { deskShiftWindow, hhmm, overtimeMs, scheduledShiftKey, seatLabel, shiftMeta, shiftWindowAt } from "../domain/shift-helpers.jsx";
 import { SHIFTS, SHIFT_MS } from "../domain/shifts.jsx";
 import { callStartTs, uhuWindowStart } from "../domain/uhu.jsx";
+import { applyTimeFillsTo, stampStep } from "../domain/stamping.jsx";
 import { soundReminderTone } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Ambulance, ArrowRight, CalendarClock, CheckCircle2, Clock, HandRaised, MessageSquare, PencilLine, Radio, Tag, Users } from "../lib/icons.jsx";
@@ -22,7 +23,7 @@ import { useEffect, useRef, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { SectionBanner } from "./AdminView.jsx";
 import { AlertToneCheck } from "./AlarmOverlay.jsx";
-import { AssistanceTasks, CallEditForm, CallRoute, EditHistory, FleetRow, InfoNote, PendingCallCard, PendingEditReview, ReceiverBanner } from "./AssistanceTasks.jsx";
+import { AssistanceTasks, CallEditForm, CallRoute, EditHistory, FleetRow, InfoNote, PendingCallCard, PendingEditReview, RadioStamp, ReceiverBanner } from "./AssistanceTasks.jsx";
 import { ScheduledRequests } from "./CompletedCalls.jsx";
 import { PastCallSection } from "./PastCall.jsx";
 import { PatientRecords } from "./PatientRecords.jsx";
@@ -792,13 +793,49 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
     );
   }
 
-  async function applyCallEdits(target, changes, note) {
-    const ok = await applyCallEditsTo({
-      req: target, changes, note,
-      who: user && user.name ? user.name : "Dispatch",
-      requests, saveRequests, addLog,
-    });
+  async function applyCallEdits(target, changes, note, fills) {
+    const who = user && user.name ? user.name : "Dispatch";
+    let ok = false;
+    if (fills && fills.length) {
+      ok = (await applyTimeFillsTo({ req: target, fills, reason: note, who, accountId: user && user.accountId, requests, saveRequests, addLog })) || ok;
+    }
+    if (changes && changes.length) {
+      ok = (await applyCallEditsTo({ req: target, changes, note, who, requests, saveRequests, addLog })) || ok;
+    }
     if (ok) setEditingCallId(null);
+  }
+
+  // The desk stamps a live call from the radio (stamping.jsx): the same step
+  // the crew would have pressed, at the time they reported, marked as the
+  // desk's and by radio — it reaches the crew's card starred like any change
+  // the desk makes, and the sheet says how the time was known.
+  async function stampByRadio(target, step, at) {
+    const now = Date.now();
+    const freshRequests = await readKey("ems:requests", requests);
+    const freshUnits = await readKey("ems:units", units);
+    const req = freshRequests.find((r) => r.id === target.id);
+    const unit = req ? freshUnits.find((u) => u.id === req.assignedUnitId) : null;
+    // The call moved on since the button was drawn — a crew whose phone came
+    // back, or a partner — so this step is no longer the next one. Nothing
+    // is written; the next poll redraws the right button.
+    if (!req || !unit || req.status !== step.from) return;
+    const who = user && user.name ? user.name : "Dispatch";
+    const out = stampStep({
+      requests: freshRequests, units: freshUnits, req, unit, step, at, stampedAt: now,
+      by: who, byRole: "dispatcher", accountId: user && user.accountId, source: "radio",
+    });
+    await saveRequests(out.requests);
+    await saveUnits(out.units);
+    const feedEvent = step.timeKey === "enroute" || step.timeKey === "backInService"
+      ? { event: step.timeKey, unitName: unit.name, requestId: req.id }
+      : undefined;
+    await addLog(
+      `${unit.name} — ${step.timeLabel} at ${clockStr(at)} · by radio, stamped by ${who}` +
+        (Math.abs(at - now) > 60000 ? ` at ${clockStr(now)}` : "") +
+        ` (${req.nature})`,
+      "status",
+      feedEvent
+    );
   }
 
   async function verifyCallEdit(target, entry, accept) {
@@ -1699,6 +1736,17 @@ export function DispatcherView({ user, units, requests, scheduled, saveUnits, sa
                 onReject={(e) => verifyCallEdit(req, e, false)}
               />
               <EditHistory req={req} />
+
+              {/* The truck's phone is dead and the crew are on the radio: the
+                  desk stamps the next step for them. Only while the call is
+                  in a truck's hands. */}
+              {req.status !== "completed" && req.assignedUnitId && (
+                <RadioStamp
+                  req={req}
+                  unitName={(units.find((u) => u.id === req.assignedUnitId) || {}).name}
+                  onStamp={(step, at) => stampByRadio(req, step, at)}
+                />
+              )}
 
               {editingCallId === req.id ? (
                 <CallEditForm

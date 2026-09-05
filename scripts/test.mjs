@@ -47,6 +47,8 @@ export { staffStatsFor, departmentUhu, categoryMixRows, serviceMixRows, response
 export { roleSwitchTarget, heldRoles } from ${JSON.stringify(ROOT + "src/ui/Header.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/seat-handover.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/desk-handover.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/stamping.jsx")};
+export { uhuPercent, UHU_MAX } from ${JSON.stringify(ROOT + "src/domain/uhu.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/call-changes.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/speaker-check.jsx")};
 export { pendingResets } from ${JSON.stringify(ROOT + "src/ui/PasswordResets.jsx")};
@@ -54,7 +56,7 @@ export { CALL_CATEGORIES, suggestedCallType } from ${JSON.stringify(ROOT + "src/
 export * from ${JSON.stringify(ROOT + "src/lib/board-size.jsx")};
 export { serverAddress, serverUnreachable } from ${JSON.stringify(ROOT + "src/lib/board-api.jsx")};
 export { toneKeyFor, alarmLoudnessNote, shellBuildNote, volumeFloorNote, shellBuildWanted, SHELL_BUILD_WANTED } from ${JSON.stringify(ROOT + "src/lib/dates.jsx")};
-export { REQ_STATUS, reqStatusMeta } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};
+export { REQ_STATUS, reqStatusMeta, callEdits, editFieldLabel, editValueText } from ${JSON.stringify(ROOT + "src/domain/constants.jsx")};
 export { requestOutcomeKey, requestOutcomeLabel } from ${JSON.stringify(ROOT + "src/domain/second-ambulance.jsx")};
 export { crewShiftWindow, deskShiftWindow } from ${JSON.stringify(ROOT + "src/domain/shift-helpers.jsx")};
 export { roleAssignable as roleAssignableServer } from ${JSON.stringify(ROOT + "lib/delegation.cjs")};

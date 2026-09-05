@@ -1,6 +1,7 @@
 import { callFrom, callRoute, callTo } from "../domain/call-locations.jsx";
 import { callCloseReason, callWasCancelled } from "../domain/close-reasons.jsx";
 import { PRIORITY, REQ_STATUS, TIME_STEPS, applyCallEditsTo, canProposeEditOn, editFieldLabel, editValueText, pendingCallEdits, priorityKeyOf, proposeCallEditsTo, reqLabels, verifyCallEditOn } from "../domain/constants.jsx";
+import { applyTimeFillsTo } from "../domain/stamping.jsx";
 import { ESCALATION_MAX, canRaiseEscalationOn, escalatedCalls, escalationAwaitsAdmin, escalationIsOpen, escalationReplies, escalationStateMeta, escalationsOf, pendingEscalationCount, raiseEscalation, replyToEscalation, setEscalationResolution, visibleEscalations } from "../domain/escalations.jsx";
 import { clockStr, msDurationStr, notifyEscalation } from "../domain/messages.jsx";
 import { pcrAuthorText } from "../domain/pcr-author.jsx";
@@ -671,12 +672,18 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
   // a screen that will not scroll.
   const filedIndex = React.useMemo(() => filedCallIndex(submissions), [submissions]);
 
-  async function applyEdits(req, changes, note) {
-    const ok = await applyCallEditsTo({
-      req, changes, note,
-      who: user && user.name ? user.name : "Dispatch",
-      requests, saveRequests, addLog,
-    });
+  async function applyEdits(req, changes, note, fills) {
+    const who = user && user.name ? user.name : "Dispatch";
+    let ok = false;
+    // A gap in the timeline, filled after the fact with a reason
+    // (stamping.jsx). Written first so the completeness check that closes
+    // the record sees the times and the details together.
+    if (fills && fills.length) {
+      ok = (await applyTimeFillsTo({ req, fills, reason: note, who, accountId: user && user.accountId, requests, saveRequests, addLog })) || ok;
+    }
+    if (changes && changes.length) {
+      ok = (await applyCallEditsTo({ req, changes, note, who, requests, saveRequests, addLog })) || ok;
+    }
     if (ok) setEditFor(null);
   }
 
@@ -1230,7 +1237,7 @@ export function CompletedCalls({ requests, units, saveRequests, addLog, user, un
                         <CallEditForm
                           req={req}
                           mode="apply"
-                          onSubmit={(changes, note) => applyEdits(req, changes, note)}
+                          onSubmit={(changes, note, fills) => applyEdits(req, changes, note, fills)}
                           onCancel={() => setEditFor(null)}
                         />
                       ) : (

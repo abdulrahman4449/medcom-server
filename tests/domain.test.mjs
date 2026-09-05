@@ -2223,6 +2223,77 @@ export function run(D, t) {
     t.is("handover push: an ask on an EMPTY seat has nobody to wake", D.newHandoverAsks([unit], [D.queueHandover(unit, "bravo", badr, now, true)]), []);
   }
 
+  // ---------- a stamp says how the time was known (stamping.jsx)
+  {
+    const H = 3600000;
+    const base = at(2026, 9, 2, 14, 0);
+    t.is("stamp: a clock on the same day", D.tsFromClock("14:32", base), at(2026, 9, 2, 14, 32));
+    t.is("stamp: a clock before the base rolls to the next day — the call crossed midnight",
+      D.tsFromClock("00:40", at(2026, 9, 2, 23, 30)), at(2026, 9, 3, 0, 40));
+    t.is("stamp: a clock just after midnight for a base just before it rolls back",
+      D.tsFromClock("23:50", at(2026, 9, 3, 0, 5)), at(2026, 9, 2, 23, 50));
+    t.is("stamp: a few minutes ahead of the base is the same day", D.tsFromClock("14:05", base), at(2026, 9, 2, 14, 5));
+    t.is("stamp: rubbish is nothing", D.tsFromClock("2pm", base), null);
+    t.is("stamp: the time as typed", D.clockOf(at(2026, 9, 2, 9, 7)), "09:07");
+
+    const req = { id: "r1", status: "enroute", nature: "Chest pain", assignedUnitId: "u1", createdAt: base, times: { assigned: base, enroute: base + 60000 } };
+    const unit = { id: "u1", name: "MEDIC 1", station: "main", status: "enroute", assignedRequestId: "r1", alpha: { accountId: "A1", name: "Ali" }, bravo: null };
+    const step = D.timeStepFor(req);
+    t.is("stamp: the next step follows the status", step && step.timeKey, "arrival");
+    t.is("stamp: a closed call has no next step", D.timeStepFor({ ...req, status: "completed" }), null);
+    const said = base + 9 * 60000, typed = base + 12 * 60000;
+    const radio = D.stampStep({ requests: [req], units: [unit], req, unit, step, at: said, stampedAt: typed, by: "Badr", byRole: "dispatcher", accountId: "D1", source: "radio" });
+    const r1 = radio.requests[0];
+    t.is("radio: the call advances", r1.status, "onscene");
+    t.is("radio: the time is the one the crew REPORTED, not the moment it was typed", r1.times.arrival, said);
+    t.is("radio: the source says by radio, by whom, and when it was typed", [r1.timeSources.arrival.source, r1.timeSources.arrival.by, r1.timeSources.arrival.at, r1.timeSources.arrival.reported], ["radio", "Badr", typed, said]);
+    t.is("radio: the truck follows the step", radio.units[0].status, "onscene");
+    t.is("radio: it is a dispatch edit on the time field, applied", [radio.edit.field, radio.edit.byRole, radio.edit.status], ["times.arrival", "dispatcher", "applied"]);
+    t.is("radio: so the crew's card stars it like any change the desk makes", D.dispatchEditsOf(r1).map((e) => e.field), ["times.arrival"]);
+    t.is("radio: the edit reads as a time with a label", [D.editFieldLabel("times.arrival"), D.editValueText(said, "times.arrival")], ["Arrival at Scene", D.clockOf(said)]);
+    const own = D.stampStep({ requests: [req], units: [unit], req, unit, step, at: said, stampedAt: said, by: "Ali", byRole: "team", accountId: "A1", source: null });
+    t.ok("own stamp: the crew's own stamp carries no source and no edit", !own.requests[0].timeSources && !own.edit && D.callEdits(own.requests[0]).length === 0);
+    const last = D.timeStepByKey("backInService");
+    const arrived = { ...r1, status: "arrived" };
+    const closed = D.stampStep({ requests: [arrived], units: [{ ...unit, status: "transporting" }], req: arrived, unit, step: last, at: base + H, stampedAt: base + H, by: "Badr", byRole: "dispatcher", accountId: "D1", source: "radio" });
+    t.is("radio: back in service frees the truck", [closed.requests[0].status, closed.units[0].assignedRequestId, closed.units[0].status], ["completed", null, "available"]);
+
+    // after the fact: only the gaps, only with a reason on them
+    const gapped = { ...arrived, status: "completed", times: { assigned: base, enroute: base + 60000, arrival: said, backInService: base + H } };
+    t.is("after the fact: the gaps are the missing steps in order", D.missingTimeSteps(gapped).map((s) => s.timeKey), ["departure", "arrivalDestination"]);
+    const filled = D.fillTimesAfterTheFact({ req: gapped, fills: [{ timeKey: "departure", at: base + 20 * 60000 }, { timeKey: "arrival", at: base + 99 }, { timeKey: "bogus", at: 5 }], by: "Badr", accountId: "D1", reason: "phone died at the scene", now: base + 2 * H });
+    t.is("after the fact: a gap is filled", filled.times.departure, base + 20 * 60000);
+    t.is("after the fact: a time the truck stamped is NEVER overwritten", filled.times.arrival, said);
+    t.is("after the fact: the source carries the reason", [filled.timeSources.departure.source, filled.timeSources.departure.reason], ["after-the-fact", "phone died at the scene"]);
+    t.is("after the fact: one edit per filled gap, none for the rest", D.callEdits(filled).map((e) => e.field), ["times.arrival", "times.departure"]);
+    t.is("after the fact: nothing to fill writes nothing", D.fillTimesAfterTheFact({ req: gapped, fills: [{ timeKey: "arrival", at: 1 }], by: "Badr" }), gapped);
+    t.is("sheet: how the times were known, in one cell", D.timeSourceNote(filled), "Arrival at Scene: by radio (Badr); Departure from Scene: after the fact (Badr — phone died at the scene)");
+    t.is("sheet: a truck-stamped call says nothing", D.timeSourceNote(req), "");
+    t.is("chip: the short marks", [D.timeSourceShort(filled.timeSources.arrival), D.timeSourceShort(filled.timeSources.departure), D.timeSourceShort(null)], ["RADIO", "BY HAND", ""]);
+
+    // the gap keeps the record open for the desk to fill — on both sides
+    const shortOne = { ...gapped, patientOrigin: "MAIN HOSPITAL Bldg.", locationTo: "Ward 3", mrn: "1", callType: "E", callCategory: "EMERGENCY (INTERNAL)", loadedKm: "NA", emergencyCode: "CARDIAC EMERGENCY", addedService: "NA", receiver: { name: "Sister Amal" } };
+    t.is("completeness: a transported call missing stamps is short of them", D.missingLogFields(shortOne).map((f) => f.key), ["time.departure", "time.arrivalDestination"]);
+    t.is("completeness: the server says the same", D.missingLogFieldKeysServer(shortOne), ["time.departure", "time.arrivalDestination"]);
+    t.is("completeness: a call that moved nobody is not asked for a timeline", D.missingLogFields({ ...shortOne, noTransport: true, times: {} }).map((f) => f.key), []);
+    t.is("completeness: nor is a call that was called off", D.missingLogFields({ ...shortOne, closeReason: "Team stood down en route", times: { enroute: 1 } }).map((f) => f.key), []);
+    t.is("completeness: the server agrees a called-off call is whole without its stamps", D.missingLogFieldKeysServer({ ...shortOne, closeReason: "Team stood down en route", times: { enroute: 1 } }), []);
+    t.is("completeness: filled after the fact, it is whole", D.missingLogFields({ ...shortOne, ...D.fillTimesAfterTheFact({ req: shortOne, fills: [{ timeKey: "departure", at: 5 }, { timeKey: "arrivalDestination", at: 6 }], by: "Badr", reason: "x" }) }).length, 0);
+  }
+
+  // ---------- UHU never exceeds 100
+  {
+    t.is("uhu: the cap is 100", D.UHU_MAX, 100);
+    t.is("uhu: a ratio past one is 100", D.uhuPercent(15 * 3600000, 12 * 3600000), 100);
+    t.is("uhu: a fair ratio is itself", D.uhuPercent(6 * 3600000, 12 * 3600000), 50);
+    t.is("uhu: nothing available is 0, never infinity", D.uhuPercent(3600000, 0), 0);
+    t.is("uhu: nothing busy is 0", D.uhuPercent(0, 3600000), 0);
+    t.is("uhu: a negative is 0", D.uhuPercent(-5, 3600000), 0);
+    const busyStay = D.computePersonUhu({ id: "u1", name: "MEDIC 1", station: "main" }, { accountId: "A1", signedOnAt: 0, shiftStart: 0, shiftEnd: 12 * 3600000 },
+      [1, 2, 3].map((i) => ({ id: "r" + i, assignedUnitId: "u1", status: "completed", createdAt: 1000, times: { assigned: 1000, backInService: 11 * 3600000 } })), 12 * 3600000, 0, 12 * 3600000);
+    t.is("uhu: three overlapping calls on one truck cannot make a person 275% busy", busyStay.pct, 100);
+  }
+
   // ---------- the dispatch desk is one seat per station, and taking it asks the holder
   {
     const now = at(2026, 9, 2, 10);
@@ -2493,7 +2564,10 @@ export function run(D, t) {
       loadedKm: "NA",
       emergencyCode: "CARDIAC EMERGENCY",
       addedService: "NA",
-      times: { arrivalDestination: 0 },
+      // A transported call carries its five stamps and its receiver; a gap in
+      // the timeline is a gap in the record (stamping.jsx).
+      times: { enroute: 1100, arrival: 1400, departure: 1900, arrivalDestination: 2300, backInService: 2800 },
+      receiver: { name: "Sister Amal" },
       ...over,
     });
     t.is("filed: the sample record really is complete", D.missingLogFields(complete()).length, 0);
@@ -2583,7 +2657,8 @@ export function run(D, t) {
       patientOrigin: "MAIN HOSPITAL Bldg.", locationTo: "Ward 3", mrn: "3727",
       callType: "E", callCategory: "EMERGENCY (INTERNAL)", loadedKm: "NA",
       emergencyCode: "CARDIAC EMERGENCY", addedService: "NA",
-      times: { arrivalDestination: 0 },
+      times: { enroute: 1100, arrival: 1400, departure: 1900, arrivalDestination: 2300, backInService: 2800 },
+      receiver: { name: "Sister Amal" },
     };
     const filedAt = { windowEnd: now - HOUR };
     const appIdx = (rec, f) => new Map(f ? [[rec.id, f]] : []);
@@ -2609,6 +2684,12 @@ export function run(D, t) {
       { ...base, noTransport: false, receiver: { name: "Sister Amal" } },
       { ...base, noTransport: false, times: {} },
       { ...base, noTransport: true },
+      // A timeline gap: the truck's phone died at the scene.
+      { ...base, times: { ...base.times, arrival: undefined } },
+      { ...base, times: { ...base.times, backInService: 0 } },
+      { ...base, noTransport: true, times: {} },
+      { ...base, closeReason: "Cancelled before the team arrived", times: { enroute: 1100 } },
+      { ...base, closeReason: "Call completed — patient delivered", times: { enroute: 1100 } },
     ];
     for (const rec of shapes) {
       const label = JSON.stringify(rec).slice(0, 70);
@@ -2663,7 +2744,7 @@ export function run(D, t) {
     // Structural equality. A record that comes back with its keys in a
     // different order is the same record, and refusing it files a finding
     // about a change that never happened.
-    const reordered = { ...base, times: { arrivalDestination: 0 }, id: "r1" };
+    const reordered = { ...base, times: { ...base.times }, id: "r1" };
     const swapped = Object.fromEntries(Object.entries(reordered).reverse());
     t.is("lock: the same record with its keys in another order is NOT a change",
       hold([swapped]).refused.length, 0);

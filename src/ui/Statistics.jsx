@@ -21,7 +21,8 @@ import { MONTH_NAMES, STAT_RANGES, statPeriodOptions, statRangeBase, statRangeWi
 import { filedContribution, statsLog, statsRequests } from "../domain/stat-source.jsx";
 import { SHIFT_MS } from "../domain/shifts.jsx";
 import { topPerformers } from "../domain/standouts.jsx";
-import { callBusyMs, callEndTs, callStartTs, unitCallInterval } from "../domain/uhu.jsx";
+import { callBusyMs, callEndTs, callStartTs, uhuPercent, unitCallInterval } from "../domain/uhu.jsx";
+import { timeSourceNote } from "../domain/stamping.jsx";
 import { CATEGORY_FILLS, SERVICE_FILLS, bravoNameFor, buildShiftHandoverRows, loadedKmFor, personUhuRows, serviceTypeFor } from "../domain/uhu-person.jsx";
 import { autoFitSheet, exportSubmission } from "../export/workbook.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
@@ -288,7 +289,7 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
       // somebody who worked ten shifts is judged on ten, not on the calendar.
       uhu:
         p.shifts.size > 0
-          ? Math.min(100, (p.onCallMs / (p.shifts.size * SHIFT_MS)) * 100)
+          ? uhuPercent(p.onCallMs, p.shifts.size * SHIFT_MS)
           : 0,
       // Checklist compliance, against the shifts they actually worked.
       //
@@ -314,7 +315,7 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
 export function departmentUhu(staff) {
   const busy = (staff || []).reduce((n, p) => n + (p.onCallMs || 0), 0);
   const available = (staff || []).reduce((n, p) => n + (p.shiftsWorked || 0) * SHIFT_MS, 0);
-  return available > 0 ? Math.min(100, (busy / available) * 100) : 0;
+  return uhuPercent(busy, available);
 }
 
 // Where the month's patients were collected from, per station.
@@ -1466,7 +1467,7 @@ export function fleetUhu(requests, units, from, to) {
     });
   });
   const capacity = list.length * (end - from);
-  return capacity > 0 ? Math.min(100, (busy / capacity) * 100) : null;
+  return capacity > 0 ? uhuPercent(busy, capacity) : null;
 }
 
 // Every closed call should carry the name of whoever wrote its patient care
@@ -2358,7 +2359,7 @@ td.ot{background:#FFE08A !important;color:#7A4E00;font-weight:700;text-align:cen
         <td class="cat"${catStyle}>${esc(r.callCategory || "")}</td>
         <td${cls}>${esc(pcrAuthorStamp(r, u))}</td>
         <td${cls}>${esc(bravoNameFor(r, u))}</td>
-        <td${cls}>${esc(requestOutcomeLabel(r))}</td>
+        <td${cls}>${esc(requestOutcomeLabel(r))}${timeSourceNote(r) ? `<br><small>${esc(timeSourceNote(r))}</small>` : ""}</td>
       </tr>`;
     })
     .join("")}
