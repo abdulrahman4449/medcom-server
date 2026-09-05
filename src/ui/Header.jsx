@@ -252,8 +252,19 @@ export function DelegatedTag({ user }) {
 export function heldRoles(user) {
   const asSession = (r) => (r === "crew" ? "team" : r);
   const listed = Array.isArray(user && user.roles) ? user.roles.map(asSession) : [];
-  const held = listed.filter((r) => r && (r !== "team" || (user && user.unitId)));
+  // The desk is ONE seat per station (desk-handover.jsx), so listing
+  // "dispatcher" on the account is not holding the desk: a dispatcher-role
+  // account seated on a truck used to be offered "Dispatch desk" here and
+  // flipped to a second desk beside the one on duty, with no sign-on and
+  // nobody asked. The desk is a held role only for the session that holds it
+  // (`deskStation`, stamped when the desk is taken) or is working it now — an
+  // administrator who took the desk and stepped into administration keeps the
+  // way back; everybody else signs in for it and is asked like anyone taking
+  // a seat.
+  const holdsDesk = !!(user && (user.deskStation || user.role === "dispatcher"));
+  const held = listed.filter((r) => r && (r !== "team" || (user && user.unitId)) && (r !== "dispatcher" || holdsDesk));
   if (user && user.unitId && !held.includes("team")) held.push("team");
+  if (holdsDesk && !held.includes("dispatcher")) held.push("dispatcher");
   return held;
 }
 

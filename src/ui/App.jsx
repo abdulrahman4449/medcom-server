@@ -9,6 +9,7 @@ import { STATUS } from "../domain/constants.jsx";
 import { COVERAGE_KEY, closeCoverageGapIfClear, openCoverageGapIfStuck } from "../domain/coverage.jsx";
 import { queuedReliefFor } from "../domain/crew-relief.jsx";
 import { clearHandover, handoverAnswer, handoverRequest } from "../domain/seat-handover.jsx";
+import { DESK_KEY, answerDeskAsk, askForMyDesk, clearDeskAsk, deskAsk, deskAskAnswer, deskAskPending, deskFor, deskHeldBy, deskHolder, handDeskTo, leaveDesk } from "../domain/desk-handover.jsx";
 import { ON_CALL_STATUSES, idleStatusFor, isOnCall, liveRequestFor } from "../domain/in-service.jsx";
 import { INVENTORY_KEY, INVENTORY_MOVES_KEY } from "../domain/inventory.jsx";
 import { DEFAULT_ACCOUNTS, DEFAULT_STATION, DEFAULT_UNITS, STATIONS, atStation, stationLabel, stationOf } from "../domain/live-sheet.jsx";
@@ -32,7 +33,7 @@ import { ensureAudioCtx, nowTime, setNativeStandby, setScreenAwake, soundReminde
 import { uid } from "../lib/helpers.jsx";
 import { AlertTriangle, Radio } from "../lib/icons.jsx";
 import { alertsSupported, notifyBookingReleased, registerAlertWorker, requestAlertPermission, requestNativeNotifications } from "../lib/notify.jsx";
-import { connectionListeners, connectionOk, lastWriteError, loadPendingWrites, pushPendingWrites, readKey, readKeyRaw, totalPendingCount, writeInFlight, writeKey, writeList } from "../lib/offline-queue.jsx";
+import { connectionListeners, connectionOk, lastWriteError, loadPendingWrites, mergeWrite, pushPendingWrites, readKey, readKeyRaw, totalPendingCount, writeInFlight, writeKey, writeList } from "../lib/offline-queue.jsx";
 import { registerPushSeat, unregisterPushSeat } from "../lib/push.jsx";
 import { useCallback, useEffect, useRef, useState } from "../lib/react.jsx";
 import { SESSION_VERSION, clearSession, patchSession, readSession, writeSession } from "../lib/session.jsx";
@@ -42,6 +43,7 @@ import { SyncStatus } from "./BackupPanel.jsx";
 import { DispatcherView } from "./ChatDock.jsx";
 import { AdminView } from "./DayArchive.jsx";
 import { Header, heldRoles } from "./Header.jsx";
+import { DeskWait } from "./DeskWait.jsx";
 import { LoginScreen } from "./LoginScreen.jsx";
 import { PWRESET_KEY, pendingResets } from "./PasswordResets.jsx";
 import { POLICY_KEY, PolicyLibrary, readPolicyFile } from "./PolicyLibrary.jsx";
@@ -283,6 +285,10 @@ export function App() {
     return u;
   });
   const [units, setUnits] = useState([]);
+  // The dispatch desk, one record per station — who holds it and who is
+  // asking for it (desk-handover.jsx). On the fast poll: an ask and its answer
+  // have to cross between two phones in seconds.
+  const [desk, setDesk] = useState({});
   const [requests, setRequests] = useState([]);
   // Requests booked for a future time. Held apart from `requests` so a booking
   // for tomorrow is never mistaken for a live call — see the scheduling section
@@ -341,6 +347,8 @@ export function App() {
   const refreshAccountsRef = useRef(null);
   // True while a deliberate sign-out is being recorded. See `handleLogout`.
   const signingOutRef = useRef(false);
+  // Held while the phone that was waiting for the desk writes its sign-on.
+  const deskLandingRef = useRef(false);
   const [messages, setMessages] = useState([]);
   const [inventory, setInventory] = useState(null);
   const [inventoryMoves, setInventoryMoves] = useState([]);
@@ -672,10 +680,11 @@ export function App() {
     // landing on screen and undoing a crew's stamps in front of them.
     await pushPendingWrites();
 
-    const [u, r, sch] = await Promise.all([
+    const [u, r, sch, dk] = await Promise.all([
       readKeyRaw("ems:units"),
       readKeyRaw("ems:requests"),
       readKeyRaw("ems:scheduled"),
+      readKeyRaw(DESK_KEY),
     ]);
 
     // Bail out of this tick if the board couldn't be read at all. Carrying on
@@ -846,6 +855,7 @@ export function App() {
     // A failed read here leaves the schedule as it was rather than emptying it:
     // an outage must not make the desk think nothing is booked.
     if (sch !== READ_FAILED) setScheduled(sch || []);
+    if (dk !== READ_FAILED) setDesk(dk && typeof dk === "object" && !Array.isArray(dk) ? dk : {});
     // The six small keys below are read TOGETHER. One after another, each a
     // round trip to Riyadh, they held the splash screen up by a second or two
     // on mobile data every time the app was opened — the "it lags, then the
@@ -1445,6 +1455,23 @@ export function App() {
     // never shown ready with nobody behind it. A truck out on a call is left
     // alone: that is the desk's to resolve, never a sign-in's.
     if (u && u.accountId) releaseAbandonedSeat(u);
+    if (u && u.accountId) releaseAbandonedDesk(u);
+  }
+
+  // The desk's twin of releaseAbandonedSeat: a dispatcher who signs in again
+  // as crew, or as an administrator, has left the desk. It is signed off with
+  // their hours and, if somebody was waiting for it, handed to them.
+  async function releaseAbandonedDesk(u) {
+    try {
+      const fresh = (await readKey(DESK_KEY, desk)) || {};
+      const held = deskHeldBy(fresh, u.accountId);
+      if (!held) return;
+      // Continuing the very desk they hold — the change-phones path — keeps it.
+      if (u.role === "dispatcher" && u.deskStation === held.station) return;
+      await leaveDeskAs(fresh, held.station, held.holder, "moved to another session");
+    } catch (e) {
+      console.error("desk release failed:", e);
+    }
   }
 
   async function releaseAbandonedSeat(u) {
@@ -1591,6 +1618,112 @@ export function App() {
     const sent = await writeList("ems:units", next, prev);
     if (sent.value && !sent.stale) setUnits(sent.value);
     return sent.value || next;
+  }
+
+  // The desk record is a map by station, so the two stations' desks are
+  // separate records and one never overwrites the other. Callers read it
+  // fresh first and pass what they read as `prev`; the state copy can be a
+  // poll behind.
+  async function saveDesk(next, prev) {
+    setDesk(next);
+    await mergeWrite(DESK_KEY, next, prev || desk);
+    return next;
+  }
+
+  // Signs the desk's holder off — the shift-log line with their hours — and
+  // passes the desk to whoever was waiting for it, or empties it. `forcedBy`
+  // names the administrator when the holder did not do this themselves.
+  async function leaveDeskAs(fresh, station, holder, why, forcedBy) {
+    const now = Date.now();
+    const ot = overtimeMs(holder, now);
+    const rec = deskFor(fresh, station) || {};
+    const ask = deskAsk(rec);
+    const waiting = deskAskPending(ask) && ask.accountId !== holder.accountId ? ask : null;
+    await saveDesk(
+      { ...fresh, [station]: waiting ? handDeskTo(rec, waiting, forcedBy ? "forced" : "signed-out", forcedBy || holder.name, now) : leaveDesk(rec) },
+      fresh
+    );
+    await addLog(
+      `Dispatch — ${holder.name} signed off ${shiftPhrase(holder)} at ${stationLabel(station)} · ${why}` +
+        (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
+      "shift",
+      {
+        kind: "off", role: "dispatcher", name: holder.name, accountId: holder.accountId, station,
+        shift: holder.shift || null, shiftStart: holder.shiftStart || null, shiftEnd: holder.shiftEnd || null,
+        overtimeMs: ot, ...(forcedBy ? { forcedBy } : {}),
+      }
+    );
+  }
+
+  // The holder's answer to a desk ask, on their own phone. Approving is their
+  // own sign-out: the desk becomes the asker's in the same write, then the
+  // ordinary sign-out closes their hours.
+  async function approveDeskAsk() {
+    const station = user.deskStation || user.station;
+    // Held from the FIRST write: the moment the desk record names the asker,
+    // the next poll would read this phone as displaced and tear the session —
+    // and the token — down before the sign-off below was written. The same
+    // fault the seat sign-out had, see `signingOutRef`.
+    if (signingOutRef.current) return;
+    signingOutRef.current = true;
+    try {
+      const fresh = (await readKey(DESK_KEY, desk)) || {};
+      const rec = deskFor(fresh, station);
+      const ask = askForMyDesk(rec, user.accountId);
+      if (!ask) return;
+      await saveDesk({ ...fresh, [station]: handDeskTo(rec, ask, "approved", user.name, Date.now()) }, fresh);
+      await addLog(
+        `Dispatch — ${user.name} handed the desk at ${stationLabel(station)} to ${ask.name} (approved on their phone)`,
+        "shift",
+        { kind: "note", role: "dispatcher", name: user.name, accountId: user.accountId, station, deskHandedTo: ask.accountId }
+      );
+      await recordSignOut(null);
+      await unregisterPushSeat();
+    } finally {
+      signingOutRef.current = false;
+    }
+    setSession(null);
+  }
+
+  async function declineDeskAsk() {
+    const station = user.deskStation || user.station;
+    const fresh = (await readKey(DESK_KEY, desk)) || {};
+    const rec = deskFor(fresh, station);
+    const ask = askForMyDesk(rec, user.accountId);
+    if (!ask) return;
+    await saveDesk({ ...fresh, [station]: answerDeskAsk(rec, "declined", user.name, Date.now()) }, fresh);
+    await addLog(
+      `Dispatch — ${user.name} declined ${ask.name}'s request to take over the desk at ${stationLabel(station)}`,
+      "shift",
+      { kind: "note", role: "dispatcher", name: user.name, accountId: user.accountId, station, deskDeclined: ask.accountId }
+    );
+  }
+
+  // An administrator, for a holder whose phone does not answer — the desk's
+  // twin of the dispatcher's "Hand over now" on a seat.
+  async function forceDeskHandover(station) {
+    const fresh = (await readKey(DESK_KEY, desk)) || {};
+    const rec = deskFor(fresh, station);
+    const holder = deskHolder(rec);
+    const ask = deskAsk(rec);
+    if (!holder || !deskAskPending(ask)) return;
+    if (
+      !window.confirm(
+        `Hand the desk at ${stationLabel(station)} over to ${ask.name} now?\n\n` +
+          `${holder.name} is signed off at this moment — their hours close now — and the log records that you did it.`
+      )
+    )
+      return;
+    await leaveDeskAs(fresh, station, holder, `handed over to ${ask.name} by ${user.name}`, user.name);
+  }
+
+  async function withdrawDeskHandover(station) {
+    const fresh = (await readKey(DESK_KEY, desk)) || {};
+    const rec = deskFor(fresh, station);
+    const ask = deskAsk(rec);
+    if (!deskAskPending(ask)) return;
+    if (!window.confirm(`Withdraw ${ask.name}'s request for the desk at ${stationLabel(station)}?\n\nThey are told, and signed off.`)) return;
+    await saveDesk({ ...fresh, [station]: answerDeskAsk(rec, "declined", user.name || "Administration", Date.now()) }, fresh);
   }
 
   // Adding, changing and removing people, through the administrator-only
@@ -2316,7 +2449,7 @@ export function App() {
           }
         );
       }
-    } else if (user && user.role === "dispatcher" && user.shift) {
+    } else if (user && user.role === "dispatcher" && user.shift && !user.awaitingDesk) {
       const ot = overtimeMs(user, now);
       await addLog(
         `Dispatch — ${user.name} signed off ${shiftPhrase(user)}` +
@@ -2327,12 +2460,40 @@ export function App() {
           role: "dispatcher",
           name: user.name,
           accountId: user.accountId,
+          station: user.deskStation || user.station || null,
           shift: user.shift,
           shiftStart: user.shiftStart || null,
           shiftEnd: user.shiftEnd || null,
           overtimeMs: ot,
         }
       );
+      // The desk itself: emptied, or handed to whoever was waiting for it —
+      // the seat rule, exactly. Read fresh: the state copy can be a poll old.
+      try {
+        const fresh = (await readKey(DESK_KEY, desk)) || {};
+        const station = user.deskStation || user.station;
+        const rec = deskFor(fresh, station);
+        const holder = deskHolder(rec, now);
+        if (holder && holder.accountId === user.accountId) {
+          const ask = deskAsk(rec);
+          const waiting = deskAskPending(ask) && ask.accountId !== user.accountId ? ask : null;
+          await saveDesk({ ...fresh, [station]: waiting ? handDeskTo(rec, waiting, "signed-out", user.name, now) : leaveDesk(rec) }, fresh);
+        }
+      } catch (e) {
+        console.error("desk sign-off failed:", e);
+      }
+    } else if (user && user.role === "dispatcher" && user.awaitingDesk) {
+      // Leaving while waiting for the desk: the ask is withdrawn. Nothing was
+      // ever signed on, so nothing is signed off.
+      try {
+        const fresh = (await readKey(DESK_KEY, desk)) || {};
+        const station = user.deskStation || user.station;
+        const rec = deskFor(fresh, station);
+        const ask = deskAsk(rec);
+        if (ask && ask.accountId === user.accountId) await saveDesk({ ...fresh, [station]: clearDeskAsk(rec) }, fresh);
+      } catch (e) {
+        console.error("desk ask withdrawal failed:", e);
+      }
     }
 
     // Overtime, and who it goes to.
@@ -2527,6 +2688,72 @@ export function App() {
     }
   }, [units, user, ready]);
 
+  // ---------- the dispatch desk is one seat per station (desk-handover.jsx)
+  //
+  // The phone that asked for the desk: it becomes theirs the moment the holder
+  // approves, signs out, or an administrator hands it over — then the sign-on
+  // is written and the board opens. "Declined" ends the wait, and the sign-in
+  // screen says who said no.
+  useEffect(() => {
+    if (!ready || !user || user.role !== "dispatcher" || !user.awaitingDesk) return;
+    if (signingOutRef.current || deskLandingRef.current) return;
+    const station = user.deskStation || user.station;
+    const rec = deskFor(desk, station);
+    const holder = deskHolder(rec);
+    const ask = deskAsk(rec);
+    if (holder && holder.accountId === user.accountId) {
+      deskLandingRef.current = true;
+      (async () => {
+        try {
+          const now = Date.now();
+          const how = deskAskAnswer(ask);
+          const fromWho = ask && ask.fromName ? ask.fromName : "";
+          await addLog(
+            `Dispatch — ${user.name} signed on at ${stationLabel(station)} for ${shiftPhrase(user)} · took over the desk` +
+              (fromWho ? ` from ${fromWho}` : "") +
+              (how === "approved" ? " (approved on their phone)" : how === "forced" ? ` (handed over by ${(ask && ask.answeredBy) || "an administrator"})` : how === "signed-out" ? " (after they signed out)" : ""),
+            "shift",
+            {
+              kind: "on", role: "dispatcher", name: user.name, accountId: user.accountId, shift: user.shift, station,
+              shiftStart: user.shiftStart, shiftEnd: user.shiftEnd, overtimeMs: overtimeMs(user, now),
+              delegated: user.delegated ? true : undefined, tookOverFrom: fromWho || undefined,
+            }
+          );
+          const fresh = (await readKey(DESK_KEY, desk)) || {};
+          const cur = deskFor(fresh, station);
+          if (cur && deskAsk(cur) && deskAsk(cur).accountId === user.accountId) await saveDesk({ ...fresh, [station]: clearDeskAsk(cur) }, fresh);
+          updateSession({ ...user, awaitingDesk: false, signedOnAt: now });
+        } finally {
+          deskLandingRef.current = false;
+        }
+      })();
+      return;
+    }
+    if (ask && ask.accountId === user.accountId && deskAskAnswer(ask) === "declined") {
+      setLoginNotice(`desk-declined:${ask.answeredBy || "The dispatcher"}:${stationLabel(station)}`);
+      handleLogout();
+    }
+  }, [desk, user, ready]);
+
+  // The dispatcher whose desk went to somebody else — approved on this phone,
+  // or handed over by an administrator when this phone did not answer — is put
+  // at the sign-in screen and told. Their hours were closed by whichever wrote
+  // the hand-over; nothing more is written here. An administrator session
+  // that held the desk merely loses the way back onto it.
+  useEffect(() => {
+    if (!ready || !user || !user.deskStation || user.awaitingDesk) return;
+    if (signingOutRef.current) return;
+    if (Date.now() - (user.signedOnAt || 0) < POLL_MS * 4) return;
+    const holder = deskHolder(deskFor(desk, user.deskStation));
+    if (!holder || !user.accountId || holder.accountId === user.accountId) return;
+    if (user.role === "dispatcher") {
+      setLoginNotice(`desk-taken:${holder.name || "another dispatcher"}:${stationLabel(user.deskStation)}`);
+      setSession(null);
+    } else {
+      updateSession({ ...user, deskStation: undefined });
+    }
+  }, [desk, user, ready]);
+
   // If an admin removes the account you're signed in with, the next poll drops
   // you back to the login screen rather than leaving a deleted user working the
   // board. The seat was already released by whoever removed the account, so
@@ -2585,6 +2812,10 @@ export function App() {
   // export is the log sheet in spreadsheet form, that button follows the
   // same rule.
   const seesLogSheet = user.role === "admin" || user.role === "dispatcher";
+  const deskAskForMe =
+    user.role === "dispatcher" && !user.awaitingDesk
+      ? askForMyDesk(deskFor(desk, user.deskStation || user.station), user.accountId)
+      : null;
 
 
 
@@ -2711,6 +2942,9 @@ export function App() {
       // refuses.
       if (!u || !heldRoles(u).includes(next)) return;
       if (next === "team" && !u.unitId) return;
+      // The desk is a seat: only the session that holds it may switch back
+      // onto it (desk-handover.jsx). Anybody else signs in for it and is asked.
+      if (next === "dispatcher" && !u.deskStation && u.role !== "dispatcher") return;
       // Switching INTO administration on lent authority has to carry the areas
       // with it, exactly as signing in that way does.
       //
@@ -2796,7 +3030,28 @@ export function App() {
         )}
 
         <div style={styles.mainCol}>
-          {!onSharedPage && user.role === "dispatcher" && (
+          {!onSharedPage && user.role === "dispatcher" && user.awaitingDesk && (
+            <DeskWait user={user} desk={desk} onWithdraw={handleLogout} />
+          )}
+          {/* Somebody wants the desk. The holder decides, here, on their own
+              phone — the person asking is signed in and waiting, and an
+              administrator steps in only if this goes unanswered. */}
+          {!onSharedPage && user.role === "dispatcher" && !user.awaitingDesk && deskAskForMe && (
+            <div style={styles.oosAsk}>
+              <div style={styles.oosAskHead}>
+                {deskAskForMe.name} is asking to take over the dispatch desk — {stationLabel(user.deskStation || user.station)}
+              </div>
+              <div style={styles.oosAskWhy}>
+                Waiting since {clockStr(deskAskForMe.queuedAt)}. Handing over signs you out now — your hours close at this
+                moment and the desk is theirs. Declining keeps the desk and tells them.
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                <button style={styles.primaryBtnSm} onClick={approveDeskAsk}>Hand over &amp; sign out</button>
+                <button style={styles.ghostBtnSm} onClick={declineDeskAsk}>Decline</button>
+              </div>
+            </div>
+          )}
+          {!onSharedPage && user.role === "dispatcher" && !user.awaitingDesk && (
             <DispatcherView
               page={navTab}
               newCallSignal={newCallSignal}
@@ -2853,6 +3108,9 @@ export function App() {
           )}
           {!onSharedPage && user.role === "admin" && (
             <AdminView
+              desk={desk}
+              onForceDesk={forceDeskHandover}
+              onWithdrawDesk={withdrawDeskHandover}
               page={navTab}
               onGoToPage={(t) => setNavTab(t)}
               onPanelChange={(open) => setAdminPanelOpen(!!open)}

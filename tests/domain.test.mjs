@@ -2223,6 +2223,46 @@ export function run(D, t) {
     t.is("handover push: an ask on an EMPTY seat has nobody to wake", D.newHandoverAsks([unit], [D.queueHandover(unit, "bravo", badr, now, true)]), []);
   }
 
+  // ---------- the dispatch desk is one seat per station, and taking it asks the holder
+  {
+    const now = at(2026, 9, 2, 10);
+    const ali = { accountId: "A1", name: "Ali", shift: "day", shiftStart: at(2026, 9, 2, 7), shiftEnd: at(2026, 9, 2, 19) };
+    const badr = { accountId: "B1", name: "Badr", shift: "day", shiftStart: at(2026, 9, 2, 7), shiftEnd: at(2026, 9, 2, 19) };
+    const held = D.takeDesk(null, ali, at(2026, 9, 2, 7));
+    t.is("desk: nobody on it is free", D.deskHandoverKind(null, "B1", now), "free");
+    t.is("desk: the holder's own desk is theirs to continue — nothing is written", D.deskHandoverKind(held, "A1", now), "mine");
+    t.is("desk: a holder mid-shift must be ASKED", D.deskHandoverKind(held, "B1", now), "needs-approval");
+    t.is("desk: a holder whose shift is over and never signed out is a plain takeover", D.deskHandoverKind(held, "B1", at(2026, 9, 2, 20)), "forgot");
+    t.is("desk: a holder a whole shift past the window is nobody", D.deskHandoverKind(held, "B1", at(2026, 9, 3, 8)), "free");
+    t.ok("desk: deskHolder honours the same grace", !D.deskHolder(held, at(2026, 9, 3, 8)) && !!D.deskHolder(held, at(2026, 9, 2, 23)));
+    const asked = D.askDesk(held, badr, now);
+    t.ok("desk: the ask is pending on the record", D.deskAskPending(D.deskAsk(asked)));
+    t.is("desk: the one asking sees their own wait when they sign in again", D.deskHandoverKind(asked, "B1", now), "waiting-mine");
+    t.ok("desk: the holder sees an ask for their desk", !!D.askForMyDesk(asked, "A1", now));
+    t.ok("desk: nobody else sees it", !D.askForMyDesk(asked, "B1", now));
+    t.is("desk: an unanswered ask is on the administrator's list", D.unansweredDeskAsks({ main: asked }, now).map((x) => x.station), ["main"]);
+    const approved = D.handDeskTo(asked, badr, "approved", "Ali", now);
+    t.is("desk: handing over makes the asker the holder", D.deskHolder(approved, now).accountId, "B1");
+    t.is("desk: and answers the ask so the asker's phone can see how", D.deskAskAnswer(D.deskAsk(approved)), "approved");
+    t.is("desk: the new holder continues as themselves", D.deskHandoverKind(approved, "B1", now), "mine");
+    t.is("desk: the old holder is now a stranger to it", D.deskHandoverKind(approved, "A1", now), "needs-approval");
+    t.ok("desk: nothing is unanswered once handed", D.unansweredDeskAsks({ main: approved }, now).length === 0);
+    const declined = D.answerDeskAsk(asked, "declined", "Ali", now);
+    t.is("desk: a declined ask says so", D.deskAskAnswer(D.deskAsk(declined)), "declined");
+    t.is("desk: a declined ask keeps the holder", D.deskHolder(declined, now).accountId, "A1");
+    t.ok("desk: a declined ask is no longer pending for the holder", !D.askForMyDesk(declined, "A1", now));
+    t.ok("desk: clearing removes it", !D.deskAsk(D.clearDeskAsk(declined)));
+    t.is("desk: deskHeldBy finds the station this account holds", D.deskHeldBy({ main: held, ccc: null }, "A1", now).station, "main");
+    t.ok("desk: deskHeldBy finds nothing for a stranger", !D.deskHeldBy({ main: held }, "B1", now));
+    t.ok("desk: leaving empties it", D.deskHandoverKind(D.leaveDesk(held), "B1", now) === "free");
+    // the push: the HOLDER's phone is woken once, when the ask lands
+    t.is("desk push: a new ask wakes the holder, once", D.newDeskAsks({ main: held }, { main: asked }).map((h) => h.holderAccountId), ["A1"]);
+    t.is("desk push: re-saving the same ask wakes nobody", D.newDeskAsks({ main: asked }, { main: asked }), []);
+    t.is("desk push: an answered ask wakes nobody", D.newDeskAsks({ main: asked }, { main: declined }), []);
+    t.is("desk push: an ask on an EMPTY desk has nobody to wake", D.newDeskAsks({}, { main: D.askDesk(null, badr, now) }), []);
+    t.is("desk push: a list where a map should be wakes nobody and throws nothing", D.newDeskAsks([], [asked]), []);
+  }
+
   // ---------- the desk's change to a live call is starred until the crew have seen it
   {
     const t0 = at(2026, 9, 3, 10);
@@ -2276,10 +2316,14 @@ export function run(D, t) {
     t.is("role switch: from administration, the truck is offered BACK", D.roleSwitchTarget(ownerAtDesk), "team");
     t.ok("role switch: the seat counts as a held role", D.heldRoles(ownerAtDesk).includes("team"));
 
-    // The same fault hit a dispatcher who took a truck.
+    // A dispatcher-role account that took a truck is NOT offered the desk from
+    // there: the desk is one seat, held by whoever signed on to it, and a
+    // second dispatcher flipping their screen to it beside the one on duty was
+    // a real report. They sign in for it and are asked, like taking a seat.
     const deskOnTruck = { role: "team", roles: ["dispatcher"], unitId: "u1", ownRole: "dispatcher" };
-    t.is("role switch: a dispatcher on a truck is offered the desk", D.roleSwitchTarget(deskOnTruck), "dispatcher");
-    t.is("role switch: and the truck back from the desk", D.roleSwitchTarget({ ...deskOnTruck, role: "dispatcher" }), "team");
+    t.is("role switch: a dispatcher on a truck is offered NOTHING — the desk is a seat", D.roleSwitchTarget(deskOnTruck), null);
+    t.is("role switch: holding the desk, the truck is offered back from it", D.roleSwitchTarget({ ...deskOnTruck, role: "dispatcher", deskStation: "main" }), "team");
+    t.is("role switch: and the desk back from the truck, for the session that HOLDS it", D.roleSwitchTarget({ ...deskOnTruck, deskStation: "main" }), "dispatcher");
 
     // No seat, no way onto a truck from here.
     t.is("role switch: an admin holding no seat is offered nothing", D.roleSwitchTarget({ role: "admin", roles: ["admin"] }), null);
@@ -2288,8 +2332,9 @@ export function run(D, t) {
     // A plain crew member has one role and nothing to switch to.
     t.is("role switch: a crew member is offered nothing", D.roleSwitchTarget({ role: "team", roles: ["crew"], unitId: "u1" }), null);
 
-    // A delegate keeps what the account lends them.
-    t.is("role switch: a lent desk is still offered", D.roleSwitchTarget({ role: "admin", roles: ["admin", "dispatcher"] }), "dispatcher");
+    // A delegate keeps what the account lends them — once they hold the desk.
+    t.is("role switch: a lent desk is offered back to the session holding it", D.roleSwitchTarget({ role: "admin", roles: ["admin", "dispatcher"], deskStation: "main" }), "dispatcher");
+    t.is("role switch: a lent desk NOT yet taken is signed in for, not switched to", D.roleSwitchTarget({ role: "admin", roles: ["admin", "dispatcher"] }), null);
   }
   // ---------- the desk is LENT, not assigned
   {

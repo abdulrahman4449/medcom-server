@@ -4,6 +4,7 @@ import { APP_NAME } from "../brand/brand.jsx";
 import { areaSentence } from "../domain/delegation.jsx";
 import { reliefSituationFor, seatShiftIsOver } from "../domain/crew-relief.jsx";
 import { handoverKind, handoverRequest, queueHandover } from "../domain/seat-handover.jsx";
+import { DESK_KEY, askDesk, deskFor, deskHandoverKind, deskHeldBy, deskHolder, takeDesk } from "../domain/desk-handover.jsx";
 import { ON_CALL_STATUSES, effectiveStatusMeta, liveRequestFor } from "../domain/in-service.jsx";
 import { callRoute } from "../domain/call-locations.jsx";
 import { DEFAULT_STATION, STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
@@ -13,7 +14,7 @@ import { HANDOVER_GRACE_MS } from "../domain/shifts.jsx";
 import { actorStamp } from "../export/name-stamps.jsx";
 import { API_BASE } from "../lib/board-api.jsx";
 import { Ambulance, Archive, CheckCircle2, ChevronRight, Radio, UserTie, Users } from "../lib/icons.jsx";
-import { readKey, writeKey } from "../lib/offline-queue.jsx";
+import { mergeWrite, readKey, writeKey } from "../lib/offline-queue.jsx";
 import { useEffect, useState } from "../lib/react.jsx";
 import { styles } from "../styles.jsx";
 import { InfoNote } from "./AssistanceTasks.jsx";
@@ -54,6 +55,14 @@ function loginNoticeText(notice) {
     const nature = cut < 0 ? "" : rest.slice(cut + 1);
     return `You are ${hours} past the end of your shift, and a call was running when it ended${nature ? ` — ${nature}` : ""}. This has been sent to administration for you.`;
   }
+  if (notice && notice.startsWith("desk-declined:")) {
+    const [, by, station] = notice.split(":");
+    return `${by} declined your request to take over the dispatch desk at ${station}. You have been signed off. If the desk has to change hands, ask an administrator.`;
+  }
+  if (notice && notice.startsWith("desk-taken:")) {
+    const [, by, station] = notice.split(":");
+    return `The dispatch desk at ${station} was handed to ${by}, so this phone was signed off. Your hours were closed at the hand-over.`;
+  }
   if (notice && notice.startsWith("declined:")) {
     const [, by, unit, seat] = notice.split(":");
     return `${by} declined your request to take over ${unit} · ${seat}. You have been signed off. If the seat has to change hands, ask the dispatcher.`;
@@ -92,6 +101,8 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
   const [idInput, setIdInput] = useState("");
   const [foundAccount, setFoundAccount] = useState(null);
   const [seatUnit, setSeatUnit] = useState(null);
+  // The desk this account already holds, when it does (desk-handover.jsx).
+  const [deskHeld, setDeskHeld] = useState(null);
   const [joinTeamId, setJoinTeamId] = useState(null);
   // What this session will end up being — "dispatcher" (own desk) or "team"
   // (a seat on a unit). Set before the shift step, because that's what decides
@@ -314,6 +325,15 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       setStage("resume");
       return;
     }
+    // The desk is a seat too: whoever holds it and signs in again — a new
+    // phone — continues on it, and nothing is written.
+    const freshDesk = (await readKey(DESK_KEY, {})) || {};
+    const deskMine = deskHeldBy(freshDesk, account.id);
+    if (deskMine) {
+      setDeskHeld(deskMine);
+      setStage("resumeDesk");
+      return;
+    }
     // The choice is offered to anybody who has more than one role to choose
     // between — which now includes a crew member an administrator has lent
     // authority to, and did not before.
@@ -324,6 +344,28 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
     }
     setPendingRole("team");
     setStage("chooseShift");
+  }
+
+  // Continuing on the desk they hold. Nothing is written.
+  function resumeDesk() {
+    if (!deskHeld || !foundAccount) {
+      setStage(canJoinTeam(foundAccount && foundAccount.role) ? "roleChoice" : "chooseShift");
+      return;
+    }
+    const h = deskHeld.holder;
+    onLogin({
+      ...authorityOf(foundAccount),
+      role: "dispatcher",
+      name: foundAccount.name || h.name || foundAccount.id,
+      accountId: foundAccount.id,
+      station: deskHeld.station,
+      deskStation: deskHeld.station,
+      shift: h.shift,
+      shiftStart: h.shiftStart,
+      shiftEnd: h.shiftEnd,
+      signedOnAt: h.signedOnAt,
+      ...(h.delegated ? { delegated: "dispatcher" } : {}),
+    });
   }
 
   // Carrying on. Nothing is written: they are already signed on, the seat is
@@ -584,30 +626,69 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
       name: account.name || account.id,
       accountId: account.id,
       station: station || DEFAULT_STATION,
+      deskStation: station || DEFAULT_STATION,
       ...(borrowed ? { delegated: "dispatcher" } : {}),
       ...assignment,
     };
-    await addLog(
-      `Dispatch — ${account.name || account.id} signed on at ${stationLabel(session.station)} for ${shiftPhrase(assignment)}` +
-        (borrowed ? " · on delegated authority" : "") +
-        (late > 0 ? ` · already ${msDurationStr(late)} past that shift's end` : ""),
-      "shift",
-      {
-        kind: "on",
-        role: "dispatcher",
-        name: account.name || account.id,
-        accountId: account.id,
-        shift: key,
-        station: session.station,
-        shiftStart: assignment.shiftStart,
-        shiftEnd: assignment.shiftEnd,
-        overtimeMs: late,
-        delegated: borrowed || undefined,
-      },
-      // This device has no session yet, so the stamp comes from the person who
-      // has just signed on rather than from whoever was here before them.
-      actorStamp(session)
-    );
+    // The desk is ONE seat per station (desk-handover.jsx). Somebody holding
+    // it mid-shift is asked, on their own phone, and this person is signed in
+    // WAITING; a holder whose shift is over and who never signed out is signed
+    // off and the desk taken, as a forgotten seat is; an empty desk is taken.
+    const freshDesk = (await readKey(DESK_KEY, {})) || {};
+    const rec = deskFor(freshDesk, session.station);
+    const kind = deskHandoverKind(rec, account.id, now);
+    const me = {
+      accountId: account.id, name: session.name, shift: key,
+      shiftStart: assignment.shiftStart, shiftEnd: assignment.shiftEnd, delegated: borrowed || undefined,
+    };
+    if (kind === "needs-approval" || kind === "waiting-mine") {
+      const holder = deskHolder(rec, now);
+      if (kind === "needs-approval") {
+        await mergeWrite(DESK_KEY, { ...freshDesk, [session.station]: askDesk(rec, { ...me, fromName: holder ? holder.name : "" }, now) }, freshDesk);
+      }
+      setBusy(false);
+      onLogin({ ...session, awaitingDesk: true });
+      return;
+    }
+    if (kind === "forgot") {
+      const holder = deskHolder(rec, now);
+      const ot = overtimeMs(holder, now);
+      await addLog(
+        `Dispatch — ${holder.name} signed off ${shiftPhrase(holder)} at ${stationLabel(session.station)} · had not signed out; ${session.name} took the desk` +
+          (ot > 0 ? ` · ${otHoursStr(ot)} overtime` : ""),
+        "shift",
+        {
+          kind: "off", role: "dispatcher", name: holder.name, accountId: holder.accountId, station: session.station,
+          shift: holder.shift || null, shiftStart: holder.shiftStart || null, shiftEnd: holder.shiftEnd || null,
+          overtimeMs: ot, forcedBy: session.name,
+        },
+        actorStamp(session)
+      );
+    }
+    if (kind !== "mine") {
+      await mergeWrite(DESK_KEY, { ...freshDesk, [session.station]: takeDesk(rec, me, now) }, freshDesk);
+      await addLog(
+        `Dispatch — ${account.name || account.id} signed on at ${stationLabel(session.station)} for ${shiftPhrase(assignment)}` +
+          (borrowed ? " · on delegated authority" : "") +
+          (late > 0 ? ` · already ${msDurationStr(late)} past that shift's end` : ""),
+        "shift",
+        {
+          kind: "on",
+          role: "dispatcher",
+          name: account.name || account.id,
+          accountId: account.id,
+          shift: key,
+          station: session.station,
+          shiftStart: assignment.shiftStart,
+          shiftEnd: assignment.shiftEnd,
+          overtimeMs: late,
+          delegated: borrowed || undefined,
+        },
+        // This device has no session yet, so the stamp comes from the person who
+        // has just signed on rather than from whoever was here before them.
+        actorStamp(session)
+      );
+    }
     setBusy(false);
     onLogin(session);
   }
@@ -1369,6 +1450,45 @@ export function LoginScreen({ units, onLogin, saveUnits, addLog, theme, onToggle
                   </button>
                   <div style={styles.formHint}>
                     Your seat, shift and hours carry on unchanged.
+                  </div>
+                  <div style={styles.loginActions}>
+                    <button style={styles.ghostBtn} onClick={resetAccountFlow}>
+                      Not me
+                    </button>
+                    <button
+                      style={styles.ghostBtn}
+                      onClick={() => {
+                        setPendingRole("team");
+                        setStage(canJoinTeam(foundAccount.role) ? "roleChoice" : "chooseShift");
+                      }}
+                    >
+                      Sign on somewhere else
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+
+            {stage === "resumeDesk" && deskHeld && (() => {
+              const meta = shiftMeta(deskHeld.holder.shift);
+              return (
+                <>
+                  <div style={styles.loginSub}>
+                    Welcome back, {foundAccount.name || foundAccount.id}.
+                  </div>
+                  <div style={styles.resumeCard}>
+                    <div style={styles.resumeWhat}>You are on the dispatch desk</div>
+                    <div style={styles.resumeWho}>{stationLabel(deskHeld.station)}</div>
+                    <div style={styles.resumeMeta}>
+                      {meta ? `${meta.label} · ` : ""}
+                      {deskHeld.holder.signedOnAt ? `on since ${clockStr(deskHeld.holder.signedOnAt)}` : "shift in progress"}
+                    </div>
+                  </div>
+                  <button style={styles.loginSubmit} onClick={resumeDesk}>
+                    Continue on the desk
+                  </button>
+                  <div style={styles.formHint}>
+                    Your shift and hours carry on unchanged.
                   </div>
                   <div style={styles.loginActions}>
                     <button style={styles.ghostBtn} onClick={resetAccountFlow}>

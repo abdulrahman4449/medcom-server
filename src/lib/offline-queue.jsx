@@ -199,7 +199,12 @@ export async function readKeyRaw(key) {
     if (got.status === 401) {
       noteAuthLost(got.reason || "");
       setConnectionOk(true);
-      return null;
+      // A FAILED read, not an empty key: a device that has just been signed
+      // out (the one-phone rule, an expired token) answered `null` here, and
+      // loadAll read that as "this board has no units" and set about writing
+      // the default fleet — refused only because the token had gone in the
+      // same breath. A housekeeping pass must never run on a failed read.
+      return READ_FAILED;
     }
     // Refused, not unreachable. The account list in particular is no longer
     // served through the board — it is credential material and now sits behind

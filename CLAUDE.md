@@ -1264,6 +1264,35 @@ patch", that document is the target — do not start a fresh exploration.
   never finalised, its overtime never final, its calls never tidied away.
   `unitsStaffedForShift` is the one rule for both, with a one-shift grace for
   a forgotten sign-out.
+- **THE DISPATCH DESK IS ONE SEAT PER STATION, and taking it asks the holder.**
+  `src/domain/desk-handover.jsx` (rules under `npm test`) + `ems:desk` on the
+  FAST poll — one record per station: `holder` (stamped like a seat) and
+  `relief` (an ask waiting on the holder). A dispatcher-role account that had
+  joined a team was offered "Dispatch desk" in the masthead and flipped its
+  screen to a second desk beside the one on duty, with no sign-on and nobody
+  asked; and nothing stopped a second dispatcher signing on to the same desk.
+  The seat rule, exactly: `deskHandoverKind` — an empty desk is taken; the
+  holder's own desk is continued ("Continue on the desk", nothing written); a
+  holder MID-SHIFT is asked on their own phone (`newDeskAsks` in
+  `lib/push-triggers.cjs` wakes them, no channel id) and the asker is signed
+  in WAITING (`awaitingDesk`, `DeskWait.jsx` instead of the board, no sign-on
+  line yet); a holder whose shift is over and who never signed out is signed
+  off and the desk taken. Approving is the holder's own sign-out
+  (`approveDeskAsk` holds `signingOutRef` from its FIRST write, or the next
+  poll reads the phone as displaced and tears the token down before the
+  sign-off lands — the seat sign-out's own bug, again); declining puts the
+  asker at the sign-in screen, told who said no; signing out with an ask
+  pending hands the desk over; an administrator's Teams page lists an
+  unanswered ask with **Hand over now** / **Withdraw** for a dead phone. The
+  phone that asked writes its OWN sign-on line when the desk becomes its
+  (`tookOverFrom` on the entry); the phone that lost it is signed out and
+  told (`desk-taken:`). `heldRoles` counts the desk as a held role ONLY for
+  the session that holds it (`deskStation`) — everybody else signs in for it —
+  and `switchRole` refuses the same. Signing in as crew or as an
+  administrator releases a desk the account held (`releaseAbandonedDesk`),
+  as a seat is released. A dispatcher signed on BEFORE this build holds no
+  desk record and can be joined once; the log is still the record of who
+  worked the desk, and `dispatchersOnDuty` still reads it.
 - **The desk has no seat on the board, so "who is on the desk today" is read
   from the shift log.** `dispatchersOnDuty` in `domain/desk-duty.jsx`, under
   `npm test`: a stay runs from its `kind: "on"` line (role `dispatcher`) until
@@ -1707,6 +1736,10 @@ patch", that document is the target — do not start a fresh exploration.
   state frozen at the render the effect was created on. The archive pass used it,
   so a redeploy could have kept an operational day out of a stale snapshot and
   written that as the record. `readKeyRaw` and a `READ_FAILED` bail, always.
+  **A 401 is a failed read too**: `readKeyRaw` answered a signed-out device
+  (the one-phone rule, an expired token) with `null`, and `loadAll` read that
+  as "this board has no units" and set about writing the default fleet —
+  refused only because the token had gone in the same breath.
 - **Wiping the board is `docs/RESET-THE-BOARD.md`, not a button.** The `-wal`
   file has to go with the `.db` or the last few minutes come back. Accounts live
   in their own table, so the board can be cleared without touching them.

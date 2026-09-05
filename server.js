@@ -938,17 +938,20 @@ app.post("/api/board", requireAuth, (req, res) => {
   let prevRequests = null;
   let prevUnits = null;
   let prevMessages = null;
-  if (key === "ems:requests" || key === "ems:units" || key === MESSAGES_KEY) {
+  let prevDesk = null;
+  if (key === "ems:requests" || key === "ems:units" || key === MESSAGES_KEY || key === DESK_KEY) {
     try {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
       const before = row ? JSON.parse(row.value) : null;
       if (key === "ems:requests") prevRequests = before;
       else if (key === "ems:units") prevUnits = before;
+      else if (key === DESK_KEY) prevDesk = before;
       else prevMessages = before;
     } catch (e) {
       prevRequests = null;
       prevUnits = null;
       prevMessages = null;
+      prevDesk = null;
     }
   }
   let stored = value ?? null;
@@ -995,6 +998,7 @@ app.post("/api/board", requireAuth, (req, res) => {
   bumpBoardKey(key);
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, value);
   if (key === "ems:units") pushForUnitsWrite(prevUnits, value);
+  if (key === DESK_KEY) pushForDeskWrite(prevDesk, value);
   if (key === MESSAGES_KEY) pushForMessagesWrite(prevMessages, value);
   res.json({ ok: true });
 });
@@ -1035,6 +1039,7 @@ const MESSAGES_KEY = "ems:messages";
 const {
   newAssignments,
   newHandoverAsks,
+  newDeskAsks,
   callStillNeedsWaking,
   newCrewMessages,
   newStandDowns,
@@ -1114,6 +1119,42 @@ function pushForUnitsWrite(prevList, nextList) {
           const r = await sendOwnerNotice(token, {
             title: "SEAT HANDOVER",
             body: `${ask.askerName} is waiting to take over your ${ask.unitName || "medic"} seat. Open the app to answer.`,
+          });
+          if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+        } catch (e) {
+          // never let a push problem near the board
+        }
+      }
+    }
+  });
+}
+
+// A DESK handover ask: the dispatcher holding the desk is told, by name, that
+// somebody is waiting to take it — the same discipline as the seat ask above:
+// no channel id, after the write, never able to fail it.
+const DESK_KEY = "ems:desk";
+function pushForDeskWrite(prevDesk, nextDesk) {
+  if (!pushConfigured()) return;
+  let asks;
+  try {
+    asks = newDeskAsks(prevDesk, nextDesk);
+  } catch (e) {
+    return;
+  }
+  if (!asks.length) return;
+  setImmediate(async () => {
+    for (const ask of asks) {
+      let rows = [];
+      try {
+        rows = db.prepare("SELECT token FROM push_tokens WHERE account_id = ?").all(ask.holderAccountId);
+      } catch (e) {
+        rows = [];
+      }
+      for (const { token } of rows) {
+        try {
+          const r = await sendOwnerNotice(token, {
+            title: "DESK HANDOVER",
+            body: `${ask.askerName} is waiting to take over the dispatch desk. Open the app to answer.`,
           });
           if (r && r.dead) db.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
         } catch (e) {
@@ -1368,6 +1409,7 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   let prevRequests = null;
   let prevUnits = null;
   let prevMessages = null;
+  let prevDesk = null;
   try {
     merged = db.transaction(() => {
       const row = db.prepare("SELECT value FROM board WHERE key = ?").get(key);
@@ -1375,6 +1417,7 @@ app.post("/api/board/records", requireAuth, (req, res) => {
       if (key === "ems:requests") prevRequests = current;
       if (key === "ems:units") prevUnits = current;
       if (key === MESSAGES_KEY) prevMessages = current;
+      if (key === DESK_KEY) prevDesk = current;
       // A key that holds a list cannot be merged with a map, or the other way
       // round. The client is told so and falls back to writing the key whole.
       if (current !== null && current !== undefined) {
@@ -1441,6 +1484,7 @@ app.post("/api/board/records", requireAuth, (req, res) => {
   // fired after the write has committed, and never able to fail it.
   if (key === "ems:requests") pushForRequestsWrite(prevRequests, merged);
   if (key === "ems:units") pushForUnitsWrite(prevUnits, merged);
+  if (key === DESK_KEY) pushForDeskWrite(prevDesk, merged);
   // A message from the desk reaches a locked phone too — the crew's own
   // messages back are not pushed; the desk is looking at the board.
   if (key === MESSAGES_KEY) pushForMessagesWrite(prevMessages, merged);

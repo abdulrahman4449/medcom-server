@@ -10,6 +10,7 @@ import { grantWholeShiftOvertime } from "../domain/overtime.jsx";
 import { assistPending } from "../domain/second-ambulance.jsx";
 import { hhmm, overtimeMs, seatLabel, shiftLabelWithWindow, shiftMeta } from "../domain/shift-helpers.jsx";
 import { dispatchersOnDuty } from "../domain/desk-duty.jsx";
+import { unansweredDeskAsks } from "../domain/desk-handover.jsx";
 import { otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { callStartTs } from "../domain/uhu.jsx";
 import { exportArchivedDay } from "../export/workbook.jsx";
@@ -395,7 +396,7 @@ function ClaimCodeBanner({ issued, onDone }) {
   );
 }
 
-export function AdminView({ archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents, onGoToPage, schedule, setSchedule, onPanelChange }) {
+export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents, onGoToPage, schedule, setSchedule, onPanelChange }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -1108,6 +1109,31 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
                 })}
               </div>
             )}
+            {/* Somebody waiting for a desk whose holder has not answered. Asked
+                on the holder's own phone first; an administrator steps in only
+                when that goes unanswered — a dead phone must not hold the desk
+                all day. */}
+            {unansweredDeskAsks(desk || {}, now).map(({ station, holder, ask }) => (
+              <div key={`da-${station}`} style={{ ...styles.oosAsk, marginTop: 10 }}>
+                <div style={styles.oosAskHead}>
+                  {ask.name} is waiting to take over the desk from {holder.name} — {stationLabel(station)}
+                </div>
+                <div style={styles.oosAskWhy}>
+                  Asked at {clockStr(ask.queuedAt)} · {holder.name} has not answered on their phone.
+                  <span style={styles.oosAskWho}>
+                    {" "}Handing over here signs {holder.name} off now and is recorded as your decision.
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  <button style={styles.primaryBtnSm} onClick={() => onForceDesk && onForceDesk(station)}>
+                    Hand over now
+                  </button>
+                  <button style={styles.ghostBtnSm} onClick={() => onWithdrawDesk && onWithdrawDesk(station)}>
+                    Withdraw the request
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         );
       })()}
