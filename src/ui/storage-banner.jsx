@@ -52,6 +52,8 @@ export const KEY_NAMES = {
   "ems:policies": "Policy files",
   "ems:checklistRuns": "Filed checklists",
   "ems:overtimeSent": "Overtime sent in",
+  "ems:productivityAsks": "Productivity requests",
+  "ems:productivity": "Productivity decisions",
   "ems:fleetSeeded": "Fleet set up",
   "ems:inventoryMoves": "Stock movements",
   "ems:coverage": "No-coverage periods",

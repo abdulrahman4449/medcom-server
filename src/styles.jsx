@@ -3279,6 +3279,42 @@ export const styles = {
     fontFamily: display,
   },
   sysBannerSay: { fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-2)", overflowWrap: "anywhere" },
+  // The crew's productivity request, beside their UHU square. The system
+  // banner's shape in the card contract's clothes — it is not a fault.
+  prodBanner: {
+    marginTop: 16,
+    borderRadius: 16,
+    padding: "12px 14px",
+    border: "1px solid var(--hair)",
+    background: "var(--raised)",
+    boxShadow: "0 6px 18px var(--lift)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 9,
+  },
+  prodBannerHead: {
+    width: "100%", display: "flex", alignItems: "center", gap: 8,
+    fontSize: 11, letterSpacing: ".08em", color: "var(--ink-3)", fontFamily: display, fontWeight: 700,
+  },
+  prodBannerCount: { marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--hold-2)" },
+  prodUhuLine: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" },
+  prodUhuFig: { fontSize: 28, fontWeight: 600, color: "var(--ink-alt)", fontVariantNumeric: "tabular-nums", letterSpacing: 0.5 },
+  prodUhuCaption: { fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.4 },
+  prodForm: { width: "100%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 7 },
+  // 16px like every field in this app, or focusing it zooms the board on iOS.
+  prodHours: {
+    background: "var(--inset)", border: "1px solid var(--hair-2)", borderRadius: 10,
+    color: "var(--ink)", padding: "9px 11px", fontSize: 16, fontFamily: "inherit",
+    width: 120, boxSizing: "border-box", fontVariantNumeric: "tabular-nums",
+  },
+  prodList: { width: "100%", display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--hair)", paddingTop: 9 },
+  prodRow: { display: "flex", flexDirection: "column", gap: 4 },
+  prodRowTop: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  prodRowDay: { fontSize: 12.5, color: "var(--ink-3)" },
+  prodRowHours: { fontSize: 13, fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" },
+  prodRowStatus: { marginLeft: "auto", fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em" },
+  prodRowTask: { fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45, overflowWrap: "anywhere" },
   chatInput: {
     flex: 1, background: "var(--inset)", border: "1px solid var(--hair-2)",
     borderRadius: 12, color: "var(--ink)", padding: "9px 11px", fontSize: 16,

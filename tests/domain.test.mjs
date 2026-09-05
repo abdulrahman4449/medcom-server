@@ -1328,6 +1328,81 @@ export function run(D, t) {
     t.is("month: so 67% compliance, not 100%", Math.round(by.F9001.checklistCompliance), 67);
     t.is("month: the department is weighted by shifts, not averaged",
       Number(D.departmentUhu(rows).toFixed(1)), 18.8);
+
+    // ---------- productivity: a task that was not a call, approved, counts into UHU
+    //
+    // The department's administrative task form: what was done, how many
+    // hours, filed the same day, approved by the supervisor. Approved hours
+    // join the person's numerator; nothing else about the figure moves.
+    t.ok("productivity: an empty task is refused", !!D.productivityProblem({ task: "", hours: 2 }));
+    t.ok("productivity: so is a stray keypress", !!D.productivityProblem({ task: "x", hours: 2 }));
+    t.ok("productivity: no hours is refused", !!D.productivityProblem({ task: "Restock audit", hours: 0 }));
+    t.ok("productivity: nonsense hours are refused", !!D.productivityProblem({ task: "Restock audit", hours: "lots" }));
+    t.ok("productivity: more than a shift is refused", !!D.productivityProblem({ task: "Restock audit", hours: 13 }));
+    t.is("productivity: a real request goes through", D.productivityProblem({ task: "Restock audit", hours: "2.5" }), "");
+    t.ok("productivity: null does not throw, it is refused", typeof D.productivityProblem(null) === "string" && !!D.productivityProblem(null));
+
+    const crew = { accountId: A.id, name: A.name, unitName: "MEDIC 1", station: "main" };
+    // Sent at 02:00 on the 6th: that is still the 5th's operational day, and
+    // the day is never typed — the form's rule is that it is filed the day
+    // the task was done.
+    const ask = D.productivityAsk({ user: crew, task: "Restock audit", hours: 3, now: at(2026, 8, 6, 2) });
+    t.is("productivity: the ID is the signed-in account", ask.accountId, "F9001");
+    t.is("productivity: hours are kept in milliseconds", ask.ms, 3 * H);
+    t.is("productivity: the day is the OPERATIONAL day it was sent on", ask.day, "2026-08-05");
+
+    const approved = D.productivityDecision({ ask, status: "approved", approvedMs: null, user: { name: "Boss", accountId: "F1" }, now: at(2026, 8, 6, 9) });
+    t.is("productivity: approving with no figure approves the whole ask", approved.approvedMs, 3 * H);
+    t.is("productivity: the decision carries the ask — who", approved.accountId, "F9001");
+    t.is("productivity: — what", approved.task, "Restock audit");
+    t.is("productivity: — and when", approved.at, ask.at);
+    const part = D.productivityDecision({ ask, status: "approved", approvedMs: 2 * H, user: { name: "Boss" } });
+    t.is("productivity: part of it can be approved", part.approvedMs, 2 * H);
+    t.is("productivity: never more than was asked",
+      D.productivityDecision({ ask, status: "approved", approvedMs: 9 * H, user: {} }).approvedMs, 3 * H);
+    const declined = D.productivityDecision({ ask, status: "declined", note: "Not agreed with me", user: { name: "Boss" } });
+    t.is("productivity: a decline approves nought", declined.approvedMs, 0);
+    t.ok("productivity: a decline must say why", !!D.productivityDeclineProblem("") && !D.productivityDeclineProblem("Not agreed"));
+
+    const rows2 = D.productivityRows({ [ask.id]: ask }, { [ask.id]: part });
+    t.is("productivity: the ask and its decision are one row", rows2.length, 1);
+    t.is("productivity: a part approval reads as one", D.productivityStatusLabel(rows2[0]), "APPROVED IN PART");
+    t.is("productivity: a whole approval reads approved", D.productivityStatusLabel({ ms: 3 * H, decision: approved }), "APPROVED");
+    t.is("productivity: undecided reads waiting", D.productivityStatusLabel({ ms: 3 * H, decision: null }), "AWAITING APPROVAL");
+    t.is("productivity: a decision whose ask has gone is still a row",
+      D.productivityRows({}, { [ask.id]: approved }).length, 1);
+    t.is("productivity: an ask nobody decided is pending",
+      D.productivityRows({ [ask.id]: ask }, {})[0].status, "pending");
+
+    // Only APPROVED hours, only inside the window.
+    const bAsk = D.productivityAsk({ user: { accountId: B.id, name: B.name }, task: "Training", hours: 5, now: at(2026, 8, 10, 15) });
+    const cAsk = D.productivityAsk({ user: { accountId: "F9003", name: "Nobody" }, task: "Training", hours: 5, now: at(2026, 8, 10, 15) });
+    const lateAsk = D.productivityAsk({ user: crew, task: "Audit", hours: 4, now: at(2026, 9, 2, 10) });
+    const decided = {
+      [ask.id]: approved,
+      [bAsk.id]: D.productivityDecision({ ask: bAsk, status: "declined", note: "No", user: {} }),
+      [cAsk.id]: D.productivityDecision({ ask: cAsk, status: "approved", user: {} }),
+      [lateAsk.id]: D.productivityDecision({ ask: lateAsk, status: "approved", user: {} }),
+    };
+    const byPerson = D.approvedProductivityByPerson(decided, win.start, win.end);
+    t.is("productivity: approved hours are credited to the person", byPerson.get("F9001"), 3 * H);
+    t.ok("productivity: a declined request credits nothing", !byPerson.has("F9002"));
+    t.ok("productivity: a request outside the period is not in it", byPerson.get("F9001") === 3 * H);
+    t.is("productivity: approvedProductivityMs reads the same map",
+      D.approvedProductivityMs(decided, "F9001", "", win.start, win.end), 3 * H);
+
+    const withProd = D.staffStatsFor(lines, reqs, unitsAB, win, now, runs, decided);
+    const byP = Object.fromEntries(withProd.map((r) => [r.id, r]));
+    t.is("productivity: three approved hours join seven on calls over three twelves",
+      Number(byP.F9001.uhu.toFixed(1)), 27.8);
+    t.is("productivity: the hours are named on the row", byP.F9001.productivityMs, 3 * H);
+    t.is("productivity: a colleague with nothing approved is unchanged", Number(byP.F9002.uhu.toFixed(1)), 16.7);
+    t.ok("productivity: somebody with no shift in the period has no row to credit", !byP.F9003);
+    t.is("productivity: and the department figure moves by the credited hours only",
+      Number(D.departmentUhu(withProd).toFixed(1)), 25.0);
+    t.is("productivity: a request nobody has decided adds nothing",
+      Number(D.staffStatsFor(lines, reqs, unitsAB, win, now, runs, {})[0].uhu.toFixed(1)),
+      Number(rows[0].uhu.toFixed(1)));
   }
 
   // ---------- a booking is raised before it leaves, never as it leaves
@@ -2097,6 +2172,10 @@ export function run(D, t) {
     // leaves shut.
     t.ok("delegation: overtime opens the overtime key",
       server.scopeAllowsKey(["overtime"], "ems:overtime"));
+    t.ok("delegation: and the productivity decisions — the same job",
+      server.scopeAllowsKey(["overtime"], "ems:productivity") &&
+      !server.scopeAllowsKey(["dispatch"], "ems:productivity") &&
+      !server.scopeAllowsKey(["stats"], "ems:productivity"));
     t.ok("delegation: and nothing else",
       !server.scopeAllowsKey(["overtime"], "ems:policies") &&
       !server.scopeAllowsKey(["overtime"], "ems:checklists") &&

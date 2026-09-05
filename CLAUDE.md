@@ -573,6 +573,38 @@ patch", that document is the target — do not start a fresh exploration.
   not moved. The BOARD still shows the true age (`now - callStartTs`), because a
   call open for two days is exactly what a desk needs to see; it is the
   statistic that must not treat it as two days of work.
+- **A PRODUCTIVITY REQUEST is the department's administrative task form, and an
+  approved one counts into the person's UHU.** `src/domain/productivity.jsx`
+  (rules under `npm test`) — a task that was not a call (on a day off, or at the
+  station between calls), approved by a supervisor, credited to that person's
+  UHU. Split exactly as overtime is: the ASK (`ems:productivityAsks`, a map by
+  id) is the person's own and anybody signed in writes it; the DECISION
+  (`ems:productivity`) is on `ADMIN_ONLY_KEYS`, opened to the `overtime`
+  delegation area, or anyone could approve their own hours by posting to the
+  board. The decision carries a COPY of the ask (who, what, which day, how many
+  hours, `approvedMs`), so the statistics read decisions alone and an ask edited
+  after approval changes nothing. **The day is never typed**: the form's own
+  rule is "filled the same day", so the day IS the operational day the request
+  was sent on, and the ID is the signed-in account — two fields, task and hours,
+  and nothing to get wrong. Hours are capped at 12 (`PRODUCTIVITY_MAX_HOURS`);
+  a decline must say why, because it goes on the person's own screen.
+  `ProductivityBanner` sits under the crew's UHU square on My truck (the SYSTEM
+  banner's shape, in the card contract's clothes — it is not a fault) and
+  prints the person's UHU THIS MONTH with the working beside it — calls plus
+  approved tasks over shifts worked — counted by `staffStatsFor` exactly as the
+  administrator's page counts it, so the two can never disagree.
+  `ProductivityPanel` is the Teams page's tile for the `overtime` area: waiting
+  requests first (whatever their date), then the period's approved list and
+  its total; approve-part and decline open their one field INLINE on the card,
+  never in a browser dialog. **Credited only to somebody who worked a shift in
+  the period** (`p.productivityMs`, added to the numerator in `staffStatsFor`
+  and `departmentUhu`): UHU is over shifts worked, and a month with no shift
+  has no denominator to credit against — numerator and denominator stay the
+  same set of people. A pending request adds nothing. The shift sheet's
+  per-person rows are NOT credited: a task has a day, not a shift window, and
+  the sheet prints the shift's calls. Both keys ride the slow poll and neither
+  is pruned — a record is a few hundred bytes and the year's statistics read
+  the decisions.
 - **UHU is per person, not per vehicle.** A medic keeps working while crews
   change over; attributing a truck's total to everyone who sat in it was a
   real bug. See `computePersonUhu`.

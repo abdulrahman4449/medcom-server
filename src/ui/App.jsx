@@ -16,6 +16,7 @@ import { DEFAULT_ACCOUNTS, DEFAULT_STATION, DEFAULT_UNITS, STATIONS, atStation, 
 import { MESSAGES_KEY, clockStr, msDurationStr, otHoursStr } from "../domain/messages.jsx";
 import { ARCHIVE_KEY, archiveOpDay, opDayComplete, opDayEnd, opDayLabel, opDayStart, requestsForOpDay, unarchivedOpDays } from "../domain/op-day.jsx";
 import { OVERTIME_KEY, OVERTIME_SENT_KEY, heldByCallAt, overtimeClaimId, overtimeReasonProblem, sendOvertimeClaim } from "../domain/overtime.jsx";
+import { PRODUCTIVITY_ASK_KEY, PRODUCTIVITY_KEY } from "../domain/productivity.jsx";
 import { RESTOCK_KEY, callsAwaitingRestock } from "../domain/restock.jsx";
 import { SCHEDULE_KEY } from "../domain/schedule.jsx";
 import { canArea, isDelegatedAdmin } from "../domain/delegation.jsx";
@@ -50,6 +51,7 @@ import { POLICY_KEY, PolicyLibrary, readPolicyFile } from "./PolicyLibrary.jsx";
 import { LogSheet } from "./ShiftReport.jsx";
 import { OvertimeAskSheet } from "./OvertimeAskSheet.jsx";
 import { TeamView } from "./TeamView.jsx";
+import { ProductivityBanner } from "./ProductivityBanner.jsx";
 import { UhuPanel } from "./UhuPanel.jsx";
 import { schedDue, schedRepeatIsLive, whenStr } from "./booking-cancel.jsx";
 import { GlobalFont } from "./font.jsx";
@@ -353,6 +355,11 @@ export function App() {
   const [inventory, setInventory] = useState(null);
   const [inventoryMoves, setInventoryMoves] = useState([]);
   const [overtimeDecisions, setOvertimeDecisions] = useState({});
+  // Productivity requests: the asks (anybody's to write) and the decisions
+  // (administration's). Both ride the slow poll — an approval is not
+  // something anybody watches the board for.
+  const [productivityAsks, setProductivityAsks] = useState({});
+  const [productivity, setProductivity] = useState({});
   const [locations, setLocations] = useState({});
   const [trackingConsents, setTrackingConsents] = useState({});
   // The policy shelf, and whether an upload is in flight.
@@ -967,7 +974,7 @@ export function App() {
     }
     // Read together, not one after another: nine round trips in a row kept
     // every screen built from these keys wrong for the whole chain.
-    const [arch, subs, l, cl, runs, invMoves, pwr, rst, sent, sched] = await Promise.all([
+    const [arch, subs, l, cl, runs, invMoves, pwr, rst, sent, sched, pAsks, pDec] = await Promise.all([
       readKeyRaw(ARCHIVE_KEY),
       readKeyRaw(SUBMISSION_KEY),
       readKeyRaw("ems:log"),
@@ -980,6 +987,8 @@ export function App() {
       // because a claim being sent is not something anybody is watching for.
       readKeyRaw(OVERTIME_SENT_KEY),
       readKeyRaw(SCHEDULE_KEY),
+      readKeyRaw(PRODUCTIVITY_ASK_KEY),
+      readKeyRaw(PRODUCTIVITY_KEY),
     ]);
     if (arch !== READ_FAILED) setArchives(arch || []);
     if (subs !== READ_FAILED) setSubmissions(subs || []);
@@ -991,6 +1000,8 @@ export function App() {
     if (rst !== READ_FAILED) setRestockDone(rst || {});
     if (sent !== READ_FAILED) setOvertimeSent(sent || {});
     if (sched !== READ_FAILED) setSchedule(sched || null);
+    if (pAsks !== READ_FAILED) setProductivityAsks(pAsks && typeof pAsks === "object" && !Array.isArray(pAsks) ? pAsks : {});
+    if (pDec !== READ_FAILED) setProductivity(pDec && typeof pDec === "object" && !Array.isArray(pDec) ? pDec : {});
     // Only a SUCCESSFUL read of the two keys the crew prompts hang on counts:
     // a failed read leaves the empty defaults in place, and a prompt built
     // from those is the flash this flag exists to stop.
@@ -3146,6 +3157,10 @@ export function App() {
               setOvertimeDecisions={setOvertimeDecisions}
               overtimeSent={overtimeSent}
               setOvertimeSent={setOvertimeSent}
+              productivityAsks={productivityAsks}
+              setProductivityAsks={setProductivityAsks}
+              productivity={productivity}
+              setProductivity={setProductivity}
               locations={locations}
               trackingConsents={trackingConsents}
               setTrackingConsents={setTrackingConsents}
@@ -3174,8 +3189,24 @@ export function App() {
                 />
               </React.Fragment>
             ) : (
-              // A crew sees their own truck's figure, on their own truck's page.
-              <UhuPanel units={units} requests={requests} focusUnitId={user.unitId} />
+              // A crew sees their own truck's figure, on their own truck's
+              // page — and under it the productivity request, which is the
+              // one thing they can do about their own UHU that is not a call.
+              <React.Fragment>
+                <UhuPanel units={units} requests={requests} focusUnitId={user.unitId} />
+                <ProductivityBanner
+                  user={user}
+                  units={units}
+                  requests={requests}
+                  log={log}
+                  submissions={submissions}
+                  archives={archives}
+                  productivityAsks={productivityAsks}
+                  setProductivityAsks={setProductivityAsks}
+                  productivity={productivity}
+                  addLog={addLog}
+                />
+              </React.Fragment>
             )}
           </div>
         )}

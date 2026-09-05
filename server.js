@@ -450,6 +450,9 @@ const ADMIN_ONLY_KEYS = new Set([
   // crew member may write is ems:overtimeSent: that they are asking for a
   // decision, never what the decision was.
   "ems:overtime",
+  // Productivity DECISIONS, for the same reason. The ask is ems:productivityAsks
+  // and is the person's own to write.
+  "ems:productivity",
 ]);
 // Never served or written through the board API, whatever a token says.
 const FORBIDDEN_KEYS = new Set(["ems:accounts", "ems:accountsSeeded"]);

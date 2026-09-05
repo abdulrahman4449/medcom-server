@@ -39,6 +39,9 @@ import { issueClaimCode } from "../lib/auth.jsx";
 import { PasswordResets, TrackingConsentAdmin } from "./LocationConsents.jsx";
 import { pendingResets } from "./PasswordResets.jsx";
 import { OvertimePanel } from "./OvertimePanel.jsx";
+import { ProductivityPanel } from "./ProductivityPanel.jsx";
+import { productivityRows } from "../domain/productivity.jsx";
+import { statRangeWindow } from "../domain/stat-range.jsx";
 import { ChecklistAdmin, CoveragePanel, IndicatorBand, IssuesRaised, LiveCoverageBanner, SavedLogs, Statistics } from "./Statistics.jsx";
 import { AssistStatusLine, CallTimes, CallTypeTag, LoadedKmTag, NoTransportTag, PcrAuthorTag, StatusBoard } from "./StatusBoard.jsx";
 
@@ -396,7 +399,7 @@ function ClaimCodeBanner({ issued, onDone }) {
   );
 }
 
-export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, locations, trackingConsents, setTrackingConsents, onGoToPage, schedule, setSchedule, onPanelChange }) {
+export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwordResets, setPasswordResets, user, units, requests, scheduled, accounts, log, saveUnits, saveAccounts, refreshAccounts, saveRequests, saveScheduled, addLog, audioCtxRef, submissions, coverage, checklists, setChecklists, checklistRuns, page, inventory, setInventory, inventoryMoves, setInventoryMoves, overtimeDecisions, setOvertimeDecisions, overtimeSent, setOvertimeSent, productivityAsks, setProductivityAsks, productivity, setProductivity, locations, trackingConsents, setTrackingConsents, onGoToPage, schedule, setSchedule, onPanelChange }) {
   // Signing out somebody who went home without doing it. Their hours are closed
   // at the end of the shift they signed on for rather than at this moment —
   // administration pressing a button hours later is not evidence that they
@@ -950,6 +953,7 @@ export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwor
         archives={archives}
         range={statRange}
         setRange={setStatRange}
+        productivity={productivity}
       />
       )}
       {!openPanel && (
@@ -1023,6 +1027,7 @@ export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwor
             archives={archives}
             range={statRange}
             setRange={setStatRange}
+            productivity={productivity}
           />
         </SectionScreen>
       )}
@@ -1203,6 +1208,20 @@ export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwor
           onOpen={setOpenPanel}
           tiles={[
             canArea(user, "schedule") && { key: "empschedule", title: "Employees schedule", icon: <CalendarClock size={26} /> },
+            // Hours somebody asks to have counted into their UHU. A request
+            // waiting turns the tile amber, as a password reset does above:
+            // the person has done the work and is waiting to hear.
+            canArea(user, "overtime") && (() => {
+              const rows = productivityRows(productivityAsks, productivity);
+              const waiting = rows.filter((r) => !r.decision).length;
+              const monthStart = statRangeWindow("month", Date.now()).start;
+              const approved = rows.filter((r) => r.decision && r.decision.status === "approved" && r.at >= monthStart).length;
+              return {
+                key: "productivity", title: "Productivity requests", icon: <FileSignature size={26} />,
+                note: waiting ? `${waiting} waiting for approval` : approved ? `${approved} approved this month` : undefined,
+                tone: waiting ? "var(--hold-2)" : null,
+              };
+            })(),
             { key: "scheduled", title: "Scheduled requests", icon: <CalendarClock size={26} /> },
             { key: "accounts", title: "Accounts & access", icon: <Users size={26} />,
               note: pendingResets(passwordResets).length
@@ -1215,6 +1234,17 @@ export function AdminView({ desk, onForceDesk, onWithdrawDesk, archives, passwor
       {openPanel === "empschedule" && canArea(user, "schedule") && (
         <SectionScreen onBack={() => setOpenPanel(null)}>
           <SchedulePage schedule={schedule} setSchedule={setSchedule} accounts={accounts} user={user} addLog={addLog} />
+        </SectionScreen>
+      )}
+      {openPanel === "productivity" && canArea(user, "overtime") && (
+        <SectionScreen onBack={() => setOpenPanel(null)}>
+          <ProductivityPanel
+            user={user}
+            asks={productivityAsks}
+            decisions={productivity}
+            setDecisions={setProductivity}
+            addLog={addLog}
+          />
         </SectionScreen>
       )}
       {openPanel === "scheduled" && (

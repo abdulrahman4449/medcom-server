@@ -10,7 +10,7 @@ import { medicCrewIndex, stayWindow } from "../domain/crew-stamps.jsx";
 import { escalatedCalls, escalationIsOpen } from "../domain/escalations.jsx";
 import { isStaffed } from "../domain/in-service.jsx";
 import { STATIONS, stationLabel, stationOf, stationShort } from "../domain/live-sheet.jsx";
-import { clockStr, durationStr, msDurationStr, shortDurationStr } from "../domain/messages.jsx";
+import { clockStr, durationStr, msDurationStr, otHoursStr, shortDurationStr } from "../domain/messages.jsx";
 import { opDayKey, opDayLabel, opDayStart } from "../domain/op-day.jsx";
 import { pcrAuthorOf, pcrAuthorStamp } from "../domain/pcr-author.jsx";
 import { requestOutcomeKey, requestOutcomeLabel } from "../domain/second-ambulance.jsx";
@@ -24,6 +24,7 @@ import { topPerformers } from "../domain/standouts.jsx";
 import { callBusyMs, callEndTs, callStartTs, uhuPercent, unitCallInterval } from "../domain/uhu.jsx";
 import { timeSourceNote } from "../domain/stamping.jsx";
 import { CATEGORY_FILLS, SERVICE_FILLS, bravoNameFor, buildShiftHandoverRows, loadedKmFor, personUhuRows, serviceTypeFor } from "../domain/uhu-person.jsx";
+import { approvedProductivityByPerson } from "../domain/productivity.jsx";
 import { autoFitSheet, exportSubmission } from "../export/workbook.jsx";
 import { gregDateStr, gregDateTimeStr } from "../lib/dates.jsx";
 import { uid } from "../lib/helpers.jsx";
@@ -155,7 +156,12 @@ function filedShiftsOf(p) {
   return n;
 }
 
-export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
+// `productivity` is the map of productivity DECISIONS (`ems:productivity`):
+// a task somebody did that was not a call, approved by a supervisor, is
+// counted into that person's UHU numerator — for a person who worked at least
+// one shift in the period, because UHU is measured over shifts worked and a
+// month with no shift has no denominator to credit against.
+export function staffStatsFor(log, requests, units, win, now, checklistRuns, productivity) {
   const people = new Map();
   const person = (id, name) => {
     const k = (id || name || "").toUpperCase();
@@ -271,6 +277,14 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
     p.checklistShifts.add(shiftWindowAt(r.at).start);
   });
 
+  // Approved productivity requests, credited by person. Only somebody who
+  // worked a shift in the period is credited — numerator and denominator
+  // stay the same set of people, on the KPI band and on the rows alike.
+  const credited = approvedProductivityByPerson(productivity, win.start, win.end);
+  people.forEach((p, k) => {
+    p.productivityMs = p.shifts.size > 0 ? credited.get(k) || 0 : 0;
+  });
+
   return Array.from(people.values())
     .filter((p) => p.name)
     .map((p) => ({
@@ -289,7 +303,7 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
       // somebody who worked ten shifts is judged on ten, not on the calendar.
       uhu:
         p.shifts.size > 0
-          ? uhuPercent(p.onCallMs, p.shifts.size * SHIFT_MS)
+          ? uhuPercent(p.onCallMs + (p.productivityMs || 0), p.shifts.size * SHIFT_MS)
           : 0,
       // Checklist compliance, against the shifts they actually worked.
       //
@@ -313,7 +327,7 @@ export function staffStatsFor(log, requests, units, win, now, checklistRuns) {
 // is a target for the department's people. Dispatchers are not in these rows
 // and are not counted; their measure is still to be defined.
 export function departmentUhu(staff) {
-  const busy = (staff || []).reduce((n, p) => n + (p.onCallMs || 0), 0);
+  const busy = (staff || []).reduce((n, p) => n + (p.onCallMs || 0) + (p.productivityMs || 0), 0);
   const available = (staff || []).reduce((n, p) => n + (p.shiftsWorked || 0) * SHIFT_MS, 0);
   return uhuPercent(busy, available);
 }
@@ -1510,7 +1524,7 @@ export function responseNote(resp) {
   return bits.length ? bits.join(" · ") : null;
 }
 
-export function IndicatorBand({ requests: liveRequests, units, log: liveLog, checklistRuns, submissions, archives, range, setRange }) {
+export function IndicatorBand({ requests: liveRequests, units, log: liveLog, checklistRuns, submissions, archives, range, setRange, productivity }) {
   const now = Date.now();
   const win = statRangeWindow(range, now);
   // The live board is not the record — see `domain/stat-source.jsx`. Every
@@ -1526,7 +1540,7 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
   // Checklist compliance department-wide is the same sum the per-person figures
   // are built from — lists filed against shifts actually worked — so the band
   // and the per-person table can never disagree.
-  const people = staffStatsFor(log, requests, units, win, now, checklistRuns);
+  const people = staffStatsFor(log, requests, units, win, now, checklistRuns, productivity);
   // The department's UHU comes from those same people. The fleet figure sits
   // beside it as context: a wide gap between the two is trucks standing with
   // nobody in them.
@@ -1642,7 +1656,7 @@ export function IndicatorBand({ requests: liveRequests, units, log: liveLog, che
   );
 }
 
-export function Statistics({ log: liveLog, requests: liveRequests, units, checklistRuns, submissions, archives, range, setRange }) {
+export function Statistics({ log: liveLog, requests: liveRequests, units, checklistRuns, submissions, archives, range, setRange, productivity }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("uhu");
   const [search, setSearch] = useState("");
@@ -1653,7 +1667,7 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
   const requests = statsRequests(liveRequests, submissions, win, archives);
   const log = statsLog(liveLog, submissions, win, archives);
   const resp = responseCompliance(requests, win.start, win.end);
-  const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns);
+  const allStaff = staffStatsFor(log, requests, units, win, now, checklistRuns, productivity);
   const mix = categoryMixOf(requests, win.start, win.end);
   const tops = topPerformers({ staff: allStaff, requests, units, log, win, now });
 
@@ -1753,6 +1767,7 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
       "SHIFTS WORKED": p.shiftsWorked,
       "TOTAL SHIFT (MIN)": Math.round(p.shiftMs / 60000),
       "PATIENT CARE TIME (MIN)": Math.round(p.onCallMs / 60000),
+      "APPROVED TASKS (MIN)": Math.round((p.productivityMs || 0) / 60000),
       "CHECKLISTS FILED": p.checklistsFiled,
     }));
     XLSX.utils.book_append_sheet(
@@ -1910,6 +1925,10 @@ export function Statistics({ log: liveLog, requests: liveRequests, units, checkl
                 <div style={styles.statMeta}>
                   {p.unitList || "—"} · {p.shiftsWorked}{" "}
                   {p.shiftsWorked === 1 ? "shift" : "shifts"}
+                  {/* Approved productivity requests are in the percentage;
+                      the hours are named so a figure that moved without a
+                      call being run can be explained. */}
+                  {p.productivityMs > 0 ? ` · +${otHoursStr(p.productivityMs)} approved tasks` : ""}
                 </div>
               </div>
               {mode === "uhu" ? (

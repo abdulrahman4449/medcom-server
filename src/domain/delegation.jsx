@@ -12,7 +12,7 @@
 export const DELEGATION_AREAS = [
   { key: "dispatch", label: "The dispatch desk", sub: "Raise and assign calls, work a shift at a station" },
   { key: "teams", label: "Teams & accounts", sub: "Add and remove staff, issue sign-in codes, clear passwords" },
-  { key: "overtime", label: "Overtime", sub: "Approve, part-approve and decline claims" },
+  { key: "overtime", label: "Overtime", sub: "Approve, part-approve and decline claims and productivity requests" },
   { key: "archive", label: "Archive & backups", sub: "The kept days, filed logs, and putting data back from a copy" },
   { key: "stats", label: "Statistics", sub: "Per-person UHU, coverage, response, checklist compliance" },
   { key: "inventory", label: "Inventory", sub: "What is on the shelf and what came off it" },

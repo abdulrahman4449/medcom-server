@@ -48,6 +48,7 @@ export { roleSwitchTarget, heldRoles } from ${JSON.stringify(ROOT + "src/ui/Head
 export * from ${JSON.stringify(ROOT + "src/domain/seat-handover.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/desk-handover.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/stamping.jsx")};
+export * from ${JSON.stringify(ROOT + "src/domain/productivity.jsx")};
 export { uhuPercent, UHU_MAX } from ${JSON.stringify(ROOT + "src/domain/uhu.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/call-changes.jsx")};
 export * from ${JSON.stringify(ROOT + "src/domain/speaker-check.jsx")};
