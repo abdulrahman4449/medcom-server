@@ -31,27 +31,33 @@ export function systemFaults(input) {
   // first one without the caller re-deriving which list it came out of.
   const bad = [];
   const warn = [];
-  const isBad = (f) => ({ ...f, level: "bad" });
-  const isWarn = (f) => ({ ...f, level: "warn" });
+  // `kind` says which screen owns the fault. The four handset settings and
+  // the volume are handset faults: the crew screen's BackgroundAlertNotice
+  // already says those in the crew's own words with the button that fixes
+  // them, and the SYSTEM ANALYSIS banner beside it must not say them a second
+  // time. An iPhone at 30% used to read the same sentence twice, one above
+  // the other.
+  const isBad = (f, kind) => ({ ...f, level: "bad", kind });
+  const isWarn = (f, kind) => ({ ...f, level: "warn", kind });
 
   // --- the phone cannot be heard ---
   if (bg && bg.notificationsEnabled === false) {
-    bad.push(isBad({ which: "notifications", say: "Notifications are turned off for this app." }));
+    bad.push(isBad({ which: "notifications", say: "Notifications are turned off for this app." }, "handset"));
   } else if (bg && !onIos && bg.channelSilenced) {
-    bad.push(isBad({ which: "channel", say: "The Dispatch alerts channel has been silenced on this phone." }));
+    bad.push(isBad({ which: "channel", say: "The Dispatch alerts channel has been silenced on this phone." }, "handset"));
   }
   if (bg && onIos && typeof bg.alarmVolumePct === "number" && bg.alarmVolumePct < 40) {
     warn.push(isWarn({
       which: null,
       say: `This iPhone is at ${bg.alarmVolumePct}% — the app cannot raise it, so turn it up before the shift.`,
-    }));
+    }, "handset"));
   } else if (bg && !onIos && bg.volumeFloorOk === false) {
-    warn.push(isWarn({ which: "notifications", say: "This phone refused to raise the alarm volume for the last alert." }));
+    warn.push(isWarn({ which: "notifications", say: "This phone refused to raise the alarm volume for the last alert." }, "handset"));
   } else if (bg && !onIos && typeof bg.alarmVolumePct === "number" && bg.alarmVolumePct < 30) {
-    warn.push(isWarn({ which: null, say: `The alarm volume is at ${bg.alarmVolumePct}%.` }));
+    warn.push(isWarn({ which: null, say: `The alarm volume is at ${bg.alarmVolumePct}%.` }, "handset"));
   }
   if (bg && !onIos && bg.batteryOptimised) {
-    warn.push(isWarn({ which: "battery", say: "Battery optimisation is on, which freezes the app in the background." }));
+    warn.push(isWarn({ which: "battery", say: "Battery optimisation is on, which freezes the app in the background." }, "handset"));
   }
 
   // --- the app on this device is behind the one it is talking to ---
@@ -60,10 +66,10 @@ export function systemFaults(input) {
   // plugin ship separately from the web build — and either one is a method the
   // app is about to call and will not find.
   if (/^SHELL IS OLD/.test(String(it.shell || ""))) {
-    bad.push(isBad({ which: null, say: `${it.shell} — rebuild and reinstall the app.` }));
+    bad.push(isBad({ which: null, say: `${it.shell} — rebuild and reinstall the app.` }, "build"));
   }
   if (String(it.shellNote || "").trim()) {
-    bad.push(isBad({ which: null, say: String(it.shellNote).replace(/^\s*·\s*/, "") }));
+    bad.push(isBad({ which: null, say: String(it.shellNote).replace(/^\s*·\s*/, "") }, "build"));
   }
 
   // --- work this device is holding that the department cannot see ---
@@ -71,14 +77,14 @@ export function systemFaults(input) {
     bad.push(isBad({
       which: null,
       say: `The server is refusing to save${held > 0 ? `. ${held} change${held === 1 ? "" : "s"} held on this device` : ""}. Nothing is lost.`,
-    }));
+    }, "sync"));
   } else if (it.connectionOk === false) {
     bad.push(isBad({
       which: null,
       say: `No signal${held > 0 ? ` — ${held} change${held === 1 ? "" : "s"} held on this device` : ""}. Nothing is lost.`,
-    }));
+    }, "sync"));
   } else if (held > 0) {
-    warn.push(isWarn({ which: null, say: `${held} change${held === 1 ? "" : "s"} still going up.` }));
+    warn.push(isWarn({ which: null, say: `${held} change${held === 1 ? "" : "s"} still going up.` }, "sync"));
   }
 
   // --- page audio, and only where it is the path a call would take ---
@@ -88,7 +94,7 @@ export function systemFaults(input) {
   // not worth a warning on a crew's screen. In a browser it is the only path
   // there is.
   if (String(it.shell || "") === "no shell (browser)" && String(it.pageAudio || "") === "interrupted") {
-    warn.push(isWarn({ which: null, say: "This browser's audio was interrupted — reload the page before relying on the tone." }));
+    warn.push(isWarn({ which: null, say: "This browser's audio was interrupted — reload the page before relying on the tone." }, "audio"));
   }
 
   return bad.concat(warn);

@@ -1297,8 +1297,7 @@ export function AdminView({ archives, passwordResets, setPasswordResets, user, u
       <div style={styles.requestForm}>
         <div style={styles.formHint}>
           The dispatch desk is <strong>lent, not assigned</strong>. Add the person as a team member,
-          then open <strong>Delegate authority</strong> and lend them <strong>The dispatch desk</strong> —
-          under their own name.
+          then open <strong>Delegate authority</strong> and lend them <strong>The dispatch desk</strong>.
           {dispatcherAccounts.length > 0
             ? " The accounts below were made under the old rule and still work."
             : " No accounts hold the old dispatcher role."}

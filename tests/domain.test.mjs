@@ -2412,6 +2412,26 @@ export function run(D, t) {
     t.ok("system: and an empty reading still produces a line", D.systemDetailLine({}).length > 0);
     t.ok("system: a null reading does not throw", D.systemSummary(null).ok);
   }
+  // ---------- every fault says which screen owns it, so no screen says it twice
+  {
+    const bg = { platform: "ios", alarmVolumePct: 30, notificationsEnabled: true, pluginBuild: "x" };
+    const f = D.systemFaults({ shell: "shell up to date", shellNote: "", bg, held: 0, connectionOk: true });
+    t.ok("system: a quiet iPhone is a HANDSET fault", f.some((x) => x.kind === "handset" && /iPhone/.test(x.say)));
+    // The crew screen's banner shows everything BUT handset faults — those are
+    // BackgroundAlertNotice's, with the settings button. An iPhone at 30% used
+    // to read "turn it up" twice, one banner above the other.
+    t.is("system: the crew banner leaves the handset faults to the notice",
+      f.filter((x) => x.kind !== "handset").length, 0);
+    const all = D.systemFaults({
+      shell: "SHELL IS OLD — rebuild the app (missing standDown)", shellNote: " · PLUGIN IS OLD",
+      bg: { ...bg, notificationsEnabled: false, batteryOptimised: true, platform: "android", alarmVolumePct: 10 },
+      held: 2, connectionOk: false, writeError: "", pageAudio: "interrupted",
+    });
+    for (const x of all) t.ok(`system: every fault carries a kind — ${x.say.slice(0, 40)}`, ["handset", "build", "sync", "audio"].includes(x.kind));
+    t.ok("system: an old shell is a BUILD fault", all.some((x) => x.kind === "build"));
+    t.ok("system: no signal is a SYNC fault", all.some((x) => x.kind === "sync"));
+    t.ok("system: notifications off is a HANDSET fault", all.some((x) => x.kind === "handset" && x.which === "notifications"));
+  }
   // ---------- a filed record is closed, to everybody
   {
     const HOUR = 3600000;
@@ -2595,6 +2615,18 @@ export function run(D, t) {
     t.is("lock: nothing throws on rubbish", D.holdFiledRecords({
       current: null, incoming: null, filedIndex: new Map(), now,
     }).records.length, 0);
+    // Structural equality. A record that comes back with its keys in a
+    // different order is the same record, and refusing it files a finding
+    // about a change that never happened.
+    const reordered = { ...base, times: { arrivalDestination: 0 }, id: "r1" };
+    const swapped = Object.fromEntries(Object.entries(reordered).reverse());
+    t.is("lock: the same record with its keys in another order is NOT a change",
+      hold([swapped]).refused.length, 0);
+    const nestedSwapped = { ...base, times: { arrivalDestination: 0, extra: 1 } };
+    t.is("lock: but a nested field that really changed still is",
+      hold([nestedSwapped]).refused[0] && hold([nestedSwapped]).refused[0].field, "times");
+    t.is("lock: an undefined field and a missing one are the same thing",
+      hold([{ ...base, notes: undefined }]).refused.length, 0);
   }
 
   // ---------- overtime nobody was held on has to say why

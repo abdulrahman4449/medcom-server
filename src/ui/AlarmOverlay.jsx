@@ -100,10 +100,14 @@ export function SoundDiagnostics({ audioCtxRef }) {
     connectionOk,
     writeError: lastWriteError || "",
   });
-  // The four handset settings have their own notice directly above this one,
-  // with the button that opens the exact settings page — repeating them here
-  // would be the same sentence twice on the screen a crew is trying to read.
-  const mine = faults.filter((f) => !f.which);
+  // The handset faults — the four settings and the volume — have their own
+  // notice directly above this one, with the button that opens the exact
+  // settings page. Repeating them here put the same sentence twice on the
+  // screen a crew is trying to read: an iPhone at 30% read "turn it up" from
+  // the notice and again from this banner. Filtered by KIND, not by whether
+  // the fault carries a settings page — the volume ones do not, and they
+  // still belong to the notice.
+  const mine = faults.filter((f) => f.kind !== "handset");
   if (!mine.length) return null;
   return (
     <div style={styles.sysBanner}>

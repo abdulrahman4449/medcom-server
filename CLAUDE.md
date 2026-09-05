@@ -1435,11 +1435,14 @@ patch", that document is the target — do not start a fresh exploration.
   directly above it saying those in the crew's own words with the button that
   fixes them. Anything new worth diagnosing goes in the reading and gets a
   fault rule, never a second permanent line.
-- **`BUILD_STAMP` is on the crew screen under the speaker check.** A whole round
-  of testing once went into a fault that was already fixed, because the phone
-  was still running the previous build and nothing on screen said so. The same
-  line reports whether the alarm is going through the system path or page audio,
-  and what state that audio is in — ask for it before diagnosing "no tone".
+- **`BUILD_STAMP` is one tap away, inside the SYSTEM chip in the masthead.** A
+  whole round of testing once went into a fault that was already fixed, because
+  the phone was still running the previous build and nothing on screen said so.
+  The chip's panel prints the build, whether the alarm is going through the
+  system path or page audio, and what state that audio is in — ask for that
+  line before diagnosing "no tone". It used to sit permanently on the crew
+  screen; see "A diagnostic that is always on screen is a diagnostic nobody
+  reads" for why it moved.
 - **An interrupted AudioContext never comes back on its own.** "Suspended" is
   not the only way page audio stops. When anything else in the app activates an
   audio session — which is what going on duty does, to stop iOS suspending the
